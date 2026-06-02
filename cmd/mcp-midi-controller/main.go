@@ -19,8 +19,12 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/transport/usbmidi"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	log.SetFlags(0)
+	log.Printf("mcp-midi-controller %s", version)
 
 	cfg, err := config.Load()
 	if err != nil {

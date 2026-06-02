@@ -1,0 +1,54 @@
+---
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mcp-midi-controller
+    main: ./cmd/mcp-midi-controller
+    binary: mcp-midi-controller
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    wrap_in_directory: true
+    files:
+      - none*
+
+checksum:
+  algorithm: sha256
+  name_template: '{{ .ProjectName }}_checksums.txt'
+
+changelog:
+  use: github-native
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+  extra_files:
+    - glob: ./dist/mcp-midi-controller_linux_amd64*/mcp-midi-controller
+      name_template: mcp-midi-controller_linux_amd64
+    - glob: ./dist/mcp-midi-controller_linux_arm64*/mcp-midi-controller
+      name_template: mcp-midi-controller_linux_arm64
