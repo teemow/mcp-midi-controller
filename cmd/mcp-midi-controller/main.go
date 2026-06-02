@@ -50,7 +50,18 @@ func main() {
 
 	eng := engine.New(reg, transports...)
 
-	// TODO: load bindings.yaml and eng.Bind(...) each, restore desired-state.
+	// Restore the rig-as-code bindings so the daemon comes back up with the same
+	// logical devices (and their control_<logical> tools) it had before.
+	// TODO: restore desired-state from the state dir.
+	bindings, err := engine.LoadBindingsFile(config.BindingsPath())
+	if err != nil {
+		log.Fatalf("load bindings: %v", err)
+	}
+	for _, b := range bindings {
+		if err := eng.Bind(b); err != nil {
+			log.Printf("skip binding %q: %v", b.Logical, err)
+		}
+	}
 
 	srv := mcpserver.New(eng)
 

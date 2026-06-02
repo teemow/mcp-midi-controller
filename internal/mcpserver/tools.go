@@ -8,6 +8,10 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/teemow/mcp-midi-controller/internal/config"
+	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/transport"
 )
 
 // registerGlobalTools registers the device-independent tools. Handlers that are
@@ -31,15 +35,37 @@ func (s *Server) registerGlobalTools() {
 		InputSchema: deviceArgSchema,
 	}, s.handleDescribeDevice)
 
+	// Endpoint discovery, pairing and bindings (wired to the engine).
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "discover_endpoints",
+		Description: "Scan for reachable transport endpoints (BLE peripherals, OSC hosts).",
+		InputSchema: objSchema,
+	}, s.handleDiscoverEndpoints)
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "pair_endpoint",
+		Description: "Pair/bond with a BLE endpoint and open its data path. Pass transport to target a non-default backend.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"endpoint":{"type":"string"},"transport":{"type":"string"}},"required":["endpoint"]}`),
+	}, s.handlePairEndpoint)
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "bind_device",
+		Description: "Bind an endpoint+channel to a device definition (generates a control_<logical> tool).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"},"endpoint":{"type":"string"},"channel":{"type":"integer"},"device":{"type":"string"}},"required":["logical","endpoint","channel","device"]}`),
+	}, s.handleBindDevice)
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "unbind_device",
+		Description: "Remove a logical device binding (removes its control_<logical> tool).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"}},"required":["logical"]}`),
+	}, s.handleUnbindDevice)
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "send_raw",
+		Description: "Escape hatch: send raw MIDI bytes (e.g. [176,17,64]) or an OSC address+args to an endpoint (untracked).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"transport":{"type":"string"},"endpoint":{"type":"string"},"midi":{"type":"array","items":{"type":"integer"}},"address":{"type":"string"},"args":{"type":"array"}},"required":["endpoint"]}`),
+	}, s.handleSendRaw)
+
 	// Stubbed surface (TODO: wire to engine).
-	s.addStub("discover_endpoints", "Scan for reachable transport endpoints (BLE peripherals, OSC hosts).", objSchema)
-	s.addStub("pair_endpoint", "Pair/bond with a BLE endpoint.", json.RawMessage(`{"type":"object","properties":{"endpoint":{"type":"string"}},"required":["endpoint"]}`))
-	s.addStub("bind_device", "Bind an endpoint+channel to a device definition (generates a control_<logical> tool).", json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"},"endpoint":{"type":"string"},"channel":{"type":"integer"},"device":{"type":"string"}},"required":["logical","endpoint","channel","device"]}`))
-	s.addStub("unbind_device", "Remove a logical device binding.", json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"}},"required":["logical"]}`))
 	s.addStub("save_scene", "Save the current desired-state (or a subset) as a named scene.", sceneArgSchema)
 	s.addStub("recall_scene", "Recall a scene (PC before CC, with per-device settle delay).", sceneArgSchema)
 	s.addStub("list_scenes", "List saved scenes.", objSchema)
-	s.addStub("send_raw", "Escape hatch: send raw MIDI bytes or an OSC address (untracked).", objSchema)
 	s.addStub("create_device_definition", "Begin authoring a new device definition.", objSchema)
 	s.addStub("add_control", "Add a control to a device definition (optionally via MIDI-learn capture).", objSchema)
 	s.addStub("save_device_definition", "Persist an authored definition to the user devices dir (hot-reloads).", objSchema)
@@ -101,6 +127,118 @@ func (s *Server) handleDescribeDevice(_ context.Context, req *mcp.CallToolReques
 		b.WriteByte('\n')
 	}
 	return textResult(b.String(), false), nil
+}
+
+func (s *Server) handleDiscoverEndpoints(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	eps, err := s.eng.DiscoverEndpoints(ctx)
+	if err != nil {
+		return textResult("discover failed: "+err.Error(), true), nil
+	}
+	if len(eps) == 0 {
+		return textResult("no endpoints found", false), nil
+	}
+	sort.Slice(eps, func(i, j int) bool { return eps[i].ID < eps[j].ID })
+	var b strings.Builder
+	for _, ep := range eps {
+		fmt.Fprintf(&b, "%s\t%q\t(transport=%s, paired=%t, connected=%t)\n", ep.ID, ep.Name, ep.Transport, ep.Paired, ep.Connected)
+	}
+	return textResult(b.String(), false), nil
+}
+
+func (s *Server) handlePairEndpoint(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Endpoint  string `json:"endpoint"`
+		Transport string `json:"transport"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	if args.Endpoint == "" {
+		return textResult("/endpoint: required", true), nil
+	}
+	if err := s.eng.PairEndpoint(ctx, args.Transport, args.Endpoint); err != nil {
+		return textResult("pair failed: "+err.Error(), true), nil
+	}
+	return textResult(fmt.Sprintf("paired and connected %s", args.Endpoint), false), nil
+}
+
+func (s *Server) handleBindDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Logical  string `json:"logical"`
+		Endpoint string `json:"endpoint"`
+		Channel  int    `json:"channel"`
+		Device   string `json:"device"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	b := engine.Binding{Logical: args.Logical, Endpoint: args.Endpoint, Channel: args.Channel, DeviceID: args.Device}
+	if err := s.eng.Bind(b); err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	s.AddDeviceTool(b)
+	if err := s.persistBindings(); err != nil {
+		return textResult(fmt.Sprintf("bound %s (warning: could not persist bindings: %v)", args.Logical, err), false), nil
+	}
+	return textResult(fmt.Sprintf("bound %s -> %s on %q channel %d (tool control_%s)", args.Logical, args.Device, args.Endpoint, args.Channel, args.Logical), false), nil
+}
+
+func (s *Server) handleUnbindDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Logical string `json:"logical"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	s.eng.Unbind(args.Logical)
+	s.RemoveDeviceTool(args.Logical)
+	if err := s.persistBindings(); err != nil {
+		return textResult(fmt.Sprintf("unbound %s (warning: could not persist bindings: %v)", args.Logical, err), false), nil
+	}
+	return textResult(fmt.Sprintf("unbound %s", args.Logical), false), nil
+}
+
+func (s *Server) handleSendRaw(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Transport string `json:"transport"`
+		Endpoint  string `json:"endpoint"`
+		MIDI      []int  `json:"midi"`
+		Address   string `json:"address"`
+		Args      []any  `json:"args"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	if args.Endpoint == "" {
+		return textResult("/endpoint: required", true), nil
+	}
+
+	var ev transport.Event
+	switch {
+	case len(args.MIDI) > 0:
+		data := make([]byte, len(args.MIDI))
+		for i, v := range args.MIDI {
+			if v < 0 || v > 255 {
+				return textResult(fmt.Sprintf("/midi/%d: byte must be in [0, 255]", i), true), nil
+			}
+			data[i] = byte(v)
+		}
+		ev = transport.Event{Kind: transport.MIDIEvent, Data: data}
+	case args.Address != "":
+		ev = transport.Event{Kind: transport.OSCEvent, OSCAddr: args.Address, OSCArgs: args.Args}
+	default:
+		return textResult("provide either midi (raw bytes) or address (OSC)", true), nil
+	}
+
+	if err := s.eng.SendRaw(ctx, args.Transport, args.Endpoint, ev); err != nil {
+		return textResult("send_raw failed: "+err.Error(), true), nil
+	}
+	return textResult("sent", false), nil
+}
+
+// persistBindings writes the current bindings to the rig-as-code bindings file.
+func (s *Server) persistBindings() error {
+	return engine.SaveBindingsFile(config.BindingsPath(), s.eng.Bindings())
 }
 
 // controlToolSchema builds the input schema for a control_<logical> tool: a

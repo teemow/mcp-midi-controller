@@ -6,11 +6,13 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 )
 
@@ -79,8 +81,14 @@ func (s *Server) handleControl(logical string) mcp.ToolHandler {
 		var applied int
 		for i, set := range args.Settings {
 			if err := s.eng.SetControl(ctx, logical, set.Control, set.Value); err != nil {
-				// TODO: distinguish validation errors (→ precise /settings/N/value
-				// or /settings/N/control pointer) from transport errors.
+				// Validation failures carry an RFC-6901 path relative to the
+				// control invocation; prefix it with the batch index so the
+				// model gets e.g. /settings/2/value (SEP-1303). Transport and
+				// other errors fall back to the plain batch-index pointer.
+				var ve *device.ValidationError
+				if errors.As(err, &ve) {
+					return textResult(fmt.Sprintf("/settings/%d%s: %s", i, ve.Pointer, ve.Msg), true), nil
+				}
 				return textResult(fmt.Sprintf("/settings/%d: %v", i, err), true), nil
 			}
 			applied++
