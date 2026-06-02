@@ -16,7 +16,8 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
 
 - Controls a heterogeneous rig from one conversation:
   - **Pedals** over BLE-MIDI (Boss MD-200, Eventide H90, Two Notes Opus,
-    Morningstar ML10X) — typically behind a CME WIDI Thru6 BT hub.
+    Morningstar ML10X) — typically behind a BLE-MIDI hub (e.g. a CME WIDI
+    Thru6).
   - **Behringer X32** over OSC/UDP (on WiFi).
   - **AUM on iPad** and its **AUv3 plugins/synths** (Battalion, iSem, Agonizer,
     Korg iMS-20, FabFilter, …) over BLE-MIDI.

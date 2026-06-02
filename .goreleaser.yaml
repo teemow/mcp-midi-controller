@@ -15,7 +15,12 @@ builds:
       - amd64
       - arm64
     env:
-      - CGO_ENABLED=0
+      # gomidi's rtmidi driver needs CGO + ALSA, so the USB path links C.
+      # The BLE/OSC paths stay pure-Go. Cross-compiling arm64 from the amd64
+      # runner requires a per-arch C toolchain and ALSA pkg-config.
+      - CGO_ENABLED=1
+      - 'CC={{- if eq .Arch "arm64" }}aarch64-linux-gnu-gcc{{- else }}gcc{{- end }}'
+      - 'PKG_CONFIG_PATH={{- if eq .Arch "arm64" }}/usr/lib/aarch64-linux-gnu/pkgconfig{{- else }}/usr/lib/x86_64-linux-gnu/pkgconfig{{- end }}'
     mod_timestamp: '{{ .CommitTimestamp }}'
     flags:
       - -trimpath

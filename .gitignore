@@ -9,3 +9,8 @@
 # Editor / OS
 *.swp
 .DS_Store
+
+# Private, installation-specific docs (rig snapshots, real names/IPs/scenes).
+# The repo is public; keep anything specific to one setup out of git.
+/docs/private/
+*.local.md

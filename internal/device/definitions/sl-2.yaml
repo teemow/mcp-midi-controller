@@ -1,0 +1,41 @@
+id: sl-2
+name: Boss SL-2
+manufacturer: Boss
+description: >-
+  Boss SL-2 Slicer (compact pedal). MIDI over TRS MIDI IN (BMIDI/BCC cables).
+  The entire live MIDI surface is three Control Changes plus MIDI-clock sync.
+  There is NO Program Change and NO way to select the slicer Type or pattern
+  Variation over MIDI — those are front-panel knobs only, so scenes can capture
+  on/off and effect level but not the pattern. Receive channel is set by a
+  power-on knob combination (channels 1-10, or "All"); the binding channel must
+  match. See docs/research/sl-2.md.
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: expression
+    description: >-
+      EXP (CC#16). Controls the output level of the effect sound — same effect
+      as a connected expression pedal.
+    type: cc
+    cc: 16
+    value: { type: range, min: 0, max: 127 }
+  - name: on_off
+    description: >-
+      EFFECTS ON/OFF (CC#80). On/off value semantics are not printed in the
+      manual; modeled per Boss convention (0 = off, 127 = on).
+    type: cc
+    cc: 80
+    value: { type: enum, values: { off: 0, on: 127 } }   # TODO: confirm 0/127 vs threshold (not stated in manual)
+  - name: tap_tempo
+    description: >-
+      TAP TEMPO (CC#81). Sets tempo from the interval between successive CC#81
+      messages — a rate trigger, not a stored value. Ignored while the pedal is
+      synced to external MIDI clock. Not scene-relevant.
+    type: cc
+    cc: 81
+    value: { type: range, min: 0, max: 127 }
+# Slicer Type (SINGLE/DUAL/TREMOLO/HARMONIC/SFX) and pattern Variation are NOT
+# MIDI-addressable: no Program Change, no CC, no documented SysEx for live
+# control. Tempo can also follow MIDI clock (F8/FA/FB/FC), which is
+# system-real-time (no channel) and handled at the transport level, not as a
+# control.

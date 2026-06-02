@@ -6,7 +6,8 @@ description: >
   (port 10023). The OSC tree is far richer than the console's MIDI table. This
   definition is a representative starter set, not an exhaustive map: the full
   tree has thousands of addresses. Every address listed here is verified against
-  the unofficial X32 OSC protocol document and is safe to extend.
+  the unofficial X32 OSC protocol document AND against a live X32 RACK (firmware
+  4.13, OSC server V2.07) — see docs/research/x32.md. It is safe to extend.
 
   Channel/bus numbers are zero-padded two digits; DCAs and mute groups are a
   single digit. Address families you can extend along the same patterns:
@@ -68,6 +69,14 @@ controls:
     type: osc
     address: /ch/01/config/color
     value: { type: int, min: 0, max: 15 }
+  - name: ch01_source
+    description: >
+      Channel 01 input source (int). 0 = OFF; 1..32 local/AES50/card inputs,
+      higher values aux/USB/FX returns. Routing block decides what each index
+      resolves to (see /config/routing). Verified field of /ch/NN/config.
+    type: osc
+    address: /ch/01/config/source
+    value: { type: int, min: 0, max: 168 }
 
   # --- Main stereo (LR) and main mono (M/C) ---
   - name: main_st_fader
@@ -85,6 +94,21 @@ controls:
     type: osc
     address: /main/st/mix/pan
     value: { type: float, min: 0.0, max: 1.0, unit: lin }
+  - name: main_st_name
+    description: Main LR scribble-strip name (string, max 12 chars)
+    type: osc
+    address: /main/st/config/name
+    value: { type: string }
+  - name: main_m_fader
+    description: Main mono (M/C) fader (0.0..1.0 -> -90..+10 dB; ~0.75 = 0 dB)
+    type: osc
+    address: /main/m/mix/fader
+    value: { type: float, min: 0.0, max: 1.0, unit: dB }
+  - name: main_m_on
+    description: Main mono (M/C) on/mute (1 = ON/unmuted, 0 = OFF/muted)
+    type: osc
+    address: /main/m/mix/on
+    value: { type: enum, values: { off: 0, on: 1 } }
 
   # --- Mix bus 01 (replicate for /bus/02.../bus/16) ---
   - name: bus01_fader

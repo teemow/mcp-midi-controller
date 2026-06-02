@@ -23,6 +23,24 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install CGO build dependencies (ALSA + arm64 cross toolchain)
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture arm64
+          # Restrict the default (amd64) repos and add arm64 from ports.ubuntu.com.
+          sudo sed -i 's/^Architectures:.*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+          CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          sudo tee /etc/apt/sources.list.d/arm64-ports.sources >/dev/null <<EOF
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: ${CODENAME} ${CODENAME}-updates ${CODENAME}-security
+          Components: main universe
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev libasound2-dev:arm64
+
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:

@@ -25,11 +25,19 @@ conversationally.
 - Cross-platform BLE (macOS/Windows). Linux-first; the transport interface
   leaves a clean seam for a CoreBluetooth/WinRT backend later.
 
-## The rig (v1 targets — all in v1)
+## Target device classes (v1)
+
+The device classes below are the v1 targets — a generic catalog of what the
+server models, not a description of any one installation. The concrete inventory
+of a particular rig (which units, which endpoints, which channels) is
+installation-specific; a documented example is kept in `docs/private/`
+(gitignored).
 
 | Device | Class | Transport | Notes | Reference |
 |--------|-------|-----------|-------|-----------|
 | Boss MD-200 | pedal | BLE-MIDI | Pure CC. Full CC map known (see below). | — (CC map inlined below) |
+| Boss SL-2 | pedal | BLE-MIDI (TRS) | 3 CCs only (CC16/80/81) + MIDI-clock sync. No PC; pattern/type not MIDI-addressable. | [SL-2 MIDI](https://static.roland.com/manuals/sl-2/eng/33861479.html) |
+| Source Audio EQ2 | pedal | BLE-MIDI | 128 presets via PC; all params via CC (remappable default map). | [EQ2 manual](https://sourceaudio.net/products/eq2) |
 | Eventide H90 | pedal | BLE-MIDI | Program change (presets) + CC + SysEx. | [H90 global/MIDI](https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html) |
 | Two Notes Opus | pedal | BLE-MIDI | CC + program change. | [Opus MIDI chart](https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual#midi_chart) |
 | Morningstar ML10X | controller/hub | BLE-MIDI | CC. Also the live foot controller. | [ML10X CC messages](https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages) |
@@ -64,11 +72,14 @@ references rather than MIDI specs:
 - **FabFilter plugins** — <https://www.fabfilter.com/products>
 - …and other AUv3 instruments/effects (add a YAML definition per plugin).
 
-The pedalboard pedals hang off a **CME WIDI Thru6 BT** hub: a *single* BLE
-endpoint fans out to all pedals on the DIN chain, distinguished only by **MIDI
-channel**. The iPad is reachable via its own WIDI dongle (another BLE-MIDI
-endpoint). Hence the core addressing unit is **`(endpoint, channel)`**, not
-`endpoint` alone.
+A typical pedalboard hangs off a multi-port **BLE-MIDI hub** (e.g. a CME WIDI
+Thru6): a *single* BLE endpoint fans out to all pedals on the DIN chain,
+distinguished only by **MIDI channel**. An iPad is reachable via its own
+BLE-MIDI dongle (another endpoint). Hence the core addressing unit is
+**`(endpoint, channel)`**, not `endpoint` alone. The concrete endpoint names and
+per-device channel assignments are **installation-specific** and live in the
+user's config dir (and, for documentation, in `docs/private/` — gitignored), not
+in this design doc.
 
 ## Architecture
 
@@ -96,7 +107,7 @@ endpoint). Hence the core addressing unit is **`(endpoint, channel)`**, not
                          └───────────────────────┼─────────────────────────────┘
                                                  ▼
                                      BLE-MIDI peripherals
-                                  (WIDI Thru6 → pedals, iPad)
+                                 (BLE-MIDI hub → pedals, iPad)
 ```
 
 The **engine is a library**; the daemon is a thin process on top. A stdio MCP
@@ -176,13 +187,15 @@ flowing through desired-state and scenes (unlike `send_raw`, which is untracked)
 ### Bindings & logical devices
 
 ```yaml
-# bindings.yaml
+# bindings.yaml — illustrative only. Real per-rig bindings (actual endpoint
+# names + channel assignments) live in the user's config dir and are not
+# committed; see docs/private/ for a documented example.
 - logical: h90        # logical device name -> generates tool control_h90
-  endpoint: "CME WIDI Thru6 BT"   # transport endpoint id
+  endpoint: "<ble-midi-hub>"   # transport endpoint id (a BLE-MIDI hub)
   channel: 1
   device: h90         # definition id
 - logical: md200
-  endpoint: "CME WIDI Thru6 BT"
+  endpoint: "<ble-midi-hub>"
   channel: 2
   device: md-200
 ```
@@ -295,12 +308,20 @@ remaining work is **YAML definitions + MIDI-learn**, not core code.
   <https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html>
 - **Boss MD-200** — default CC map inlined above (no public manual link); also in
   `internal/device/definitions/md-200.yaml`.
+- **Boss SL-2** — "Controlling This Unit from an External MIDI Device" (3 CCs +
+  MIDI clock; no PC): <https://static.roland.com/manuals/sl-2/eng/33861479.html>
+  (research note: `docs/research/sl-2.md`).
+- **Source Audio EQ2** — user guide + MIDI Implementation Guide (PC presets, CC
+  per parameter, remappable in Neuro): <https://sourceaudio.net/products/eq2>
+  (research note: `docs/research/eq-2.md`).
 - **Morningstar ML10X** — Control Change messages:
   <https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages>
 - **Two Notes Opus** — MIDI chart:
   <https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual#midi_chart>
 - **Behringer X32** — MIDI table (and OSC protocol):
   <https://behringer.world/wiki/doku.php?id=x32_midi_table>
+  (research note: `docs/research/x32.md` — verified live against an **X32 RACK**,
+  FW 4.13, OSC/UDP 10023)
 - **AUM (iPad)** — help / MIDI control:
   <https://kymatica.com/aum/help>
 

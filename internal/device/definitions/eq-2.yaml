@@ -1,0 +1,57 @@
+id: eq-2
+name: Source Audio EQ2
+manufacturer: Source Audio
+description: >-
+  Source Audio EQ2 Programmable EQ (One Series, SA270). Full MIDI: 128 presets
+  recallable via Program Change, and effectively every DSP parameter reachable
+  via Control Change. The CC map is GLOBAL and user-remappable in the Neuro
+  Desktop Editor, so the vendor default CC numbers are a starting point, not a
+  fixed contract — prefer MIDI-learn to bind parameters per rig, or transcribe
+  the EQ2 MIDI Implementation Guide and keep this YAML as the source of truth
+  the Neuro map must match. MIDI over 5-pin DIN / USB; default receive channel
+  is 1 (channel comes from the binding here). See docs/research/eq-2.md.
+transport: blemidi
+settle_ms: 50   # not specified by Source Audio; conservative wait for a recalled preset to load before CC overrides
+controls:
+  # --- Preset recall (confirmed) --------------------------------------------
+  - name: preset
+    description: >-
+      Recall any of the 128 presets via Program Change (PC 0 = preset 1). The
+      reliable, unambiguous recall path. Tip: save a preset in its bypassed
+      state to "queue up" a sound without engaging it on recall.
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  # Presets are also recallable via CC#103 / CC#104 per the product feature
+  # list, but the pair's semantics (select vs. bank vs. up/down) are not
+  # documented in the user guide. Confirm against the MIDI Implementation Guide
+  # before modeling them as controls:
+  # - name: preset_recall_a
+  #   type: cc
+  #   cc: 103
+  #   value: { type: range, min: 0, max: 127 }   # TODO: confirm semantics
+  # - name: preset_recall_b
+  #   type: cc
+  #   cc: 104
+  #   value: { type: range, min: 0, max: 127 }   # TODO: confirm semantics
+
+  # --- Parameters reachable over CC (remappable; default CC#s in the MIDI
+  #     Implementation Guide, NOT reproduced in the user guide) ---------------
+  # The parameters below are documented as MIDI/Neuro-accessible, but their
+  # default CC numbers are published only in the separate "EQ2 Programmable EQ
+  # MIDI Implementation Guide" download and are user-remappable. Capture the
+  # actual CC per parameter with MIDI-learn (learn_start/learn_capture), or fill
+  # in the `cc:` values from the Implementation Guide, then drop the TODO.
+  #
+  #   - bypass / engage (Universal Bypass on/off)
+  #   - output_level (master; +12 dB boost, unity at mid)
+  #   - ch1_gain / ch2_gain (-18..+18 dB; relevant in Split Mode)
+  #   - split_mode (on/off), channel_swap
+  #   - routing_mode (mono / stereo / effects-loop variants)
+  #   - per band b1..b10 (per channel in Split Mode):
+  #       bN_level     (boost/cut, +/-18 dB)
+  #       bN_frequency (20 Hz .. 20 kHz)
+  #       bN_q         (~0.1 .. 10)
+  #   - b1_shelf / b10_shelf (peaking vs. shelf)
+  #   - ch1_highpass / ch2_highpass (10..80 Hz)
+  #   - noise_gate_threshold, limiter (optional; configured in Neuro)
+  #   - tuner (on/off)
