@@ -1,0 +1,87 @@
+id: isem
+name: Arturia iSEM (AUv3)
+manufacturer: Arturia
+description: >
+  Arturia iSEM — physical model of the 1974 Oberheim SEM (dual oscillator,
+  12 dB/oct multi-mode filter, two ADS envelopes, sine LFO, plus added sub
+  oscillator, noise, second LFO, arpeggiator, portamento and a mod matrix).
+  AUv3 plugin hosted in AUM. AUv3 parameters have NO fixed CC numbers — a
+  parameter only responds to a CC if you map it inside AUM (AUM MIDI control)
+  or via the plugin's own MIDI-learn (iSEM is Core MIDI compatible and supports
+  MIDI-learn, but ships NO published default CC map). The CC numbers below are
+  therefore a CONVENTION this server owns; mirror them once into AUM per plugin
+  instance (the authoring tools can emit an AUM mapping cheat-sheet). Bound to
+  the iPad's BLE-MIDI endpoint on its own MIDI channel.
+  Product reference: https://www.arturia.com/products/ios-instruments/isem/overview
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: preset
+    description: Plugin preset / Voice Programmer slot (if mapped to Program Change in AUM)
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  - name: cutoff
+    description: Multi-mode filter cutoff frequency (convention CC)
+    type: cc
+    cc: 30
+    value: { type: range, min: 0, max: 127 }
+  - name: resonance
+    description: Filter resonance / emphasis (convention CC)
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: filter_mode
+    description: Continuous filter type morph (low-pass -> notch -> high-pass; band-pass fixed) (convention CC)
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }
+  - name: env_amount
+    description: Envelope modulation depth to filter cutoff (convention CC)
+    type: cc
+    cc: 33
+    value: { type: range, min: 0, max: 127 }
+  - name: attack
+    description: Filter/amp ADS envelope attack time (convention CC)
+    type: cc
+    cc: 34
+    value: { type: range, min: 0, max: 127 }
+  - name: decay
+    description: Filter/amp ADS envelope decay time (convention CC)
+    type: cc
+    cc: 35
+    value: { type: range, min: 0, max: 127 }
+  - name: sustain
+    description: Filter/amp ADS envelope sustain level (convention CC)
+    type: cc
+    cc: 36
+    value: { type: range, min: 0, max: 127 }
+  - name: lfo_rate
+    description: Sine LFO rate (convention CC)
+    type: cc
+    cc: 37
+    value: { type: range, min: 0, max: 127 }
+  - name: lfo_depth
+    description: LFO modulation depth (convention CC)
+    type: cc
+    cc: 38
+    value: { type: range, min: 0, max: 127 }
+  - name: osc2_detune
+    description: Oscillator 2 detune / pitch offset for thickening (convention CC)
+    type: cc
+    cc: 39
+    value: { type: range, min: 0, max: 127 }
+  - name: pulse_width
+    description: Pulse wave width / PWM amount (convention CC)
+    type: cc
+    cc: 40
+    value: { type: range, min: 0, max: 127 }
+  - name: sub_level
+    description: Sub-oscillator level (added feature) (convention CC)
+    type: cc
+    cc: 41
+    value: { type: range, min: 0, max: 127 }
+  - name: volume
+    description: Master output volume (convention CC)
+    type: cc
+    cc: 42
+    value: { type: range, min: 0, max: 127 }

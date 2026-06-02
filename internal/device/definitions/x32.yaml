@@ -1,0 +1,135 @@
+id: x32
+name: Behringer X32
+manufacturer: Behringer
+description: >
+  Behringer X32 / Midas M32 digital mixer, remote-controlled over OSC/UDP
+  (port 10023). The OSC tree is far richer than the console's MIDI table. This
+  definition is a representative starter set, not an exhaustive map: the full
+  tree has thousands of addresses. Every address listed here is verified against
+  the unofficial X32 OSC protocol document and is safe to extend.
+
+  Channel/bus numbers are zero-padded two digits; DCAs and mute groups are a
+  single digit. Address families you can extend along the same patterns:
+    /ch/[01..32]/...        input channels (mix, config, eq, dyn, preamp, sends)
+    /auxin/[01..08]/...     aux inputs
+    /fxrtn/[01..08]/...     FX returns
+    /bus/[01..16]/...       mix buses
+    /mtx/[01..06]/...       matrices
+    /main/st/...            main stereo (LR)
+    /main/m/...             main mono (M/C)
+    /dca/[1..8]/...         DCA groups
+    /config/mute/[1..6]     mute group masters
+    /-action/goscene        scene recall (int 0..99)
+    /-action/gosnippet      snippet recall (int 0..99)
+    /-stat/...              transient console state (solo, screen, etc.)
+  Per-channel mix sub-addresses: /mix/fader, /mix/on, /mix/pan, /mix/st,
+  /mix/mono, /mix/[01..16]/level (bus sends), /config/name, /config/color,
+  /config/icon, /config/source.
+
+  Value encodings:
+    - faders/levels are float 0.0..1.0 on the wire, mapped to a piecewise dB
+      curve spanning -90 dB..+10 dB (0.75 ~= 0 dB, 0.5 ~= -10 dB). Not linear.
+    - /mix/on is int 0/1, where 1 = ON (unmuted) and 0 = OFF (muted).
+    - pan is float 0.0..1.0 with 0.5 = center (maps to -100..+100).
+    - color is int 0..15; name/icon/source are strings/ints.
+  Reference (unofficial X32 OSC protocol, Patrick-Gilles Maillot):
+    https://sites.google.com/site/patrickmaillot/x32
+    https://tostibroeders.nl/wp-content/uploads/2020/02/X32-OSC.pdf
+  MIDI table (for context):
+    https://behringer.world/wiki/doku.php?id=x32_midi_table
+transport: osc
+settle_ms: 0
+controls:
+  # --- Input channel 01 (replicate for /ch/02.../ch/32) ---
+  - name: ch01_fader
+    description: Channel 01 fader (0.0..1.0 -> -90..+10 dB; ~0.75 = 0 dB)
+    type: osc
+    address: /ch/01/mix/fader
+    value: { type: float, min: 0.0, max: 1.0, unit: dB }
+  - name: ch01_on
+    description: Channel 01 on/mute (1 = ON/unmuted, 0 = OFF/muted)
+    type: osc
+    address: /ch/01/mix/on
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: ch01_pan
+    description: Channel 01 pan (0.0 = hard left, 0.5 = center, 1.0 = hard right)
+    type: osc
+    address: /ch/01/mix/pan
+    value: { type: float, min: 0.0, max: 1.0, unit: lin }
+  - name: ch01_name
+    description: Channel 01 scribble-strip name (string, max 12 chars)
+    type: osc
+    address: /ch/01/config/name
+    value: { type: string }
+  - name: ch01_color
+    description: >
+      Channel 01 scribble color: 0..15 = OFF,RD,GN,YE,BL,MG,CY,WH then the
+      inverted variants OFFi..WHi
+    type: osc
+    address: /ch/01/config/color
+    value: { type: int, min: 0, max: 15 }
+
+  # --- Main stereo (LR) and main mono (M/C) ---
+  - name: main_st_fader
+    description: Main LR fader (0.0..1.0 -> -90..+10 dB; ~0.75 = 0 dB)
+    type: osc
+    address: /main/st/mix/fader
+    value: { type: float, min: 0.0, max: 1.0, unit: dB }
+  - name: main_st_on
+    description: Main LR on/mute (1 = ON/unmuted, 0 = OFF/muted)
+    type: osc
+    address: /main/st/mix/on
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: main_st_pan
+    description: Main LR pan/balance (0.5 = center)
+    type: osc
+    address: /main/st/mix/pan
+    value: { type: float, min: 0.0, max: 1.0, unit: lin }
+
+  # --- Mix bus 01 (replicate for /bus/02.../bus/16) ---
+  - name: bus01_fader
+    description: Mix bus 01 master fader (0.0..1.0 -> -90..+10 dB)
+    type: osc
+    address: /bus/01/mix/fader
+    value: { type: float, min: 0.0, max: 1.0, unit: dB }
+  - name: bus01_on
+    description: Mix bus 01 on/mute (1 = ON/unmuted, 0 = OFF/muted)
+    type: osc
+    address: /bus/01/mix/on
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: ch01_send_bus01
+    description: Channel 01 send level to bus 01 (0.0..1.0 -> -90..+10 dB)
+    type: osc
+    address: /ch/01/mix/01/level
+    value: { type: float, min: 0.0, max: 1.0, unit: dB }
+
+  # --- DCA group 1 (replicate for /dca/2.../dca/8) ---
+  - name: dca1_fader
+    description: DCA 1 fader (0.0..1.0 -> -90..+10 dB; ~0.75 = 0 dB)
+    type: osc
+    address: /dca/1/fader
+    value: { type: float, min: 0.0, max: 1.0, unit: dB }
+  - name: dca1_on
+    description: DCA 1 on/mute (1 = ON/unmuted, 0 = OFF/muted)
+    type: osc
+    address: /dca/1/on
+    value: { type: enum, values: { off: 0, on: 1 } }
+
+  # --- Mute groups (masters 1..6) ---
+  - name: mute_group_1
+    description: Mute group 1 master (1 = group muted/ON, 0 = OFF)
+    type: osc
+    address: /config/mute/1
+    value: { type: enum, values: { off: 0, on: 1 } }
+
+  # --- Scene / snippet recall ---
+  - name: scene_recall
+    description: Recall a saved scene by number (0..99)
+    type: osc
+    address: /-action/goscene
+    value: { type: int, min: 0, max: 99 }
+  - name: snippet_recall
+    description: Recall a saved snippet by number (0..99)
+    type: osc
+    address: /-action/gosnippet
+    value: { type: int, min: 0, max: 99 }

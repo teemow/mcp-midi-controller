@@ -1,0 +1,106 @@
+id: aum
+name: AUM (iPad host)
+manufacturer: Kymatica
+description: >
+  AUM mixer/host on the iPad, reached over BLE-MIDI (its WIDI dongle). AUM has no
+  fixed factory CC map: its "MIDI Control" system lets you assign any incoming CC/
+  NOTE/PC/PBEND/CHPRS message to a parameter via MIDI learn, so the CC numbers
+  below are a CONVENTION this server owns — they are NOT documented AUM defaults.
+  To use this definition, mirror the same CC numbers into AUM's MIDI Control matrix
+  (the "Channel Controls" collection for level/mute, a Stereo Balance node for pan,
+  and the Transport "Simple MIDI control" items) on the MIDI channel this device is
+  bound to. Generate a cheat-sheet from this file to make the AUM-side setup
+  mechanical. AUM CC is 7-bit only (no NRPN; 14-bit is available solely via Pitch
+  Bend, which this convention does not use). See: https://kymatica.com/aum/help
+transport: blemidi
+settle_ms: 0
+# Convention CC map (mirror these into AUM's MIDI Control / learn):
+#   transport            -> CC 20
+#   channel N (1-4):
+#     mute  = 18 + 3*N    (ch1=21, ch2=24, ch3=27, ch4=30)
+#     level = 19 + 3*N    (ch1=22, ch2=25, ch3=28, ch4=31)
+#     pan   = 20 + 3*N    (ch1=23, ch2=26, ch3=29, ch4=32)
+# All CCs ride the MIDI channel supplied by the binding. The block sits in MIDI's
+# general-purpose/undefined CC range to avoid clashing with common controllers.
+controls:
+  - name: transport
+    description: >
+      Start/stop AUM's global transport. Convention CC — in AUM map this to the
+      Transport "Toggle play" simple control, or to separate "Start play" /
+      "Stop/rewind" triggers (note: AUM Triggers fire on non-zero only, so a 0
+      value will not stop unless mapped to a dedicated stop trigger).
+    type: cc
+    cc: 20
+    value: { type: enum, values: { stop: 0, start: 127 } }
+
+  - name: ch1_mute
+    description: Channel 1 mute (convention CC — AUM "Channel Controls" mute toggle).
+    type: cc
+    cc: 21
+    value: { type: enum, values: { unmute: 0, mute: 127 } }
+  - name: ch1_level
+    description: Channel 1 level fader (convention CC — AUM "Channel Controls" volume).
+    type: cc
+    cc: 22
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_pan
+    description: >
+      Channel 1 pan (convention CC). AUM channel strips have no native pan; map
+      this to a Stereo Balance/Panning node's knob on the channel. 64 = center.
+    type: cc
+    cc: 23
+    value: { type: range, min: 0, max: 127 }
+
+  - name: ch2_mute
+    description: Channel 2 mute (convention CC — AUM "Channel Controls" mute toggle).
+    type: cc
+    cc: 24
+    value: { type: enum, values: { unmute: 0, mute: 127 } }
+  - name: ch2_level
+    description: Channel 2 level fader (convention CC — AUM "Channel Controls" volume).
+    type: cc
+    cc: 25
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_pan
+    description: >
+      Channel 2 pan (convention CC). Map to a Stereo Balance/Panning node's knob
+      on the channel. 64 = center.
+    type: cc
+    cc: 26
+    value: { type: range, min: 0, max: 127 }
+
+  - name: ch3_mute
+    description: Channel 3 mute (convention CC — AUM "Channel Controls" mute toggle).
+    type: cc
+    cc: 27
+    value: { type: enum, values: { unmute: 0, mute: 127 } }
+  - name: ch3_level
+    description: Channel 3 level fader (convention CC — AUM "Channel Controls" volume).
+    type: cc
+    cc: 28
+    value: { type: range, min: 0, max: 127 }
+  - name: ch3_pan
+    description: >
+      Channel 3 pan (convention CC). Map to a Stereo Balance/Panning node's knob
+      on the channel. 64 = center.
+    type: cc
+    cc: 29
+    value: { type: range, min: 0, max: 127 }
+
+  - name: ch4_mute
+    description: Channel 4 mute (convention CC — AUM "Channel Controls" mute toggle).
+    type: cc
+    cc: 30
+    value: { type: enum, values: { unmute: 0, mute: 127 } }
+  - name: ch4_level
+    description: Channel 4 level fader (convention CC — AUM "Channel Controls" volume).
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: ch4_pan
+    description: >
+      Channel 4 pan (convention CC). Map to a Stereo Balance/Panning node's knob
+      on the channel. 64 = center.
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }

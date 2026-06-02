@@ -1,0 +1,30 @@
+id: generic-midi
+name: Generic MIDI Device
+description: >
+  Built-in fallback so any unmodeled device is immediately controllable by raw
+  number. Its controls are parametric: the CC/NRPN/program number is supplied at
+  call time. Unlike send_raw, values set here flow through desired-state and
+  scenes. Bind any endpoint+channel to this while you reverse-engineer a device
+  (then graduate it to its own definition via the authoring tools).
+transport: blemidi
+controls:
+  - name: cc
+    description: Send a Control Change. Provide controller number and value.
+    type: cc
+    parametric: true
+    value: { type: range, min: 0, max: 127 }
+  - name: nrpn
+    description: Send an NRPN. Provide parameter number and value.
+    type: nrpn
+    parametric: true
+    value: { type: range, min: 0, max: 16383 }
+  - name: program_change
+    description: Send a Program Change. Provide the program number as the value.
+    type: program_change
+    parametric: true
+    value: { type: range, min: 0, max: 127 }
+  - name: note
+    description: Send a Note On. Provide the note number and velocity.
+    type: note_on
+    parametric: true
+    value: { type: range, min: 0, max: 127 }

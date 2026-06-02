@@ -1,0 +1,326 @@
+# mcp-midi-controller — Design
+
+An MCP server, written in Go, that acts as a **conversational rig-setup,
+sound-design and scene-management** layer for a MIDI/OSC rig. It is **not** a
+real-time/live controller — an LLM-driven MCP server has request/response
+latency and cannot sit in the live foot-control path. The Morningstar ML10X
+remains the live foot controller; this server is for *configuring* the rig,
+recalling/building scenes, designing sounds, and documenting/extending the rig
+conversationally.
+
+## Goals
+
+- Control a heterogeneous rig from a conversation: pedals, a digital mixer, an
+  iPad host, and software plugins.
+- Be **extendable without writing Go**: adding a device/synth is writing a YAML
+  file (or having an agent author it via MIDI-learn).
+- Own the messy parts (BLE discovery + pairing) so the user does not have to
+  fiddle with `bluetoothctl`.
+- Keep the rig **versionable as code** (one git-trackable config dir).
+
+## Non-goals (v1)
+
+- Live, low-latency performance control (expression sweeps, tap-tempo timing,
+  per-beat switching).
+- Cross-platform BLE (macOS/Windows). Linux-first; the transport interface
+  leaves a clean seam for a CoreBluetooth/WinRT backend later.
+
+## The rig (v1 targets — all in v1)
+
+| Device | Class | Transport | Notes | Reference |
+|--------|-------|-----------|-------|-----------|
+| Boss MD-200 | pedal | BLE-MIDI | Pure CC. Full CC map known (see below). | — (CC map inlined below) |
+| Eventide H90 | pedal | BLE-MIDI | Program change (presets) + CC + SysEx. | [H90 global/MIDI](https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html) |
+| Two Notes Opus | pedal | BLE-MIDI | CC + program change. | [Opus MIDI chart](https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual#midi_chart) |
+| Morningstar ML10X | controller/hub | BLE-MIDI | CC. Also the live foot controller. | [ML10X CC messages](https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages) |
+| Behringer X32 | mixer | OSC/UDP | OSC (`/ch/01/mix/fader`), not MIDI. On WiFi. | [X32 MIDI table](https://behringer.world/wiki/doku.php?id=x32_midi_table) |
+| AUM (iPad) | host | BLE-MIDI | Mixer/transport/routing via AUM MIDI control. | [AUM help](https://kymatica.com/aum/help) |
+| AUv3 plugins/synths | software | BLE-MIDI (via AUM) | Battalion, iSem, Agonizer, iMS-20, FabFilter, … | see plugin list below |
+
+### Boss MD-200 — default CC map
+
+The MD-200 has no public manual link here; the default CC numbers are recorded
+directly (also bundled in `internal/device/definitions/md-200.yaml`):
+
+| Control | CC# | Control | CC# |
+|---------|-----|---------|-----|
+| Rate knob | 17 | On/Off switch | 28 |
+| Depth knob | 18 | Memory/Tap switch | 82 |
+| E. Level knob | 19 | Ctl-1 | 80 |
+| Param1 knob | 20 | Ctl-2 | 81 |
+| Param2 knob | 21 | Expression | 16 |
+| Param3 knob | 22 | Effect On/Off | 27 |
+
+### AUv3 plugins / synths (hosted in AUM)
+
+Controlled via the AUM CC convention (see "AUv3 plugins & AUM" below). CC maps
+are user-defined in AUM, not fixed by the vendor, so these links are product
+references rather than MIDI specs:
+
+- **Unfiltered Audio Battalion** — <https://www.unfilteredaudio.com/products/battalion>
+- **Arturia iSEM** — <https://www.arturia.com/products/ios-instruments/isem/overview>
+- **Kai Aras Agonizer** — <https://apps.apple.com/app/agonizer/id1583662383>
+- **Korg iMS-20** — <https://www.korg.com/products/software/ims20/>
+- **FabFilter plugins** — <https://www.fabfilter.com/products>
+- …and other AUv3 instruments/effects (add a YAML definition per plugin).
+
+The pedalboard pedals hang off a **CME WIDI Thru6 BT** hub: a *single* BLE
+endpoint fans out to all pedals on the DIN chain, distinguished only by **MIDI
+channel**. The iPad is reachable via its own WIDI dongle (another BLE-MIDI
+endpoint). Hence the core addressing unit is **`(endpoint, channel)`**, not
+`endpoint` alone.
+
+## Architecture
+
+```
+                         ┌──────────────────────────────────────────┐
+   MCP client            │            mcp-midi-controller daemon      │
+ (Cursor / Claude) ──────┤  (systemd user unit, streamable-HTTP,     │
+   HTTP 127.0.0.1        │   127.0.0.1 only)                          │
+                         │                                            │
+                         │  ┌──────────┐   generates   ┌───────────┐ │
+                         │  │ mcpserver │◀─────────────▶│  engine   │ │
+                         │  │ (go-sdk)  │  tools per     │ registry  │ │
+                         │  └──────────┘  bound device   │ bindings  │ │
+                         │                                │ state     │ │
+                         │                                │ scenes    │ │
+                         │                                └─────┬─────┘ │
+                         │                                      │       │
+                         │                       ┌──────────────┼─────┐ │
+                         │                       ▼              ▼     ▼ │
+                         │                  ┌────────┐   ┌────────┐ ┌────────┐
+                         │                  │ blemidi │   │  osc   │ │ usbmidi│
+                         │                  │(BlueZ   │   │ (X32)  │ │(gomidi)│
+                         │                  │ D-Bus)  │   └────────┘ │ bonus  │
+                         │                  └────┬────┘              └────────┘
+                         └───────────────────────┼─────────────────────────────┘
+                                                 ▼
+                                     BLE-MIDI peripherals
+                                  (WIDI Thru6 → pedals, iPad)
+```
+
+The **engine is a library**; the daemon is a thin process on top. A stdio MCP
+adapter can be added later without touching the engine.
+
+### Transport interface
+
+```go
+type Transport interface {
+    ID() string
+    Discover(ctx) ([]Endpoint, error)
+    Pair(ctx, endpointID) error           // blemidi owns this; osc/usbmidi no-op
+    Connect(ctx, endpointID) error
+    Disconnect(ctx, endpointID) error
+    Send(ctx, endpointID, Event) error
+    Listen(ctx, endpointID) (<-chan Event, error) // inbound: MIDI-learn / reconcile
+}
+```
+
+Backends:
+
+- **`blemidi`** — owns BLE **discovery + pairing + connection** via **BlueZ over
+  D-Bus** (`Adapter1.StartDiscovery`, `Device1.Pair`, an `Agent1` for the PIN),
+  then reads/writes/notifies the **BLE-MIDI GATT** characteristic directly.
+  Service `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`, characteristic
+  `7772E5DB-3868-4112-A1A9-F2669D106BF3`. Implements the BLE-MIDI 13-bit
+  timestamp framing. Linux-only (BlueZ); this is the deliberate Linux-first
+  choice. We do **not** depend on the external BlueALSA daemon — owning the GATT
+  keeps pairing and the data path in one place, and gives us the inbound notify
+  channel that powers MIDI-learn.
+- **`osc`** — UDP OSC to the X32 (`host:port`). No pairing.
+- **`usbmidi`** *(bonus)* — `gitlab.com/gomidi/midi/v2` over ALSA (`rtmididrv`).
+
+### Device definitions (the extension mechanism)
+
+A device is described by a **declarative YAML definition** — no Go code. The
+definition doubles as the **validation schema** for that device's generated MCP
+tool. A `Control` has a semantic name, a wire `type`, an address, and a value
+spec:
+
+```yaml
+id: md-200
+name: Boss MD-200
+manufacturer: Boss
+transport: blemidi
+settle_ms: 0          # delay after a program change before CC is accepted
+controls:
+  - name: rate
+    description: Rate knob
+    type: cc           # cc | program_change | nrpn | sysex | osc | note_on | note_off
+    cc: 17
+    value: { type: range, min: 0, max: 127 }
+  - name: on_off
+    type: cc
+    cc: 28
+    value: { type: enum, values: { off: 0, on: 127 } }
+```
+
+Value specs: `range` (min/max), `enum` (label→wire value, with human-units like
+`dB` allowed via `unit`), `float`/`int`, and `string` (free text payloads such
+as OSC scribble-strip names). The **channel is not in the
+definition** — it is supplied by the *binding*, so one definition (e.g. H90) can
+be bound on different channels.
+
+Bundled definitions ship inside the binary via `go:embed` (source of truth:
+`internal/device/definitions/*.yaml`). User definitions in
+`$XDG_CONFIG_HOME/mcp-midi-controller/devices/*.yaml` **override bundled ones by
+filename** and add new ones.
+
+#### `generic-midi` fallback
+
+A built-in definition whose controls are **parametric** — the CC/NRPN/program
+number is supplied at call time. Binding any unmodeled endpoint+channel to
+`generic-midi` makes it controllable immediately (by raw number), while still
+flowing through desired-state and scenes (unlike `send_raw`, which is untracked).
+
+### Bindings & logical devices
+
+```yaml
+# bindings.yaml
+- logical: h90        # logical device name -> generates tool control_h90
+  endpoint: "CME WIDI Thru6 BT"   # transport endpoint id
+  channel: 1
+  device: h90         # definition id
+- logical: md200
+  endpoint: "CME WIDI Thru6 BT"
+  channel: 2
+  device: md-200
+```
+
+A **binding** = `(endpoint, channel, definition)` → a named **logical device**.
+Bindings persist so the daemon restores the rig on restart. Binding/unbinding
+generates/removes the per-device tool at runtime and emits
+`notifications/tools/list_changed`.
+
+### MCP tools
+
+Generated **per logical device** (`control_<logical>`): the tool's input schema
+enumerates *that device's* control names (so an invalid control name is rejected
+by the schema), accepts a **batch** of `{control, value}`, and validates the
+**value** in-handler against the YAML value spec — returning
+`CallToolResult{IsError:true}` with an RFC-6901 JSON-pointer path on failure
+(SEP-1303). Tool count = number of bound devices + the globals below.
+
+Global tools:
+
+- `list_devices` — bound logical devices + their definitions.
+- `describe_device` — controls, types, ranges/enums for one device.
+- `bind_device` / `unbind_device` — manage bindings (→ `list_changed`).
+- `discover_endpoints` / `pair_endpoint` — BLE discovery + pairing.
+- `save_scene` / `recall_scene` / `list_scenes`.
+- `send_raw` — raw MIDI bytes / OSC address escape hatch (untracked).
+- Authoring: `create_device_definition` / `add_control` / `save_device_definition`.
+- MIDI-learn: `learn_start` / `learn_capture` (reads the inbound notify channel
+  to capture the CC/NRPN the user moves).
+
+### State & scenes
+
+- The server keeps an **authoritative desired-state**: per logical device, the
+  last value sent per control. Updated on every control set; optionally
+  reconciled from inbound MIDI (hand-tweaks on hardware).
+- A **scene** is a named snapshot of **only the controls that have been set**
+  (so scenes are small, partial, and **layerable**). For preset-based devices
+  (H90/Opus) it stores the **program number plus CC overrides**.
+- **Recall** replays **program-change before CC**, with a per-device
+  `settle_ms` delay, and supports **additive** (apply over current state) and
+  **exact** (reset to scene) modes.
+- Scenes are human-readable files in `$XDG_CONFIG_HOME/mcp-midi-controller/scenes/`.
+
+### AUv3 plugins & AUM — the convention model
+
+Hardware pedals have **fixed, manufacturer-assigned CC#s**. AUv3 plugins do
+**not**: a parameter only responds to a CC if *you* map it inside AUM (AUM's MIDI
+control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
+**arbitrary convention the server invents**, and AUM must be configured to match.
+
+- The server's **YAML is the source of truth** for each plugin's
+  `param → (channel, CC)` convention.
+- The authoring tools emit an **AUM mapping cheat-sheet** (per plugin: channel +
+  CC list) so configuring AUM is mechanical.
+- MIDI-learn (capture inbound CC) is the primary path for **hardware**; for
+  **plugins** it is optional and only works if AUM is set to echo parameter
+  changes as CC.
+- AUM itself and each plugin are ordinary **logical devices** bound to the
+  iPad's BLE-MIDI endpoint on **distinct MIDI channels**.
+
+## Deployment
+
+- A **persistent systemd user daemon** exposing MCP over **streamable-HTTP bound
+  to `127.0.0.1`** (never a wide bind). Hardware connections, inbound listening,
+  and desired-state are long-lived by nature, so they should survive editor
+  sessions.
+- SDK: **`github.com/modelcontextprotocol/go-sdk`** (official, stable) —
+  built-in input-schema validation before the handler, `StreamableHTTPHandler`,
+  dynamic tools + `list_changed`. Generated tools set `Tool.InputSchema`
+  explicitly so runtime control-name enums work.
+
+## Storage layout
+
+```
+$XDG_CONFIG_HOME/mcp-midi-controller/     # rig-as-code — git init here
+  config.yaml                             #   daemon listen addr, defaults
+  devices/*.yaml                          #   custom/learned definitions (override bundled by name)
+  bindings.yaml                           #   endpoints+channels → devices
+  scenes/*.yaml                           #   saved scenes
+$XDG_STATE_HOME/mcp-midi-controller/      # volatile — not versioned
+  desired-state.json                      #   last applied state (resume on restart)
+  *.log
+```
+
+Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binary).
+
+## Build order (risk-first)
+
+1. **BLE spike (throwaway)** — BlueZ D-Bus discover → pair (`Agent1`) → connect →
+   write the BLE-MIDI characteristic and receive notifies, proven against the
+   **MD-200** (flip On/Off CC 28, sweep Rate CC 17, read back an inbound CC).
+   De-risks the whole project.
+2. **Engine library** — transport interface + `blemidi`; YAML loader (embed +
+   user dir); binding model; desired-state; control rendering (CC/PC/NRPN/SysEx).
+3. **MCP daemon** — go-sdk over loopback streamable-HTTP (systemd user unit);
+   globals; dynamic per-device tools + `list_changed`; in-handler validation.
+4. **Scenes** — save/recall/list; PC→CC ordering + settle delay; additive/exact.
+5. **Authoring + MIDI-learn** — definition authoring tools + inbound capture.
+6. **OSC transport (X32)** — a second, non-MIDI backend (keeps the abstraction honest).
+7. **Bonus** — USB-MIDI via gomidi.
+
+All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
+remaining work is **YAML definitions + MIDI-learn**, not core code.
+
+## Key references
+
+### Devices
+
+- **Eventide H90** — global/MIDI implementation:
+  <https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html>
+- **Boss MD-200** — default CC map inlined above (no public manual link); also in
+  `internal/device/definitions/md-200.yaml`.
+- **Morningstar ML10X** — Control Change messages:
+  <https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages>
+- **Two Notes Opus** — MIDI chart:
+  <https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual#midi_chart>
+- **Behringer X32** — MIDI table (and OSC protocol):
+  <https://behringer.world/wiki/doku.php?id=x32_midi_table>
+- **AUM (iPad)** — help / MIDI control:
+  <https://kymatica.com/aum/help>
+
+### AUv3 plugins / synths (controlled via the AUM CC convention)
+
+- Unfiltered Audio Battalion — <https://www.unfilteredaudio.com/products/battalion>
+- Arturia iSEM — <https://www.arturia.com/products/ios-instruments/isem/overview>
+- Kai Aras Agonizer — <https://apps.apple.com/app/agonizer/id1583662383>
+- Korg iMS-20 — <https://www.korg.com/products/software/ims20/>
+- FabFilter plugins — <https://www.fabfilter.com/products>
+
+### Protocols & libraries
+
+- **BLE-MIDI spec**: service `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`, char
+  `7772E5DB-3868-4112-A1A9-F2669D106BF3`, 13-bit timestamp framing —
+  <https://www.midi.org/specifications/midi-transports-specifications/midi-over-bluetooth-low-energy-ble-midi>
+- **Go BLE**: `tinygo.org/x/bluetooth` does GATT but **not pairing** → we use
+  BlueZ D-Bus directly for the pairing-owning requirement —
+  <https://github.com/tinygo-org/bluetooth>
+- **BlueZ D-Bus API** (adapter/device/agent/GATT) —
+  <https://github.com/bluez/bluez/tree/master/doc>
+- **gomidi** (USB/ALSA bonus transport) — <https://gitlab.com/gomidi/midi>
+- **MCP go-sdk** — <https://github.com/modelcontextprotocol/go-sdk>

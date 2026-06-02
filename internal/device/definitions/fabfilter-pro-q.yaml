@@ -1,0 +1,85 @@
+id: fabfilter-pro-q
+name: FabFilter Pro-Q (AUv3)
+manufacturer: FabFilter
+description: >
+  FabFilter Pro-Q — high-quality parametric EQ (AUv3). Each band has Frequency
+  (5 Hz - 30 kHz), Gain (-30 to +30 dB, used for Bell/Shelf shapes) and Q, plus
+  a global Output Gain (-inf to +36 dB) and Gain Scale. Pro-Q natively supports
+  interactive MIDI-Learn (see manual), so unlike most AUv3 plugins it can respond
+  to CC directly — but it ships NO fixed default CC map: you still choose the CCs.
+  The CC numbers below are a CONVENTION this server owns; configure them either in
+  Pro-Q's own MIDI-Learn or in AUM MIDI control, per instance (the authoring tools
+  can emit an AUM mapping cheat-sheet). Wire values 0-127 are linearly mapped onto
+  each parameter's full range by AUM/the plugin (e.g. gain 0 = -30 dB, 64 ~ 0 dB,
+  127 = +30 dB). Bound to the iPad's BLE-MIDI endpoint on its own MIDI channel.
+  Product reference: https://www.fabfilter.com/products
+  MIDI-Learn docs: https://www.fabfilter.com/help/pro-q/using/midilearn
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: preset
+    description: Preset recall (if mapped to Program Change in AUM)
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  - name: band1_freq
+    description: Band 1 frequency, 5 Hz - 30 kHz (convention CC; Pro-Q MIDI-Learn capable)
+    type: cc
+    cc: 30
+    value: { type: range, min: 0, max: 127 }
+  - name: band1_gain
+    description: Band 1 gain, -30..+30 dB (0=-30, 64~0, 127=+30) (convention CC)
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: band1_q
+    description: Band 1 Q / bandwidth (convention CC)
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }
+  - name: band2_freq
+    description: Band 2 frequency, 5 Hz - 30 kHz (convention CC)
+    type: cc
+    cc: 33
+    value: { type: range, min: 0, max: 127 }
+  - name: band2_gain
+    description: Band 2 gain, -30..+30 dB (convention CC)
+    type: cc
+    cc: 34
+    value: { type: range, min: 0, max: 127 }
+  - name: band2_q
+    description: Band 2 Q / bandwidth (convention CC)
+    type: cc
+    cc: 35
+    value: { type: range, min: 0, max: 127 }
+  - name: band3_freq
+    description: Band 3 frequency, 5 Hz - 30 kHz (convention CC)
+    type: cc
+    cc: 36
+    value: { type: range, min: 0, max: 127 }
+  - name: band3_gain
+    description: Band 3 gain, -30..+30 dB (convention CC)
+    type: cc
+    cc: 37
+    value: { type: range, min: 0, max: 127 }
+  - name: band3_q
+    description: Band 3 Q / bandwidth (convention CC)
+    type: cc
+    cc: 38
+    value: { type: range, min: 0, max: 127 }
+  - name: output_gain
+    description: Global output gain, -inf..+36 dB (convention CC)
+    type: cc
+    cc: 39
+    value: { type: range, min: 0, max: 127 }
+  - name: gain_scale
+    description: Gain scale (scales all Bell/Shelf band gains together) (convention CC)
+    type: cc
+    cc: 40
+    value: { type: range, min: 0, max: 127 }
+  - name: bypass
+    description: Global plug-in bypass (convention CC switch)
+    type: cc
+    cc: 41
+    value:
+      type: enum
+      values: { active: 0, bypassed: 127 }

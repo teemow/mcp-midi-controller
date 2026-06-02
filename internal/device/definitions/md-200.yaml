@@ -1,0 +1,93 @@
+id: md-200
+name: Boss MD-200
+manufacturer: Boss
+description: >-
+  Boss MD-200 Modulation pedal (Boss 200 series). 12 modulation modes, 127 user
+  memories + a real-time panel ("MAN") setting. MIDI over mini-TRS. Memories are
+  recalled with MIDI Program Change; knobs/switches over MIDI Control Change.
+  CC IN (CCI) and PC IN (Pin) must be enabled in the menu, and the binding
+  channel must match the pedal's RCH (MIDI receive channel).
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: memory
+    description: >-
+      Recall a memory via Program Change. Wire/PC value 0 = MAN (real-time panel
+      setting), 1-127 = memory 1-127. Bank Select is ignored by the pedal.
+      Requires PC IN (Pin) = on. Recalling a memory always sets the effect ON.
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  - name: rate
+    description: Rate knob (modulation speed). Mode ROTARY switches slow/fast.
+    type: cc
+    cc: 17
+    value: { type: range, min: 0, max: 127 }
+  - name: depth
+    description: Depth knob (modulation depth).
+    type: cc
+    cc: 18
+    value: { type: range, min: 0, max: 127 }
+  - name: e_level
+    description: E. Level knob (effect volume / effect-direct balance, mode dependent).
+    type: cc
+    cc: 19
+    value: { type: range, min: 0, max: 127 }
+  - name: param1
+    description: Param1 knob. Meaning depends on the selected effect mode.
+    type: cc
+    cc: 20
+    value: { type: range, min: 0, max: 127 }
+  - name: param2
+    description: Param2 knob. Meaning depends on the selected effect mode.
+    type: cc
+    cc: 21
+    value: { type: range, min: 0, max: 127 }
+  - name: param3
+    description: Param3 knob. Meaning depends on the selected effect mode.
+    type: cc
+    cc: 22
+    value: { type: range, min: 0, max: 127 }
+  - name: on_off
+    description: >-
+      Effect On/Off switch. Boss 200-series CC switches respond to 0 (off) and
+      127 (on) per Roland support; momentary controllers must send both 0 and
+      127 for the same CC.
+    type: cc
+    cc: 28
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: memory_tap
+    description: >-
+      Memory/Tap footswitch (momentary). Function depends on the pedal's MFC
+      (memory switch function) setting; send 0 and 127 to actuate.
+    type: cc
+    cc: 82
+    value: { type: range, min: 0, max: 127 }
+  - name: ctl_1
+    description: >-
+      CTL-1 footswitch function (momentary). Assignable via C1F; send 0 and 127
+      to actuate.
+    type: cc
+    cc: 80
+    value: { type: range, min: 0, max: 127 }
+  - name: ctl_2
+    description: >-
+      CTL-2 footswitch function (momentary). Assignable via C2F; send 0 and 127
+      to actuate.
+    type: cc
+    cc: 81
+    value: { type: range, min: 0, max: 127 }
+  - name: expression
+    description: Expression pedal (continuous), function assignable via EPF.
+    type: cc
+    cc: 16
+    value: { type: range, min: 0, max: 127 }
+  - name: effect_on_off
+    description: >-
+      Effect On/Off CC (EFC). Boss 200-series CC switches respond to 0 (off) and
+      127 (on) per Roland support.
+    type: cc
+    cc: 27
+    value: { type: enum, values: { off: 0, on: 127 } }
+# Effect TYPE (mode) selection is NOT MIDI-addressable: the MD-200 exposes no
+# Mode/Type CC and no SysEx in the owner's manual. Change the effect type by
+# recalling a memory (Program Change) that was saved with that mode.

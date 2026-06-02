@@ -1,0 +1,414 @@
+id: opus
+name: Two Notes Opus
+manufacturer: Two Notes
+description: >
+  Multi-channel amp sim, DynIR engine, amp DI and IR loader. Presets are recalled
+  via Program Change (99 internal preset slots); every DSP parameter is reachable
+  via Control Change per the official MIDI chart. On/off and mode switches use
+  0/1 wire values (NOT 0/127). MIDI receive (PC and/or CC) and the receive channel
+  are configured on the unit (SETUP / MIDI; channel may be set to "all"/omni).
+  Sources:
+  https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual#midi_chart
+  https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual (sections "MIDI" and "MIDI Chart")
+transport: blemidi
+settle_ms: 50   # not specified by Two Notes; conservative wait for a preset (with cab IR) to load before CC overrides
+controls:
+  # --- Preset recall ---------------------------------------------------------
+  - name: preset
+    description: Recall a preset by Program Change (99 internal slots; PC 0 = preset #1).
+    type: program_change
+    value: { type: range, min: 0, max: 98 }
+  - name: preset_select
+    description: Recall a preset by CC (0 = preset #1 … 99 = preset #100).
+    type: cc
+    cc: 68
+    value: { type: int, min: 0, max: 99 }
+  - name: preset_down
+    description: Step to the previous preset (any value triggers).
+    type: cc
+    cc: 70
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_up
+    description: Step to the next preset (any value triggers).
+    type: cc
+    cc: 71
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_mode
+    description: Cabinet source mode.
+    type: cc
+    cc: 0
+    value: { type: enum, values: { dynir_engine: 0, ir_loader: 1 } }
+
+  # --- Noise Gate ------------------------------------------------------------
+  - name: noise_gate
+    description: Noise gate on/off.
+    type: cc
+    cc: 1
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: noise_gate_mode
+    description: Noise gate response.
+    type: cc
+    cc: 2
+    value: { type: enum, values: { soft: 0, hard: 1 } }
+  - name: noise_gate_threshold
+    description: Noise gate threshold (0 = -80 dB … 80 = 0 dB).
+    type: cc
+    cc: 3
+    value: { type: range, min: 0, max: 80, unit: dB }
+
+  # --- TSM Preamp ------------------------------------------------------------
+  - name: preamp
+    description: Preamp on/off.
+    type: cc
+    cc: 4
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: preamp_model
+    description: Preamp model (per MIDI chart enumeration; differs from Torpedo Remote ordering).
+    type: cc
+    cc: 5
+    value:
+      type: enum
+      values:
+        foundry: 0
+        foxy: 1
+        albion: 2
+        niftyfifty: 3
+        peggy: 4
+        tanger: 5
+        eldorado: 6
+        aviator: 7
+        gemini: 8
+        flatback: 9
+  - name: preamp_gain
+    description: Preamp gain (0-127).
+    type: cc
+    cc: 6
+    value: { type: range, min: 0, max: 127 }
+  - name: preamp_treble
+    description: Preamp treble (0-127).
+    type: cc
+    cc: 7
+    value: { type: range, min: 0, max: 127 }
+  - name: preamp_middle
+    description: Preamp middle (0-127).
+    type: cc
+    cc: 8
+    value: { type: range, min: 0, max: 127 }
+  - name: preamp_bass
+    description: Preamp bass (0-127).
+    type: cc
+    cc: 9
+    value: { type: range, min: 0, max: 127 }
+
+  # --- TSM Poweramp ----------------------------------------------------------
+  - name: power_amp
+    description: Power amp on/off.
+    type: cc
+    cc: 10
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: power_amp_model
+    description: >
+      Power amp model (0 = SE 6L6, 1 = SE EL34, 2 = SE EL84 …). Chart only
+      documents the first three of 0-7; full enumeration not published.
+    type: cc
+    cc: 11
+    value: { type: int, min: 0, max: 7 }   # TODO: confirm full model list (chart truncates after SE EL84)
+  - name: power_amp_volume
+    description: Power amp volume (0-127).
+    type: cc
+    cc: 12
+    value: { type: range, min: 0, max: 127 }
+  - name: power_amp_contour
+    description: Power amp contour (Push-Pull models only; 0-127, 50% = bypassed).
+    type: cc
+    cc: 13
+    value: { type: range, min: 0, max: 127 }
+  - name: power_amp_depth
+    description: Power amp depth (0-127).
+    type: cc
+    cc: 14
+    value: { type: range, min: 0, max: 127 }
+  - name: power_amp_type
+    description: Power amp tube configuration.
+    type: cc
+    cc: 15
+    value: { type: enum, values: { triode: 0, pentode: 1 } }
+
+  # --- DynIR Engine / Miking -------------------------------------------------
+  - name: miking
+    description: Cabinet miking on/off (DynIR Engine only).
+    type: cc
+    cc: 16
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: virtual_cabinet
+    description: DynIR virtual cabinet slot (0 = DynIR #0 …; depends on loaded cabs, 64 slots).
+    type: cc
+    cc: 17
+    value: { type: int, min: 0, max: 63 }   # TODO: confirm upper bound (varies with loaded cabinets; 64 DynIR slots)
+  - name: mic_a_model
+    description: Mic A model (8 microphones per cabinet).
+    type: cc
+    cc: 18
+    value: { type: int, min: 0, max: 7 }
+  - name: mic_b_model
+    description: Mic B model (8 microphones per cabinet).
+    type: cc
+    cc: 19
+    value: { type: int, min: 0, max: 7 }
+  - name: mic_a_level
+    description: Mic A channel level (0-127).
+    type: cc
+    cc: 20
+    value: { type: range, min: 0, max: 127 }
+  - name: mic_a_bypass
+    description: Mic A bypass (send unprocessed signal).
+    type: cc
+    cc: 21
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: mic_a_mute
+    description: Mic A mute.
+    type: cc
+    cc: 22
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: mic_a_phase
+    description: Mic A phase.
+    type: cc
+    cc: 23
+    value: { type: enum, values: { normal: 0, invert: 1 } }
+  - name: mic_b_level
+    description: Mic B channel level (0-127).
+    type: cc
+    cc: 24
+    value: { type: range, min: 0, max: 127 }
+  - name: mic_b_bypass
+    description: Mic B bypass (send unprocessed signal).
+    type: cc
+    cc: 25
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: mic_b_mute
+    description: Mic B mute.
+    type: cc
+    cc: 26
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: mic_b_phase
+    description: Mic B phase.
+    type: cc
+    cc: 27
+    value: { type: enum, values: { normal: 0, invert: 1 } }
+  - name: mic_a_axis
+    description: Mic A axis position (DynIR Engine only; 0-127).
+    type: cc
+    cc: 28
+    value: { type: range, min: 0, max: 127 }
+  - name: mic_a_distance
+    description: Mic A distance (DynIR Engine only; 0-127).
+    type: cc
+    cc: 29
+    value: { type: range, min: 0, max: 127 }
+  - name: mic_a_position
+    description: Mic A placement (DynIR Engine only).
+    type: cc
+    cc: 30
+    value: { type: enum, values: { front: 0, back: 1 } }
+  - name: mic_b_axis
+    description: Mic B axis position (DynIR Engine only; 0-127).
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: mic_b_distance
+    description: Mic B distance (DynIR Engine only; 0-127).
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }
+  - name: mic_b_position
+    description: Mic B placement (DynIR Engine only).
+    type: cc
+    cc: 33
+    value: { type: enum, values: { front: 0, back: 1 } }
+
+  # --- IR Loader -------------------------------------------------------------
+  - name: ir_file_a
+    description: IR Loader file A (0 = File #0 …; depends on loaded IRs).
+    type: cc
+    cc: 34
+    value: { type: int, min: 0, max: 127 }   # TODO: confirm upper bound (varies with loaded IR files)
+  - name: ir_file_b
+    description: IR Loader file B (0 = File #0 …; depends on loaded IRs).
+    type: cc
+    cc: 35
+    value: { type: int, min: 0, max: 127 }   # TODO: confirm upper bound (varies with loaded IR files)
+  - name: ir_folder_a
+    description: IR Loader folder A.
+    type: cc
+    cc: 36
+    value: { type: enum, values: { user_0: 0, user_1: 1, user_2: 2, user_3: 3 } }
+  - name: ir_folder_b
+    description: IR Loader folder B.
+    type: cc
+    cc: 37
+    value: { type: enum, values: { user_0: 0, user_1: 1, user_2: 2, user_3: 3 } }
+
+  # --- EQ --------------------------------------------------------------------
+  - name: eq
+    description: Equalizer on/off.
+    type: cc
+    cc: 38
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: eq_mode
+    description: EQ mode.
+    type: cc
+    cc: 39
+    value: { type: enum, values: { guitar: 0, bass: 1, custom: 2 } }
+  - name: eq_freq_low_cut
+    description: EQ low-cut frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 40
+    value: { type: range, min: 0, max: 127, unit: Hz }
+  - name: eq_gain_low
+    description: EQ low gain (0 = -15 dB, 15 = 0 dB, 30 = +15 dB).
+    type: cc
+    cc: 41
+    value: { type: range, min: 0, max: 30, unit: dB }
+  - name: eq_freq_low
+    description: EQ low frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 42
+    value: { type: range, min: 0, max: 127, unit: Hz }
+  - name: eq_gain_low_mid
+    description: EQ low-mid gain (0 = -15 dB, 15 = 0 dB, 30 = +15 dB).
+    type: cc
+    cc: 43
+    value: { type: range, min: 0, max: 30, unit: dB }
+  - name: eq_freq_low_mid
+    description: EQ low-mid frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 44
+    value: { type: range, min: 0, max: 127, unit: Hz }
+  - name: eq_gain_mid
+    description: EQ mid gain (0 = -15 dB, 15 = 0 dB, 30 = +15 dB).
+    type: cc
+    cc: 45
+    value: { type: range, min: 0, max: 30, unit: dB }
+  - name: eq_freq_mid
+    description: EQ mid frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 46
+    value: { type: range, min: 0, max: 127, unit: Hz }
+  - name: eq_gain_high_mid
+    description: EQ high-mid gain (0 = -15 dB, 15 = 0 dB, 30 = +15 dB).
+    type: cc
+    cc: 47
+    value: { type: range, min: 0, max: 30, unit: dB }
+  - name: eq_freq_high_mid
+    description: EQ high-mid frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 48
+    value: { type: range, min: 0, max: 127, unit: Hz }
+  - name: eq_gain_high
+    description: EQ high gain (0 = -15 dB, 15 = 0 dB, 30 = +15 dB).
+    type: cc
+    cc: 49
+    value: { type: range, min: 0, max: 30, unit: dB }
+  - name: eq_freq_high
+    description: EQ high frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 50
+    value: { type: range, min: 0, max: 127, unit: Hz }
+  - name: eq_freq_high_cut
+    description: EQ high-cut frequency (Custom mode only; 0-127 maps to Hz).
+    type: cc
+    cc: 51
+    value: { type: range, min: 0, max: 127, unit: Hz }
+
+  # --- Enhancer --------------------------------------------------------------
+  - name: enhancer
+    description: Enhancer on/off.
+    type: cc
+    cc: 52
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: enhancer_instrument
+    description: Enhancer voicing.
+    type: cc
+    cc: 53
+    value: { type: enum, values: { guitar: 0, bass: 1 } }
+  - name: enhancer_dry_wet
+    description: Enhancer dry/wet mix (0-127).
+    type: cc
+    cc: 54
+    value: { type: range, min: 0, max: 127 }
+  - name: enhancer_body
+    description: Enhancer body (0-127).
+    type: cc
+    cc: 55
+    value: { type: range, min: 0, max: 127 }
+  - name: enhancer_thickness
+    description: Enhancer thickness (0-127).
+    type: cc
+    cc: 56
+    value: { type: range, min: 0, max: 127 }
+  - name: enhancer_brilliance
+    description: Enhancer brilliance (0-127).
+    type: cc
+    cc: 57
+    value: { type: range, min: 0, max: 127 }
+
+  # --- Reverb ----------------------------------------------------------------
+  - name: reverb
+    description: Reverb on/off.
+    type: cc
+    cc: 58
+    value: { type: enum, values: { off: 0, on: 1 } }
+  - name: reverb_preset
+    description: Reverb space (0 = Studio A, 1 = Studio B, 2 = Basement …; 12 spaces + custom).
+    type: cc
+    cc: 59
+    value: { type: int, min: 0, max: 12 }
+  - name: reverb_type
+    description: Reverb acoustic character.
+    type: cc
+    cc: 60
+    value: { type: enum, values: { room: 0, ambience: 1 } }
+  - name: reverb_dry_wet
+    description: Reverb dry/wet mix (0-127).
+    type: cc
+    cc: 61
+    value: { type: range, min: 0, max: 127 }
+  - name: reverb_size
+    description: Reverb size (0-127).
+    type: cc
+    cc: 62
+    value: { type: range, min: 0, max: 127 }
+  - name: reverb_echo
+    description: Reverb echo / reflections level (0-127).
+    type: cc
+    cc: 63
+    value: { type: range, min: 0, max: 127 }
+  - name: reverb_color
+    description: Reverb color / tone (0-127).
+    type: cc
+    cc: 64
+    value: { type: range, min: 0, max: 127 }
+
+  # --- Levels / general ------------------------------------------------------
+  - name: preset_level
+    description: Per-preset level (0-107).
+    type: cc
+    cc: 65
+    value: { type: range, min: 0, max: 107 }
+  - name: master_volume
+    description: Global master volume (0 = mute, 1-100 = level).
+    type: cc
+    cc: 66
+    value: { type: range, min: 0, max: 100 }
+  - name: master_mute
+    description: Global master mute.
+    type: cc
+    cc: 67
+    value: { type: enum, values: { off: 0, on: 1 } }
+
+  # --- Tuner -----------------------------------------------------------------
+  - name: tuner
+    description: Tuner on/off.
+    type: cc
+    cc: 69
+    value: { type: enum, values: { off: 0, on: 1 } }

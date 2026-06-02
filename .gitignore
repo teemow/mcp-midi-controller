@@ -1,0 +1,11 @@
+# Binaries
+/mcp-midi-controller
+/dist/
+*.exe
+
+# Go
+/vendor/
+
+# Editor / OS
+*.swp
+.DS_Store

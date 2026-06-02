@@ -1,0 +1,33 @@
+id: battalion
+name: Unfiltered Audio Battalion (AUv3)
+manufacturer: Unfiltered Audio
+description: >
+  Example AUv3 plugin definition hosted in AUM. AUv3 plugin parameters have NO
+  fixed CC numbers — a parameter only responds to a CC if you map it inside AUM
+  (or the plugin's MIDI-learn). The CC numbers below are therefore a convention
+  this server OWNS; you mirror them once into AUM per plugin instance (the
+  authoring tools can emit an AUM mapping cheat-sheet). Bound to the iPad's
+  BLE-MIDI endpoint on its own MIDI channel.
+  Product reference: https://www.unfilteredaudio.com/products/battalion
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: preset
+    description: Plugin preset (if mapped to Program Change in AUM)
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  - name: drive
+    description: Drive amount (convention CC)
+    type: cc
+    cc: 30
+    value: { type: range, min: 0, max: 127 }
+  - name: mix
+    description: Dry/wet mix (convention CC)
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: rate
+    description: LFO rate (convention CC)
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }

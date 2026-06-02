@@ -1,0 +1,177 @@
+id: ml10x
+name: Morningstar ML10X
+manufacturer: Morningstar
+description: >
+  Programmable reorderable audio loop switcher / MIDI hub (also the live foot
+  controller). This definition models what the ML10X RESPONDS to over MIDI so
+  the rig can be configured conversationally: preset recall via Program Change,
+  bank select + functions via Control Change. Loop engage/bypass/toggle CCs act
+  on Simple-mode presets only (loops cannot be bypassed in Advanced mode).
+  Source — ML10X User Manual, "MIDI Implementation" (Program Change + Control
+  Change Messages), updated 22/12/2025:
+  https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages
+transport: blemidi
+settle_ms: 0
+controls:
+  # Program Change: PC 0-127 recalls Presets 0-127 in the current bank. To
+  # recall a preset in another bank, send change_bank first, then the PC.
+  # https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages
+  - name: preset
+    description: Recall a preset (Program Change 0-127) within the current bank.
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+
+  # CC 0, value 0-3 selects one of the 4 banks (128 presets each, 0-127).
+  - name: change_bank
+    description: Select active bank (4 banks; send before a preset PC for a cross-bank recall).
+    type: cc
+    cc: 0
+    value: { type: enum, values: { bank_1: 0, bank_2: 1, bank_3: 2, bank_4: 3 } }
+
+  # CC 4: 0-63 bypass / 64-127 engage all loops in the current preset (Simple mode only).
+  - name: all_loops
+    description: Engage or bypass all loops in the current preset (Simple mode only).
+    type: cc
+    cc: 4
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+
+  # CC 5 (any value): scroll up one preset.
+  - name: scroll_up
+    description: Scroll up one preset.
+    type: cc
+    cc: 5
+    value: { type: enum, values: { trigger: 127 } }
+
+  # CC 6 (any value): scroll down one preset.
+  - name: scroll_down
+    description: Scroll down one preset.
+    type: cc
+    cc: 6
+    value: { type: enum, values: { trigger: 127 } }
+
+  # CC 7 (any value): mute.
+  - name: mute
+    description: Mute the output.
+    type: cc
+    cc: 7
+    value: { type: enum, values: { trigger: 127 } }
+
+  # CC 8 (any value): unmute.
+  - name: unmute
+    description: Unmute the output.
+    type: cc
+    cc: 8
+    value: { type: enum, values: { trigger: 127 } }
+
+  # CC 9 (any value): toggle mute/unmute.
+  - name: toggle_mute
+    description: Toggle mute/unmute.
+    type: cc
+    cc: 9
+    value: { type: enum, values: { trigger: 127 } }
+
+  # CC 10-19: engage/bypass an individual loop connector (Simple mode only).
+  # 0-63 = bypass, 64-127 = engage.
+  - name: loop_a_tip
+    description: Engage/bypass Loop A Tip (Simple mode only).
+    type: cc
+    cc: 10
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_a_ring
+    description: Engage/bypass Loop A Ring (Simple mode only).
+    type: cc
+    cc: 11
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_b_tip
+    description: Engage/bypass Loop B Tip (Simple mode only).
+    type: cc
+    cc: 12
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_b_ring
+    description: Engage/bypass Loop B Ring (Simple mode only).
+    type: cc
+    cc: 13
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_c_tip
+    description: Engage/bypass Loop C Tip (Simple mode only).
+    type: cc
+    cc: 14
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_c_ring
+    description: Engage/bypass Loop C Ring (Simple mode only).
+    type: cc
+    cc: 15
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_d_tip
+    description: Engage/bypass Loop D Tip (Simple mode only).
+    type: cc
+    cc: 16
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_d_ring
+    description: Engage/bypass Loop D Ring (Simple mode only).
+    type: cc
+    cc: 17
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_e_tip
+    description: Engage/bypass Loop E Tip (Simple mode only).
+    type: cc
+    cc: 18
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: loop_e_ring
+    description: Engage/bypass Loop E Ring (Simple mode only).
+    type: cc
+    cc: 19
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+
+  # CC 20-29 (any value, 0-127): toggle an individual loop connector to the
+  # opposite of its current state (Simple mode only).
+  - name: toggle_loop_a_tip
+    description: Toggle Loop A Tip (Simple mode only).
+    type: cc
+    cc: 20
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_a_ring
+    description: Toggle Loop A Ring (Simple mode only).
+    type: cc
+    cc: 21
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_b_tip
+    description: Toggle Loop B Tip (Simple mode only).
+    type: cc
+    cc: 22
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_b_ring
+    description: Toggle Loop B Ring (Simple mode only).
+    type: cc
+    cc: 23
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_c_tip
+    description: Toggle Loop C Tip (Simple mode only).
+    type: cc
+    cc: 24
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_c_ring
+    description: Toggle Loop C Ring (Simple mode only).
+    type: cc
+    cc: 25
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_d_tip
+    description: Toggle Loop D Tip (Simple mode only).
+    type: cc
+    cc: 26
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_d_ring
+    description: Toggle Loop D Ring (Simple mode only).
+    type: cc
+    cc: 27
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_e_tip
+    description: Toggle Loop E Tip (Simple mode only).
+    type: cc
+    cc: 28
+    value: { type: enum, values: { trigger: 127 } }
+  - name: toggle_loop_e_ring
+    description: Toggle Loop E Ring (Simple mode only).
+    type: cc
+    cc: 29
+    value: { type: enum, values: { trigger: 127 } }

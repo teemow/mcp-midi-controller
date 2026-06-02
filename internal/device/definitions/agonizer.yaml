@@ -1,0 +1,94 @@
+id: agonizer
+name: Kai Aras Agonizer (AUv3)
+manufacturer: Kai Aras
+description: >
+  Kai Aras Agonizer — monophonic wavetable bass synth (designed with Jakob Haq).
+  Dual wavetable oscillators with morphing and cross-mod, sub oscillator and
+  noise, a "Mangle" pre-filter section (Drive, Bitcrush, Lift, Push), a VA ladder
+  filter, the Wobulator (sequenced LFO), a key/BPM-sync LFO, variable-slope AD and
+  ADSR envelopes, tube master drive, and two stereo effect units (vintage chorus,
+  digital delay). AUv3 plugin hosted in AUM. AUv3 parameters have NO fixed CC
+  numbers — Agonizer exposes its AU parameters to the host so you map them with
+  AUM MIDI control (or host MIDI-learn); there is NO published default CC map.
+  The CC numbers below are therefore a CONVENTION this server owns; mirror them
+  once into AUM per plugin instance (the authoring tools can emit an AUM mapping
+  cheat-sheet). Bound to the iPad's BLE-MIDI endpoint on its own MIDI channel.
+  Product reference: https://numericalaudio.com/agonizer/iOS/
+  App Store: https://apps.apple.com/app/agonizer/id1583662383
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: preset
+    description: Factory/user preset recall (if mapped to Program Change in AUM)
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  - name: cutoff
+    description: VA ladder filter cutoff frequency (convention CC)
+    type: cc
+    cc: 30
+    value: { type: range, min: 0, max: 127 }
+  - name: resonance
+    description: VA ladder filter resonance (convention CC)
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: drive
+    description: Mangle pre-filter drive amount (convention CC)
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }
+  - name: bitcrush
+    description: Mangle bitcrush amount (convention CC)
+    type: cc
+    cc: 33
+    value: { type: range, min: 0, max: 127 }
+  - name: wavetable_morph
+    description: Oscillator wavetable morph / position (convention CC)
+    type: cc
+    cc: 34
+    value: { type: range, min: 0, max: 127 }
+  - name: osc_xmod
+    description: Oscillator cross-modulation amount (convention CC)
+    type: cc
+    cc: 35
+    value: { type: range, min: 0, max: 127 }
+  - name: sub_level
+    description: Sub-oscillator level (convention CC)
+    type: cc
+    cc: 36
+    value: { type: range, min: 0, max: 127 }
+  - name: attack
+    description: Amp ADSR envelope attack time (convention CC)
+    type: cc
+    cc: 37
+    value: { type: range, min: 0, max: 127 }
+  - name: decay
+    description: Amp ADSR envelope decay time (convention CC)
+    type: cc
+    cc: 38
+    value: { type: range, min: 0, max: 127 }
+  - name: sustain
+    description: Amp ADSR envelope sustain level (convention CC)
+    type: cc
+    cc: 39
+    value: { type: range, min: 0, max: 127 }
+  - name: release
+    description: Amp ADSR envelope release time (convention CC)
+    type: cc
+    cc: 40
+    value: { type: range, min: 0, max: 127 }
+  - name: lfo_rate
+    description: Sync-able LFO rate (convention CC)
+    type: cc
+    cc: 41
+    value: { type: range, min: 0, max: 127 }
+  - name: master_drive
+    description: Tube-based master drive (convention CC)
+    type: cc
+    cc: 42
+    value: { type: range, min: 0, max: 127 }
+  - name: delay_mix
+    description: Digital delay wet/dry mix (convention CC)
+    type: cc
+    cc: 43
+    value: { type: range, min: 0, max: 127 }

@@ -1,0 +1,87 @@
+id: ims20
+name: Korg iMS-20 (AUv3)
+manufacturer: Korg
+description: >
+  Korg iMS-20 — Component Modeling (CMT) recreation of the 1978 MS-20 monophonic
+  analog synth: 2 VCO, 2 VCF (a self-oscillating high-pass and low-pass filter,
+  each with cutoff + peak/resonance), 1 VCA, 2 EG, a Modulation Generator (MG),
+  patch panel, and an SQ-10-style 16-step sequencer. AUv3 plugin hosted in AUM.
+  AUv3 parameters have NO fixed CC numbers — map them inside AUM (AUM MIDI control)
+  or via the plugin's MIDI-learn; iMS-20 ships NO published default CC map. The CC
+  numbers below are therefore a CONVENTION this server owns; mirror them once into
+  AUM per plugin instance (the authoring tools can emit an AUM mapping cheat-sheet).
+  Bound to the iPad's BLE-MIDI endpoint on its own MIDI channel.
+  Product reference: https://www.korg.com/products/software/ims20/
+  Manual (MS-20 control panel): https://www.korguser.net/ims20/html/help/en/synth.html
+transport: blemidi
+settle_ms: 0
+controls:
+  - name: preset
+    description: Program/patch recall (if mapped to Program Change in AUM)
+    type: program_change
+    value: { type: range, min: 0, max: 127 }
+  - name: lpf_cutoff
+    description: Low-pass VCF cutoff frequency (convention CC)
+    type: cc
+    cc: 30
+    value: { type: range, min: 0, max: 127 }
+  - name: lpf_peak
+    description: Low-pass VCF peak/resonance (self-oscillates near max) (convention CC)
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: hpf_cutoff
+    description: High-pass VCF cutoff frequency (convention CC)
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }
+  - name: hpf_peak
+    description: High-pass VCF peak/resonance (self-oscillates near max) (convention CC)
+    type: cc
+    cc: 33
+    value: { type: range, min: 0, max: 127 }
+  - name: eg2_attack
+    description: EG2 (VCF/VCA) attack time (convention CC)
+    type: cc
+    cc: 34
+    value: { type: range, min: 0, max: 127 }
+  - name: eg2_decay
+    description: EG2 (VCF/VCA) decay time (convention CC)
+    type: cc
+    cc: 35
+    value: { type: range, min: 0, max: 127 }
+  - name: eg2_sustain
+    description: EG2 (VCF/VCA) sustain level (convention CC)
+    type: cc
+    cc: 36
+    value: { type: range, min: 0, max: 127 }
+  - name: eg2_release
+    description: EG2 (VCF/VCA) release time (convention CC)
+    type: cc
+    cc: 37
+    value: { type: range, min: 0, max: 127 }
+  - name: mg_frequency
+    description: Modulation Generator (MG) frequency/rate (convention CC)
+    type: cc
+    cc: 38
+    value: { type: range, min: 0, max: 127 }
+  - name: mg_vcf_mod
+    description: MG modulation depth to filter cutoff (convention CC)
+    type: cc
+    cc: 39
+    value: { type: range, min: 0, max: 127 }
+  - name: vco_mod_intensity
+    description: EG1/MG modulation intensity to VCO pitch (convention CC)
+    type: cc
+    cc: 40
+    value: { type: range, min: 0, max: 127 }
+  - name: portamento
+    description: Portamento / glide time (convention CC)
+    type: cc
+    cc: 41
+    value: { type: range, min: 0, max: 127 }
+  - name: volume
+    description: Master output volume / VCA level (convention CC)
+    type: cc
+    cc: 42
+    value: { type: range, min: 0, max: 127 }

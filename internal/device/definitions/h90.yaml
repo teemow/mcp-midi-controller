@@ -1,0 +1,236 @@
+id: h90
+name: Eventide H90
+manufacturer: Eventide
+description: >
+  Harmonizer / dual-algorithm multi-effects. Firmware 1.7.1. Programs are
+  recalled with standard MIDI Program Change (PC 1-100 by default, 0-99 with
+  "PC Offset" enabled); there is NO MIDI Bank Select (CC0/CC32) - "Bank Up/Down"
+  are CC-mappable navigation functions, not Bank Select messages, and the
+  Playlist cannot be changed over MIDI. IMPORTANT: the H90 ships with NO default
+  MIDI CC assignments - every CC function below is a server-side CONVENTION that
+  must be matched on the device under System Menu > MIDI > Global Control (or in
+  H90 Control). The CC numbers here are NOT Eventide factory values. Active/Bypass
+  and trigger functions act on CC value >= 64 (active/engage) vs < 64 (bypass).
+  Deeper per-algorithm parameter control is not exposed via a documented public
+  SysEx/MIDI API; use the Quick Knob / HotKnob / Performance global mappings (CC)
+  or the H90 Control app. Sources:
+  https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/system-menu/midi.html
+  https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html
+transport: blemidi
+settle_ms: 50   # heuristic: Eventide advise not to send PC and CC simultaneously; let the program load before applying CC overrides
+controls:
+  # --- Program recall (the only confirmed, vendor-defined MIDI mapping) ---
+  - name: program
+    description: >
+      Recall a Program by number via Program Change. Default range is PC 1-100;
+      with System > MIDI > PC Offset enabled it becomes 0-99. Loads a Program
+      (a pair of algorithm presets) from the currently selected Playlist only.
+    type: program_change
+    value: { type: range, min: 1, max: 100 }   # source: system-menu/midi.html (PC Offset note)
+
+  # --- Program / Bank navigation (Global Mapping Options; CC# = convention, assign on H90) ---
+  - name: program_load
+    description: Load the currently cued-up Program (also toggles Act/Byp of a loaded Program). Triggers on CC value >= 64.
+    type: cc
+    cc: 20            # convention (no factory default) - assign under System > MIDI > Global Control
+    value: { type: enum, values: { trigger: 127 } }
+  - name: program_increment
+    description: Increment and cue up the next Program. Triggers on CC value >= 64.
+    type: cc
+    cc: 21            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: program_decrement
+    description: Decrement and cue up the previous Program. Triggers on CC value >= 64.
+    type: cc
+    cc: 22            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: program_inc_load
+    description: Increment Program and load it immediately. Triggers on CC value >= 64.
+    type: cc
+    cc: 23            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: program_dec_load
+    description: Decrement Program and load it immediately. Triggers on CC value >= 64.
+    type: cc
+    cc: 24            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: bank_up
+    description: Increment three Programs to the next Bank. Triggers on CC value >= 64. (Not MIDI Bank Select.)
+    type: cc
+    cc: 25            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: bank_down
+    description: Decrement three Programs to the previous Bank. Triggers on CC value >= 64. (Not MIDI Bank Select.)
+    type: cc
+    cc: 26            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+
+  # --- Active / Bypass (momentary semantics: < 64 = bypass, >= 64 = active) ---
+  - name: program_active_bypass
+    description: 'Program (P) active/bypass. Maps to "P Act/Byp (M)": CC < 64 bypasses, CC >= 64 activates.'
+    type: cc
+    cc: 102           # convention (no factory default)
+    value: { type: enum, values: { bypass: 0, active: 127 } }
+  - name: preset_a_active_bypass
+    description: 'Preset A active/bypass. Maps to "A Act/Byp (M)": CC < 64 bypasses, CC >= 64 activates.'
+    type: cc
+    cc: 104           # convention (no factory default)
+    value: { type: enum, values: { bypass: 0, active: 127 } }
+  - name: preset_b_active_bypass
+    description: 'Preset B active/bypass. Maps to "B Act/Byp (M)": CC < 64 bypasses, CC >= 64 activates.'
+    type: cc
+    cc: 106           # convention (no factory default)
+    value: { type: enum, values: { bypass: 0, active: 127 } }
+  - name: insert_1_active_bypass
+    description: Insert 1 active/bypass. CC < 64 bypasses, CC >= 64 activates.
+    type: cc
+    cc: 108           # convention (no factory default)
+    value: { type: enum, values: { bypass: 0, active: 127 } }
+  - name: insert_2_active_bypass
+    description: Insert 2 active/bypass. CC < 64 bypasses, CC >= 64 activates.
+    type: cc
+    cc: 109           # convention (no factory default)
+    value: { type: enum, values: { bypass: 0, active: 127 } }
+
+  # --- HotSwitches (engage on CC >= 64) ---
+  - name: hotswitch_1
+    description: Engage HotSwitch 1. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 110           # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: hotswitch_2
+    description: Engage HotSwitch 2. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 111           # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: hotswitch_3
+    description: Engage HotSwitch 3. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 112           # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+
+  # --- Performance parameters 1-6 (engage on CC >= 64) ---
+  - name: perform_1
+    description: Engage Program Performance Parameter 1. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 40            # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: perform_2
+    description: Engage Program Performance Parameter 2. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 41            # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: perform_3
+    description: Engage Program Performance Parameter 3. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 42            # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: perform_4
+    description: Engage Program Performance Parameter 4. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 43            # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: perform_5
+    description: Engage Program Performance Parameter 5. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 44            # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: perform_6
+    description: Engage Program Performance Parameter 6. CC < 64 off, CC >= 64 on.
+    type: cc
+    cc: 45            # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+
+  # --- Continuous controllers (full 0-127 sweep) ---
+  - name: quick_knob_1
+    description: Adjust Program Quick Knob 1.
+    type: cc
+    cc: 50            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: quick_knob_2
+    description: Adjust Program Quick Knob 2.
+    type: cc
+    cc: 51            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: quick_knob_3
+    description: Adjust Program Quick Knob 3.
+    type: cc
+    cc: 52            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: quick_knob_4
+    description: Adjust Program Quick Knob 4.
+    type: cc
+    cc: 53            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: quick_knob_5
+    description: Adjust Program Quick Knob 5.
+    type: cc
+    cc: 54            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: quick_knob_6
+    description: Adjust Program Quick Knob 6.
+    type: cc
+    cc: 55            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: hotknob_p
+    description: Adjust Program HotKnob (common expression-pedal target).
+    type: cc
+    cc: 60            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: hotknob_a
+    description: Adjust Preset A HotKnob.
+    type: cc
+    cc: 61            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: hotknob_b
+    description: Adjust Preset B HotKnob.
+    type: cc
+    cc: 62            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: program_mix
+    description: Adjust Program Mix.
+    type: cc
+    cc: 70            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: program_in_gain
+    description: Adjust Program Input Gain.
+    type: cc
+    cc: 71            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: program_out_gain
+    description: Adjust Program Output Gain.
+    type: cc
+    cc: 72            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+
+  # --- System / mode functions (trigger on CC >= 64) ---
+  - name: tuner
+    description: Enter/Exit Tuner Mode. Triggers on CC value >= 64 (toggle-only; display-side, no tuning data is sent back over MIDI).
+    type: cc
+    cc: 27            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: tap_tempo
+    description: Program Tap Tempo. Triggers on CC value >= 64.
+    type: cc
+    cc: 80            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: mode_toggle
+    description: Toggle between SELECT and PERFORM Mode. Triggers on CC value >= 64.
+    type: cc
+    cc: 30            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: mode_select
+    description: Enter SELECT Mode. Triggers on CC value >= 64.
+    type: cc
+    cc: 31            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: mode_perform
+    description: Enter PERFORM Mode. Triggers on CC value >= 64.
+    type: cc
+    cc: 32            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: mode_bank
+    description: Enter BANK Mode. Triggers on CC value >= 64.
+    type: cc
+    cc: 33            # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
