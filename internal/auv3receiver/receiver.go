@@ -123,7 +123,7 @@ func handleProbe(outDir string, onStaged func(device.ProbeDump, Result)) http.Ha
 
 		var dump device.ProbeDump
 		if err := json.NewDecoder(r.Body).Decode(&dump); err != nil {
-			httpError(w, http.StatusBadRequest, "decode dump: %v", err)
+			httpError(w, decodeErrStatus(err), "decode dump: %v", err)
 			return
 		}
 
@@ -190,7 +190,7 @@ func handleDiagnostics(outDir string) http.HandlerFunc {
 
 		var report device.ProbeReport
 		if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-			httpError(w, http.StatusBadRequest, "decode report: %v", err)
+			httpError(w, decodeErrStatus(err), "decode report: %v", err)
 			return
 		}
 
@@ -235,6 +235,16 @@ func handleDiagnostics(outDir string) http.HandlerFunc {
 func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 	log.Printf("auv3-probe receiver: %s", fmt.Sprintf(format, args...))
 	http.Error(w, clientMessage(code), code)
+}
+
+// decodeErrStatus maps a body-decode error to a status: a body that exceeds the
+// MaxBytesReader cap is 413 Request Entity Too Large, anything else is a 400.
+func decodeErrStatus(err error) int {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
 }
 
 func clientMessage(code int) string {
