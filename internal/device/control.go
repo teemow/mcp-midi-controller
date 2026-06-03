@@ -46,7 +46,8 @@ type ValueSpec struct {
 //   - cc:              CC
 //   - nrpn:            NRPN
 //   - program_change:  Program (optional; usually supplied as the value)
-//   - sysex:           SysEx (hex template; "%v" is replaced by the wire value)
+//   - sysex:           SysEx (hex template; "%v" = wire value, "[ ] %k" =
+//     Roland address-based checksum region — see renderSysEx)
 //   - osc:             Address
 //   - note_on/off:     CC reused as the note number, or supplied as the value
 type Control struct {

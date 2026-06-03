@@ -16,6 +16,13 @@ const appName = "mcp-midi-controller"
 type Config struct {
 	// ListenAddr is the streamable-HTTP bind address. MUST stay on loopback.
 	ListenAddr string `yaml:"listen_addr"`
+
+	// USBAllowWrites is the master gate for USB writes (set_param, write_pattern,
+	// recall_pattern, select_preset, and real — non-dry-run — usb_write). It
+	// defaults to false: a fresh install is read-only over USB. Even with it on,
+	// a USB binding must additionally opt in with writable: true before its write
+	// tools are exposed (see engine.Binding.Writable and docs/usb-tools.md).
+	USBAllowWrites bool `yaml:"usb_allow_writes"`
 }
 
 // Default returns the default config.
@@ -54,6 +61,12 @@ func BindingsPath() string { return filepath.Join(ConfigDir(), "bindings.yaml") 
 
 // DesiredStatePath is the persisted desired-state cache (volatile).
 func DesiredStatePath() string { return filepath.Join(StateDir(), "desired-state.json") }
+
+// AUv3ProbesDir is the staging dir for AUv3 parameter-tree dumps shipped by the
+// off-daemon cmd/auv3-probe receiver and ingested via import_auv3_probe. It is
+// volatile (under the state dir), not rig-as-code: the dumps are a throwaway
+// authoring input, not committed config.
+func AUv3ProbesDir() string { return filepath.Join(StateDir(), "auv3-probes") }
 
 // Load reads config.yaml from the config dir, falling back to defaults.
 func Load() (Config, error) {

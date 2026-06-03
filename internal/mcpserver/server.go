@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/scene"
 )
 
 // Version is reported to MCP clients.
@@ -21,27 +24,111 @@ const Version = "0.0.1-scaffold"
 
 // Server wraps the engine and an mcp.Server.
 type Server struct {
-	eng *engine.Engine
-	mcp *mcp.Server
+	eng    *engine.Engine
+	mcp    *mcp.Server
+	scenes *scene.Store
+
+	// usbAllowWrites is the daemon's master USB write gate (config
+	// usb_allow_writes). With it off, USB write tools (set_param, write_pattern,
+	// recall_pattern, select_preset) are never registered and a real usb_write
+	// is refused; only reads/identify/list/monitor are exposed. See
+	// WithUSBAllowWrites and docs/usb-tools.md.
+	usbAllowWrites bool
+
+	// drafts holds in-progress device definitions being authored via
+	// create_device_definition / add_control, keyed by draft (definition) id,
+	// until save_device_definition persists them. Guarded by draftsMu.
+	draftsMu sync.Mutex
+	drafts   map[string]*device.Definition
+}
+
+// Option configures a Server at construction.
+type Option func(*Server)
+
+// WithUSBAllowWrites sets the daemon's master USB write gate (config
+// usb_allow_writes). Default (no option) is false: read-only over USB.
+func WithUSBAllowWrites(allow bool) Option {
+	return func(s *Server) { s.usbAllowWrites = allow }
 }
 
 // New builds the MCP server, registers global tools, and generates a tool for
 // each currently bound device.
-func New(eng *engine.Engine) *Server {
+func New(eng *engine.Engine, opts ...Option) *Server {
 	s := &Server{
-		eng: eng,
-		mcp: mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
+		eng:    eng,
+		mcp:    mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
+		scenes: scene.NewStore(config.ScenesDir()),
+		drafts: map[string]*device.Definition{},
+	}
+	for _, o := range opts {
+		o(s)
 	}
 	s.registerGlobalTools()
+	s.registerWIDITools()
 	for _, b := range eng.Bindings() {
-		s.AddDeviceTool(b)
+		s.addToolsForBinding(b)
 	}
+	// Stream inbound MIDI (reverse-mapped) to clients as log notifications so an
+	// agent can watch the rig react in real time (hand-tweaks, echoes).
+	eng.SetInboundHook(s.notifyInbound)
 	return s
+}
+
+// notifyInbound broadcasts a decoded inbound event (and any controls it
+// reverse-mapped to) to every connected session as an MCP log notification.
+// Clients receive it only after setting a logging level (per the MCP spec).
+func (s *Server) notifyInbound(in engine.InboundEvent, obs []engine.Observation) {
+	params := &mcp.LoggingMessageParams{
+		Level:  "info",
+		Logger: "inbound",
+		Data: map[string]any{
+			"transport": in.Transport,
+			"endpoint":  in.Endpoint,
+			"kind":      in.Kind,
+			"channel":   in.Channel,
+			"number":    in.Number,
+			"value":     in.Value,
+			"observed":  obs,
+		},
+	}
+	ctx := context.Background()
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Log(ctx, params)
+	}
 }
 
 // Handler returns the streamable-HTTP handler to mount on a loopback listener.
 func (s *Server) Handler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
+}
+
+// addToolsForBinding generates the right MCP tool(s) for a binding: the USB
+// editor/readback family for a USB binding, otherwise the control_<logical>
+// tool. Both paths emit tools/list_changed.
+func (s *Server) addToolsForBinding(b engine.Binding) {
+	if s.eng.IsUSBBinding(b.Logical) {
+		s.AddUSBDeviceTool(b)
+		return
+	}
+	s.AddDeviceTool(b)
+}
+
+// removeToolsForBinding removes whichever tool(s) a binding generated. The kind
+// must be resolved before the binding is dropped from the engine.
+func (s *Server) removeToolsForBinding(logical string, wasUSB bool) {
+	if wasUSB {
+		s.RemoveUSBDeviceTool(logical)
+		return
+	}
+	s.RemoveDeviceTool(logical)
+}
+
+// usbWritesAllowed reports whether write tools may be exposed for a USB binding:
+// both the daemon's master gate (usb_allow_writes) and the binding's own
+// writable opt-in must be set. This is the two-key safety model from
+// docs/usb-tools.md — writes change persistent/live device state.
+func (s *Server) usbWritesAllowed(b engine.Binding) bool {
+	return s.usbAllowWrites && b.Writable
 }
 
 // AddDeviceTool generates and registers control_<logical> for a binding. Adding
@@ -51,10 +138,17 @@ func (s *Server) AddDeviceTool(b engine.Binding) {
 	if !ok {
 		return
 	}
+	// USB bindings expose the device's editor/readback surface, not the
+	// fire-and-forget control surface, so they do not get a control_<logical>
+	// tool. The generic usb_* tools (and the per-binding semantic USB tools)
+	// cover them instead.
+	if s.eng.IsUSBBinding(b.Logical) {
+		return
+	}
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "control_" + b.Logical,
 		Description: fmt.Sprintf("Set one or more controls on %q (%s). Use describe_device for ranges/enums.", b.Logical, def.Name),
-		InputSchema: controlToolSchema(def.ControlNames()),
+		InputSchema: controlToolSchema(def),
 	}, s.handleControl(b.Logical))
 }
 

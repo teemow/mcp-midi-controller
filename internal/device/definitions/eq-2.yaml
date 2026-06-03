@@ -4,16 +4,19 @@ manufacturer: Source Audio
 description: >-
   Source Audio EQ2 Programmable EQ (One Series, SA270). Full MIDI: 128 presets
   recallable via Program Change, and effectively every DSP parameter reachable
-  via Control Change. The CC map is GLOBAL and user-remappable in the Neuro
-  Desktop Editor, so the vendor default CC numbers are a starting point, not a
-  fixed contract — prefer MIDI-learn to bind parameters per rig, or transcribe
-  the EQ2 MIDI Implementation Guide and keep this YAML as the source of truth
-  the Neuro map must match. MIDI over 5-pin DIN / USB; default receive channel
-  is 1 (channel comes from the binding here). See docs/research/eq-2.md.
+  via Control Change. The CC numbers below are the FACTORY DEFAULT map,
+  transcribed verbatim from the official "EQ2 Programmable Equalizer MIDI Mapping
+  Table". Note the map is GLOBAL and user-remappable in the Neuro Desktop Editor
+  (Device > Edit Device MIDI Map): if a rig has remapped it, either restore the
+  defaults or re-bind via MIDI-learn. A handful of parameters have NO factory CC
+  (band type, channel config/phase, split, limiter, gate, switch assign/action,
+  external-control enable) — assign them a CC in Neuro and add them here. MIDI
+  over 5-pin DIN / USB; default receive channel is 1 (channel comes from the
+  binding here). See docs/research/eq-2.md.
 transport: blemidi
 settle_ms: 50   # not specified by Source Audio; conservative wait for a recalled preset to load before CC overrides
 controls:
-  # --- Preset recall (confirmed) --------------------------------------------
+  # --- Preset recall --------------------------------------------------------
   - name: preset
     description: >-
       Recall any of the 128 presets via Program Change (PC 0 = preset 1). The
@@ -21,37 +24,419 @@ controls:
       state to "queue up" a sound without engaging it on recall.
     type: program_change
     value: { type: range, min: 0, max: 127 }
-  # Presets are also recallable via CC#103 / CC#104 per the product feature
-  # list, but the pair's semantics (select vs. bank vs. up/down) are not
-  # documented in the user guide. Confirm against the MIDI Implementation Guide
-  # before modeling them as controls:
-  # - name: preset_recall_a
-  #   type: cc
-  #   cc: 103
-  #   value: { type: range, min: 0, max: 127 }   # TODO: confirm semantics
-  # - name: preset_recall_b
-  #   type: cc
-  #   cc: 104
-  #   value: { type: range, min: 0, max: 127 }   # TODO: confirm semantics
+  - name: recall_preset_bypassed
+    description: Recall a preset (value = preset number) in the BYPASSED state (CC103).
+    type: cc
+    cc: 103
+    value: { type: range, min: 0, max: 127 }
+  - name: recall_preset_engaged
+    description: Recall a preset (value = preset number) in the ENGAGED state (CC104).
+    type: cc
+    cc: 104
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_increment
+    description: Step to the next preset (any value triggers).
+    type: cc
+    cc: 82
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_decrement
+    description: Step to the previous preset (any value triggers).
+    type: cc
+    cc: 80
+    value: { type: range, min: 0, max: 127 }
 
-  # --- Parameters reachable over CC (remappable; default CC#s in the MIDI
-  #     Implementation Guide, NOT reproduced in the user guide) ---------------
-  # The parameters below are documented as MIDI/Neuro-accessible, but their
-  # default CC numbers are published only in the separate "EQ2 Programmable EQ
-  # MIDI Implementation Guide" download and are user-remappable. Capture the
-  # actual CC per parameter with MIDI-learn (learn_start/learn_capture), or fill
-  # in the `cc:` values from the Implementation Guide, then drop the TODO.
-  #
-  #   - bypass / engage (Universal Bypass on/off)
-  #   - output_level (master; +12 dB boost, unity at mid)
-  #   - ch1_gain / ch2_gain (-18..+18 dB; relevant in Split Mode)
-  #   - split_mode (on/off), channel_swap
-  #   - routing_mode (mono / stereo / effects-loop variants)
-  #   - per band b1..b10 (per channel in Split Mode):
-  #       bN_level     (boost/cut, +/-18 dB)
-  #       bN_frequency (20 Hz .. 20 kHz)
-  #       bN_q         (~0.1 .. 10)
-  #   - b1_shelf / b10_shelf (peaking vs. shelf)
-  #   - ch1_highpass / ch2_highpass (10..80 Hz)
-  #   - noise_gate_threshold, limiter (optional; configured in Neuro)
-  #   - tuner (on/off)
+  # --- Bypass / engage ------------------------------------------------------
+  - name: bypass_engage
+    description: Universal Bypass. Value < 64 = bypass, value >= 64 = engage (CC101).
+    type: cc
+    cc: 101
+    value: { type: enum, values: { bypass: 0, engage: 127 } }
+  - name: toggle_bypass_engage
+    description: Toggle bypass/engage (any value triggers; CC102).
+    type: cc
+    cc: 102
+    value: { type: range, min: 0, max: 127 }
+
+  # --- Master / input levels ------------------------------------------------
+  - name: master_volume
+    description: Master output volume (CC0). 0 = -inf, 64 = unity, 127 = +12 dB.
+    type: cc
+    cc: 0
+    value: { type: range, min: 0, max: 127 }
+  - name: input1_trim
+    description: Input 1 trim (CC1). 0 = -inf, 64 = unity, 127 = +6 dB.
+    type: cc
+    cc: 1
+    value: { type: range, min: 0, max: 127 }
+  - name: input2_trim
+    description: Input 2 trim (CC2). 0 = -inf, 64 = unity, 127 = +6 dB.
+    type: cc
+    cc: 2
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_gain
+    description: Channel 1 gain (CC69). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 69
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_gain
+    description: Channel 2 gain (CC70). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 70
+    value: { type: range, min: 0, max: 36, unit: dB }
+
+  # --- Input high-pass filters ----------------------------------------------
+  - name: ch1_highpass
+    description: Channel 1 input high-pass (CC71). 0 = 10 Hz, 28 = 80 Hz (0.5 Hz/step).
+    type: cc
+    cc: 71
+    value: { type: range, min: 0, max: 28, unit: Hz }
+  - name: ch2_highpass
+    description: Channel 2 input high-pass (CC72). 0 = 10 Hz, 28 = 80 Hz (0.5 Hz/step).
+    type: cc
+    cc: 72
+    value: { type: range, min: 0, max: 28, unit: Hz }
+
+  # --- Routing --------------------------------------------------------------
+  - name: routing_option
+    description: >-
+      Signal routing (CC73). 0 = Auto Detect, 1 = Mono->Stereo, 2 = Stereo->Stereo,
+      3 = Stereo->Mono, 4 = Mono->Mono.
+    type: cc
+    cc: 73
+    value: { type: int, min: 0, max: 4 }   # TODO: confirm 4's label (truncated in the mapping PDF; Mono->Mono assumed)
+
+  # --- External control / tuner ---------------------------------------------
+  - name: remote_expression
+    description: Remote expression input when using MIDI as the external control source (CC100).
+    type: cc
+    cc: 100
+    value: { type: range, min: 0, max: 127 }
+  - name: remote_switch
+    description: Remote switch function (CC94; latching only, any value).
+    type: cc
+    cc: 94
+    value: { type: range, min: 0, max: 127 }
+  - name: tuner
+    description: Enable/disable the tuner (CC83). Any value toggles the tuner display.
+    type: cc
+    cc: 83
+    value: { type: range, min: 0, max: 127 }
+
+  # --- Channel 1 bands (10) --------------------------------------------------
+  # Level CC 3-12, Frequency CC 23-32, Q CC 43-52.
+  - name: ch1_b1_level
+    description: Ch1 Band 1 level (CC3). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 3
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b1_frequency
+    description: Ch1 Band 1 frequency (CC23). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 23
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b1_q
+    description: Ch1 Band 1 Q (CC43). 0 = 0.5, 5 = 1.0 (default), 95 = 10.0.
+    type: cc
+    cc: 43
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b2_level
+    description: Ch1 Band 2 level (CC4). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 4
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b2_frequency
+    description: Ch1 Band 2 frequency (CC24). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 24
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b2_q
+    description: Ch1 Band 2 Q (CC44). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 44
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b3_level
+    description: Ch1 Band 3 level (CC5). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 5
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b3_frequency
+    description: Ch1 Band 3 frequency (CC25). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 25
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b3_q
+    description: Ch1 Band 3 Q (CC45). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 45
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b4_level
+    description: Ch1 Band 4 level (CC6). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 6
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b4_frequency
+    description: Ch1 Band 4 frequency (CC26). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 26
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b4_q
+    description: Ch1 Band 4 Q (CC46). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 46
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b5_level
+    description: Ch1 Band 5 level (CC7). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 7
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b5_frequency
+    description: Ch1 Band 5 frequency (CC27). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 27
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b5_q
+    description: Ch1 Band 5 Q (CC47). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 47
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b6_level
+    description: Ch1 Band 6 level (CC8). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 8
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b6_frequency
+    description: Ch1 Band 6 frequency (CC28). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 28
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b6_q
+    description: Ch1 Band 6 Q (CC48). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 48
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b7_level
+    description: Ch1 Band 7 level (CC9). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 9
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b7_frequency
+    description: Ch1 Band 7 frequency (CC29). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 29
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b7_q
+    description: Ch1 Band 7 Q (CC49). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 49
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b8_level
+    description: Ch1 Band 8 level (CC10). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 10
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b8_frequency
+    description: Ch1 Band 8 frequency (CC30). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 30
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b8_q
+    description: Ch1 Band 8 Q (CC50). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 50
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b9_level
+    description: Ch1 Band 9 level (CC11). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 11
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b9_frequency
+    description: Ch1 Band 9 frequency (CC31). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 31
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b9_q
+    description: Ch1 Band 9 Q (CC51). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 51
+    value: { type: range, min: 0, max: 95 }
+  - name: ch1_b10_level
+    description: Ch1 Band 10 level (CC12). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 12
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch1_b10_frequency
+    description: Ch1 Band 10 frequency (CC32). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 32
+    value: { type: range, min: 0, max: 127 }
+  - name: ch1_b10_q
+    description: Ch1 Band 10 Q (CC52). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 52
+    value: { type: range, min: 0, max: 95 }
+
+  # --- Channel 2 bands (10; used in Split Mode) ------------------------------
+  # Level CC 13-22, Frequency CC 33-42, Q CC 53-62.
+  - name: ch2_b1_level
+    description: Ch2 Band 1 level (CC13). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 13
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b1_frequency
+    description: Ch2 Band 1 frequency (CC33). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 33
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b1_q
+    description: Ch2 Band 1 Q (CC53). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 53
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b2_level
+    description: Ch2 Band 2 level (CC14). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 14
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b2_frequency
+    description: Ch2 Band 2 frequency (CC34). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 34
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b2_q
+    description: Ch2 Band 2 Q (CC54). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 54
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b3_level
+    description: Ch2 Band 3 level (CC15). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 15
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b3_frequency
+    description: Ch2 Band 3 frequency (CC35). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 35
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b3_q
+    description: Ch2 Band 3 Q (CC55). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 55
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b4_level
+    description: Ch2 Band 4 level (CC16). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 16
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b4_frequency
+    description: Ch2 Band 4 frequency (CC36). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 36
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b4_q
+    description: Ch2 Band 4 Q (CC56). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 56
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b5_level
+    description: Ch2 Band 5 level (CC17). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 17
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b5_frequency
+    description: Ch2 Band 5 frequency (CC37). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 37
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b5_q
+    description: Ch2 Band 5 Q (CC57). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 57
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b6_level
+    description: Ch2 Band 6 level (CC18). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 18
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b6_frequency
+    description: Ch2 Band 6 frequency (CC38). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 38
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b6_q
+    description: Ch2 Band 6 Q (CC58). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 58
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b7_level
+    description: Ch2 Band 7 level (CC19). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 19
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b7_frequency
+    description: Ch2 Band 7 frequency (CC39). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 39
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b7_q
+    description: Ch2 Band 7 Q (CC59). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 59
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b8_level
+    description: Ch2 Band 8 level (CC20). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 20
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b8_frequency
+    description: Ch2 Band 8 frequency (CC40). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 40
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b8_q
+    description: Ch2 Band 8 Q (CC60). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 60
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b9_level
+    description: Ch2 Band 9 level (CC21). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 21
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b9_frequency
+    description: Ch2 Band 9 frequency (CC41). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 41
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b9_q
+    description: Ch2 Band 9 Q (CC61). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 61
+    value: { type: range, min: 0, max: 95 }
+  - name: ch2_b10_level
+    description: Ch2 Band 10 level (CC22). 0 = -18 dB, 18 = 0 dB, 36 = +18 dB.
+    type: cc
+    cc: 22
+    value: { type: range, min: 0, max: 36, unit: dB }
+  - name: ch2_b10_frequency
+    description: Ch2 Band 10 frequency (CC42). 0-127 maps 20 Hz - 20 kHz (log).
+    type: cc
+    cc: 42
+    value: { type: range, min: 0, max: 127 }
+  - name: ch2_b10_q
+    description: Ch2 Band 10 Q (CC62). 0 = 0.5, 5 = 1.0, 95 = 10.0.
+    type: cc
+    cc: 62
+    value: { type: range, min: 0, max: 95 }
+
+# Parameters with NO factory default CC in the mapping table (assign a CC to
+# them in the Neuro Desktop Editor, then add them here as cc controls):
+#   - Band Type (Ch1 B1, Ch1 B10, Ch2 B1, Ch2 B10): 0 = Peak, 1 = Shelving
+#   - Channel Config (Ch1/Ch2): 0 = Parallel (Graphic), 1 = Series (Parametric)
+#   - Channel Phase (Ch1/Ch2): 0 = Normal, 1 = Inverted
+#   - Split Channels: 0 = OFF (linked), 1 = ON (independent Ch2 EQ)
+#   - Limiter Enable / Look-ahead / Stereo Link: 0 = OFF, 1 = ON
+#   - Gate Enable: 0 = OFF, 1 = Both, 2 = Ch1, 3 = Ch2
+#   - Gate Threshold: 0 = -100 dB .. 75 = -25 dB
+#   - Gate Source: 0 = Ch1, 1 = Ch2
+#   - Switch Assign (0-4) / Switch Action (0 = Momentary, 1 = Latching)
+#   - Enable External Control: 0 = OFF, 1 = ON

@@ -9,8 +9,12 @@ controller — an LLM-driven server has request/response latency and does not
 belong in the live foot-control path. Use your footswitch (e.g. a Morningstar
 ML10X) to play live; use this to *build* the sounds and scenes it recalls.
 
-> Status: **early scaffold**. The architecture is settled (see
-> [`docs/design.md`](docs/design.md)); implementations are stubs with `TODO`s.
+> Status: **functional**. The core is implemented end-to-end — engine, BLE-MIDI /
+> OSC / USB transports, dynamic per-device tools with per-control value schemas,
+> scenes (save/recall), device authoring + MIDI-learn, desired-state persistence,
+> and the systemd-managed loopback daemon (see [`docs/design.md`](docs/design.md)).
+> What remains is per-control **hardware validation** on the live rig (the harness
+> is `scripts/validate.sh`).
 
 ## What it does
 
@@ -68,6 +72,10 @@ internal/
   engine/                  registry, bindings, desired-state, scene orchestration
   scene/                   scene model + persistence
   mcpserver/               MCP layer (official go-sdk): tool generation + handlers
+cmd/usb-probe/             read-only USB readback spike (validation oracle)
+init/                      systemd user unit
+scripts/                   validate.sh (hardware-validation harness) + capture tooling
+.cursor/mcp.json           Cursor MCP client config (points at the loopback daemon)
 docs/design.md             full design
 ```
 
@@ -81,6 +89,34 @@ $XDG_CONFIG_HOME/mcp-midi-controller/   # git init this
   scenes/*.yaml
 $XDG_STATE_HOME/mcp-midi-controller/    # volatile (desired-state cache, logs)
 ```
+
+## Running as a daemon (systemd user service)
+
+The server is a long-lived daemon (hardware connections, inbound listening and
+desired-state are long-lived), so run it as a **systemd user service**. A unit
+is provided at [`init/mcp-midi-controller.service`](init/mcp-midi-controller.service).
+
+```bash
+# 1. Install the binary (lands in $GOBIN, or $GOPATH/bin = ~/.go/bin).
+go install ./cmd/mcp-midi-controller
+
+# 2. Install and enable the user unit (starts now and on every login).
+mkdir -p ~/.config/systemd/user
+cp init/mcp-midi-controller.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mcp-midi-controller.service
+
+# Status / live logs:
+systemctl --user status mcp-midi-controller.service
+journalctl --user -u mcp-midi-controller.service -f
+```
+
+To keep it running when you are not logged in (e.g. a headless rig host), enable
+lingering: `loginctl enable-linger "$USER"`.
+
+The daemon binds loopback only; [`.cursor/mcp.json`](.cursor/mcp.json) points
+Cursor at it (`http://127.0.0.1:7799/`). If you change `listen_addr` in
+`config.yaml`, update that URL to match.
 
 ## License
 

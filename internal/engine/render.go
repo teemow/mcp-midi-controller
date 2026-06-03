@@ -132,8 +132,21 @@ func nrpnEvents(ch, param, value int) []transport.Event {
 	}
 }
 
-// renderSysEx parses a whitespace-separated hex template (e.g. "F0 7D 01 %v
-// F7"), substituting "%v" with the wire value, and returns the message bytes.
+// renderSysEx parses a whitespace-separated hex template and returns the message
+// bytes. Recognised tokens (everything else is a literal hex byte):
+//
+//   - "%v"     substitute the wire value byte (0..127)
+//   - "["      open a checksum region (bytes from here are accumulated)
+//   - "]"      close the checksum region
+//   - "%k"     emit the Roland address-based checksum of the region:
+//     (0x80 - (Σregion & 0x7F)) & 0x7F
+//
+// A plain template like "F0 7D 01 %v F7" needs none of the region tokens. A
+// Roland DT1 write uses them, e.g. (SL-2 temp-patch SLICER pattern):
+//
+//	"F0 41 10 00 00 00 00 1D 12 [ 20 00 10 00 %v ] %k F7"
+//
+// where the checksum covers the address + data bytes only.
 func renderSysEx(template string, value int) ([]byte, error) {
 	if strings.TrimSpace(template) == "" {
 		return nil, &device.ValidationError{Pointer: "/control", Msg: "sysex control is missing a template"}
@@ -143,16 +156,31 @@ func renderSysEx(template string, value int) ([]byte, error) {
 	}
 	fields := strings.Fields(template)
 	out := make([]byte, 0, len(fields))
+	var sum int
+	inSum := false
+	addByte := func(b byte) {
+		out = append(out, b)
+		if inSum {
+			sum += int(b)
+		}
+	}
 	for _, f := range fields {
-		if f == "%v" {
-			out = append(out, byte(value))
-			continue
+		switch f {
+		case "%v":
+			addByte(byte(value))
+		case "[":
+			inSum, sum = true, 0
+		case "]":
+			inSum = false
+		case "%k":
+			out = append(out, byte((0x80-(sum&0x7F))&0x7F))
+		default:
+			b, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(f), "0x"), 16, 8)
+			if err != nil {
+				return nil, &device.ValidationError{Pointer: "/control", Msg: fmt.Sprintf("invalid sysex byte %q in template", f)}
+			}
+			addByte(byte(b))
 		}
-		b, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(f), "0x"), 16, 8)
-		if err != nil {
-			return nil, &device.ValidationError{Pointer: "/control", Msg: fmt.Sprintf("invalid sysex byte %q in template", f)}
-		}
-		out = append(out, byte(b))
 	}
 	return out, nil
 }

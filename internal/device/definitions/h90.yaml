@@ -92,6 +92,27 @@ controls:
     cc: 109           # convention (no factory default)
     value: { type: enum, values: { bypass: 0, active: 127 } }
 
+  # --- Active / Bypass toggle (latching) variants ---
+  # The plain "Act/Byp" functions (no "(M)") flip the current state on a single
+  # CC >= 64; unlike the momentary variants above they do not encode an explicit
+  # target, so state is non-deterministic (depends on the current state). Prefer
+  # the *_active_bypass (momentary) controls when you need a known end state.
+  - name: program_active_bypass_toggle
+    description: 'Program (P) active/bypass TOGGLE. Maps to "P Act/Byp": CC >= 64 flips the current Program active/bypass state.'
+    type: cc
+    cc: 103           # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: preset_a_active_bypass_toggle
+    description: 'Preset A active/bypass TOGGLE. Maps to "A Act/Byp": CC >= 64 flips the current Preset A active/bypass state.'
+    type: cc
+    cc: 105           # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+  - name: preset_b_active_bypass_toggle
+    description: 'Preset B active/bypass TOGGLE. Maps to "B Act/Byp": CC >= 64 flips the current Preset B active/bypass state.'
+    type: cc
+    cc: 107           # convention (no factory default)
+    value: { type: enum, values: { trigger: 127 } }
+
   # --- HotSwitches (engage on CC >= 64) ---
   - name: hotswitch_1
     description: Engage HotSwitch 1. CC < 64 off, CC >= 64 on.
@@ -107,6 +128,26 @@ controls:
     description: Engage HotSwitch 3. CC < 64 off, CC >= 64 on.
     type: cc
     cc: 112           # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+
+  # --- HotSwitches, momentary variants (held only while CC >= 64) ---
+  # Maps to "HS1 (M)".."HS3 (M)": the switch is engaged while CC >= 64 and
+  # releases when CC < 64. The hotswitch_1..3 controls above are the latching
+  # equivalents (stay on after a single CC >= 64).
+  - name: hotswitch_1_momentary
+    description: 'Momentary HotSwitch 1 ("HS1 (M)"): engaged while CC >= 64, released when CC < 64.'
+    type: cc
+    cc: 113           # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: hotswitch_2_momentary
+    description: 'Momentary HotSwitch 2 ("HS2 (M)"): engaged while CC >= 64, released when CC < 64.'
+    type: cc
+    cc: 114           # convention (no factory default)
+    value: { type: enum, values: { off: 0, on: 127 } }
+  - name: hotswitch_3_momentary
+    description: 'Momentary HotSwitch 3 ("HS3 (M)"): engaged while CC >= 64, released when CC < 64.'
+    type: cc
+    cc: 115           # convention (no factory default)
     value: { type: enum, values: { off: 0, on: 127 } }
 
   # --- Performance parameters 1-6 (engage on CC >= 64) ---
@@ -201,6 +242,26 @@ controls:
     description: Adjust Program Output Gain.
     type: cc
     cc: 72            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_a_in_gain
+    description: Adjust Preset A Input Gain.
+    type: cc
+    cc: 73            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_a_out_gain
+    description: Adjust Preset A Output Gain.
+    type: cc
+    cc: 74            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_b_in_gain
+    description: Adjust Preset B Input Gain.
+    type: cc
+    cc: 75            # convention (no factory default)
+    value: { type: range, min: 0, max: 127 }
+  - name: preset_b_out_gain
+    description: Adjust Preset B Output Gain.
+    type: cc
+    cc: 76            # convention (no factory default)
     value: { type: range, min: 0, max: 127 }
 
   # --- System / mode functions (trigger on CC >= 64) ---

@@ -208,11 +208,15 @@ generates/removes the per-device tool at runtime and emits
 ### MCP tools
 
 Generated **per logical device** (`control_<logical>`): the tool's input schema
-enumerates *that device's* control names (so an invalid control name is rejected
-by the schema), accepts a **batch** of `{control, value}`, and validates the
-**value** in-handler against the YAML value spec — returning
-`CallToolResult{IsError:true}` with an RFC-6901 JSON-pointer path on failure
-(SEP-1303). Tool count = number of bound devices + the globals below.
+accepts a **batch** of `{control, value}`. Each batch item is a `oneOf` of
+per-control objects derived from the YAML — `control` is pinned to a `const`
+name and `value` carries that control's own value schema (integer range, enum
+labels + wire ints, float bounds + unit, string, or the parametric
+`{number, value}` shape) — so the model sees valid ranges/enums up front. The
+**value** is still validated in-handler against the YAML value spec as the
+authoritative safety net, returning `CallToolResult{IsError:true}` with an
+RFC-6901 JSON-pointer path on failure (SEP-1303). Tool count = number of bound
+devices + the globals below.
 
 Global tools:
 
@@ -221,7 +225,16 @@ Global tools:
 - `bind_device` / `unbind_device` — manage bindings (→ `list_changed`).
 - `discover_endpoints` / `pair_endpoint` — BLE discovery + pairing.
 - `save_scene` / `recall_scene` / `list_scenes`.
+- `export_scene_to_footswitch` — compile a saved scene into a standalone
+  BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
+  per-device settle baked into the event order) and optionally HTTP-POST it to
+  the device, so the footswitch can replay the scene live with no laptop.
 - `send_raw` — raw MIDI bytes / OSC address escape hatch (untracked).
+- WIDI dongle config: `widi_read_config` / `widi_write_setting` / `widi_set_group`
+  / `widi_clear_group` — read/write a CME WIDI dongle's persistent flash settings
+  (BLE role, TX power, MIDI-thru, wireless groups) via the `internal/widi` library
+  over the BLE-MIDI characteristic. Addressed by endpoint + product (not a binding),
+  request/reply, and deliberately **outside** the scene/desired-state path.
 - Authoring: `create_device_definition` / `add_control` / `save_device_definition`.
 - MIDI-learn: `learn_start` / `learn_capture` (reads the inbound notify channel
   to capture the CC/NRPN the user moves).
@@ -229,8 +242,10 @@ Global tools:
 ### State & scenes
 
 - The server keeps an **authoritative desired-state**: per logical device, the
-  last value sent per control. Updated on every control set; optionally
-  reconciled from inbound MIDI (hand-tweaks on hardware).
+  last value sent per control. Updated on every control set and **persisted as
+  JSON** under the state dir (`$XDG_STATE_HOME/mcp-midi-controller/desired-state.json`)
+  so it survives a daemon restart; optionally reconciled from inbound MIDI
+  (hand-tweaks on hardware).
 - A **scene** is a named snapshot of **only the controls that have been set**
   (so scenes are small, partial, and **layerable**). For preset-based devices
   (H90/Opus) it stores the **program number plus CC overrides**.
@@ -238,6 +253,19 @@ Global tools:
   `settle_ms` delay, and supports **additive** (apply over current state) and
   **exact** (reset to scene) modes.
 - Scenes are human-readable files in `$XDG_CONFIG_HOME/mcp-midi-controller/scenes/`.
+- **Compile + push to a footswitch (design-time):** because recall ordering and
+  settle are resolved here, a scene can be *compiled* into a flat, already-ordered
+  event list and pushed into a standalone BLE-MIDI footswitch (HTTP over WiFi),
+  which then replays it live with no laptop in the path. The footswitch is a
+  faithful player: it does not re-derive recall semantics. See
+  `export_scene_to_footswitch`. Each event keeps its binding's MIDI channel, so
+  the **routing host** the footswitch is connected to live (e.g. AUM on the iPad)
+  must fan the replayed messages out to the gear by channel — the footswitch does
+  not address the pedal hub directly. Verified end-to-end against real hardware
+  (push → store → inbound-trigger → BLE replay → host relay → MIDI hub → pedal
+  recalled its program). Note: this is also why a per-device **binding channel**
+  must be correct (0-based wire channel); a wrong channel silently routes to the
+  wrong pedal even though the push/replay path is fine.
 
 ### AUv3 plugins & AUM — the convention model
 
@@ -251,8 +279,9 @@ control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
 - The authoring tools emit an **AUM mapping cheat-sheet** (per plugin: channel +
   CC list) so configuring AUM is mechanical.
 - MIDI-learn (capture inbound CC) is the primary path for **hardware**; for
-  **plugins** it is optional and only works if AUM is set to echo parameter
-  changes as CC.
+  **plugins** it is optional. AUM does **not** echo parameter changes as MIDI
+  (input-only), so plugin control is **open-loop** and definitions are verified
+  at authoring time, not by a live echo — see `docs/research/auv3-feedback.md`.
 - AUM itself and each plugin are ordinary **logical devices** bound to the
   iPad's BLE-MIDI endpoint on **distinct MIDI channels**.
 
@@ -262,10 +291,20 @@ control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
   to `127.0.0.1`** (never a wide bind). Hardware connections, inbound listening,
   and desired-state are long-lived by nature, so they should survive editor
   sessions.
+- Install: `go install ./cmd/mcp-midi-controller` (lands in `$GOBIN` / `~/.go/bin`),
+  then the provided user unit `init/mcp-midi-controller.service`
+  (`systemctl --user enable --now …`). See the README for the exact steps.
+- **Startup is serve-first**: the loopback MCP endpoint binds and starts serving
+  immediately; restoring bindings is synchronous (cheap), but inbound BLE
+  listening is kicked off in the **background** so an unreachable/powered-off
+  endpoint can never gate the daemon from coming up. Unreachable endpoints are
+  retried on demand by verify/learn/probe.
+- **Cursor** (and other MCP clients) connect via `.cursor/mcp.json`, which points
+  at the daemon's loopback URL (`http://127.0.0.1:7799/`).
 - SDK: **`github.com/modelcontextprotocol/go-sdk`** (official, stable) —
   built-in input-schema validation before the handler, `StreamableHTTPHandler`,
   dynamic tools + `list_changed`. Generated tools set `Tool.InputSchema`
-  explicitly so runtime control-name enums work.
+  explicitly so runtime per-control value schemas (ranges/enums) work.
 
 ## Storage layout
 
@@ -295,7 +334,13 @@ Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binar
 4. **Scenes** — save/recall/list; PC→CC ordering + settle delay; additive/exact.
 5. **Authoring + MIDI-learn** — definition authoring tools + inbound capture.
 6. **OSC transport (X32)** — a second, non-MIDI backend (keeps the abstraction honest).
-7. **Bonus** — USB-MIDI via gomidi.
+7. **USB editor/readback tools** — USB-MIDI + vendor-HID transports exposing the
+   pedals' deep editor protocols (read device state, author SL-2 patterns, verify
+   what BLE writes landed). First design: `docs/usb-tools.md`.
+8. **AUv3 feedback (`auv3-probe`)** — an off-daemon iPad utility that dumps each
+   plugin's `AUParameterTree` to verify the plugin definitions are correct and
+   cover the maximum functionality (AUM doesn't echo MIDI, so this replaces the
+   BLE echo for plugins). Design: `docs/research/auv3-feedback.md`.
 
 All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
 remaining work is **YAML definitions + MIDI-learn**, not core code.
@@ -327,6 +372,8 @@ remaining work is **YAML definitions + MIDI-learn**, not core code.
 
 ### AUv3 plugins / synths (controlled via the AUM CC convention)
 
+- Verifying plugin definitions (no AUM MIDI echo; `auv3-probe` →
+  `AUParameterTree` dump): `docs/research/auv3-feedback.md`
 - Unfiltered Audio Battalion — <https://www.unfilteredaudio.com/products/battalion>
 - Arturia iSEM — <https://www.arturia.com/products/ios-instruments/isem/overview>
 - Kai Aras Agonizer — <https://apps.apple.com/app/agonizer/id1583662383>

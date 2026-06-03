@@ -1,0 +1,343 @@
+# H90 Control — static-analysis catalog (reference data for h90.yaml)
+#
+# Extracted by static analysis (RTTI, log strings, leaked build paths,
+# disassembly) of "H90 Control.exe" 1.9.13 (Win x64, unstripped JUCE/C++ app).
+# See docs/research/h90.md "H90 Control protocol (static analysis)" for method
+# and the full narrative. This file is RESEARCH DATA, not a shipped device
+# definition — the daemon's controllable surface stays Program Change + CC
+# (h90.yaml). Nothing here is a control the daemon issues today.
+#
+# IMPORTANT HONESTY NOTE: the per-algorithm parameter map (names / ids / ranges
+# for Blackhole, MicroPitch, etc.) is NOT baked into the app. The binary embeds
+# only the EffectType *categories* and a handful of pedal icons. Each algorithm's
+# parameter set is delivered at runtime by the pedal as ParameterMetadata
+# flatbuffers (the `meta_*` fields below). A full per-algo catalog therefore
+# requires a live TRPC capture, not static extraction.
+
+source:
+  app: "H90 Control"
+  version: "1.9.13"        # Windows x64 installer (1.9.15 macOS also present)
+  build_root: 'C:\Jenkins\workspace\audio-apps\h90control\H90\ControlApp\Source'
+  method: "RTTI + log strings + objdump/capstone disassembly (Wine-extracted PE)"
+
+# ---------------------------------------------------------------------------
+# TRPC SysEx framing — RECOVERED from disassembly (no live capture needed).
+# The dot9 inbound parser (.text 0x14013ac90) gates on these literal bytes, and
+# the build/parse helpers (0x140429a40 / 0x140429c50) seed the 8-byte header
+# struct with `mov qword [rcx], 0x771cf0` => bytes F0 1C 77 00. The constant
+# occurs 10x in .text, on BOTH the trpc::dot9 and trpc::msg brokers and on BOTH
+# the receive parser and the sendMIDIRequest build path (0x14013ee5c).
+# See docs/research/h90.md "SysEx header recovered".
+sysex_framing:
+  verified_live: "CONFIRMED on hardware: the pedal replies to F0 1C 77 frames over its own USB-MIDI with status 0x02 + a FlatBuffers body (root uoffset 12). Reproduce: go run ./cmd/usb-probe --device h90 --h90-ping. The Universal Identity Request gets no reply; the legacy 1C 70 TJ WANTs get no reply."
+  prefix: [0xF0, 0x1C, 0x77]   # SysEx start, Eventide mfg 0x1C, H90 dot9 model 0x77
+  note_legacy: "NOT the legacy Factor-family 1C 70; the Dot9 platform uses 0x77."
+  frame: "F0 1C 77 00 <f4> <f5> <f6> <f7> <FlatBuffers payload, 7-bit packed, opt. zlib> F7"
+  header_bytes:
+    offset_0_2: "F0 1C 77 (fixed prefix)"
+    offset_3:   "0x00 separator (seeded in the header struct)"
+    offset_4_7: "four 7-bit fields; a high/low pair reconstructs a 14-bit message id"
+  message_id: "14-bit, (hi<<7)|lo; correlated against pendingResponseID"
+  error_response_code: 0x02     # log: "Device returned error response code 0x02"
+  encoding: "all bytes 7-bit safe (shr 7 / and 0x7f); 4-byte aligned; 32-bit LE length prefixes"
+  compression: "zlib deflate when a per-device cap flag is set AND payload > 100 bytes"
+  transport: "JUCE UMP SysEx7 appends the closing F7"
+  still_missing: "per-operation Dot9MessageType opcode VALUES (enum names not stringified; needs a short live capture)"
+
+# ---------------------------------------------------------------------------
+# EffectType — the algorithm *categories*. The category strings ARE present in
+# the binary (verified), but they are NOT laid out as a FlatBuffers EnumNames
+# pointer array, so the ORDER below is NOT evidence of the enum's ordinal values
+# (it could not be confirmed by static analysis). Treat as an unordered set.
+# These are categories, NOT the ~60 individual algorithms.
+# ---------------------------------------------------------------------------
+effect_types:                  # order NOT confirmed (no EnumNames table)
+  - Delay
+  - Modulation
+  - Reverb
+  - Harmonizer
+  - Dynamic
+  - Synth
+  - Multi
+  - Distortion
+  - Looper
+  - Granular
+  - Utility
+  - Harmonizer+
+
+# RoutingMode — the H90's three routing topologies. Sourced from UI strings +
+# the importH9PresetList(RoutingMode) signature; NOT found as an EnumNames array,
+# so ordinal values are unconfirmed.
+routing_modes: [Series, Parallel, Dual]
+
+# Routing / insert POSITION enum — RECOVERED with exact ordinals from a
+# FlatBuffers EnumNames pointer array (.rdata 0x140802340). Distinct from
+# routing_modes above; this is where an algorithm sits in the signal path
+# (cf. the `insertOption1` program field).
+routing_position:              # index == enum value
+  0: Off
+  1: Pre
+  2: Mid
+  3: Post
+  4: Parallel
+  5: Pre-A
+  6: Post-A
+  7: Pre-B
+  8: Post-B
+  9: Stereo
+
+# Individual algorithm names that DO appear as strings (device/pedal icons only,
+# not the full H90 algorithm list). Listed for completeness; do not treat as the
+# catalog.
+algorithm_names_seen: [Blackhole, MicroPitch, UltraTap, TriceraChorus, Riptide, "Knife Drop"]
+
+# ---------------------------------------------------------------------------
+# Parameter metadata schema — the fields a pedal sends per parameter
+# (trpc::dot9::ParameterMetadataT). Keys are the literal `meta_*` strings.
+# This is the shape of a parameter; values come from the device at runtime.
+# ---------------------------------------------------------------------------
+parameter_metadata_fields:
+  meta_uid:            "stable parameter id"
+  meta_name:           "display name"
+  meta_min:            "minimum value"
+  meta_max:            "maximum value"
+  meta_default:        "default value"
+  meta_res:            "resolution / step size"
+  meta_steps:          "number of discrete steps"
+  meta_mode:           "value mode"
+  meta_ctl:            "control/widget type (see control_types)"
+  meta_tag:            "grouping tag"
+  meta_group:          "parameter group"
+  meta_choices:        "choice labels (for enum/choice params)"
+  meta_choices_values: "choice underlying values"
+  meta_gang:           "ganged-parameter flag"
+  meta_members:        "gang member ids"
+  meta_enabled:        "enabled flag"
+  meta_automated:      "automatable flag"
+  meta_persistent:     "persisted-across-recall flag"
+  meta_global:         "global (system) parameter flag"
+  meta_subscription:   "controller-subscription binding"
+  meta_pretapermin:    "pre-taper range minimum"
+  meta_pretapermax:    "pre-taper range maximum"
+  meta_stmt:           "statement / formatting"
+
+# UI control/widget type enum a parameter declares via meta_ctl — RECOVERED with
+# exact ordinals from a FlatBuffers EnumNames pointer array (.rdata 0x1408eeff0,
+# 48 entries). index == enum value. (Supersedes the earlier hand-picked subset.)
+control_types:                 # index == enum value
+  0:  list
+  1:  knob
+  2:  meter
+  3:  smon
+  4:  extControl
+  5:  monitor
+  6:  radio
+  7:  toggle
+  8:  textLine
+  9:  tjKnobs
+  10: tMonitor
+  11: menuPage
+  12: multiTap
+  13: textBlock
+  14: headm
+  15: trigger
+  16: tapKnob
+  17: vMonitor
+  18: rFader
+  19: textKnob
+  20: hMonitor
+  21: sKnob3
+  22: multiKnob
+  23: hMenuPage
+  24: mKnob
+  25: hFader
+  26: sTextKnob
+  27: vFader
+  28: uoSwitch
+  29: cGraph
+  30: nullCtl
+  31: tjKnob
+  32: textEdit
+  33: ipAddress
+  34: momentary
+  35: waveform
+  36: hostname
+  37: meter8Chan
+  38: ledIndicator
+  39: mappedTextKnob
+  40: grMeter
+  41: asynKnob
+  42: tempoKnob
+  43: footswitch
+  44: footswitch_latching
+  45: footswitch_momentary
+  46: footswitch_oneshot
+  47: footswitch_combo
+
+# Parameter CATEGORY enum (the tag/group a parameter belongs to) — RECOVERED with
+# exact ordinals from a FlatBuffers EnumNames pointer array (.rdata 0x1408e17f0,
+# 14 entries). index == enum value. Tells you which surface a parameter targets
+# (program vs algorithm vs system vs the global-mapping / midi-CC layer).
+parameter_categories:          # index == enum value
+  0:  progGeneral
+  1:  progFootswitch
+  2:  progMeter
+  3:  progFunction
+  4:  algGeneral
+  5:  algFootswitch
+  6:  algEffect
+  7:  system
+  8:  dspGlobal
+  9:  algEffectFootswitch
+  10: systemFootswitch
+  11: globalMapping
+  12: midiCCTransmit
+  13: algTransport
+
+# Control-source kinds a parameter can be mapped to (RangeParamPanel).
+control_sources:
+  - "Pedal #"
+  - "Switch #"
+  - "Aux Switch"
+  - "Exp Pedal"
+  - "Program HotKnob"
+  - "Preset HotKnob"
+  - "MIDI CC#"
+
+# ---------------------------------------------------------------------------
+# FlatBuffers model tables (the document/state model carried over TRPC). Native
+# C++ types end in `T`; the wire is FlatBuffers. No reflection schema (.bfbs) is
+# embedded — these are the compiled-in tables, recovered from RTTI + JSON keys.
+# ---------------------------------------------------------------------------
+model_tables:
+  exported_documents:        # trpc::models::*  (host-side export units)
+    - ExportedProgram        # *.pgm90
+    - ExportedPreset         # *.preset90
+    - ExportedProgramList    # *.lst90
+    - ExportedAlgorithm      # *.alg90
+    - ExportedDeviceState    # full device backup
+  device_state:
+    - ProgramDatabase
+    - DeviceState
+    - DeviceInfo
+    - DeviceInfoList
+    - SystemSettings
+    - Routing
+    - SoftwareComponent
+  programs_presets:
+    - Program
+    - ProgramDetail
+    - ProgramSummary
+    - PreviewedProgramSummary
+    - ProgramList
+    - ProgramListArray
+    - ProgramLibrary
+    - ProgramNotes
+    - ProgramPreview
+    - ProgramCache
+    - ListMetadata
+    - Preset
+    - PresetLibrary
+    - PresetSummary
+    - PresetListArray
+    - PresetSlots
+  parameters:
+    - Parameter
+    - ParameterArray
+    - ParameterPair
+    - ParameterValueArray
+    - ParameterSubscriptionArray
+    - ControllerSubscription
+    - DiscardParameter
+  hardware:
+    - Footswitch
+    - FootswitchArray
+    - QuickKnob
+    - QuickKnobArray
+    - Favorite
+    - Favorites
+    - BankArray
+    - AlgorithmSummary
+    - AlgorithmArray
+
+# Per-parameter / per-program model fields (ProgramDetailModel / ParameterModel
+# JSON keys) — useful when decoding a captured flatbuffer.
+model_fields:
+  parameter:
+    - numericId
+    - label
+    - description
+    - value
+    - postValue
+    - minimumValue
+    - maximumValue
+    - defaultValue
+    - resolution
+    - numValues
+    - choices
+    - pretaperMin
+    - pretaperMax
+    - isAutomatable
+    - isModified
+    - userObjectId
+    - controlSourceIndex
+    - controlSourceType
+    - controlSourceMask
+    - controllerSubscriptionPmin
+    - controllerSubscriptionPmax
+    - controllerSubscriptionCmin
+    - controllerSubscriptionCmax
+    - controllerActionExtraction
+    - controllerActionTransformation
+  program:
+    - serialNo
+    - deviceId
+    - listIndex
+    - effectType
+    - author
+    - notes
+    - version
+    - minClientVersion
+    - isFactory
+    - isDualMode
+    - routing
+    - insertOption1
+    - favoriteType
+    - modifiedProgramListIndex
+
+# ---------------------------------------------------------------------------
+# TRPC operations (RPC methods recovered from RTTI). WRITE ops are flagged; the
+# daemon must NEVER issue these during research. Listed for the eventual
+# verify_control read path only.
+# ---------------------------------------------------------------------------
+operations:
+  reads:
+    - getSystemParameters          # "SystemParametersResponse flatbuffer size:"
+    - loadExportedAlgorithm
+    - importProgram                # host->device staging (loads into edit buffer)
+    - importPreset
+    - importProgramList
+    - importH9Preset
+    - importH9ZPreset
+  writes_do_not_issue:
+    - changePresetParameter        # (int index, ValuePair) — live parameter edit
+    - loadDeviceBackup             # (ExportedDeviceState) — full restore
+    - restoreDevice
+    - backupDevice
+    - factoryReset
+    - rebootInUpdateMode
+  system_test:                     # SystemTestView message kinds (safe diagnostics)
+    - SystemParameters
+    - TestLoopback
+    - TestBytes
+
+# ---------------------------------------------------------------------------
+# Files H90 Control reads/writes on the host (formats; internal layout = the
+# flatbuffer tables above).
+# ---------------------------------------------------------------------------
+host_files:
+  ".pgm90":    "single Program (a pair of presets + routing)"
+  ".lst90":    "Program List / Playlist (up to 99 Programs)"
+  ".preset90": "single Preset"
+  ".alg90":    "exported Algorithm"
+  ".h9z / .h9 / .tide": "legacy H9 import formats"

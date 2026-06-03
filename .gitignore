@@ -1,5 +1,9 @@
 # Binaries
 /mcp-midi-controller
+/aum-test
+/usb-probe
+/widi-probe
+/auv3-probe
 /dist/
 *.exe
 

@@ -160,3 +160,87 @@ Every row above is sourced from the MIDI Chart:
 - **On/off encoding.** Unlike some pedals (and the previous placeholder), Opus
   on/off and switch CCs use **0/1**, not 0/127. Sending 127 to a 0–1 control is
   out of the documented range.
+
+## USB readback — Torpedo Remote HID protocol (state verification)
+
+For the USB readback research (verifying what a BLE-MIDI write actually landed —
+see `docs/research/usb.md`), the Opus is the only rig pedal that exposes **no
+USB-MIDI at all**: its sole USB function is a vendor **HID** interface, the
+channel the **Torpedo Remote** editor uses. All non-MIDI device state (cabinet
+manager, IR loader, firmware) goes over this HID pipe.
+
+### Transport (confirmed)
+
+- Single USB interface, **HID** (class `03`/`00`/`00`), VID:PID **`0483:A334`**
+  (STMicroelectronics — the Opus is an STM32-based device; manufacturer string
+  "Two Notes Audio Engineering", product "OPUS"). Full Speed, self-powered.
+- Two interrupt endpoints: **EP `0x01` OUT / `0x81` IN, 64-byte** reports,
+  `bInterval` 1. A raw bidirectional 64-byte vendor pipe.
+- On Linux it binds `usbhid` and appears as a `hidraw` node. The editor (Torpedo
+  Remote desktop) is **Mac/Win only**; the wireless app (Android/iOS) talks to
+  the same device family over **BLE**, not USB. So on Linux the HID interface is
+  free for direct access.
+
+### HID report descriptor (confirmed — dumped from the device)
+
+`wDescriptorLength` = 36 bytes. `lsusb -v` prints it as `** UNAVAILABLE **` (the
+kernel `usbhid` driver holds the interface and `lsusb` won't detach it); it was
+read instead from sysfs (`/sys/.../<intf>/<hidbus>/report_descriptor`). Raw bytes:
+
+```
+06 00 FF 09 01 A1 01 19 02 29 41 15 00 25 7F 95 40 75 08 81 26
+            19 42 29 81 15 00 25 7F 95 40 75 08 91 22 C0
+```
+
+Decoded:
+
+| Item | Value |
+|------|-------|
+| Usage Page | `0xFF00` (vendor-defined) |
+| Usage / Collection | Usage `0x01`, Application collection |
+| Report ID | **none** (unnumbered reports) |
+| Input report | usages `0x02..0x41`, Report Count 64, Report Size 8, Logical 0..127, flags `0x26` = Data, Var, **Relative** |
+| Output report | usages `0x42..0x81`, Report Count 64, Report Size 8, Logical 0..127, flags `0x22` = Data, Var, **Absolute** |
+
+So: **one 64-byte Input report and one 64-byte Output report, no report IDs, and
+*no Feature reports*.** This corrects the plan's "feature-report readback layout"
+wording — the Opus does **not** use HID FEATURE reports; readback rides the same
+64-byte interrupt **Input** report. Concretely: write a request to EP `0x01`,
+read the reply on EP `0x81` (over hidraw: a plain `write()`/`read()` of 64-byte
+reports). The `Relative`/`Absolute` flags are cosmetic for a vendor pipe and
+carry no semantic meaning here.
+
+### Command layout (blocked on a non-Linux capture)
+
+The bytes **inside** the 64-byte reports — the Torpedo Remote command set
+(preset/parameter read, cabinet/IR enumeration) — are **proprietary and
+undocumented**, and there is no published spec or known open-source decode. Two
+Notes confirms only that "MIDI control of every parameter" exists (so live
+control is the CC map above) while cabinet/IR management is HID-only. Decoding
+the readback therefore requires the **gold-path capture**: run Torpedo Remote on
+a Mac/Win host (or the Android/iOS app over BLE), snoop the HID/BLE traffic while
+performing a known read, and diff the wire bytes. The desktop editor does not run
+natively on Linux (Wine/VirtualBox USB passthrough has been reported not to find
+the device), so this is the Mac/Win/VM step the shared methodology flags.
+
+Status: **transport + report descriptor confirmed**; **semantic command layout
+blocked** on a Torpedo Remote capture. No round-trip readback is wired into
+`verify_control` (that is a future phase; today verification stays on the
+MIDI-echo path, like the H90 — see `docs/research/usb.md`).
+
+### Probe tool (read-only)
+
+`cmd/usb-probe --device opus` speaks the HID pipe directly over hidraw (auto-detects
+`0483:A334`; no cgo/hidapi). It is **read-only by design and never synthesises a
+request**, because the command bytes are unknown and a wrong write could change
+device state:
+
+- default — **listen-only**: drains and prints any 64-byte Input reports the
+  Opus emits on its own (e.g. a front-panel edit or a preset recall over MIDI);
+  sends nothing.
+- `--opus-raw "F0 .."` — replays exactly one operator-supplied captured frame
+  (padded/truncated to 64 bytes) and dumps the reply, for replaying a request
+  lifted from a Torpedo Remote capture.
+
+hidraw nodes are root-only; grant per-session access with
+`sudo setfacl -m u:$USER:rw /dev/hidrawN`.

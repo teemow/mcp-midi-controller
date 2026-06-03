@@ -86,6 +86,20 @@ func (r *Registry) add(b []byte, src string) error {
 	return nil
 }
 
+// AddDefinition validates and inserts (or replaces) a definition in the
+// registry so an authored device hot-loads without a daemon restart. The
+// definition must have an id.
+func (r *Registry) AddDefinition(d *Definition) error {
+	if d == nil {
+		return fmt.Errorf("nil definition")
+	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	r.defs[d.ID] = d
+	return nil
+}
+
 // Get returns the definition with the given ID.
 func (r *Registry) Get(id string) (*Definition, bool) {
 	d, ok := r.defs[id]

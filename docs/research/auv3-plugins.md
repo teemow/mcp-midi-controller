@@ -49,6 +49,12 @@ spec.)
 | Korg iMS-20 | No fixed CC map | Via host (AUM MIDI control) | Map AU params in AUM. |
 | FabFilter Pro-Q | No fixed CC map | **Yes — built-in interactive MIDI-Learn** | Only one here with first-class MIDI-Learn; can also follow the "active band". Still no default CC numbers — you assign them. |
 
+> Because these CC maps are an invented convention, verifying that a definition
+> is **correct** and covers the plugin's **maximum** functionality needs a
+> dedicated feedback path (AUM does not echo MIDI). See
+> `docs/research/auv3-feedback.md` for that design — chiefly an `auv3-probe`
+> companion that dumps each plugin's `AUParameterTree`.
+
 In all four cases the CC numbers in our YAML are a **chosen convention**, not a
 vendor-fixed mapping. FabFilter Pro-Q is the only plugin that documents
 first-class MIDI control of its own, so for Pro-Q the convention can be entered in

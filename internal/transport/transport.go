@@ -6,12 +6,17 @@ package transport
 
 import "context"
 
-// EventKind distinguishes MIDI byte payloads from OSC packets.
+// EventKind distinguishes MIDI byte payloads from OSC packets from raw
+// (vendor HID) reports.
 type EventKind int
 
 const (
 	MIDIEvent EventKind = iota
 	OSCEvent
+	// RawEvent carries an opaque byte payload that has no MIDI/OSC framing:
+	// a vendor HID report (e.g. the Neuro or Torpedo Remote pipe), moved
+	// verbatim by the usbhid transport. The bytes live in Data.
+	RawEvent
 )
 
 // Event is a fully-rendered control change ready to emit on a transport. The
@@ -19,9 +24,10 @@ const (
 type Event struct {
 	Kind EventKind
 
-	// MIDI fields (Kind == MIDIEvent).
+	// MIDI fields (Kind == MIDIEvent); also the raw report payload for
+	// Kind == RawEvent (a HID report moved verbatim, no channel applied).
 	Channel int    // 0-15
-	Data    []byte // raw MIDI status+data bytes (channel already applied)
+	Data    []byte // raw MIDI status+data bytes (channel already applied), or a raw HID report
 
 	// OSC fields (Kind == OSCEvent).
 	OSCAddr string

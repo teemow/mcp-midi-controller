@@ -14,8 +14,8 @@ import (
 
 // alsaDataPlane is the primary BLE-MIDI data plane on a PipeWire desktop. The
 // WirePlumber bluez5 plugin bridges each bonded BLE-MIDI endpoint into the ALSA
-// sequencer (a client named after the device, e.g. "teemow-pedals"), so we send
-// and receive plain MIDI bytes over that ALSA-seq port via gomidi instead of
+// sequencer (a client named after the device's BLE name), so we send and
+// receive plain MIDI bytes over that ALSA-seq port via gomidi instead of
 // owning the GATT characteristic (which PipeWire holds — see gatt.go).
 //
 // Requires CGO + ALSA (the gomidi rtmidi driver links libasound).

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/transport"
 	"github.com/teemow/mcp-midi-controller/internal/transport/blemidi"
 	"github.com/teemow/mcp-midi-controller/internal/transport/osc"
+	"github.com/teemow/mcp-midi-controller/internal/transport/usbhid"
 	"github.com/teemow/mcp-midi-controller/internal/transport/usbmidi"
 )
 
@@ -46,13 +48,19 @@ func main() {
 		mustTransport(blemidi.New()),
 		mustTransport(osc.New()),
 		mustTransport(usbmidi.New()),
+		mustTransport(usbhid.New()),
 	}
 
 	eng := engine.New(reg, transports...)
 
+	// Restore the persisted desired-state so the daemon resumes the last applied
+	// values, and keep writing it back after each change.
+	if err := eng.EnableStatePersistence(config.DesiredStatePath()); err != nil {
+		log.Printf("restore desired-state: %v", err)
+	}
+
 	// Restore the rig-as-code bindings so the daemon comes back up with the same
 	// logical devices (and their control_<logical> tools) it had before.
-	// TODO: restore desired-state from the state dir.
 	bindings, err := engine.LoadBindingsFile(config.BindingsPath())
 	if err != nil {
 		log.Fatalf("load bindings: %v", err)
@@ -63,7 +71,19 @@ func main() {
 		}
 	}
 
-	srv := mcpserver.New(eng)
+	srv := mcpserver.New(eng, mcpserver.WithUSBAllowWrites(cfg.USBAllowWrites))
+
+	// Begin listening for inbound MIDI on every bound endpoint so observed-state
+	// and the feedback tools work without an explicit learn_start. This runs in
+	// the background: connecting to BLE endpoints can block (or fail) when the
+	// hardware is off, and that must never gate the loopback MCP endpoint from
+	// coming up. Endpoints that are not reachable now are retried on demand by
+	// verify/learn/probe.
+	go func() {
+		if err := eng.StartInboundForBindings(context.Background()); err != nil {
+			log.Printf("inbound listeners: %v", err)
+		}
+	}()
 
 	log.Printf("mcp-midi-controller listening on http://%s (loopback)", cfg.ListenAddr)
 	if err := http.ListenAndServe(cfg.ListenAddr, srv.Handler()); err != nil {

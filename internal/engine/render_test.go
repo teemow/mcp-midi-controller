@@ -86,6 +86,25 @@ func TestRenderSysEx(t *testing.T) {
 	}
 }
 
+func TestRenderSysExRolandChecksum(t *testing.T) {
+	// SL-2 temp-patch SLICER(1) PATTERN write (DT1). Checksum covers the
+	// address + data bytes inside [ ]; verified against docs/research/sl-2.md
+	// (the EXP_FUNC=04 example yields checksum 0x65).
+	c := &device.Control{
+		Type:  device.ControlSysEx,
+		SysEx: "F0 41 10 00 00 00 00 1D 12 [ 10 00 00 07 %v ] %k F7",
+		Value: device.ValueSpec{Type: device.ValueRange},
+	}
+	evs, err := renderControl(nil, c, 5, mustResolve(t, c, float64(4)))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	want := []byte{0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x00, 0x1D, 0x12, 0x10, 0x00, 0x00, 0x07, 0x04, 0x65, 0xF7}
+	if !bytes.Equal(evs[0].Data, want) {
+		t.Fatalf("data = % X, want % X", evs[0].Data, want)
+	}
+}
+
 func TestRenderOSC(t *testing.T) {
 	fc := &device.Control{Type: device.ControlOSC, Address: "/ch/01/mix/fader", Value: device.ValueSpec{Type: device.ValueFloat, Min: f(0), Max: f(1)}}
 	evs, err := renderControl(nil, fc, 0, mustResolve(t, fc, 0.5))

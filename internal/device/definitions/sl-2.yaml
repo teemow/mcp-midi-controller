@@ -3,19 +3,28 @@ name: Boss SL-2
 manufacturer: Boss
 description: >-
   Boss SL-2 Slicer (compact pedal). MIDI over TRS MIDI IN (BMIDI/BCC cables).
-  The entire live MIDI surface is three Control Changes plus MIDI-clock sync.
-  There is NO Program Change and NO way to select the slicer Type or pattern
-  Variation over MIDI — those are front-panel knobs only, so scenes can capture
-  on/off and effect level but not the pattern. Receive channel is set by a
-  power-on knob combination (channels 1-10, or "All"); the binding channel must
-  match. See docs/research/sl-2.md.
+  The live channel-voice surface is three Control Changes plus MIDI-clock sync;
+  there is NO Program Change. The slicer pattern, FX type and step count are NOT
+  reachable by PC/CC, but they ARE writable via Roland DT1 SysEx (the BOSS Tone
+  Studio editor protocol), confirmed live over BLE/TRS — so the sysex controls
+  below let scenes capture the pattern/type too (they write the temporary/edit
+  patch, i.e. the running sound, no editor handshake needed). SysEx carries no
+  channel; the CC controls use the binding channel, which must match the SL-2's
+  receive channel (set by a power-on knob combination; channels 1-10, or "All").
+  See docs/research/sl-2.md.
 transport: blemidi
 settle_ms: 0
 controls:
   - name: expression
     description: >-
-      EXP (CC#16). Controls the output level of the effect sound — same effect
-      as a connected expression pedal.
+      EXP controller (CC#16). Drives the single parameter assigned to EXP via the
+      SYSTEM EXP_FUNC setting (0x10000007): 0=DUTY, 1=ATTACK, 2=TEMPO, 3=BALANCE,
+      4=OUTPUT LEVEL (factory default 2=TEMPO). It is NOT a fixed "effect level".
+      CONFIRMED LIVE with EXP_FUNC=2=TEMPO: CC#16 sets tempo linearly across the
+      40-300 BPM range (tempo_BPM = 40 + cc/127*260; cc=40 ~= 122 BPM). For the
+      manual's "effect output level" behaviour, set EXP_FUNC=4. See
+      docs/research/sl-2.md. (Name kept as `expression` for compatibility; it is
+      really the assignable EXP controller.)
     type: cc
     cc: 16
     value: { type: range, min: 0, max: 127 }
@@ -34,8 +43,61 @@ controls:
     type: cc
     cc: 81
     value: { type: range, min: 0, max: 127 }
-# Slicer Type (SINGLE/DUAL/TREMOLO/HARMONIC/SFX) and pattern Variation are NOT
-# MIDI-addressable: no Program Change, no CC, no documented SysEx for live
-# control. Tempo can also follow MIDI clock (F8/FA/FB/FC), which is
-# system-real-time (no channel) and handled at the transport level, not as a
-# control.
+
+  # --- Roland DT1 SysEx (BOSS Tone Studio editor protocol) -------------------
+  # These write the TEMPORARY (edit-buffer) patch at base 0x20000000, which is
+  # the running sound — confirmed live over BLE/TRS, no editor handshake needed
+  # (docs/research/sl-2.md). The Roland checksum (over the address+data bytes in
+  # [ ]) is emitted by the engine's "%k" template token. Model id is the 5-byte
+  # 00 00 00 00 1D; command 12 = DT1.
+  - name: slicer1_pattern
+    description: >-
+      SLICER(1) slice pattern (temp patch 0x20001000). Selects the preset slice
+      pattern; this is the parameter the manual calls "front-panel only" but it
+      is writable via DT1 and the change is audible live.
+    type: sysex
+    sysex: "F0 41 10 00 00 00 00 1D 12 [ 20 00 10 00 %v ] %k F7"
+    value: { type: range, min: 0, max: 50 }
+  - name: slicer1_fx_type
+    description: SLICER(1) effect type (temp patch 0x20001002), 0-6 per the editor address map.
+    type: sysex
+    sysex: "F0 41 10 00 00 00 00 1D 12 [ 20 00 10 02 %v ] %k F7"
+    value: { type: range, min: 0, max: 6 }
+  - name: slicer1_step_number
+    description: SLICER(1) step count (temp patch 0x20001003), 0-3 per the editor address map.
+    type: sysex
+    sysex: "F0 41 10 00 00 00 00 1D 12 [ 20 00 10 03 %v ] %k F7"
+    value: { type: range, min: 0, max: 3 }
+  - name: slicer2_pattern
+    description: SLICER(2) slice pattern (temp patch 0x20002000; used by DUAL patches), 0-50.
+    type: sysex
+    sysex: "F0 41 10 00 00 00 00 1D 12 [ 20 00 20 00 %v ] %k F7"
+    value: { type: range, min: 0, max: 50 }
+  - name: exp_func
+    description: >-
+      SYSTEM EXP_FUNC (0x10000007): re-points the EXP controller (CC#16) to one
+      parameter. Factory default 2=TEMPO (so CC#16 is a tempo control). Confirmed
+      live and reversible over BLE.
+    type: sysex
+    sysex: "F0 41 10 00 00 00 00 1D 12 [ 10 00 00 07 %v ] %k F7"
+    value:
+      type: enum
+      values: { duty: 0, attack: 1, tempo: 2, balance: 3, output_level: 4 }
+  - name: patch_select
+    description: >-
+      Recall a stored pattern into the temporary/edit patch (PATCH_SELECT command
+      0x7F000100, data "00 <n>") — effectively preset recall over MIDI, which the
+      SL-2 lacks via Program Change. Non-destructive to stored patches (only the
+      live edit buffer changes).
+    type: sysex
+    sysex: "F0 41 10 00 00 00 00 1D 12 [ 7F 00 01 00 00 %v ] %k F7"
+    value: { type: range, min: 0, max: 87 }   # TODO: confirm slot indexing (0-87 vs 1-88) and live-over-BLE behaviour
+# Slicer Type (SINGLE/DUAL/TREMOLO/HARMONIC/SFX) and pattern Variation are not
+# reachable by Program Change or CC, but they are addressable via the DT1 SysEx
+# controls above (BOSS Tone Studio editor protocol, docs/research/sl-2.md). The
+# USB port also speaks this protocol (plus RQ1 readback, which the TRS MIDI IN
+# cannot carry), and ignores channel-voice CC; live CC control only works over
+# BLE/TRS. Storing the edit buffer to a slot (PATCH_WRITE 0x7F000104) is an
+# authoring/destructive action and is intentionally NOT modeled as a control.
+# Tempo can also follow MIDI clock (F8/FA/FB/FC), which is system-real-time (no
+# channel) and handled at the transport level, not as a control.

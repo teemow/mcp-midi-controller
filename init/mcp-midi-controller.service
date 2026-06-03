@@ -1,0 +1,23 @@
+[Unit]
+Description=mcp-midi-controller — MCP MIDI/OSC rig controller daemon (loopback)
+Documentation=https://github.com/teemow/mcp-midi-controller
+# BLE-MIDI talks to BlueZ over the system bus and OSC needs the network up.
+# Ordering a user unit against system targets is best-effort, so Restart= below
+# covers the case where BlueZ/network are not ready yet when this first starts.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Install the binary first:
+#   go install github.com/teemow/mcp-midi-controller/cmd/mcp-midi-controller@latest
+# (lands in $GOBIN, or $GOPATH/bin = ~/.go/bin here).
+ExecStart=%h/.go/bin/mcp-midi-controller
+Restart=on-failure
+RestartSec=2
+# The daemon binds loopback only (config.yaml listen_addr, default
+# 127.0.0.1:7799) and reads its rig-as-code from the XDG dirs, so no extra
+# environment is needed; stdout/stderr go to the journal.
+
+[Install]
+WantedBy=default.target
