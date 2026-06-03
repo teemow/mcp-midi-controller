@@ -2,17 +2,17 @@ package aum
 
 // This file provides a synthetic, minimal, fully-public AUM session graph used
 // as (a) the authoring-template seed for the Phase-3 build path and (b) the
-// shared fixture the read/edit tests exercise. It is built in code rather than
-// go:embed'd because the privacy rule (.cursor/rules/public-vs-private.mdc)
+// shared fixture the read/edit tests exercise. It is built in code (not
+// embedded via go:embed) because the privacy rule (.cursor/rules/public-vs-private.mdc)
 // forbids committing a real session — channel/plugin names, the plugin set and
 // the controller map are a private rig snapshot. The real 75-session corpus is
 // wired separately and privately through the AUM_CORPUS-gated fidelity harness
 // (corpus_test.go).
 //
 // When an anonymized real session can be carved (the corpus lives on the Mac,
-// reachable over SSH + brctl), this synthetic seed can be replaced by a
-// go:embed of that file for higher authoring fidelity; until then it is a
-// structurally-complete stand-in: an audio strip hosting one AUv3 node, a
+// reachable over SSH + brctl), this synthetic seed can be replaced by
+// embedding that file (via go:embed) for higher authoring fidelity; until then
+// it is a structurally-complete stand-in: an audio strip hosting one AUv3 node, a
 // master strip, a MIDI strip, a parallel nodeArchives chain, a midiCtrlState
 // tree of (placeholder) leaves in the version-13 specState encoding, and a
 // transport clock. It exercises every shape the readers and editors handle.
