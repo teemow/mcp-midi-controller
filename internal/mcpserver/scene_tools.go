@@ -246,7 +246,7 @@ func pushFootswitchScene(ctx context.Context, base, id string, body []byte) (int
 	if err != nil {
 		return 0, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return resp.StatusCode, string(rb), nil
 }

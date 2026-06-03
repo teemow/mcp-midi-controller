@@ -81,7 +81,7 @@ func (a *alsaDataPlane) Listen(ctx context.Context) (<-chan transport.Event, err
 
 func (a *alsaDataPlane) Close() error {
 	if a.in != nil {
-		a.in.Close()
+		_ = a.in.Close()
 	}
 	if a.out != nil {
 		return a.out.Close()

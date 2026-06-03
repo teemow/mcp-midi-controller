@@ -126,7 +126,7 @@ func (t *Transport) Close() error {
 	defer t.mu.Unlock()
 	for _, d := range t.devices {
 		if d.plane != nil {
-			d.plane.Close()
+			_ = d.plane.Close()
 			d.plane = nil
 		}
 	}
@@ -352,7 +352,7 @@ func (t *Transport) setPlane(endpointID string, path dbus.ObjectPath, name strin
 	defer t.mu.Unlock()
 	d := t.deviceLocked(strings.ToUpper(endpointID))
 	if d.plane != nil {
-		d.plane.Close()
+		_ = d.plane.Close()
 	}
 	d.path = path
 	if name != "" {

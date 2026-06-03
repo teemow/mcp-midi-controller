@@ -63,7 +63,7 @@ func main() {
 		if err := out.Open(); err != nil {
 			log.Fatalf("open out port %q: %v", *alsaPort, err)
 		}
-		defer out.Close()
+		defer func() { _ = out.Close() }()
 		status := byte(0xB0) | byte(*channel&0x0F)
 		for i := 0; i < *repeat; i++ {
 			msg := []byte{status, byte(ccNum), byte(*val)}

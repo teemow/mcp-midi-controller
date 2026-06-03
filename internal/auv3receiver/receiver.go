@@ -119,7 +119,7 @@ func handleProbe(outDir string, onStaged func(device.ProbeDump, Result)) http.Ha
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 
 		var dump device.ProbeDump
 		if err := json.NewDecoder(r.Body).Decode(&dump); err != nil {
@@ -186,7 +186,7 @@ func handleDiagnostics(outDir string) http.HandlerFunc {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 
 		var report device.ProbeReport
 		if err := json.NewDecoder(r.Body).Decode(&report); err != nil {

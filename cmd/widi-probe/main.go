@@ -183,7 +183,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("new transport: %v", err)
 	}
-	defer t.Close()
+	defer func() { _ = t.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

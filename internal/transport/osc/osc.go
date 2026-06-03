@@ -87,7 +87,7 @@ func (t *Transport) Connect(ctx context.Context, endpointID string) error {
 	}
 	t.mu.Lock()
 	if old := t.conns[endpointID]; old != nil {
-		old.Close()
+		_ = old.Close()
 	}
 	t.conns[endpointID] = conn
 	t.mu.Unlock()

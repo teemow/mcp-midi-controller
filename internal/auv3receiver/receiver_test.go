@@ -40,7 +40,7 @@ func TestHandlerStagesDumpAndNotifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -105,7 +105,7 @@ func TestHandlerPreservesRichMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -145,7 +145,7 @@ func TestHandlerRejectsBadInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Fatalf("status = %d, want 405", resp.StatusCode)
 		}
@@ -157,7 +157,7 @@ func TestHandlerRejectsBadInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("POST: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", resp.StatusCode)
 		}
@@ -168,7 +168,7 @@ func TestHandlerRejectsBadInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET healthz: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
 		}
@@ -187,7 +187,7 @@ func TestHandlerAcceptsEmptyParamDump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -221,7 +221,7 @@ func TestHandlerStoresDiagnosticsReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}

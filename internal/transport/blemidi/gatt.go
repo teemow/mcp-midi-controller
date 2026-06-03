@@ -103,7 +103,7 @@ func (g *gattDataPlane) Listen(ctx context.Context) (<-chan transport.Event, err
 		// Remove both the match rule (server-side) and the signal channel so a
 		// repeated Listen/Disconnect cycle does not leak match rules on the bus.
 		defer g.conn.RemoveSignal(sigCh)
-		defer g.conn.RemoveMatchSignal(matchOpts...)
+		defer func() { _ = g.conn.RemoveMatchSignal(matchOpts...) }()
 		// One decoder for the whole session so a SysEx spanning several
 		// notifications is reassembled across packets.
 		dec := &Decoder{}
@@ -136,7 +136,7 @@ func (g *gattDataPlane) Listen(ctx context.Context) (<-chan transport.Event, err
 func (g *gattDataPlane) Close() error {
 	g.wmu.Lock()
 	if g.w != nil {
-		g.w.Close()
+		_ = g.w.Close()
 		g.w = nil
 	}
 	g.wmu.Unlock()
