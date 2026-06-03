@@ -5,11 +5,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/teemow/mcp-midi-controller/internal/auv3receiver"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
@@ -36,12 +42,21 @@ func main() {
 		log.Fatalf("refusing non-loopback listen address %q (loopback only)", cfg.ListenAddr)
 	}
 
+	// A SIGINT/SIGTERM cancels this context, which propagates to the inbound
+	// listeners, the AUv3 receiver, and (via the goroutine below) the HTTP
+	// server for a graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	reg, err := device.LoadBundled()
 	if err != nil {
 		log.Fatalf("load bundled definitions: %v", err)
 	}
+	// A malformed user definition must not gate the daemon from starting: a bad
+	// file is logged and skipped inside LoadDir. Only a directory-level read
+	// error is surfaced here, and even then we serve the bundled set.
 	if err := reg.LoadDir(config.DevicesDir()); err != nil {
-		log.Fatalf("load user definitions: %v", err)
+		log.Printf("load user definitions: %v (serving bundled set)", err)
 	}
 
 	transports := []transport.Transport{
@@ -60,10 +75,12 @@ func main() {
 	}
 
 	// Restore the rig-as-code bindings so the daemon comes back up with the same
-	// logical devices (and their control_<logical> tools) it had before.
+	// logical devices (and their control_<logical> tools) it had before. A
+	// malformed bindings file must not stop the daemon: log it and start with
+	// no bindings (they can be re-created via the authoring tools).
 	bindings, err := engine.LoadBindingsFile(config.BindingsPath())
 	if err != nil {
-		log.Fatalf("load bindings: %v", err)
+		log.Printf("load bindings: %v (starting with no bindings)", err)
 	}
 	for _, b := range bindings {
 		if err := eng.Bind(b); err != nil {
@@ -73,6 +90,27 @@ func main() {
 
 	srv := mcpserver.New(eng, mcpserver.WithUSBAllowWrites(cfg.USBAllowWrites))
 
+	// Run the AUv3 probe receiver as a SEPARATE LAN listener (the loopback-only
+	// MCP endpoint above is unreachable from the iPad). It only stages dumps as
+	// JSON for the list/get/import_auv3_probe tools — no hardware surface. When
+	// a dump lands it notifies connected MCP clients so an agent sees the new
+	// plugin data arrive. Disabled when auv3_receiver_addr is "".
+	if cfg.AUv3ReceiverAddr != "" {
+		go func() {
+			err := auv3receiver.Serve(
+				ctx,
+				cfg.AUv3ReceiverAddr,
+				config.AUv3ProbesDir(),
+				func(dump device.ProbeDump, res auv3receiver.Result) {
+					srv.NotifyAUv3Probe(res.ID, dump.Name, res.Params, res.Writable)
+				},
+			)
+			if err != nil {
+				log.Printf("auv3 probe receiver: %v", err)
+			}
+		}()
+	}
+
 	// Begin listening for inbound MIDI on every bound endpoint so observed-state
 	// and the feedback tools work without an explicit learn_start. This runs in
 	// the background: connecting to BLE endpoints can block (or fail) when the
@@ -80,14 +118,39 @@ func main() {
 	// coming up. Endpoints that are not reachable now are retried on demand by
 	// verify/learn/probe.
 	go func() {
-		if err := eng.StartInboundForBindings(context.Background()); err != nil {
+		if err := eng.StartInboundForBindings(ctx); err != nil {
 			log.Printf("inbound listeners: %v", err)
 		}
 	}()
 
+	httpSrv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	// On signal, give in-flight MCP requests a brief grace period to drain,
+	// then close the listener so ListenAndServe returns.
+	go func() {
+		<-ctx.Done()
+		log.Printf("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
+	}()
+
 	log.Printf("mcp-midi-controller listening on http://%s (loopback)", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv.Handler()); err != nil {
+	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
+	}
+
+	// Tear down transports/listeners (disconnect BLE, stop pumps) once the
+	// server has stopped accepting requests.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := eng.Close(closeCtx); err != nil {
+		log.Printf("engine close: %v", err)
 	}
 }
 

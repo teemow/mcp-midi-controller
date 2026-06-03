@@ -36,9 +36,15 @@ func encodeMessage(addr string, args []any) ([]byte, error) {
 			tags = append(tags, 'i')
 			body = appendInt32(body, v)
 		case int:
+			if v < math.MinInt32 || v > math.MaxInt32 {
+				return nil, fmt.Errorf("osc: int arg %d of %d out of int32 range", i, v)
+			}
 			tags = append(tags, 'i')
 			body = appendInt32(body, int32(v))
 		case int64:
+			if v < math.MinInt32 || v > math.MaxInt32 {
+				return nil, fmt.Errorf("osc: int arg %d of %d out of int32 range", i, v)
+			}
 			tags = append(tags, 'i')
 			body = appendInt32(body, int32(v))
 		case float32:
@@ -158,7 +164,14 @@ func decodeMessage(b []byte) (decodedMessage, error) {
 			}
 			blob := append([]byte(nil), rest[:n]...)
 			m.args = append(m.args, blob)
-			rest = rest[pad4(n):]
+			// Advance past the padded blob, but never beyond the buffer: a
+			// blob that ends the packet without 4-byte padding makes pad4(n) >
+			// len(rest), which would panic on the slice.
+			adv := pad4(n)
+			if adv > len(rest) {
+				adv = len(rest)
+			}
+			rest = rest[adv:]
 		case 'T':
 			m.args = append(m.args, true)
 		case 'F':

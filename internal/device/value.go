@@ -42,9 +42,15 @@ type Resolved struct {
 // the value is validated against the spec. Non-object input is treated as the
 // value alone (e.g. a parametric program_change whose value is the program).
 func Resolve(c *Control, raw any) (Resolved, error) {
+	// The implicit range domain depends on the control: NRPN carries a 14-bit
+	// value (0..16383), every other MIDI control is the 7-bit CC domain.
+	rangeHi := 127
+	if c.Type == ControlNRPN {
+		rangeHi = 16383
+	}
 	if c.Parametric {
 		if m, ok := raw.(map[string]any); ok {
-			r, err := resolveValue(&c.Value, m["value"], "/value/value")
+			r, err := resolveValue(&c.Value, m["value"], "/value/value", rangeHi)
 			if err != nil {
 				return Resolved{}, err
 			}
@@ -59,10 +65,10 @@ func Resolve(c *Control, raw any) (Resolved, error) {
 			return r, nil
 		}
 	}
-	return resolveValue(&c.Value, raw, "/value")
+	return resolveValue(&c.Value, raw, "/value", rangeHi)
 }
 
-func resolveValue(spec *ValueSpec, raw any, ptr string) (Resolved, error) {
+func resolveValue(spec *ValueSpec, raw any, ptr string, rangeHi int) (Resolved, error) {
 	switch spec.Type {
 	case ValueEnum:
 		return resolveEnum(spec, raw, ptr)
@@ -73,8 +79,9 @@ func resolveValue(spec *ValueSpec, raw any, ptr string) (Resolved, error) {
 	case ValueString:
 		return resolveString(raw, ptr)
 	case ValueRange, "":
-		// range defaults to the CC 0..127 domain when bounds are omitted.
-		lo, hi := 0, 127
+		// range defaults to the control's wire domain when bounds are omitted
+		// (0..127 for CC, 0..16383 for NRPN).
+		lo, hi := 0, rangeHi
 		return resolveBoundedInt(spec, raw, ptr, ValueRange, &lo, &hi)
 	default:
 		return Resolved{}, &ValidationError{ptr, fmt.Sprintf("control has unknown value type %q", spec.Type)}
@@ -132,6 +139,11 @@ func resolveFloat(spec *ValueSpec, raw any, ptr string) (Resolved, error) {
 	f, err := toFloat(raw, ptr)
 	if err != nil {
 		return Resolved{}, err
+	}
+	// NaN/±Inf compare false against any bound, so they would slip past the
+	// range checks below and render to a garbage wire value. Reject them.
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return Resolved{}, &ValidationError{ptr, "must be a finite number"}
 	}
 	if spec.Min != nil && f < *spec.Min {
 		return Resolved{}, &ValidationError{ptr, floatBoundsMsg(spec)}
@@ -203,9 +215,23 @@ func toFloat(raw any, ptr string) (float64, error) {
 		return float64(v), nil
 	case int:
 		return float64(v), nil
-	case int64:
+	case int8:
+		return float64(v), nil
+	case int16:
 		return float64(v), nil
 	case int32:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case uint:
+		return float64(v), nil
+	case uint8:
+		return float64(v), nil
+	case uint16:
+		return float64(v), nil
+	case uint32:
+		return float64(v), nil
+	case uint64:
 		return float64(v), nil
 	case string:
 		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {

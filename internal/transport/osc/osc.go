@@ -183,7 +183,11 @@ func (t *Transport) xremoteLoop(ctx context.Context, conn *net.UDPConn) {
 	ticker := time.NewTicker(t.xremoteEvery)
 	defer ticker.Stop()
 	for {
-		_, _ = conn.Write(pkt)
+		// Stop promptly when the socket is closed (Disconnect) instead of
+		// spinning writes at a dead fd until ctx is cancelled.
+		if _, err := conn.Write(pkt); err != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return

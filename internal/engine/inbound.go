@@ -85,10 +85,12 @@ func (e *Engine) StartInbound(ctx context.Context, transportID, endpoint string)
 		cancel()
 		return nil
 	}
-	e.listening[key] = cancel
+	e.listenSeq++
+	gen := e.listenSeq
+	e.listening[key] = &inboundListener{cancel: cancel, gen: gen}
 	e.inboundMu.Unlock()
 
-	go e.pump(lctx, transportID, endpoint, key, ch)
+	go e.pump(lctx, transportID, endpoint, key, gen, ch)
 	return nil
 }
 
@@ -126,23 +128,24 @@ func (e *Engine) StopInbound(transportID, endpoint string) {
 	}
 	key := connKey{transportID, endpoint}
 	e.inboundMu.Lock()
-	cancel := e.listening[key]
+	l := e.listening[key]
 	delete(e.listening, key)
 	e.inboundMu.Unlock()
-	if cancel != nil {
-		cancel()
+	if l != nil {
+		l.cancel()
 	}
 }
 
 // pump consumes one endpoint's inbound stream: decode, reverse-map into
 // observed-state, append to the learn buffer, and fan out to subscribers and
 // the notification hook. It exits when the channel closes (ctx done).
-func (e *Engine) pump(ctx context.Context, transportID, endpoint string, key connKey, ch <-chan transport.Event) {
+func (e *Engine) pump(ctx context.Context, transportID, endpoint string, key connKey, gen uint64, ch <-chan transport.Event) {
 	defer func() {
 		e.inboundMu.Lock()
-		// Only clear if we are still the registered listener (avoid clobbering
-		// a restarted one).
-		if e.listening[key] != nil {
+		// Only clear if we are still the registered listener: a Stop+Start for
+		// the same endpoint registers a new generation that this old pump must
+		// not delete.
+		if l, ok := e.listening[key]; ok && l.gen == gen {
 			delete(e.listening, key)
 		}
 		e.inboundMu.Unlock()
@@ -174,19 +177,21 @@ func (e *Engine) handleInbound(transportID, endpoint string, ev transport.Event)
 	if len(e.recent) > recentCap {
 		e.recent = e.recent[len(e.recent)-recentCap:]
 	}
-	subs := make([]chan InboundEvent, 0, len(e.subscribers))
+	// Fan out to subscribers while holding inboundMu: subscribe()'s cancel
+	// closes the channel under the same lock, so sending here cannot race a
+	// close (which would panic). Sends are non-blocking, so the lock is not
+	// held for any meaningful time.
 	for _, c := range e.subscribers {
-		subs = append(subs, c)
-	}
-	hook := e.onInbound
-	e.inboundMu.Unlock()
-
-	for _, c := range subs {
 		select {
 		case c <- in:
 		default: // a slow subscriber must not block the pump
 		}
 	}
+	hook := e.onInbound
+	e.inboundMu.Unlock()
+
+	// The hook calls back into the MCP layer (notifications); keep it outside
+	// the lock to avoid lock-ordering surprises.
 	if hook != nil {
 		hook(in, obs)
 	}

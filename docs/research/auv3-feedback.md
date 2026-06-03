@@ -7,9 +7,22 @@ hosted in AUM**, so the per-plugin device definitions (`isem.yaml`,
 functionality** — the AUv3 counterpart to the BLE echo (`verify_control` /
 `probe_feedback`) and the USB readback (`docs/usb-tools.md`).
 
-This is a *design* note: unlike `widi.md` / `x32.md` it is **not yet verified
-live**. It records the constraints (two of which are confirmed from Apple's
-API and AUM's documented behaviour) and the options that follow from them.
+This is a *design* note. It records the constraints (two of which are confirmed
+from Apple's API and AUM's documented behaviour) and the options that follow
+from them.
+
+> **Status: option 1 is implemented and verified live.** The `auv3-probe` iPad
+> app exists at [github.com/teemow/auv3-probe](https://github.com/teemow/auv3-probe)
+> and has been run on-device: it enumerates installed AUv3s, dumps each
+> `AUParameterTree`, and POSTs the JSON to the daemon's **built-in probe
+> receiver** (`internal/auv3receiver`, a LAN listener separate from the
+> loopback MCP endpoint; config `auv3_receiver_addr`, default `:7800`), which
+> stages one `<ProbeID>.json` per plugin under the state dir. Agents read what's
+> available and configurable via `list_auv3_probes` / `get_auv3_probe` and
+> scaffold/verify definitions via `import_auv3_probe`. (`cmd/auv3-probe` still
+> ships the same receiver standalone, for running it apart from the daemon.)
+> The app can be built/signed/installed from Linux (no Mac) via xtool — see the
+> app repo's `docs/building-on-linux.md`.
 
 ## What "feedback" means in the existing transports
 
@@ -85,6 +98,47 @@ A small iOS app (any app may host installed AUv3s via
 4. ships it to the daemon — simplest first: write a JSON file synced off-device,
    or one-shot HTTP POST to the daemon's loopback when on the same LAN; a
    BLE-MIDI SysEx channel is possible but heavier.
+
+> **As built:** the app ([github.com/teemow/auv3-probe](https://github.com/teemow/auv3-probe))
+> POSTs each dump to the daemon's built-in probe receiver (binds the LAN on
+> `:7800`; the daemon's own MCP endpoint is loopback-only so the iPad cannot
+> reach it directly). When a dump lands the receiver notifies connected MCP
+> clients (`auv3-probe` logger) so an agent sees new plugin data arrive. One
+> gotcha worth recording: enumerating **third-party** AUv3s requires the host
+> app to carry the **Inter-App Audio** entitlement — without it
+> `AVAudioUnitComponentManager` returns only Apple's built-in Audio Units.
+> (Works with a free Apple ID.)
+>
+> **Robustness pass (2026-06):** probing *all* installed plugins surfaced two
+> spurious error classes that are now handled. (1) AU params commonly report
+> non-finite `min`/`max`/`value` (`±Inf`/`NaN`), which neither JSON nor Go's
+> `encoding/json` can encode — the app now clamps them to finite sentinels and
+> records the fact in a `nonFinite` field. (2) Plugins with an empty (or absent)
+> parameter tree are now **accepted and staged** (params=0 is valid diagnostic
+> data), not rejected with a 400. On top of the per-plugin dump the app POSTs a
+> per-run **diagnostics report** to `POST /auv3-probe/diagnostics` capturing
+> every outcome — including plugins that *fail to instantiate* and so never
+> produce a dump — which the receiver stores under `_diagnostics/<ts>.json`. The
+> dump itself was also enriched (human manufacturer name + version, factory
+> presets, short name, and per-param parameter-group, flag bitfield, and decoded
+> flags such as `displayLogarithmic`/`isHighResolution`). A later pass added more
+> AU metadata: unit-level `channelCapabilities` (mono/stereo/multi-out),
+> `latency`/`tailTime` (seconds), `supportsUserPresets`, factory **and user**
+> presets (`factoryPresets`/`userPresets`, name + number), and per-param
+> `dependentParameters` — the addresses a meta/macro control drives, so the
+> authoring side knows not to also map those derived params independently.
+>
+> **Why presets matter for scenes.** Both factory and user presets are
+> recallable by **Program Change** through AUM (PC → the plugin node's preset),
+> so their `number` is the handle an MCP scene uses to recall a named preset.
+> Capturing `userPresets` is therefore first-class scene material, not just
+> diagnostics: an agent can author "recall *my Lead patch*" by number. User
+> preset **names are installation-specific**, so a dump carrying them is only
+> ever staged in the gitignored state dir (`auv3-probes/`) and any derived
+> per-plugin definition lives in the user config dir — never committed. We do
+> **not** dump `fullState`: it is an opaque, plugin-defined blob applied via the
+> AU host API, not reachable over the MIDI/AUM control path, so it is not
+> actionable for scenes (presets, recalled by PC, are the right granularity).
 
 This **fully answers "are the definitions correct and do we cover the maximum
 functionality?"**:

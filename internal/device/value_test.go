@@ -2,11 +2,31 @@ package device
 
 import (
 	"errors"
+	"math"
 	"testing"
 )
 
 func f64(v float64) *float64 { return &v }
 func iptr(v int) *int        { return &v }
+
+func TestResolveFloatRejectsNonFinite(t *testing.T) {
+	c := &Control{Type: ControlCC, CC: iptr(17), Value: ValueSpec{Type: ValueFloat, Min: f64(0), Max: f64(1)}}
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, err := Resolve(c, v); err == nil {
+			t.Errorf("Resolve(%v): expected error for non-finite value", v)
+		}
+	}
+}
+
+func TestResolveNRPNDefaultRange(t *testing.T) {
+	c := &Control{Type: ControlNRPN, NRPN: iptr(5), Value: ValueSpec{Type: ValueRange}}
+	if _, err := Resolve(c, float64(16383)); err != nil {
+		t.Errorf("NRPN value 16383 should be in range: %v", err)
+	}
+	if _, err := Resolve(c, float64(16384)); err == nil {
+		t.Errorf("NRPN value 16384 should be out of range")
+	}
+}
 
 func TestResolveRange(t *testing.T) {
 	c := &Control{Type: ControlCC, CC: iptr(17), Value: ValueSpec{Type: ValueRange, Min: f64(0), Max: f64(127)}}

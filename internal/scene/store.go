@@ -19,12 +19,24 @@ type Store struct {
 // NewStore returns a scene store backed by dir (created on first save).
 func NewStore(dir string) *Store { return &Store{dir: dir} }
 
-func (s *Store) path(name string) string {
-	return filepath.Join(s.dir, sanitize(name)+".yaml")
+// path maps a scene name to its file path. sanitize() already collapses path
+// separators and dots to "_", so traversal is not possible; the remaining risk
+// is a name that sanitizes to nothing (empty/punctuation-only), which would
+// produce a hidden ".yaml" file — reject it.
+func (s *Store) path(name string) (string, error) {
+	clean := sanitize(name)
+	if strings.Trim(clean, "_") == "" {
+		return "", fmt.Errorf("scene name %q has no usable characters", name)
+	}
+	return filepath.Join(s.dir, clean+".yaml"), nil
 }
 
 // Save writes a scene to disk.
 func (s *Store) Save(sc *Scene) error {
+	p, err := s.path(sc.Name)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
@@ -32,12 +44,16 @@ func (s *Store) Save(sc *Scene) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(sc.Name), b, 0o644)
+	return os.WriteFile(p, b, 0o644)
 }
 
 // Load reads a scene by name.
 func (s *Store) Load(name string) (*Scene, error) {
-	b, err := os.ReadFile(s.path(name))
+	p, err := s.path(name)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}

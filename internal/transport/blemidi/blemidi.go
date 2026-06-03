@@ -230,7 +230,13 @@ func (t *Transport) Connect(ctx context.Context, endpointID string) error {
 	if err != nil {
 		return err
 	}
-	plane, err = newGATTDataPlane(ctx, t.conn, charPath)
+	t.mu.Lock()
+	conn := t.conn
+	t.mu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("blemidi: bus connection closed")
+	}
+	plane, err = newGATTDataPlane(ctx, conn, charPath)
 	if err != nil {
 		return fmt.Errorf("blemidi: GATT data plane (a PipeWire host needs the bluetooth.midi WirePlumber rule disabled): %w", err)
 	}

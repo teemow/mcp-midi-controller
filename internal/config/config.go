@@ -23,11 +23,19 @@ type Config struct {
 	// a USB binding must additionally opt in with writable: true before its write
 	// tools are exposed (see engine.Binding.Writable and docs/usb-tools.md).
 	USBAllowWrites bool `yaml:"usb_allow_writes"`
+
+	// AUv3ReceiverAddr is the LAN bind address for the AUv3 probe receiver — the
+	// off-MCP listener that ingests parameter-tree dumps from the auv3-probe
+	// iPad app (github.com/teemow/auv3-probe). Unlike ListenAddr this is meant
+	// to be LAN-reachable (the iPad cannot reach loopback). It has a write-only
+	// surface (stage a dump as JSON; never touch hardware). Default ":7800";
+	// set to "" to disable the in-daemon receiver entirely.
+	AUv3ReceiverAddr string `yaml:"auv3_receiver_addr"`
 }
 
 // Default returns the default config.
 func Default() Config {
-	return Config{ListenAddr: "127.0.0.1:7799"}
+	return Config{ListenAddr: "127.0.0.1:7799", AUv3ReceiverAddr: ":7800"}
 }
 
 // ConfigDir returns $XDG_CONFIG_HOME/mcp-midi-controller (rig-as-code).

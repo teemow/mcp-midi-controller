@@ -147,6 +147,58 @@ func TestFrameDecodeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDecoderMultiPacketSysEx(t *testing.T) {
+	// A SysEx split across three packets: open (F0 + data, no terminator),
+	// continuation (raw data), final (data + timestamp + F7).
+	hdr := byte(0x80)
+	ts := byte(0x80)
+	p1 := []byte{hdr, ts, 0xF0, 0x7D, 0x01}
+	p2 := []byte{hdr, 0x02, 0x03}
+	p3 := []byte{hdr, 0x04, ts, 0xF7}
+
+	dec := &Decoder{}
+	var got [][]byte
+	got = append(got, dec.Decode(p1)...)
+	got = append(got, dec.Decode(p2)...)
+	got = append(got, dec.Decode(p3)...)
+
+	want := [][]byte{{0xF0, 0x7D, 0x01, 0x02, 0x03, 0x04, 0xF7}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("multi-packet sysex = %v, want %v", got, want)
+	}
+}
+
+func TestFrameMessageMTUChunksSysEx(t *testing.T) {
+	// A SysEx longer than the MTU must split into several packets that, when
+	// decoded by a single stateful Decoder, reassemble to the original message.
+	body := make([]byte, 0, 40)
+	for i := 0; i < 40; i++ {
+		body = append(body, byte(i))
+	}
+	midi := append(append([]byte{0xF0}, body...), 0xF7)
+
+	const mtu = 12
+	packets := FrameMessageMTU(midi, mtu)
+	if len(packets) < 2 {
+		t.Fatalf("expected the long sysex to be chunked, got %d packet(s)", len(packets))
+	}
+	for i, p := range packets {
+		if len(p) > mtu {
+			t.Fatalf("packet %d len %d exceeds mtu %d", i, len(p), mtu)
+		}
+	}
+
+	dec := &Decoder{}
+	var got [][]byte
+	for _, p := range packets {
+		got = append(got, dec.Decode(p)...)
+	}
+	want := [][]byte{midi}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reassembled = %v, want %v", got, want)
+	}
+}
+
 func TestChannelOf(t *testing.T) {
 	tests := []struct {
 		midi   []byte

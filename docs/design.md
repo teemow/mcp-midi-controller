@@ -175,7 +175,9 @@ be bound on different channels.
 Bundled definitions ship inside the binary via `go:embed` (source of truth:
 `internal/device/definitions/*.yaml`). User definitions in
 `$XDG_CONFIG_HOME/mcp-midi-controller/devices/*.yaml` **override bundled ones by
-filename** and add new ones.
+definition `id`** (not by filename — the loader keys the registry on the `id:`
+field, so a user file with a bundled id replaces it whatever the file is named)
+and add new ones.
 
 #### `generic-midi` fallback
 
@@ -222,6 +224,12 @@ Global tools:
 
 - `list_devices` — bound logical devices + their definitions.
 - `describe_device` — controls, types, ranges/enums for one device.
+- `list_bindings` / `list_definitions` / `get_definition` — machine-readable
+  rig-reasoning views: the bindings (logical→device/endpoint/channel/transport),
+  every loaded definition (bundled + user dir, bound or not), and one
+  definition's full control detail. These plus `list_devices`, `describe_device`
+  and `read_state` emit `structuredContent` (JSON) alongside the human text so
+  the web client / agents get structured data, not just prose.
 - `bind_device` / `unbind_device` — manage bindings (→ `list_changed`).
 - `discover_endpoints` / `pair_endpoint` — BLE discovery + pairing.
 - `save_scene` / `recall_scene` / `list_scenes`.
@@ -311,7 +319,7 @@ control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
 ```
 $XDG_CONFIG_HOME/mcp-midi-controller/     # rig-as-code — git init here
   config.yaml                             #   daemon listen addr, defaults
-  devices/*.yaml                          #   custom/learned definitions (override bundled by name)
+  devices/*.yaml                          #   custom/learned definitions (override bundled by definition id)
   bindings.yaml                           #   endpoints+channels → devices
   scenes/*.yaml                           #   saved scenes
 $XDG_STATE_HOME/mcp-midi-controller/      # volatile — not versioned
@@ -340,7 +348,29 @@ Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binar
 8. **AUv3 feedback (`auv3-probe`)** — an off-daemon iPad utility that dumps each
    plugin's `AUParameterTree` to verify the plugin definitions are correct and
    cover the maximum functionality (AUM doesn't echo MIDI, so this replaces the
-   BLE echo for plugins). Design: `docs/research/auv3-feedback.md`.
+   BLE echo for plugins). Design: `docs/research/auv3-feedback.md`. Implemented:
+   the iPad app lives in its own repo
+   ([github.com/teemow/auv3-probe](https://github.com/teemow/auv3-probe)) and
+POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
+  separate from the loopback MCP endpoint, `internal/auv3receiver`, config
+  `auv3_receiver_addr`, default `:7800`). Staged dumps are exposed to agents
+  via `list_auv3_probes` / `get_auv3_probe` and turned into definitions via
+  `import_auv3_probe`. The standalone `cmd/auv3-probe` still exists for running
+  the receiver apart from the daemon. The receiver also accepts a per-run
+  **diagnostics report** (`POST /auv3-probe/diagnostics`, stored under
+  `_diagnostics/`) recording every probe outcome — including plugins that fail
+  to instantiate and so produce no dump — and **stages empty-parameter dumps**
+  rather than rejecting them (a plugin with no AUM-mappable params is valid
+  diagnostic data). Dumps carry richer per-param metadata (parameter-group,
+  flag bitfield/decoded flags, and `dependentParameters` so meta/macro controls
+  are recognised — the draft builder and AUM cheat-sheet flag a macro so its
+  derived params are not separately mapped) plus unit-level metadata (factory
+  **and user** presets with their numbers — recallable by Program Change so an
+  agent can build preset-recall scenes — human manufacturer/version, channel
+  capabilities, latency/tail time); non-finite AU values are clamped to finite
+  sentinels for transport. User-preset names are installation-specific, so they
+  only ever live in the gitignored state dir / user config — never in committed
+  artifacts.
 
 All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
 remaining work is **YAML definitions + MIDI-learn**, not core code.

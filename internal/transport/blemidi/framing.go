@@ -38,23 +38,106 @@ func frameMessageAt(midi []byte, ts uint16) []byte {
 	return out
 }
 
+// FrameMessageMTU frames a MIDI message into one or more BLE-MIDI packets, each
+// at most mtu bytes. Channel-voice / system messages always fit in a single
+// packet; a long SysEx is split across continuation packets per the BLE-MIDI
+// spec (the first packet opens with 0xF0, intermediate packets carry raw data
+// after the header byte, and the final packet ends with a timestamp + 0xF7). An
+// mtu < minSysExPacket is treated as "no limit" and yields one packet.
+func FrameMessageMTU(midi []byte, mtu int) [][]byte {
+	ts := timestamp13()
+	full := frameMessageAt(midi, ts)
+	// minSysExPacket = header + timestamp + F0 + 1 data byte; below this we
+	// cannot make progress, so fall back to a single (best-effort) packet.
+	const minSysExPacket = 4
+	if mtu < minSysExPacket || len(full) <= mtu {
+		return [][]byte{full}
+	}
+	// Only a SysEx can be meaningfully chunked; anything else over the MTU is
+	// emitted whole (it is at most a few bytes, so this should not happen).
+	if len(midi) < 2 || midi[0] != 0xF0 || midi[len(midi)-1] != 0xF7 {
+		return [][]byte{full}
+	}
+	return chunkSysEx(midi, ts, mtu)
+}
+
+// chunkSysEx splits a complete F0..F7 SysEx into MTU-bounded BLE-MIDI packets.
+func chunkSysEx(midi []byte, ts uint16, mtu int) [][]byte {
+	ts &= 0x1FFF
+	header := byte(0x80) | byte(ts>>7)
+	tsLow := byte(0x80) | byte(ts&0x7F)
+
+	body := midi[1 : len(midi)-1] // data bytes between F0 and F7
+	var packets [][]byte
+
+	// First packet: header + timestamp + F0 + as much data as fits.
+	first := []byte{header, tsLow, 0xF0}
+	take := mtu - len(first)
+	if take > len(body) {
+		take = len(body)
+	}
+	first = append(first, body[:take]...)
+	packets = append(packets, first)
+	body = body[take:]
+
+	// Continuation packets: header + data. The packet that can also hold the
+	// terminator (timestamp + F7) closes the SysEx.
+	for len(body) > 0 {
+		pkt := []byte{header}
+		room := mtu - 1
+		if len(body)+2 <= room { // data + ts + F7 all fit: final packet
+			pkt = append(pkt, body...)
+			pkt = append(pkt, tsLow, 0xF7)
+			return append(packets, pkt)
+		}
+		take := room
+		if take > len(body) {
+			take = len(body)
+		}
+		pkt = append(pkt, body[:take]...)
+		packets = append(packets, pkt)
+		body = body[take:]
+	}
+	// All data was sent but the terminator did not fit alongside it: emit it in
+	// its own final packet.
+	return append(packets, []byte{header, tsLow, 0xF7})
+}
+
 // timestamp13 returns the low 13 bits of the current Unix millisecond clock.
 func timestamp13() uint16 {
 	return uint16(time.Now().UnixMilli()) & 0x1FFF
 }
 
-// DecodePacket strips BLE-MIDI timestamp framing from one received packet and
-// returns the MIDI messages it carries. Each result is a complete message:
-// status byte + data bytes, a single-byte system real-time message, or a full
-// 0xF0..0xF7 SysEx blob. Running status, system real-time and SysEx are
-// handled; a truncated trailing message is dropped.
-func DecodePacket(p []byte) [][]byte {
+// Decoder decodes a stream of BLE-MIDI packets, carrying state (running status
+// and an in-progress SysEx) across packet boundaries. A SysEx blob frequently
+// spans several characteristic notifications: the first packet opens it with
+// 0xF0 and no terminator, continuation packets carry raw data bytes (after the
+// mandatory header byte), and the final packet ends with a timestamp + 0xF7.
+// Use one Decoder per Listen session; the stateless DecodePacket is for
+// self-contained single packets (and tests).
+type Decoder struct {
+	running byte   // last channel-voice status (for running status)
+	sysex   []byte // accumulating SysEx blob (non-nil while inSysex)
+	inSysex bool   // true between an opening 0xF0 and its 0xF7 terminator
+}
+
+// Decode strips BLE-MIDI timestamp framing from one received packet and returns
+// the complete MIDI messages it yields. A SysEx that does not terminate in this
+// packet is buffered and continued on the next Decode call. A truncated
+// non-SysEx trailing message is dropped.
+func (d *Decoder) Decode(p []byte) [][]byte {
 	if len(p) < 2 {
 		return nil
 	}
 	var msgs [][]byte
-	var running byte // last channel-voice status (for running status)
-	i := 1           // skip the header byte
+	i := 1 // skip the header byte
+
+	// A SysEx opened in a previous packet continues right after the header:
+	// the continuation bytes are raw SysEx data (no timestamp/status prefix).
+	if d.inSysex {
+		i = d.consumeSysex(p, i, &msgs)
+	}
+
 	for i < len(p) {
 		// A timestamp byte (high bit set) precedes every status byte and every
 		// running-status message. Consume it when present.
@@ -70,30 +153,16 @@ func DecodePacket(p []byte) [][]byte {
 			status = p[i]
 			i++
 		} else {
-			status = running // running status: reuse the previous status
+			status = d.running // running status: reuse the previous status
 		}
 		if status == 0 {
 			break // data byte with no established running status
 		}
 
 		if status == 0xF0 { // SysEx: collect data until the 0xF7 terminator
-			msg := []byte{0xF0}
-			for i < len(p) {
-				b := p[i]
-				if b == 0xF7 {
-					msg = append(msg, b)
-					i++
-					break
-				}
-				if b&0x80 != 0 { // timestamp byte preceding the terminator
-					i++
-					continue
-				}
-				msg = append(msg, b)
-				i++
-			}
-			msgs = append(msgs, msg)
-			running = 0
+			d.inSysex = true
+			d.sysex = []byte{0xF0}
+			i = d.consumeSysex(p, i, &msgs)
 			continue
 		}
 
@@ -108,12 +177,50 @@ func DecodePacket(p []byte) [][]byte {
 		i += n
 
 		if status < 0xF0 {
-			running = status // running status applies only to channel-voice
-		} else {
-			running = 0
+			d.running = status // running status applies only to channel-voice
+		} else if status < 0xF8 {
+			d.running = 0 // system common cancels running status…
 		}
+		// …but system real-time (>= 0xF8) may be interleaved anywhere and does
+		// NOT cancel running status, so leave running untouched for those.
 	}
 	return msgs
+}
+
+// consumeSysex appends SysEx data bytes from p[i:] onto the in-progress blob,
+// terminating it at the 0xF7 (which is preceded by a timestamp byte). It
+// returns the index just past the bytes it consumed. If the packet ends before
+// the terminator the blob stays open (inSysex remains true) so the next Decode
+// continues it. Mirroring the single-packet rule, any other high-bit byte
+// inside the blob is treated as a timestamp byte and skipped.
+func (d *Decoder) consumeSysex(p []byte, i int, msgs *[][]byte) int {
+	for i < len(p) {
+		b := p[i]
+		if b == 0xF7 {
+			d.sysex = append(d.sysex, b)
+			i++
+			*msgs = append(*msgs, d.sysex)
+			d.sysex = nil
+			d.inSysex = false
+			d.running = 0
+			return i
+		}
+		if b&0x80 != 0 { // timestamp byte preceding the terminator
+			i++
+			continue
+		}
+		d.sysex = append(d.sysex, b)
+		i++
+	}
+	return i
+}
+
+// DecodePacket decodes a single self-contained BLE-MIDI packet. It is the
+// stateless form of Decoder.Decode: an unterminated SysEx in the packet is
+// dropped rather than buffered (use a Decoder to reassemble across packets).
+func DecodePacket(p []byte) [][]byte {
+	d := &Decoder{}
+	return d.Decode(p)
 }
 
 // dataLen returns the number of data bytes that follow a given MIDI status

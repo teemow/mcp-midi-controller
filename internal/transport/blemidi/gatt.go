@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/teemow/mcp-midi-controller/internal/transport"
@@ -22,8 +23,11 @@ type gattDataPlane struct {
 	conn     *dbus.Conn
 	charPath dbus.ObjectPath
 	char     dbus.BusObject
-	w        *os.File
 	mtu      uint16
+
+	// wmu guards w: Send writes to it concurrently with Close clearing it.
+	wmu sync.Mutex
+	w   *os.File
 }
 
 // newGATTDataPlane enables notifications and acquires a write fd on the
@@ -59,11 +63,23 @@ func newGATTDataPlane(ctx context.Context, conn *dbus.Conn, charPath dbus.Object
 }
 
 func (g *gattDataPlane) Send(midi []byte) error {
+	g.wmu.Lock()
+	defer g.wmu.Unlock()
 	if g.w == nil {
 		return fmt.Errorf("blemidi: GATT write fd closed")
 	}
-	if _, err := g.w.Write(FrameMessage(midi)); err != nil {
-		return fmt.Errorf("blemidi: GATT write: %w", err)
+	// Reserve the 3-byte ATT write header from the negotiated MTU to get the
+	// usable characteristic payload; 0 (some BlueZ versions) means "unknown",
+	// treated as no limit. Frame and write under the lock so a concurrent Close
+	// cannot close the fd out from under the write.
+	usable := 0
+	if g.mtu > 3 {
+		usable = int(g.mtu) - 3
+	}
+	for _, pkt := range FrameMessageMTU(midi, usable) {
+		if _, err := g.w.Write(pkt); err != nil {
+			return fmt.Errorf("blemidi: GATT write: %w", err)
+		}
 	}
 	return nil
 }
@@ -71,11 +87,12 @@ func (g *gattDataPlane) Send(midi []byte) error {
 func (g *gattDataPlane) Listen(ctx context.Context) (<-chan transport.Event, error) {
 	sigCh := make(chan *dbus.Signal, 64)
 	g.conn.Signal(sigCh)
-	if err := g.conn.AddMatchSignal(
+	matchOpts := []dbus.MatchOption{
 		dbus.WithMatchObjectPath(g.charPath),
 		dbus.WithMatchInterface(propsIface),
 		dbus.WithMatchMember("PropertiesChanged"),
-	); err != nil {
+	}
+	if err := g.conn.AddMatchSignal(matchOpts...); err != nil {
 		g.conn.RemoveSignal(sigCh)
 		return nil, fmt.Errorf("blemidi: watch PropertiesChanged: %w", err)
 	}
@@ -83,7 +100,13 @@ func (g *gattDataPlane) Listen(ctx context.Context) (<-chan transport.Event, err
 	out := make(chan transport.Event, 64)
 	go func() {
 		defer close(out)
+		// Remove both the match rule (server-side) and the signal channel so a
+		// repeated Listen/Disconnect cycle does not leak match rules on the bus.
 		defer g.conn.RemoveSignal(sigCh)
+		defer g.conn.RemoveMatchSignal(matchOpts...)
+		// One decoder for the whole session so a SysEx spanning several
+		// notifications is reassembled across packets.
+		dec := &Decoder{}
 		for {
 			select {
 			case <-ctx.Done():
@@ -93,7 +116,7 @@ func (g *gattDataPlane) Listen(ctx context.Context) (<-chan transport.Event, err
 				if !ok {
 					continue
 				}
-				for _, m := range DecodePacket(raw) {
+				for _, m := range dec.Decode(raw) {
 					ev := transport.Event{Kind: transport.MIDIEvent, Data: m}
 					if ch, ok := channelOf(m); ok {
 						ev.Channel = ch
@@ -111,10 +134,12 @@ func (g *gattDataPlane) Listen(ctx context.Context) (<-chan transport.Event, err
 }
 
 func (g *gattDataPlane) Close() error {
+	g.wmu.Lock()
 	if g.w != nil {
 		g.w.Close()
 		g.w = nil
 	}
+	g.wmu.Unlock()
 	if g.char != nil {
 		g.char.Call(gattCharIface+".StopNotify", 0)
 	}

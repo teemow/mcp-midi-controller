@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -229,11 +230,13 @@ func normalizeTriggerType(t string) (string, error) {
 
 // pushFootswitchScene POSTs the compiled scene JSON to <base>/scenes?id=<id>.
 func pushFootswitchScene(ctx context.Context, base, id string, body []byte) (int, string, error) {
-	url := strings.TrimRight(base, "/") + "/scenes?id=" + id
+	// Escape the id into the query so an id with spaces/&/= cannot corrupt the
+	// URL or inject extra query parameters.
+	reqURL := strings.TrimRight(base, "/") + "/scenes?id=" + url.QueryEscape(id)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, "", err
 	}

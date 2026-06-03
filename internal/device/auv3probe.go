@@ -16,14 +16,31 @@ import (
 // ProbeComponent identifies the AudioUnit component the dump came from. The
 // fields mirror AudioComponentDescription (type/subtype/manufacturer are FourCC
 // codes rendered as strings, e.g. "aumu"/"aufx").
+//
+// ManufacturerName and Version are richer, human-readable metadata the iPad app
+// reads from AVAudioUnitComponent (they are optional so older dumps without them
+// still decode).
 type ProbeComponent struct {
-	Type         string `json:"type"`
-	Subtype      string `json:"subtype"`
-	Manufacturer string `json:"manufacturer"`
+	Type             string `json:"type"`
+	Subtype          string `json:"subtype"`
+	Manufacturer     string `json:"manufacturer"`
+	ManufacturerName string `json:"manufacturerName,omitempty"`
+	Version          string `json:"version,omitempty"`
 }
 
 // ProbeParam is one AUParameter as read from auAudioUnit.parameterTree. The
 // JSON tags match the dump shape documented in docs/research/auv3-feedback.md.
+//
+// The Min/Max/Value fields are always finite: the iPad app sanitizes the AU's
+// non-finite values (±Inf, NaN — common for unbounded gain/log-scaled params)
+// to finite sentinels before encoding, because neither JSON nor Go's
+// encoding/json can represent them. NonFinite records that this happened so the
+// real bound is not silently mistaken for a literal value.
+//
+// Flags is the raw AUParameter flag bitfield; the decoded booleans below
+// surface the ones useful for authoring (e.g. logarithmic display, high-res).
+// Group is the displayName of the parameter's parent AUParameterGroup, so the
+// (flattened) tree's hierarchy is not lost. All of these are optional.
 type ProbeParam struct {
 	Address      uint64   `json:"address"`
 	KeyPath      string   `json:"keyPath"`
@@ -37,13 +54,66 @@ type ProbeParam struct {
 	ValueStrings []string `json:"valueStrings"`
 	Writable     bool     `json:"writable"`
 	Readable     bool     `json:"readable"`
+
+	// Optional richer metadata (added 2026-06; absent in older dumps).
+	Group              string `json:"group,omitempty"`
+	Flags              uint32 `json:"flags,omitempty"`
+	DisplayLogarithmic bool   `json:"displayLogarithmic,omitempty"`
+	DisplayExponential bool   `json:"displayExponential,omitempty"`
+	IsHighResolution   bool   `json:"isHighResolution,omitempty"`
+	IsRampable         bool   `json:"isRampable,omitempty"`
+	IsMeta             bool   `json:"isMeta,omitempty"`
+	// DependentParameters lists the addresses of parameters whose value is
+	// derived from this one (AUParameter.dependentParameters). A non-empty list
+	// marks this as a meta/macro control: changing it moves the listed params,
+	// so the authoring side knows not to also map them independently.
+	DependentParameters []uint64 `json:"dependentParameters,omitempty"`
+	// NonFinite is set when the AU reported a non-finite min/max/value that was
+	// clamped to a finite sentinel for transport (e.g. "max=+inf").
+	NonFinite string `json:"nonFinite,omitempty"`
 }
 
-// ProbeDump is the full parameter-tree dump for one plugin.
+// ProbePreset is one preset exposed by the AudioUnit (name + number). Factory
+// presets carry numbers >= 0; user presets carry negative numbers (the AU
+// convention). The number is what a Program Change recalls when AUM maps PC to
+// the plugin node's preset, so it is the handle a scene uses to recall a preset
+// by name.
+type ProbePreset struct {
+	Number int    `json:"number"`
+	Name   string `json:"name"`
+}
+
+// ProbeDump is the full parameter-tree dump for one plugin. The fields after
+// Parameters are optional richer metadata (added 2026-06) and decode to their
+// zero value for older dumps that predate them.
 type ProbeDump struct {
 	Component  ProbeComponent `json:"component"`
 	Name       string         `json:"name"`
 	Parameters []ProbeParam   `json:"parameters"`
+
+	ShortName      string        `json:"shortName,omitempty"`
+	FactoryPresets []ProbePreset `json:"factoryPresets,omitempty"`
+	// UserPresets are the user-saved presets (auAudioUnit.userPresets). Like
+	// factory presets they are recallable by Program Change through AUM, so they
+	// are first-class scene material (an agent can recall "my Lead patch" by its
+	// number). Their names are installation-specific, so they only ever live in
+	// the gitignored state dir / user config — never in committed artifacts.
+	UserPresets []ProbePreset `json:"userPresets,omitempty"`
+
+	// ChannelCapabilities mirrors auAudioUnit.channelCapabilities: a flat list
+	// of [in, out] count pairs the unit supports, where -1 means "any". It tells
+	// the authoring side whether a plugin is mono/stereo/multi-out.
+	ChannelCapabilities []int `json:"channelCapabilities,omitempty"`
+	// Latency / TailTime are auAudioUnit.latency / .tailTime in seconds. Latency
+	// is the processing delay (relevant for the open-loop control posture);
+	// TailTime is how long the unit keeps producing output after input stops
+	// (reverbs/delays). Optional; 0 (the common case) is omitted.
+	Latency  float64 `json:"latency,omitempty"`
+	TailTime float64 `json:"tailTime,omitempty"`
+	// SupportsUserPresets is auAudioUnit.supportsUserPresets — whether the unit
+	// can persist user presets. We deliberately do NOT dump userPresets contents
+	// (names are user/installation state; see public-vs-private rule).
+	SupportsUserPresets bool `json:"supportsUserPresets,omitempty"`
 }
 
 // ProbeID derives the sanitized definition/file id for a dump (from the
@@ -112,6 +182,17 @@ type ProbeBuildReport struct {
 	// SkippedReadOnly lists params that are not writable; AUM can only map
 	// writable params, so these get no control.
 	SkippedReadOnly []ProbeParam
+	// MacroControls names the generated controls whose param is a meta/macro
+	// (has dependentParameters): mapping the macro's CC moves several other
+	// params, so a human/agent should map the macro and not separately fight its
+	// derived params.
+	MacroControls []string
+	// DerivedSkipped lists writable params that are driven by a macro/meta
+	// param (their address appears in another param's dependentParameters) and
+	// are not themselves a macro. They get no independent CC because the macro
+	// moves them; they are reported (not silently dropped) so a human can
+	// curate any they still want mapped directly.
+	DerivedSkipped []ProbeParam
 }
 
 // DefinitionFromProbe builds a device.Definition draft from a parameter-tree
@@ -142,11 +223,27 @@ func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeB
 		Transport:    "blemidi",
 	}
 
+	// A macro/meta param drives the params it lists in dependentParameters.
+	// Pre-compute that driven set so each derived param is skipped (the macro's
+	// CC already moves it) rather than consuming its own convention CC.
+	derived := map[uint64]bool{}
+	for _, p := range dump.Parameters {
+		for _, a := range p.DependentParameters {
+			derived[a] = true
+		}
+	}
+
 	usedNames := map[string]bool{}
 	nextCC := opts.StartCC
 	for _, p := range dump.Parameters {
 		if !p.Writable {
 			report.SkippedReadOnly = append(report.SkippedReadOnly, p)
+			continue
+		}
+		// Skip params driven by a macro (but keep a param that is itself a
+		// macro, even if some macro also drives it).
+		if derived[p.Address] && len(p.DependentParameters) == 0 {
+			report.DerivedSkipped = append(report.DerivedSkipped, p)
 			continue
 		}
 		if nextCC > opts.MaxCC {
@@ -166,6 +263,9 @@ func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeB
 			c.Value = ValueSpec{Type: ValueEnum, Values: enumValues(p.ValueStrings)}
 		} else {
 			c.Value = ValueSpec{Type: ValueRange}
+		}
+		if len(p.DependentParameters) > 0 {
+			report.MacroControls = append(report.MacroControls, c.Name)
 		}
 		def.Controls = append(def.Controls, c)
 	}
@@ -194,6 +294,9 @@ func probeParamDescription(p ProbeParam) string {
 	}
 	if len(p.ValueStrings) > 0 {
 		meta = append(meta, "values="+strings.Join(p.ValueStrings, "|"))
+	}
+	if n := len(p.DependentParameters); n > 0 {
+		meta = append(meta, fmt.Sprintf("macro=drives:%d", n))
 	}
 	parts = append(parts, "[AU "+strings.Join(meta, " ")+"]")
 	return strings.Join(parts, " ")
@@ -394,4 +497,61 @@ func firstNonEmpty(ss ...string) string {
 		}
 	}
 	return ""
+}
+
+// --- Diagnostics ---------------------------------------------------------
+//
+// A probe run on the iPad does more than produce dumps: some plugins fail to
+// instantiate, some have no parameter tree, some have an empty one, and some
+// had non-finite values sanitized. The successful dumps go to /auv3-probe; the
+// full picture of a run — including the failures, which never produce a dump —
+// is POSTed to /auv3-probe/diagnostics as a ProbeReport so every outcome is
+// recorded on the receiver, not just lost in the app UI.
+
+// ProbeRunDevice is the (non-identifying) device context for a probe run. It
+// deliberately omits the device's user-assigned name to keep the report free of
+// personal/identifying detail (see .cursor/rules/public-vs-private.mdc).
+type ProbeRunDevice struct {
+	Model         string `json:"model,omitempty"`
+	SystemName    string `json:"systemName,omitempty"`
+	SystemVersion string `json:"systemVersion,omitempty"`
+}
+
+// ProbeRunResult is the outcome for one plugin in a probe run. Status is one of
+// "sent" (dump POSTed ok), "probed" (probed but not sent — no receiver),
+// "empty" (no AUM-mappable parameters), or "failed" (Error explains why).
+type ProbeRunResult struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Component ProbeComponent `json:"component"`
+	Status    string         `json:"status"`
+	Error     string         `json:"error,omitempty"`
+	Params    int            `json:"params"`
+	Writable  int            `json:"writable"`
+	Sanitized int            `json:"sanitized,omitempty"`
+}
+
+// ProbeReport is the full diagnostic record of one probe run, POSTed to the
+// receiver's /auv3-probe/diagnostics endpoint.
+type ProbeReport struct {
+	App       string           `json:"app,omitempty"`
+	StartedAt string           `json:"startedAt,omitempty"`
+	Device    ProbeRunDevice   `json:"device,omitempty"`
+	Results   []ProbeRunResult `json:"results"`
+}
+
+// Summary tallies the run's outcomes by status for a one-line log/return.
+func (r ProbeReport) Summary() (total, sent, empty, failed int) {
+	total = len(r.Results)
+	for _, res := range r.Results {
+		switch res.Status {
+		case "sent":
+			sent++
+		case "empty":
+			empty++
+		case "failed":
+			failed++
+		}
+	}
+	return total, sent, empty, failed
 }

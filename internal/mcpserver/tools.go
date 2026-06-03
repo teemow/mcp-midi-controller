@@ -91,6 +91,10 @@ func (s *Server) registerGlobalTools() {
 		InputSchema: objSchema,
 	}, s.handleLearnCapture)
 
+	// Rig-reasoning read tools (list_bindings / list_definitions /
+	// get_definition) — the machine-readable companions to list_devices /
+	// describe_device — are wired in registerRigTools.
+	s.registerRigTools()
 	// Generic USB editor/readback tools (usb_identify/read/dump/write +
 	// usb_probe/usb_monitor) are wired in registerUSBTools.
 	s.registerUSBTools()
@@ -105,17 +109,29 @@ func (s *Server) registerGlobalTools() {
 func (s *Server) handleListDevices(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	bindings := s.eng.Bindings()
 	if len(bindings) == 0 {
-		return textResult("no devices bound yet; use discover_endpoints + bind_device", false), nil
+		return structResult("no devices bound yet; use discover_endpoints + bind_device", map[string]any{"devices": []bindingView{}}), nil
 	}
+	views := make([]bindingView, 0, len(bindings))
 	var b strings.Builder
 	for _, bind := range bindings {
 		name := bind.DeviceID
+		v := bindingView{
+			Logical:   bind.Logical,
+			Device:    bind.DeviceID,
+			Endpoint:  bind.Endpoint,
+			Channel:   bind.Channel,
+			Transport: bind.Transport,
+			USB:       s.eng.IsUSBBinding(bind.Logical),
+			Writable:  bind.Writable,
+		}
 		if def, ok := s.eng.Registry().Get(bind.DeviceID); ok {
 			name = def.Name
+			v.DeviceName = def.Name
 		}
+		views = append(views, v)
 		fmt.Fprintf(&b, "%s\t(device=%s, endpoint=%q, channel=%d)\n", bind.Logical, name, bind.Endpoint, bind.Channel)
 	}
-	return textResult(b.String(), false), nil
+	return structResult(b.String(), map[string]any{"devices": views}), nil
 }
 
 func (s *Server) handleDescribeDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -152,7 +168,7 @@ func (s *Server) handleDescribeDevice(_ context.Context, req *mcp.CallToolReques
 		}
 		b.WriteByte('\n')
 	}
-	return textResult(b.String(), false), nil
+	return structResult(b.String(), newDefinitionView(def)), nil
 }
 
 // describeValueSpec renders a control's accepted-value domain (range/enum/unit)
@@ -262,6 +278,12 @@ func (s *Server) handleBindDevice(_ context.Context, req *mcp.CallToolRequest) (
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
+	// A MIDI channel is 0..15 on the wire. Reject out-of-range values so a
+	// typo (e.g. the human 1..16 form) does not get masked into a wrong channel
+	// when rendered (status |= channel & 0x0F).
+	if args.Channel < 0 || args.Channel > 15 {
+		return textResult(fmt.Sprintf("/channel: %d out of range (must be 0..15; note the wire form is 0-based)", args.Channel), true), nil
+	}
 	b := engine.Binding{
 		Logical:   args.Logical,
 		Endpoint:  args.Endpoint,
@@ -369,7 +391,7 @@ func (s *Server) handleReadState(_ context.Context, req *mcp.CallToolRequest) (*
 	if err != nil {
 		return textResult("encode state: "+err.Error(), true), nil
 	}
-	return textResult(string(b), false), nil
+	return structResult(string(b), out), nil
 }
 
 // stateLogicals returns the logical device names to report on: the requested
