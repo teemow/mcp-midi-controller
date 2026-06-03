@@ -12,9 +12,7 @@
 package auv3receiver
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -65,18 +63,6 @@ func Handler(outDir string, onStaged func(device.ProbeDump, Result)) http.Handle
 	mux.HandleFunc("/healthz", lanhttp.Healthz)
 	Register(mux, outDir, onStaged)
 	return mux
-}
-
-// Serve runs the receiver on addr until ctx is cancelled, then shuts it down
-// gracefully. outDir is created if missing. A blank addr is treated as an error
-// by the caller; the daemon disables the receiver before calling Serve in that
-// case.
-func Serve(ctx context.Context, addr, outDir string, onStaged func(device.ProbeDump, Result)) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("create out dir %s: %w", outDir, err)
-	}
-	log.Printf("auv3-probe receiver listening on %s, staging dumps in %s", addr, outDir)
-	return lanhttp.Serve(ctx, addr, Handler(outDir, onStaged))
 }
 
 // handleProbe decodes and validates a ProbeDump, derives its id, and stages it
