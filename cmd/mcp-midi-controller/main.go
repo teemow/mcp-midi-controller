@@ -15,10 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
 	"github.com/teemow/mcp-midi-controller/internal/auv3receiver"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/mcpserver"
 	"github.com/teemow/mcp-midi-controller/internal/transport"
 	"github.com/teemow/mcp-midi-controller/internal/transport/blemidi"
@@ -90,23 +92,17 @@ func main() {
 
 	srv := mcpserver.New(eng, mcpserver.WithUSBAllowWrites(cfg.USBAllowWrites))
 
-	// Run the AUv3 probe receiver as a SEPARATE LAN listener (the loopback-only
-	// MCP endpoint above is unreachable from the iPad). It only stages dumps as
-	// JSON for the list/get/import_auv3_probe tools — no hardware surface. When
-	// a dump lands it notifies connected MCP clients so an agent sees the new
-	// plugin data arrive. Disabled when auv3_receiver_addr is "".
+	// Run the iPad receiver as a SINGLE SEPARATE LAN listener (the loopback-only
+	// MCP endpoint above is unreachable from the iPad). One listener carries
+	// both the AUv3-probe surface (stage parameter-tree dumps for the
+	// list/get/import_auv3_probe tools) and the AUM-session surface (ferry
+	// .aumproj/.aum_midimap files in and out for the aum tools). Neither touches
+	// hardware. When data lands it notifies connected MCP clients so an agent
+	// sees it arrive. Disabled when auv3_receiver_addr is "".
 	if cfg.AUv3ReceiverAddr != "" {
 		go func() {
-			err := auv3receiver.Serve(
-				ctx,
-				cfg.AUv3ReceiverAddr,
-				config.AUv3ProbesDir(),
-				func(dump device.ProbeDump, res auv3receiver.Result) {
-					srv.NotifyAUv3Probe(res.ID, dump.Name, res.Params, res.Writable)
-				},
-			)
-			if err != nil {
-				log.Printf("auv3 probe receiver: %v", err)
+			if err := serveLANReceiver(ctx, cfg.AUv3ReceiverAddr, srv); err != nil {
+				log.Printf("iPad receiver: %v", err)
 			}
 		}()
 	}
@@ -152,6 +148,32 @@ func main() {
 	if err := eng.Close(closeCtx); err != nil {
 		log.Printf("engine close: %v", err)
 	}
+}
+
+// serveLANReceiver runs the combined iPad-facing LAN receiver (AUv3 probes +
+// AUM sessions) on one listener until ctx is cancelled, then shuts it down
+// gracefully. Both surfaces and the shared /healthz are mounted on a single
+// mux. The onStaged callbacks notify connected MCP clients new data arrived.
+func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server) error {
+	probesDir := config.AUv3ProbesDir()
+	sessionsDir := config.AUMSessionsDir()
+	for _, d := range []string{probesDir, sessionsDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
+	auv3receiver.Register(mux, probesDir, func(dump device.ProbeDump, res auv3receiver.Result) {
+		srv.NotifyAUv3Probe(res.ID, dump.Name, res.Params, res.Writable)
+	})
+	aumreceiver.Register(mux, sessionsDir, func(res aumreceiver.Result) {
+		srv.NotifyAUMSession(res.ID, res.Title, res.Version, res.Channels, res.Mappings)
+	})
+
+	log.Printf("iPad receiver listening on %s (auv3 probes -> %s, aum sessions -> %s)", addr, probesDir, sessionsDir)
+	return lanhttp.Serve(ctx, addr, mux)
 }
 
 func mustTransport(t transport.Transport, err error) transport.Transport {

@@ -80,7 +80,16 @@ func DecodeFile(path string) (*Archive, error) {
 // Encode re-emits the archive as a binary plist. The plist binary encoder
 // rebuilds the offset table and uniques objects, so the byte output is NOT
 // expected to match the input; use GraphEqual to verify fidelity.
+//
+// Encode first clamps any non-finite floats (NaN / ±Inf) in the graph to finite
+// sentinels, IN PLACE. This is unavoidable: the howett.net/plist binary encoder
+// keys its object-uniquing map on the float value, and a NaN key can never be
+// found again (NaN != NaN), so a single stray NaN — which real AUM sessions do
+// carry on uninitialized/meter params — would otherwise panic the encoder. This
+// mirrors the probe pipeline's non-finite handling (docs/design.md). All finite
+// values are preserved exactly; fidelity (GraphEqual) holds modulo this clamp.
 func (a *Archive) Encode() ([]byte, error) {
+	a.SanitizeNonFinite()
 	root := map[string]any{
 		"$archiver": a.Archiver,
 		"$version":  a.Version,
@@ -93,6 +102,78 @@ func (a *Archive) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("aum: encode bplist: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// SanitizeNonFinite replaces every non-finite float in the graph (NaN, +Inf,
+// -Inf) with a finite sentinel, in place, returning the number of values
+// changed. NaN → 0, +Inf → math.MaxFloat*, -Inf → -math.MaxFloat*, preserving
+// the Go float width. Encode calls this automatically; it is exported so a
+// caller can detect (via the count) whether a session it is about to write
+// carried non-finite values.
+func (a *Archive) SanitizeNonFinite() int {
+	n := 0
+	var fix func(v any) any
+	fix = func(v any) any {
+		switch x := v.(type) {
+		case float64:
+			if f, changed := clampFinite(x); changed {
+				n++
+				return f
+			}
+		case float32:
+			if f, changed := clampFinite32(x); changed {
+				n++
+				return f
+			}
+		case []any:
+			for i := range x {
+				x[i] = fix(x[i])
+			}
+		case map[string]any:
+			for k := range x {
+				x[k] = fix(x[k])
+			}
+		}
+		return v
+	}
+	for i := range a.Objects {
+		a.Objects[i] = fix(a.Objects[i])
+	}
+	for k := range a.Top {
+		a.Top[k] = fix(a.Top[k])
+	}
+	return n
+}
+
+// clampFinite maps a non-finite float64 to a finite sentinel, reporting whether
+// it changed.
+func clampFinite(f float64) (float64, bool) {
+	switch {
+	case math.IsNaN(f):
+		return 0, true
+	case math.IsInf(f, 1):
+		return math.MaxFloat64, true
+	case math.IsInf(f, -1):
+		return -math.MaxFloat64, true
+	default:
+		return f, false
+	}
+}
+
+// clampFinite32 is clampFinite for float32: it must use the float32 sentinels,
+// because float32(math.MaxFloat64) overflows back to ±Inf — the very value we
+// are trying to remove.
+func clampFinite32(f float32) (float32, bool) {
+	switch {
+	case math.IsNaN(float64(f)):
+		return 0, true
+	case math.IsInf(float64(f), 1):
+		return math.MaxFloat32, true
+	case math.IsInf(float64(f), -1):
+		return -math.MaxFloat32, true
+	default:
+		return f, false
+	}
 }
 
 // Resolve returns the object at uid in the Objects table, or nil if out of
@@ -140,22 +221,52 @@ func (a *Archive) ClassName(obj any) string {
 // reuses a single slot — mirroring NSKeyedArchiver, which uniques such objects.
 // Containers (maps/arrays) are never interned: each gets a fresh slot.
 type Builder struct {
-	a        *Archive
-	interned map[internKey]UID
+	a         *Archive
+	interned  map[internKey]UID
+	classDefs map[string]UID // class-definition objects deduped by $classname
 }
 
 // NewBuilder returns a Builder seeded with the archive's existing internable
 // objects, so appended scalars dedupe against what is already in the table.
+// Existing class-definition objects are indexed too, so ClassDef reuses them
+// rather than appending duplicates.
 func (a *Archive) NewBuilder() *Builder {
-	b := &Builder{a: a, interned: map[internKey]UID{}}
+	b := &Builder{a: a, interned: map[internKey]UID{}, classDefs: map[string]UID{}}
 	for i, obj := range a.Objects {
 		if k, ok := makeInternKey(obj); ok {
 			if _, dup := b.interned[k]; !dup {
 				b.interned[k] = UID(i)
 			}
 		}
+		if m, ok := obj.(map[string]any); ok {
+			if name, ok := m["$classname"].(string); ok {
+				if _, dup := b.classDefs[name]; !dup {
+					b.classDefs[name] = UID(i)
+				}
+			}
+		}
 	}
 	return b
+}
+
+// ClassDef returns the UID of a class-definition object for the given class
+// name, appending one (with the supplied parent chain plus NSObject) the first
+// time a name is seen and reusing it thereafter. Class defs are containers, so
+// Intern would not dedupe them; this cache keeps a single def per class.
+func (b *Builder) ClassDef(name string, parents ...string) UID {
+	if uid, ok := b.classDefs[name]; ok {
+		return uid
+	}
+	classes := make([]any, 0, len(parents)+2)
+	classes = append(classes, name)
+	for _, p := range parents {
+		classes = append(classes, p)
+	}
+	classes = append(classes, "NSObject")
+	uid := UID(len(b.a.Objects))
+	b.a.Objects = append(b.a.Objects, map[string]any{"$classname": name, "$classes": classes})
+	b.classDefs[name] = uid
+	return uid
 }
 
 // Intern returns a UID referencing obj, appending it to the object table if it

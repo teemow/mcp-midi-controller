@@ -24,12 +24,12 @@ type Config struct {
 	// tools are exposed (see engine.Binding.Writable and docs/usb-tools.md).
 	USBAllowWrites bool `yaml:"usb_allow_writes"`
 
-	// AUv3ReceiverAddr is the LAN bind address for the AUv3 probe receiver — the
+	// AUv3ReceiverAddr is the LAN bind address for the iPad receiver — the
 	// off-MCP listener that ingests parameter-tree dumps from the auv3-probe
-	// iPad app (github.com/teemow/auv3-probe). Unlike ListenAddr this is meant
-	// to be LAN-reachable (the iPad cannot reach loopback). It has a write-only
-	// surface (stage a dump as JSON; never touch hardware). Default ":7800";
-	// set to "" to disable the in-daemon receiver entirely.
+	// iPad app (github.com/teemow/auv3-probe) AND ferries AUM session files
+	// (.aumproj/.aum_midimap) in and out. Unlike ListenAddr this is meant to be
+	// LAN-reachable (the iPad cannot reach loopback). It never touches hardware.
+	// Default ":7800"; set to "" to disable the in-daemon receiver entirely.
 	AUv3ReceiverAddr string `yaml:"auv3_receiver_addr"`
 }
 
@@ -75,6 +75,14 @@ func DesiredStatePath() string { return filepath.Join(StateDir(), "desired-state
 // volatile (under the state dir), not rig-as-code: the dumps are a throwaway
 // authoring input, not committed config.
 func AUv3ProbesDir() string { return filepath.Join(StateDir(), "auv3-probes") }
+
+// AUMSessionsDir is the staging dir for AUM session (.aumproj) and standalone
+// MIDI-map (.aum_midimap) files: the ones uploaded from the iPad via the aum
+// receiver and the ones authored/edited by the aum MCP tools (then downloaded
+// back to the iPad). Like AUv3ProbesDir it is volatile (under the state dir),
+// NOT rig-as-code — sessions are private rig snapshots (channel/plugin names,
+// the controller map) and are never committed (see the public-vs-private rule).
+func AUMSessionsDir() string { return filepath.Join(StateDir(), "aum-sessions") }
 
 // Load reads config.yaml from the config dir, falling back to defaults.
 func Load() (Config, error) {

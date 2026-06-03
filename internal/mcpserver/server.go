@@ -119,6 +119,30 @@ func (s *Server) NotifyAUv3Probe(id, name string, params, writable int) {
 	}
 }
 
+// NotifyAUMSession broadcasts to every connected session that an AUM session
+// file was staged by the aum receiver (uploaded from the iPad), so an agent
+// watching the rig sees newly captured sessions arrive without polling
+// list_aum_sessions. Like notifyInbound, clients receive it only after setting
+// a logging level.
+func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings int) {
+	p := &mcp.LoggingMessageParams{
+		Level:  "info",
+		Logger: "aum-session",
+		Data: map[string]any{
+			"id":       id,
+			"title":    title,
+			"version":  version,
+			"channels": channels,
+			"mappings": mappings,
+			"hint":     "inspect with get_aum_session, compare with diff_aum_session, propose bindings with import_aum_session",
+		},
+	}
+	ctx := context.Background()
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Log(ctx, p)
+	}
+}
+
 // Handler returns the streamable-HTTP handler to mount on a loopback listener.
 func (s *Server) Handler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)

@@ -19,12 +19,12 @@ import (
 // definitions (which default to blemidi) pass the registered-transport check.
 type fakeBLE struct{}
 
-func (fakeBLE) ID() string                                                  { return "blemidi" }
-func (fakeBLE) Discover(context.Context) ([]transport.Endpoint, error)      { return nil, nil }
-func (fakeBLE) Pair(context.Context, string) error                          { return nil }
-func (fakeBLE) Connect(context.Context, string) error                       { return nil }
-func (fakeBLE) Disconnect(context.Context, string) error                    { return nil }
-func (fakeBLE) Send(context.Context, string, transport.Event) error         { return nil }
+func (fakeBLE) ID() string                                             { return "blemidi" }
+func (fakeBLE) Discover(context.Context) ([]transport.Endpoint, error) { return nil, nil }
+func (fakeBLE) Pair(context.Context, string) error                     { return nil }
+func (fakeBLE) Connect(context.Context, string) error                  { return nil }
+func (fakeBLE) Disconnect(context.Context, string) error               { return nil }
+func (fakeBLE) Send(context.Context, string, transport.Event) error    { return nil }
 func (fakeBLE) Listen(context.Context, string) (<-chan transport.Event, error) {
 	ch := make(chan transport.Event)
 	return ch, nil

@@ -104,6 +104,9 @@ func (s *Server) registerGlobalTools() {
 	// Device authoring tools (create/add_control/save) are wired in
 	// registerAuthoringTools.
 	s.registerAuthoringTools()
+	// AUM session tools (list/get/diff/import/author/edit + export_aum_midimap)
+	// over the internal/aum library are wired in registerAUMTools.
+	s.registerAUMTools()
 }
 
 func (s *Server) handleListDevices(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
