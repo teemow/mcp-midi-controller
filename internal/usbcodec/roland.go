@@ -149,7 +149,17 @@ func (c *Roland) decodeDT1(f []byte) (addr, data []byte, ok bool) {
 	if f[3+len(c.model)] != rolandDT1 {
 		return nil, nil, false
 	}
+	// Reject a frame without the SysEx EOX terminator (truncated reply).
+	if f[len(f)-1] != 0xF7 {
+		return nil, nil, false
+	}
 	addr = append([]byte(nil), f[hdr:hdr+c.addrBytes]...)
 	data = append([]byte(nil), f[hdr+c.addrBytes:len(f)-2]...) // strip cksum + F7
+	// Verify Roland's address+data checksum so a corrupted reply is not
+	// accepted as valid readback data.
+	body := append(append([]byte(nil), addr...), data...)
+	if rolandChecksum(body) != f[len(f)-2] {
+		return nil, nil, false
+	}
 	return addr, data, true
 }

@@ -214,6 +214,13 @@ func (e *Engine) widiRequest(ctx context.Context, endpoint string, req []byte, d
 			if !ok {
 				return widi.Reply{}, fmt.Errorf("inbound stream closed")
 			}
+			// The subscriber fan-out carries inbound from every endpoint. Match
+			// only replies that arrived on the endpoint we queried (and over the
+			// BLE-MIDI transport we sent on) so a second dongle sharing a devID
+			// cannot answer for this one.
+			if in.Transport != defaultTransport || in.Endpoint != endpoint {
+				continue
+			}
 			data := in.Event.Data
 			if !widi.IsReply(data) {
 				continue

@@ -18,3 +18,7 @@
 # The repo is public; keep anything specific to one setup out of git.
 /docs/private/
 *.local.md
+
+# The public/private + reverse-engineering policy rule. Kept out of the public
+# repo "just in case" so the RE strategy notes stay private.
+/.cursor/rules/public-vs-private.mdc

@@ -2,6 +2,29 @@ package device
 
 import "testing"
 
+func TestDefinitionValidateID(t *testing.T) {
+	good := []string{"md-200", "eq2", "fabfilter_pro_q", "x32", "a"}
+	bad := []string{"", "../etc/passwd", "a/b", "a..b", "..", "Up", "a b", "a.b", "-leading"}
+	mk := func(id string) Definition {
+		cc := 1
+		return Definition{ID: id, Transport: "blemidi", Controls: []Control{
+			{Name: "c", Type: ControlCC, CC: &cc, Value: ValueSpec{Type: ValueRange}},
+		}}
+	}
+	for _, id := range good {
+		d := mk(id)
+		if err := d.Validate(); err != nil {
+			t.Errorf("id %q: unexpected error %v", id, err)
+		}
+	}
+	for _, id := range bad {
+		d := mk(id)
+		if err := d.Validate(); err == nil {
+			t.Errorf("id %q: expected a validation error, got nil", id)
+		}
+	}
+}
+
 func TestDefinitionValidateAddressing(t *testing.T) {
 	cc := func(n int) *int { return &n }
 	bound := func(v float64) *float64 { return &v }

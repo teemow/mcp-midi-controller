@@ -87,6 +87,9 @@ func Decode(b []byte) (Reply, error) {
 		}
 		return r, nil
 	case CmdReadStatus:
+		if len(body) < 1 {
+			return Reply{}, fmt.Errorf("widi: short status reply: % X", b)
+		}
 		r.Kind = ReplyStatus
 		r.Status = Status(body[0])
 		r.StatusData = body[1:]

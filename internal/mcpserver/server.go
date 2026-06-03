@@ -97,6 +97,28 @@ func (s *Server) notifyInbound(in engine.InboundEvent, obs []engine.Observation)
 	}
 }
 
+// NotifyAUv3Probe broadcasts to every connected session that a fresh AUv3
+// parameter-tree dump was staged by the receiver, so an agent watching the
+// rig sees newly probed plugins arrive without polling list_auv3_probes. Like
+// notifyInbound, clients receive it only after setting a logging level.
+func (s *Server) NotifyAUv3Probe(id, name string, params, writable int) {
+	p := &mcp.LoggingMessageParams{
+		Level:  "info",
+		Logger: "auv3-probe",
+		Data: map[string]any{
+			"id":       id,
+			"name":     name,
+			"params":   params,
+			"writable": writable,
+			"hint":     "inspect with get_auv3_probe, scaffold a definition with import_auv3_probe",
+		},
+	}
+	ctx := context.Background()
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Log(ctx, p)
+	}
+}
+
 // Handler returns the streamable-HTTP handler to mount on a loopback listener.
 func (s *Server) Handler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
@@ -195,5 +217,16 @@ func textResult(msg string, isErr bool) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
 		IsError: isErr,
+	}
+}
+
+// structResult returns a successful result carrying both a human-readable text
+// rendering and a machine-readable structuredContent payload (which must
+// marshal to a JSON object, per the MCP spec). The rig-reasoning read tools use
+// this so a web client / agent can consume JSON without re-parsing the text.
+func structResult(msg string, structured any) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: msg}},
+		StructuredContent: structured,
 	}
 }

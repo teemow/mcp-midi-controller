@@ -152,7 +152,14 @@ func rolandReplier(t *testing.T, data []byte) func(transport.Event) []transport.
 		out := []byte{0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x00, 0x1D, 0x12}
 		out = append(out, addr...)
 		out = append(out, data...)
-		out = append(out, 0x00, 0xF7) // checksum is not validated by the decoder
+		// Roland address+data checksum (the decoder now verifies it).
+		body := append(append([]byte(nil), addr...), data...)
+		sum := 0
+		for _, b := range body {
+			sum += int(b)
+		}
+		ck := byte((0x80 - (sum & 0x7F)) & 0x7F)
+		out = append(out, ck, 0xF7)
 		return []transport.Event{{Kind: transport.MIDIEvent, Data: out}}
 	}
 }

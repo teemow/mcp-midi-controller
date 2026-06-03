@@ -210,23 +210,149 @@ read the reply on EP `0x81` (over hidraw: a plain `write()`/`read()` of 64-byte
 reports). The `Relative`/`Absolute` flags are cosmetic for a vendor pipe and
 carry no semantic meaning here.
 
-### Command layout (blocked on a non-Linux capture)
+### Command layout (decompiled from Torpedo Remote — 2026-06-03)
 
-The bytes **inside** the 64-byte reports — the Torpedo Remote command set
-(preset/parameter read, cabinet/IR enumeration) — are **proprietary and
-undocumented**, and there is no published spec or known open-source decode. Two
-Notes confirms only that "MIDI control of every parameter" exists (so live
-control is the CC map above) while cabinet/IR management is HID-only. Decoding
-the readback therefore requires the **gold-path capture**: run Torpedo Remote on
-a Mac/Win host (or the Android/iOS app over BLE), snoop the HID/BLE traffic while
-performing a known read, and diff the wire bytes. The desktop editor does not run
-natively on Linux (Wine/VirtualBox USB passthrough has been reported not to find
-the device), so this is the Mac/Win/VM step the shared methodology flags.
+First mapped from a live `rig-capture capture hid` snoop (Frida `Interceptor`
+hooks on the IOKit `IOHIDDevice{Set,Get}Report[WithCallback]` calls), then
+**confirmed and completed by static analysis** of the Torpedo Remote desktop
+editor (a JUCE/C++ app, shipped **unstripped**) with Ghidra. Everything below is
+**generic protocol structure** lifted from the editor's own dispatch and
+parameter tables — no rig content (serials, preset/cabinet names, IR hashes) is
+recorded here, per the public/private rule.
 
-Status: **transport + report descriptor confirmed**; **semantic command layout
-blocked** on a Torpedo Remote capture. No round-trip readback is wired into
-`verify_control` (that is a future phase; today verification stays on the
-MIDI-echo path, like the H90 — see `docs/research/usb.md`).
+**Framing**
+
+- Every report is exactly **64 bytes, zero-padded**. OUT = HID **Output** reports,
+  IN = HID **Input** reports (the one-of-each pair the descriptor declares).
+- **Byte 0 is the opcode.** Host→device commands carry their `CommandType` enum
+  value in byte 0; the editor passes that same value as the HID `reportID`
+  argument even though the descriptor declares *no* report IDs — it is **not** a
+  HID report-ID prefix, the firmware just keys off byte 0.
+- Device→host frames are matched by `Torpedo::processIncomingMessage` against an
+  `IncomingMessageFactory` keyed on **byte 0 plus an optional byte-1 range**.
+  When nothing matches, the host falls back to emitting a `0x7e` **Ping**, which
+  is therefore also the idle poll/keepalive (empty payload — the dominant OUT).
+
+**Message classes** (byte 0 — confirmed against a 30k-frame live capture)
+
+| byte0 | dir | meaning |
+|-------|-----|---------|
+| `0x7e` | OUT | **Ping / poll** (empty payload; the idle keepalive — dominant OUT). |
+| `0x05` | IN  | **Status heartbeat** — periodic 64-byte state snapshot (preset idx, levels/meters, serial fragment). |
+| `0x01` | both | **Parameter read / report** — `[0x01][wireIndex][value…]` (see index maps). |
+| `0x6f` | both | **Streaming / bulk** — high-rate packed payload (live drag / metering curve). |
+| `0x6e` | OUT | **Load-by-name** — select a cabinet/IR/mic by null-padded ASCII name. |
+| `0x04` | both | **Query/command envelope** — byte 1 carries the `CommandType` (table below). |
+| `0x02` / `0x03` | IN | preset payload (titles + value block). |
+| `0x0c` | both | periodic control / sync. |
+| `0x70` | OUT | **UploadAudioData** (IR upload) start/ack. |
+| `0x0b` | IN  | identification / handshake (startup; carries serial). |
+
+**`CommandType` sub-codes** (byte 1 under the `0x04` envelope; resolved from the
+editor's vtables / `Command<(CommandType)N>` templates)
+
+| byte1 | Command (editor class) |
+|-------|------------------------|
+| `0x09` | `SpeakerFilenameQuery` (also first stage of `PresetNamesQuery`) |
+| `0x3b` (59) | `SwitchingCommand` |
+| `0x3d` (61) | `MD5Query` — IR/speaker content hash (see below) |
+| `0x68` (104) / `0x6d` (109) | `MoveItemCommand` variants (reorder cabinets / presets) |
+| `0x73` (115) | `PresetNamesQuery` |
+
+  IN `0x04` replies use byte 1 `0x70` (ack), `0x31` (list entry), `0x0f` (name),
+  `0x3d` (16-byte md5 digest). `IdentificationQuery` is `CommandType 1` and
+  `Ping` is `CommandType 126` (`0x7e`, sent as its own byte-0 class). Additional
+  `Command<(CommandType)N>` codes exist for N ∈ {`0x03`,`0x04`,`0x0a`,`0x0b`,
+  `0x0e`,`0x27`,`0x38`,`0x3a`,`0x42`,`0x45`,`0x49`,`0x75`}, not all mapped yet.
+  `SetParameterCommand` is a `ModeOutgoingMessage` (mode-flagged set) rather than a
+  fixed `CommandType`.
+
+**Parameter access model**
+
+- A parameter set (`SetParameterCommand`) and the device's change notification
+  (`ParameterChangedMessage`) share the layout **`[opcode] [wireIndex] [value]`**
+  — byte 1 is the parameter's wire index, byte 2 the value.
+- `wireIndex = channel * blockSize + hwIndex`. The Opus is single-channel, so
+  `channel = 0` and `wireIndex = hwIndex` straight from the tables below. Indices
+  at/above `channels * blockSize` select the **setup** table instead of the
+  **parameter** table (the firmware keeps two `HardwareIndexDictionary` trees).
+- `MD5Query` (`0x3d`) sends `[0x3d] 00 <subtype>` and the reply carries a
+  **16-byte digest at byte offset 3** (the per-IR content hash the editor uses to
+  identify cabinet files). Subtype is a small enum (0–6).
+
+**Opus parameter index map** (`OpusParameterIndexDictionary`, `name → wireIndex`;
+values are decimal). This is the byte 1 used in `[opcode][wireIndex][value]`:
+
+| idx | name | idx | name | idx | name |
+|----:|------|----:|------|----:|------|
+| 0 | PARAM_SIMUAMP | 23 | PARAM_EQ_F4 | 46 | PARAM_SIMUHP_BYPASS |
+| 1 | PARAM_SIMUAMP_MODELE | 24 | PARAM_PRESET_LEVEL | 47 | PARAM_SIMUHP_BYPASS_2 |
+| 2 | PARAM_SIMUAMP_GAIN | 25 | PARAM_REVERB | 48 | PARAM_REVERB_SIZE |
+| 3 | PARAM_SIMUAMP_PRESENCE | 26 | PARAM_REVERB_ROOM | 49 | PARAM_REVERB_ECHO |
+| 4 | PARAM_SIMUAMP_DEPTH | 27 | PARAM_REVERB_DRYWET | 50 | PARAM_REVERB_COLOR |
+| 5 | PARAM_SIMUAMP_CHARACTER | 28 | PARAM_PRESET_MODE | 51 | PARAM_REVERB_MODEL |
+| 6 | PARAM_SIMUHP | 29 | PARAM_SIMUHP_LEVEL | 52 | PARAM_NOISEGATE |
+| 7 | PARAM_SIMUHP_PREVIEW | 30 | PARAM_SIMUHP_PHASE | 53 | PARAM_NOISEGATE_MODE |
+| 8 | PARAM_SIMUHP_SPEAKER | 31 | PARAM_SIMUHP_MUTE | 54 | PARAM_NOISEGATE_THRESHOLD |
+| 9 | PARAM_SIMUHP_WAVE0 | 32 | PARAM_SIMUHP_MIC_2 | 55 | PARAM_ENHANCER |
+| 10 | PARAM_SIMUHP_WAVE1 | 33 | PARAM_SIMUHP_DISTANCE_2 | 56 | PARAM_ENHANCER_INSTRUMENT |
+| 11 | PARAM_SIMUHP_FOLDER_IR_0 | 34 | PARAM_SIMUHP_CENTER_2 | 57 | PARAM_ENHANCER_BODY |
+| 12 | PARAM_SIMUHP_FOLDER_IR_1 | 35 | PARAM_SIMUHP_POSITION_2 | 58 | PARAM_ENHANCER_THICKNESS |
+| 13 | PARAM_SIMUHP_MIC | 36 | PARAM_SIMUHP_LEVEL_2 | 59 | PARAM_ENHANCER_BRILLIANCE |
+| 14 | PARAM_SIMUHP_DISTANCE | 37 | PARAM_SIMUHP_PHASE_2 | 60 | PARAM_ENHANCER_DRYWET |
+| 15 | PARAM_SIMUHP_CENTER | 38 | PARAM_SIMUHP_MUTE_2 | 61 | PARAM_PREAMP |
+| 16 | PARAM_SIMUHP_POSITION | 39 | PARAM_EQ_FREQ_LOW | 63 | PARAM_PREAMP_GAIN |
+| 17 | PARAM_EQ | 40 | PARAM_EQ_FREQ_F0 | 64 | PARAM_PREAMP_TREBLE |
+| 18 | PARAM_EQ_MODE | 41 | PARAM_EQ_FREQ_F1 | 65 | PARAM_PREAMP_MID |
+| 19 | PARAM_EQ_F0 | 42 | PARAM_EQ_FREQ_F2 | 66 | PARAM_PREAMP_BASS |
+| 20 | PARAM_EQ_F1 | 43 | PARAM_EQ_FREQ_F3 | | |
+| 21 | PARAM_EQ_F2 | 44 | PARAM_EQ_FREQ_F4 | | |
+| 22 | PARAM_EQ_F3 | 45 | PARAM_EQ_FREQ_HIGH | | |
+
+(Index 62 is unused; `PARAM_PREAMP_MODEL` is editor-side only — no wire index.)
+
+**Opus setup index map** (`OpusSetupIndexDictionary`, `name → wireIndex`):
+
+| idx | name | idx | name |
+|----:|------|----:|------|
+| 0 | SETUP_LEVEL | 9 | SETUP_OPTIM |
+| 1 | SETUP_MUTE | 10 | SETUP_INPUT_CHANNEL_SELECTION |
+| 2 | SETUP_ON_OFF | 11 | SETUP_OUTPUT_JACK_ROUTING |
+| 3 | SETUP_PRESET | 12 | SETUP_DISPLAY_BRIGHTNESS |
+| 4 | SETUP_PRESET_SOURCE | 13 | SETUP_SCREENSAVER_TYPE |
+| 5 | SETUP_FLAG_PRESET_MODIF | 14 | SETUP_SCREENSAVER_TIME |
+| 6 | SETUP_MIDI_CC | 15 | SETUP_TUNER_FREQ |
+| 7 | SETUP_MIDI_PC | 16 | SETUP_TUNER_MUTE |
+| 8 | SETUP_MIDI_CHANNEL | 17 | SETUP_BLE_POWER |
+
+(`SETUP_NOISEGATE_LEARN` is editor-side only — no wire index.)
+
+**Opus info index map** (`OpusInfoIndexDictionary`, read-only telemetry):
+
+`0` INFOS_DSP_VOLUME_IN · `1` INFOS_DSP_VOLUME_OUT · `3` INFOS_DSP_BINARY_VALUES ·
+`4` INFO_DSP_ERROR · `5` INFOS_DSP_TUNER_NOTE · `6` INFOS_DSP_TUNER_DIFF ·
+`7` INFOS_DSP_DEBUG_PROC_USAGE · `8` INFOS_DSP_NOISE_GATE. The input/output
+clip and silence flags are computed client-side (negative indices, never on the
+wire); `INFOS_TUNER_STATE` has no wire index.
+
+**Encoding notes**
+
+- Strings (cabinet/preset/IR names) are **ASCII, null-padded** at a fixed offset
+  after the opcode bytes. Multi-byte numerics are little-endian.
+- The editor selects the parameter-query *strategy* by firmware/type at runtime
+  (`Studio` / `Legacy` (fw < 5.0) / `Unified`), so exact query framing can vary by
+  firmware generation; the Opus uses the unified path.
+
+**Status:** transport, report descriptor, **frame dispatch, message classes,
+command opcodes, and the full Opus parameter / setup / info index maps are decoded**
+from the editor binary **and cross-validated against a 30k-frame live capture**
+(every observed `0x01` parameter index resolves to a mapped name; `0x04` byte-1
+values are all known `CommandType`s). What remains is per-parameter **value
+scaling/ranges** (raw byte ↔ engineering units), the `0x05` status field layout,
+and a few unmapped `0x04` sub-codes. A round-trip readback is still not wired into
+`verify_control` (verification stays on the MIDI-echo path for now — see
+`docs/research/usb.md`). The decoded capture (with rig-specific values) is in
+`docs/private/opus-capture-analysis.md`.
 
 ### Probe tool (read-only)
 

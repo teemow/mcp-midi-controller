@@ -16,6 +16,10 @@ import (
 type DesiredState struct {
 	mu     sync.RWMutex
 	values map[string]map[string]any // logical -> control -> value
+
+	// saveMu serializes Save so concurrent control sends (each calling
+	// persistState) cannot interleave writes to the state file.
+	saveMu sync.Mutex
 }
 
 // NewDesiredState returns an empty desired-state.
@@ -62,10 +66,34 @@ func (s *DesiredState) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// Serialize saves so two concurrent persisters cannot interleave, and write
+	// to a temp file + rename so a reader (or a crash mid-write) never sees a
+	// truncated/partial state file.
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	tmp, err := os.CreateTemp(dir, ".desired-state-*.json")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // Load reads a persisted desired-state from path, replacing the in-memory

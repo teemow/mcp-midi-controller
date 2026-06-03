@@ -38,7 +38,7 @@ func TestSendNotConnected(t *testing.T) {
 func TestSendRejectsMIDI(t *testing.T) {
 	tr, _ := New()
 	pc := fakeConsole(t, nil)
-	defer pc.Close()
+	defer func() { _ = pc.Close() }()
 	ep := pc.LocalAddr().String()
 	if err := tr.Connect(context.Background(), ep); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -87,7 +87,7 @@ func TestListenReceivesXRemoteMirror(t *testing.T) {
 			}
 		}
 	})
-	defer pc.Close()
+	defer func() { _ = pc.Close() }()
 
 	tr, _ := New(WithXRemoteInterval(50 * time.Millisecond))
 	ep := pc.LocalAddr().String()
@@ -119,7 +119,7 @@ func TestListenReceivesXRemoteMirror(t *testing.T) {
 
 func TestDisconnectStopsListen(t *testing.T) {
 	pc := fakeConsole(t, nil)
-	defer pc.Close()
+	defer func() { _ = pc.Close() }()
 	tr, _ := New(WithXRemoteInterval(time.Hour))
 	ep := pc.LocalAddr().String()
 	ctx, cancel := context.WithCancel(context.Background())

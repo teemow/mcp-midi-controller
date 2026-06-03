@@ -41,12 +41,12 @@ func (t *Transport) ensureBus() error {
 	}
 	adapter := conn.Object(bluezBus, dbus.ObjectPath("/org/bluez/"+t.adapterName))
 	if err := setProp(adapter, adapterIface, "Powered", dbus.MakeVariant(true)); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("blemidi: power on adapter %s: %w", t.adapterName, err)
 	}
 	cancelAgent, err := registerAgent(conn, "NoInputNoOutput")
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return err
 	}
 

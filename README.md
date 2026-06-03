@@ -24,7 +24,13 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
     Thru6).
   - **Behringer X32** over OSC/UDP (on WiFi).
   - **AUM on iPad** and its **AUv3 plugins/synths** (Battalion, iSem, Agonizer,
-    Korg iMS-20, FabFilter, …) over BLE-MIDI.
+    Korg iMS-20, FabFilter, …) over BLE-MIDI. Plugin definitions are verified
+    with the companion **[auv3-probe](https://github.com/teemow/auv3-probe)**
+    iPad app, which dumps each plugin's `AUParameterTree` to the daemon's
+    built-in **probe receiver** (a LAN listener separate from the loopback MCP
+    endpoint). Agents then see what's available and configurable via the
+    `list_auv3_probes` / `get_auv3_probe` tools and scaffold definitions with
+    `import_auv3_probe`.
 - **Owns BLE discovery + pairing** itself (via BlueZ over D-Bus) — no manual
   `bluetoothctl`.
 - **Extendable without writing Go**: add a device by dropping a YAML definition,
@@ -73,6 +79,11 @@ internal/
   scene/                   scene model + persistence
   mcpserver/               MCP layer (official go-sdk): tool generation + handlers
 cmd/usb-probe/             read-only USB readback spike (validation oracle)
+cmd/auv3-probe/            standalone AUv3 dump receiver (same listener is now
+                           built into the daemon; this is for running it apart)
+internal/
+  auv3receiver/            the AUv3 probe receiver (LAN listener, write-only;
+                           staged dumps feed list/get/import_auv3_probe)
 init/                      systemd user unit
 scripts/                   validate.sh (hardware-validation harness) + capture tooling
 .cursor/mcp.json           Cursor MCP client config (points at the loopback daemon)
@@ -117,6 +128,14 @@ lingering: `loginctl enable-linger "$USER"`.
 The daemon binds loopback only; [`.cursor/mcp.json`](.cursor/mcp.json) points
 Cursor at it (`http://127.0.0.1:7799/`). If you change `listen_addr` in
 `config.yaml`, update that URL to match.
+
+In addition to the loopback MCP endpoint, the daemon runs the **AUv3 probe
+receiver** on a separate LAN address (`auv3_receiver_addr` in `config.yaml`,
+default `:7800`; set to `""` to disable). This is intentionally LAN-reachable so
+the [auv3-probe](https://github.com/teemow/auv3-probe) iPad app can POST
+parameter-tree dumps to it — it has a write-only surface (stage a dump as JSON;
+never touches hardware). If the daemon host runs a default-deny firewall, allow
+that port from your LAN. See [`docs/research/auv3-feedback.md`](docs/research/auv3-feedback.md).
 
 ## License
 

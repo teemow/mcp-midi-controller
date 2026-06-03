@@ -27,6 +27,15 @@ type connKey struct {
 	endpoint  string
 }
 
+// inboundListener tracks a running inbound pump. gen is a unique generation so
+// a pump's teardown only removes its own registry entry — a quickly
+// restarted listener for the same endpoint (Stop then Start) must not be
+// clobbered by the old pump's deferred cleanup.
+type inboundListener struct {
+	cancel func()
+	gen    uint64
+}
+
 // Engine is the rig controller core.
 type Engine struct {
 	mu sync.RWMutex
@@ -53,8 +62,9 @@ type Engine struct {
 	// subscribers (verify_control / probe_feedback), the recent-event buffer
 	// (MIDI-learn) and the notification hook. Guarded by inboundMu.
 	inboundMu   sync.Mutex
-	listening   map[connKey]func()        // active inbound listeners -> cancel
-	subscribers map[int]chan InboundEvent // verify/probe waiters
+	listening   map[connKey]*inboundListener // active inbound listeners
+	listenSeq   uint64                       // monotonic listener generation
+	subscribers map[int]chan InboundEvent    // verify/probe waiters
 	nextSubID   int
 	recent      []InboundEvent                    // ring buffer for MIDI-learn
 	learnSince  time.Time                         // learn_capture only returns events after this
@@ -77,7 +87,7 @@ func New(reg *device.Registry, transports ...transport.Transport) *Engine {
 		state:       NewDesiredState(),
 		observed:    NewObservedState(),
 		connected:   map[connKey]bool{},
-		listening:   map[connKey]func(){},
+		listening:   map[connKey]*inboundListener{},
 		subscribers: map[int]chan InboundEvent{},
 	}
 }
@@ -103,6 +113,46 @@ func (e *Engine) persistState() {
 		return
 	}
 	_ = e.state.Save(path)
+}
+
+// Close tears the engine down: it cancels every inbound listener and
+// disconnects every open data path. It is best-effort — per-endpoint
+// disconnect errors are joined into the returned error but never abort the
+// teardown — and is meant to run on daemon shutdown.
+func (e *Engine) Close(ctx context.Context) error {
+	e.inboundMu.Lock()
+	listeners := make([]*inboundListener, 0, len(e.listening))
+	for k, l := range e.listening {
+		listeners = append(listeners, l)
+		delete(e.listening, k)
+	}
+	e.inboundMu.Unlock()
+	for _, l := range listeners {
+		l.cancel()
+	}
+
+	e.mu.Lock()
+	keys := make([]connKey, 0, len(e.connected))
+	for k := range e.connected {
+		keys = append(keys, k)
+	}
+	e.connected = map[connKey]bool{}
+	e.mu.Unlock()
+
+	var errs []string
+	for _, k := range keys {
+		tr, ok := e.transports[k.transport]
+		if !ok {
+			continue
+		}
+		if err := tr.Disconnect(ctx, k.endpoint); err != nil {
+			errs = append(errs, fmt.Sprintf("%s/%s: %v", k.transport, k.endpoint, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("engine close: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // Registry exposes the device registry.

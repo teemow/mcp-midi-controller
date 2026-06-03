@@ -193,6 +193,14 @@ func readReport(fd int, timeout time.Duration) ([]byte, error) {
 	if n == 0 {
 		return nil, nil
 	}
+	// Surface device-gone conditions instead of attempting a read that would
+	// fail (or block): a disconnected hidraw node wakes poll with POLLHUP/
+	// POLLERR/POLLNVAL rather than POLLIN.
+	if rev := pfd[0].Revents; rev&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+		return nil, fmt.Errorf("usbhid: poll error on fd (revents=0x%x; device disconnected?)", rev)
+	} else if rev&unix.POLLIN == 0 {
+		return nil, nil // woke without readable data; treat as a timeout
+	}
 	buf := make([]byte, reportLen)
 	m, err := unix.Read(fd, buf)
 	if err != nil {

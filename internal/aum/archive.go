@@ -1,0 +1,360 @@
+// Package aum reads, edits and authors AUM session (.aumproj) and standalone
+// MIDI-mapping (.aum_midimap) files. Both are Apple binary plists whose top
+// level is an NSKeyedArchiver object graph (see docs/research/aum-session.md).
+//
+// This file is the Phase-0 foundation: a generic NSKeyedArchiver Archive with
+// decode/encode, a UID resolver (UID -> object) and an interning builder
+// (object -> UID), plus a semantic graph-equality check. There is no Go
+// NSKeyedUnarchiver, so howett.net/plist decodes the bplist into the raw
+// $archiver/$version/$top/$objects structure and we resolve CF$UID refs
+// ourselves.
+//
+// The writer is a GRAPH round-trip, not a byte round-trip: we mutate targeted
+// objects in the decoded $objects table and re-encode. Fidelity is therefore
+// verified by semantic graph equality (decode(encode(x)) graph-equals
+// decode(x)) — never by byte equality, because the binary-plist offset table is
+// rebuilt and object order/widths are not preserved.
+package aum
+
+import (
+	"bytes"
+	"fmt"
+	"math"
+	"os"
+
+	"howett.net/plist"
+)
+
+// UID is an NSKeyedArchiver CF$UID: an index into the Archive's Objects table.
+// It is re-exported from howett.net/plist so callers walking the graph need not
+// import the plist package directly.
+type UID = plist.UID
+
+// Archive is a decoded NSKeyedArchiver graph. Objects is the flat object table;
+// every reference elsewhere in the graph is a UID index into it (object 0 is
+// conventionally the string "$null", AUM's nil). Values inside Objects, Top and
+// nested containers are one of: string, uint64, int64, float64, float32, bool,
+// []byte, []any, map[string]any, or UID.
+type Archive struct {
+	Archiver string         // "$archiver", e.g. "NSKeyedArchiver"
+	Version  uint64         // "$version", e.g. 100000
+	Top      map[string]any // "$top", e.g. {"root": UID(1)}
+	Objects  []any          // "$objects", the flat object table
+}
+
+// Decode parses bplist/NSKeyedArchiver bytes into an Archive.
+func Decode(data []byte) (*Archive, error) {
+	var root map[string]any
+	if _, err := plist.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("aum: decode bplist: %w", err)
+	}
+	if root == nil {
+		return nil, fmt.Errorf("aum: empty plist root")
+	}
+
+	a := &Archive{}
+	a.Archiver, _ = root["$archiver"].(string)
+	a.Version = toUint64(root["$version"])
+	if top, ok := root["$top"].(map[string]any); ok {
+		a.Top = top
+	} else {
+		a.Top = map[string]any{}
+	}
+	objs, ok := root["$objects"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("aum: archive has no $objects array (got %T)", root["$objects"])
+	}
+	a.Objects = objs
+	return a, nil
+}
+
+// DecodeFile reads and decodes an NSKeyedArchiver file (.aumproj/.aum_midimap).
+func DecodeFile(path string) (*Archive, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return Decode(data)
+}
+
+// Encode re-emits the archive as a binary plist. The plist binary encoder
+// rebuilds the offset table and uniques objects, so the byte output is NOT
+// expected to match the input; use GraphEqual to verify fidelity.
+func (a *Archive) Encode() ([]byte, error) {
+	root := map[string]any{
+		"$archiver": a.Archiver,
+		"$version":  a.Version,
+		"$top":      a.Top,
+		"$objects":  a.Objects,
+	}
+	var buf bytes.Buffer
+	enc := plist.NewBinaryEncoder(&buf)
+	if err := enc.Encode(root); err != nil {
+		return nil, fmt.Errorf("aum: encode bplist: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// Resolve returns the object at uid in the Objects table, or nil if out of
+// range.
+func (a *Archive) Resolve(uid UID) any {
+	i := int(uid)
+	if i < 0 || i >= len(a.Objects) {
+		return nil
+	}
+	return a.Objects[i]
+}
+
+// Deref resolves v to a concrete object: if v is a UID it is looked up in the
+// object table; otherwise v (an inline scalar/container) is returned unchanged.
+func (a *Archive) Deref(v any) any {
+	if uid, ok := v.(UID); ok {
+		return a.Resolve(uid)
+	}
+	return v
+}
+
+// Root returns the dereferenced $top["root"] object (the AUMSession for a
+// session, the collection dict for a standalone map).
+func (a *Archive) Root() any {
+	return a.Deref(a.Top["root"])
+}
+
+// ClassName returns the $classname of a resolved object dict (e.g. "AUMSession",
+// "NSMutableArray"), or "" if obj is not a class-bearing dict.
+func (a *Archive) ClassName(obj any) string {
+	m, ok := obj.(map[string]any)
+	if !ok {
+		return ""
+	}
+	cls, ok := a.Deref(m["$class"]).(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := cls["$classname"].(string)
+	return name
+}
+
+// Builder appends objects to an archive's Objects table and returns their UID,
+// interning internable values (scalars/strings/data/UIDs) so an equal value
+// reuses a single slot — mirroring NSKeyedArchiver, which uniques such objects.
+// Containers (maps/arrays) are never interned: each gets a fresh slot.
+type Builder struct {
+	a        *Archive
+	interned map[internKey]UID
+}
+
+// NewBuilder returns a Builder seeded with the archive's existing internable
+// objects, so appended scalars dedupe against what is already in the table.
+func (a *Archive) NewBuilder() *Builder {
+	b := &Builder{a: a, interned: map[internKey]UID{}}
+	for i, obj := range a.Objects {
+		if k, ok := makeInternKey(obj); ok {
+			if _, dup := b.interned[k]; !dup {
+				b.interned[k] = UID(i)
+			}
+		}
+	}
+	return b
+}
+
+// Intern returns a UID referencing obj, appending it to the object table if it
+// is not already present. Internable scalars dedupe; containers always append.
+func (b *Builder) Intern(obj any) UID {
+	if k, ok := makeInternKey(obj); ok {
+		if uid, found := b.interned[k]; found {
+			return uid
+		}
+		uid := UID(len(b.a.Objects))
+		b.a.Objects = append(b.a.Objects, obj)
+		b.interned[k] = uid
+		return uid
+	}
+	uid := UID(len(b.a.Objects))
+	b.a.Objects = append(b.a.Objects, obj)
+	return uid
+}
+
+// internKey is a comparable identity for an internable object.
+type internKey struct {
+	tag byte
+	s   string
+	n   uint64
+	f   float64
+	b   bool
+}
+
+func makeInternKey(obj any) (internKey, bool) {
+	switch v := obj.(type) {
+	case string:
+		return internKey{tag: 's', s: v}, true
+	case []byte:
+		return internKey{tag: 'd', s: string(v)}, true
+	case bool:
+		return internKey{tag: 'b', b: v}, true
+	case uint64:
+		return internKey{tag: 'i', n: v}, true
+	case int64:
+		return internKey{tag: 'i', n: uint64(v)}, true
+	case float32:
+		return internKey{tag: 'f', f: float64(v)}, true
+	case float64:
+		return internKey{tag: 'f', f: v}, true
+	case UID:
+		return internKey{tag: 'u', n: uint64(v)}, true
+	default:
+		return internKey{}, false
+	}
+}
+
+// GraphEqual reports whether two archives encode the same NSKeyedArchiver graph
+// rooted at $top, resolving UIDs as it walks. It deliberately ignores the
+// physical $objects ordering and integer widths (the binary encoder rebuilds
+// both), comparing integers numerically rather than by Go type. This is the
+// fidelity check the writer relies on: decode(encode(x)) must GraphEqual
+// decode(x).
+func GraphEqual(x, y *Archive) bool {
+	if x.Archiver != y.Archiver || x.Version != y.Version {
+		return false
+	}
+	if len(x.Top) != len(y.Top) {
+		return false
+	}
+	seen := map[uidPair]bool{}
+	for k, xv := range x.Top {
+		yv, ok := y.Top[k]
+		if !ok || !equalValue(x, xv, y, yv, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+type uidPair struct{ x, y UID }
+
+// equalValue compares two graph edges, following UIDs into the object tables.
+// Cycles are bounded by the seen set of UID pairs already being compared.
+func equalValue(xa *Archive, xv any, ya *Archive, yv any, seen map[uidPair]bool) bool {
+	xuid, xIsUID := xv.(UID)
+	yuid, yIsUID := yv.(UID)
+	if xIsUID != yIsUID {
+		return false
+	}
+	if xIsUID {
+		p := uidPair{xuid, yuid}
+		if seen[p] {
+			return true
+		}
+		seen[p] = true
+		return equalObject(xa, xa.Resolve(xuid), ya, ya.Resolve(yuid), seen)
+	}
+	return equalObject(xa, xv, ya, yv, seen)
+}
+
+func equalObject(xa *Archive, xv any, ya *Archive, yv any, seen map[uidPair]bool) bool {
+	// Numbers first: compare by value, not Go type, because decode->encode->
+	// decode can turn a small positive int64 into a uint64 (the encoder picks
+	// the minimal width and ignores signedness).
+	if xn, ok := asNumber(xv); ok {
+		yn, ok := asNumber(yv)
+		return ok && numbersEqual(xn, yn)
+	}
+	switch x := xv.(type) {
+	case nil:
+		return yv == nil
+	case string:
+		y, ok := yv.(string)
+		return ok && x == y
+	case bool:
+		y, ok := yv.(bool)
+		return ok && x == y
+	case []byte:
+		y, ok := yv.([]byte)
+		return ok && bytes.Equal(x, y)
+	case []any:
+		y, ok := yv.([]any)
+		if !ok || len(x) != len(y) {
+			return false
+		}
+		for i := range x {
+			if !equalValue(xa, x[i], ya, y[i], seen) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		y, ok := yv.(map[string]any)
+		if !ok || len(x) != len(y) {
+			return false
+		}
+		for k, xvv := range x {
+			yvv, ok := y[k]
+			if !ok || !equalValue(xa, xvv, ya, yvv, seen) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// number is a type-erased numeric for value comparison. isInt distinguishes the
+// integer family (int64/uint64) from the real family (float32/float64) so an
+// integer never compares equal to a float of the same magnitude.
+type number struct {
+	isInt bool
+	i     int64
+	u     uint64
+	uBig  bool // true when the value is a uint64 that does not fit int64
+	f     float64
+}
+
+func asNumber(v any) (number, bool) {
+	switch n := v.(type) {
+	case int64:
+		if n >= 0 {
+			return number{isInt: true, u: uint64(n)}, true
+		}
+		return number{isInt: true, i: n}, true
+	case uint64:
+		if n <= math.MaxInt64 {
+			return number{isInt: true, u: n}, true
+		}
+		return number{isInt: true, u: n, uBig: true}, true
+	case float32:
+		return number{f: float64(n)}, true
+	case float64:
+		return number{f: n}, true
+	default:
+		return number{}, false
+	}
+}
+
+func numbersEqual(a, b number) bool {
+	if a.isInt != b.isInt {
+		return false
+	}
+	if a.isInt {
+		// Canonicalize: non-negative ints live in u, negatives in i.
+		if a.uBig != b.uBig {
+			return false
+		}
+		return a.i == b.i && a.u == b.u
+	}
+	if math.IsNaN(a.f) && math.IsNaN(b.f) {
+		return true
+	}
+	return a.f == b.f
+}
+
+func toUint64(v any) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case int64:
+		return uint64(n)
+	default:
+		return 0
+	}
+}

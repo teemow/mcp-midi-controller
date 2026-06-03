@@ -108,7 +108,7 @@ func (t *Transport) Disconnect(ctx context.Context, endpointID string) error {
 		return nil
 	}
 	if p.in != nil && p.in.IsOpen() {
-		p.in.Close()
+		_ = p.in.Close()
 	}
 	if p.out != nil {
 		return p.out.Close()

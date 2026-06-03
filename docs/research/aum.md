@@ -93,9 +93,23 @@ Source: <https://kymatica.com/aum/help> ("MIDI Control", "Transport Control",
   node parameter. So `chN_pan` in the convention must be mapped to a Stereo
   Balance/Panning node placed on that channel.
 
+### Per channel — sends
+- **Bus Send** is a node placed in an effect slot (AUM has no fixed per-channel
+  send matrix; routing is node-based). Its **send-amount knob** is MIDI-
+  controllable as a node parameter, exactly like the Stereo Balance pan knob. So
+  `chN_send1` in the convention maps to the first Bus Send node's knob on that
+  channel. Add more sends with the same approach (`send2`, …).
+
 ### Global transport — "Transport Control"
-- **MMC (SysEx)** via "Receive MMC": Play, Stop, Pause, Rewind, Record,
-  Goto/Locate.
+- **MMC (SysEx)** via "Receive MMC" (a Transport toggle). When enabled, AUM
+  reacts to these MMC SysEx commands (`F0 7F <dev> 06 <cmd> F7`, `dev` = device
+  id, `0x7F` = all-call):
+  - Play `0x02` (also `0x03` deferred play)
+  - Stop `0x01` (also rewinds if already stopped)
+  - Pause `0x09`
+  - Rewind `0x05`
+  - Record `0x06`
+  - Goto/Locate `0x44` (needs a target time argument — not a single-byte command)
 - **Simple MIDI control** items (Trigger/Value, mappable to NOTE or CC):
   Rewind, Start play, Stop/rewind, **Toggle play**, Toggle record, Previous bar,
   Next bar, Tap tempo, Tempo, Tempo Presets, Metronome on/off.
@@ -112,36 +126,71 @@ Source: <https://kymatica.com/aum/help> ("MIDI Control", "Transport Control",
 - File player **play-enable** toggle and **playback rate**; MIDI Bus node
   **Enabled** toggle. (Not in the convention map, but available.)
 
-## Proposed convention CC map
+## Convention CC map
 
 All CCs ride the **MIDI channel supplied by the binding**. Numbers sit in MIDI's
 general-purpose/undefined CC range to avoid clashing with common controller
-defaults (mod wheel, sustain, bank select, etc.).
+defaults (mod wheel, sustain, bank select, etc.). The map covers AUM's full
+mappable host surface; `aum.yaml` materializes it for **channels 1-8**.
 
-Per-channel formula (channel `N`, 1-based):
-- `mute  = 18 + 3*N`
-- `level = 19 + 3*N`
-- `pan   = 20 + 3*N`
+### Per-channel mixer block (interleaved, stride 3), channel `N` = 1..8
+- `mute  = 18 + 3*N`  → ch1=21 ch2=24 … ch8=42 — "Channel Controls" Mute toggle
+- `level = 19 + 3*N`  → ch1=22 ch2=25 … ch8=43 — "Channel Controls" Volume
+- `pan   = 20 + 3*N`  → ch1=23 ch2=26 … ch8=44 — Stereo Balance node knob (64 = center)
 
-| Control      | CC | Value spec                         | AUM mapping target |
-|--------------|----|------------------------------------|--------------------|
-| transport    | 20 | enum `{stop:0, start:127}`         | Transport → "Toggle play" (or Start play / Stop-rewind triggers) |
-| ch1_mute     | 21 | enum `{unmute:0, mute:127}`        | Ch 1 "Channel Controls" → Mute toggle (Cycle off) |
-| ch1_level    | 22 | range `0-127`                      | Ch 1 "Channel Controls" → Volume |
-| ch1_pan      | 23 | range `0-127` (64 = center)        | Ch 1 → Stereo Balance node knob |
-| ch2_mute     | 24 | enum `{unmute:0, mute:127}`        | Ch 2 → Mute toggle |
-| ch2_level    | 25 | range `0-127`                      | Ch 2 → Volume |
-| ch2_pan      | 26 | range `0-127` (64 = center)        | Ch 2 → Stereo Balance node knob |
-| ch3_mute     | 27 | enum `{unmute:0, mute:127}`        | Ch 3 → Mute toggle |
-| ch3_level    | 28 | range `0-127`                      | Ch 3 → Volume |
-| ch3_pan      | 29 | range `0-127` (64 = center)        | Ch 3 → Stereo Balance node knob |
-| ch4_mute     | 30 | enum `{unmute:0, mute:127}`        | Ch 4 → Mute toggle |
-| ch4_level    | 31 | range `0-127`                      | Ch 4 → Volume |
-| ch4_pan      | 32 | range `0-127` (64 = center)        | Ch 4 → Stereo Balance node knob |
+### Per-channel parallel blocks, channel `N` = 1..8
+- `solo   = 44 + N`  → 45..52 — "Channel Controls" Solo toggle (Cycle off → >64 = solo)
+- `rec    = 52 + N`  → 53..60 — "Channel Controls" Rec toggle (Cycle off → >64 = armed)
+- `scroll = 60 + N`  → 61..68 — "Scroll to this channel" trigger (fires on non-zero)
+- `send1  = 68 + N`  → 69..76 — first Bus Send node's send-amount knob on the channel
 
-The set covers transport + channels 1-4 as a representative slice; extend with the
-same stride for more channels (ch5 → 33/34/35, …). `solo` and `rec` are exposed by
-AUM too and can be added later (e.g. a parallel block once mute/level/pan settle).
+### Transport / system (single toggle + undefined-CC block)
+
+| Control                 | CC  | Value spec                  | AUM mapping target |
+|-------------------------|-----|-----------------------------|--------------------|
+| transport               | 20  | enum `{stop:0, start:127}`  | Transport → "Toggle play" (start on >0; 0 won't stop) |
+| transport_start         | 102 | enum `{trigger:127}`        | Transport → "Start play" |
+| transport_stop          | 103 | enum `{trigger:127}`        | Transport → "Stop/rewind" (deterministic stop) |
+| transport_rewind        | 104 | enum `{trigger:127}`        | Transport → "Rewind" |
+| transport_toggle_record | 105 | enum `{trigger:127}`        | Transport → "Toggle record" |
+| transport_prev_bar      | 106 | enum `{trigger:127}`        | Transport → "Previous bar" |
+| transport_next_bar      | 107 | enum `{trigger:127}`        | Transport → "Next bar" |
+| tap_tempo               | 108 | enum `{trigger:127}`        | Transport → "Tap tempo" |
+| tempo                   | 109 | range `0-127`               | Transport → "Tempo" Value (0-127 maps to AUM's configured BPM range) |
+| metronome               | 110 | enum `{off:0, on:127}`      | Transport → "Metronome on/off" toggle |
+| unsolo_all              | 111 | enum `{trigger:127}`        | System action → "Unsolo Channels" |
+| hide_plugins            | 112 | enum `{trigger:127}`        | System action → "Hide/Unhide Plugins" |
+| switch_to_aum           | 113 | enum `{trigger:127}`        | System action → "Switch to AUM" |
+
+### Session / Preset load — Program Change
+
+| Control      | Type           | Value spec     | AUM mapping target |
+|--------------|----------------|----------------|--------------------|
+| session_load | program_change | range `0-127`  | MIDI Control → "Session Load" actions (one per session, each on a distinct PC) |
+| preset_load  | program_change | range `0-127`  | a plugin node's "Preset Load" actions (one per preset, each on a distinct PC) |
+
+Both are Program Change. Because the bound MIDI channel is shared, mapping both
+on the **same** channel makes one PC fire both — bind them on **separate
+channels** (or drive presets through the per-plugin auv3 probe workflow) to keep
+them independent. The scene engine sends PC before CC, so these recall first.
+
+### MMC over SysEx (alternative transport path)
+
+Channel-less SysEx (the binding channel does not apply). Requires AUM Transport
+→ **"Receive MMC"** enabled. Template `F0 7F 7F 06 <cmd> F7` (device id `7F` =
+all-call).
+
+| Control     | SysEx                 | MMC cmd |
+|-------------|-----------------------|---------|
+| mmc_play    | `F0 7F 7F 06 02 F7`   | Play    |
+| mmc_stop    | `F0 7F 7F 06 01 F7`   | Stop (also rewinds if already stopped) |
+| mmc_pause   | `F0 7F 7F 06 09 F7`   | Pause   |
+| mmc_rewind  | `F0 7F 7F 06 05 F7`   | Rewind  |
+| mmc_record  | `F0 7F 7F 06 06 F7`   | Record  |
+
+Extend with the same strides for more channels/sends as a rig needs. The block
+layout keeps the mixer (20-76), transport/system (102-113), and NRPN/RPN-reserved
+CCs (98-101) clear of each other.
 
 ## Generating an "AUM mapping cheat-sheet"
 
@@ -152,14 +201,19 @@ should be derived directly from this YAML plus the binding's MIDI channel:
 - **Inputs:** the bound MIDI channel `C`, and each control's `name` + `cc` from
   `aum.yaml`.
 - **Output rows:** `MIDI channel C, CC <n>  →  <human target>` where the target is
-  derived from the control name (`chN_mute` → "Channel N → Channel Controls →
-  Mute"; `chN_level` → "Channel N → Channel Controls → Volume"; `chN_pan` →
-  "Channel N → Stereo Balance node knob"; `transport` → "Transport → Toggle
-  play"). The `description` field already carries these targets in prose, so a
-  generator can lean on it.
-- **Per-control hints to surface:** for `enum` mute controls, note "Toggle, Cycle
-  **off**" (so >64 = on); for `range` pan, note "center = 64"; for `transport`,
-  note the Trigger-fires-on-non-zero caveat.
+  derived from the control name (`chN_mute`/`_solo`/`_rec` → "Channel N → Channel
+  Controls → Mute/Solo/Rec"; `chN_level` → "… → Volume"; `chN_scroll` → "… →
+  Scroll to this channel"; `chN_pan` → "Channel N → Stereo Balance node knob";
+  `chN_send1` → "Channel N → first Bus Send node knob"; `transport*`/`tap_tempo`/
+  `tempo`/`metronome` → the matching Transport item; `session_load`/`preset_load`
+  → the matching Program Change action; `mmc_*` → SysEx, no channel). The
+  `description` field already carries these targets in prose, so a generator can
+  lean on it.
+- **Per-control hints to surface:** for `enum` toggle controls (mute/solo/rec/
+  metronome), note "Toggle, Cycle **off**" (so >64 = on); for `range` pan, note
+  "center = 64"; for trigger controls (scroll/transport_*/system actions), note
+  the Trigger-fires-on-non-zero caveat; `program_change` controls are not CC and
+  map to PC actions; `mmc_*` are channel-less SysEx.
 - **Setup order for the user in AUM:** (1) connect this server's BLE-MIDI source
   to AUM's "MIDI Control" destination; (2) on each channel's collection use **Set
   MIDI Channels** to channel `C`; (3) LEARN or hand-enter each CC from the

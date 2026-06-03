@@ -158,6 +158,9 @@ func decodeReply(b []byte) string {
 		raw := decodeNibbles(nib)
 		return fmt.Sprintf("%s dev=0x%02X %-24s n=%2d bytes=% X ascii=%q", label, devID, regName(regID), n, raw, ascii(raw))
 	case cmdReadStatus:
+		if len(body) < 1 {
+			return fmt.Sprintf("STATUS   dev=0x%02X (short) body=% X", devID, body)
+		}
 		return fmt.Sprintf("STATUS   dev=0x%02X id=%d body=% X", devID, body[0], body[1:])
 	default:
 		return fmt.Sprintf("cmd=0x%02X dev=0x%02X body=% X", cmd, devID, body)
@@ -180,7 +183,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("new transport: %v", err)
 	}
-	defer t.Close()
+	defer func() { _ = t.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

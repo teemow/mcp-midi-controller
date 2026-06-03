@@ -1,6 +1,16 @@
 package device
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
+
+// idPattern constrains a definition ID to a filesystem-safe token. The ID is
+// used directly as a filename (devices/<id>.yaml) and as a probe/registry key,
+// so it must not contain path separators, "..", or other path-significant
+// characters. Allowing only lowercase alphanumerics plus "-"/"_" (starting
+// alphanumeric) keeps authored/learned IDs from escaping the config dir.
+var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // Definition is a declarative description of a controllable device. It is the
 // primary extension mechanism: adding a device means writing one of these (no
@@ -61,6 +71,9 @@ func (d *Definition) ControlNames() []string {
 func (d *Definition) Validate() error {
 	if d.ID == "" {
 		return fmt.Errorf("device definition: missing id")
+	}
+	if !idPattern.MatchString(d.ID) {
+		return fmt.Errorf("device definition: invalid id %q (must match %s)", d.ID, idPattern.String())
 	}
 	if d.Transport == "" {
 		return fmt.Errorf("device %q: missing transport", d.ID)
