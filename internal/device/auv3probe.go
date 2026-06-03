@@ -3,6 +3,8 @@ package device
 import (
 	"fmt"
 	"strings"
+
+	"github.com/teemow/mcp-midi-controller/internal/sanitize"
 )
 
 // This file turns an AUv3 parameter-tree dump (produced by the off-daemon
@@ -121,7 +123,7 @@ type ProbeDump struct {
 // staged dumps <ProbeID>.json so import_auv3_probe and DefinitionFromProbe
 // agree on the id.
 func ProbeID(dump ProbeDump) string {
-	return sanitizeID(firstNonEmpty(dump.Component.Subtype, dump.Name))
+	return sanitizeName(firstNonEmpty(dump.Component.Subtype, dump.Name))
 }
 
 // label returns the most human-friendly identifier for a parameter, preferring
@@ -450,31 +452,9 @@ func writableParams(dump ProbeDump) []ProbeParam {
 	return out
 }
 
-// sanitizeName lowercases and reduces a label to a control-name-safe token:
-// runs of non-alphanumeric characters collapse to a single underscore.
-func sanitizeName(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	var b strings.Builder
-	prevUnderscore := false
-	for _, r := range s {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
-			b.WriteRune(r)
-			prevUnderscore = false
-		default:
-			if !prevUnderscore && b.Len() > 0 {
-				b.WriteByte('_')
-				prevUnderscore = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "_")
-}
-
-// sanitizeID is sanitizeName with a guaranteed non-empty fallback.
-func sanitizeID(s string) string {
-	return sanitizeName(s)
-}
+// sanitizeName reduces a label to a control-name-safe token (the shared
+// identifier rule: lowercase, non-alphanumeric runs collapse to one underscore).
+func sanitizeName(s string) string { return sanitize.ID(s) }
 
 // uniqueName ensures a control name is unique within a definition by suffixing
 // _2, _3, … on collision. It records the chosen name in used.

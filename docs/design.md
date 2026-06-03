@@ -371,6 +371,41 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
   sentinels for transport. User-preset names are installation-specific, so they
   only ever live in the gitignored state dir / user config — never in committed
   artifacts.
+9. **AUM session read/write (`internal/aum`)** — a Go library that **reads,
+   edits, and authors** AUM session (`.aumproj`) and standalone mapping
+   (`.aum_midimap`) files, and an MCP surface over it. The format is an Apple
+   `NSKeyedArchiver` binary plist; the verified schema is in
+   `docs/research/aum-session.md`. The writer is a **graph round-trip** (decode
+   the `NSKeyedArchiver` object graph via `howett.net/plist`, mutate targeted
+   objects, re-encode), so fidelity is checked by semantic graph equality plus
+   an on-device "AUM still opens it" acceptance test — never byte equality.
+   Mapping a parameter edits AUM's existing disabled placeholder leaf in place
+   (`specState` v13 / `spec` v8/10) rather than adding objects; authoring a
+   session from scratch clones an embedded minimal template and mutates it. The
+   library layers as: `archive.go` (the generic graph codec), `session.go` +
+   `spec.go` + `midimap.go` (the typed read model + the packed `spec`/`specState`
+   codec + the flat `SessionMap` JSON), `edit.go` + `export.go` (round-trip edits
+   + `.aum_midimap` export), and `build.go` + `template.go` (template-clone
+   authoring). Like the AUv3 probe, the iPad app POSTs `.aumproj` bytes to an
+   **off-MCP LAN receiver** (`internal/aumreceiver`, mounted on the same shared
+   LAN listener as the probe receiver — `auv3_receiver_addr`, default `:7800` —
+   not the loopback MCP endpoint): `POST /aum-session` stages an upload, `GET
+   /aum-session` is the manifest, `GET /aum-session/{file}` downloads a
+   generated/edited file back to AUM. The daemon stages files under the state
+   dir (`config.AUMSessionsDir()`, gitignored — sessions are private rig
+   snapshots, never committed) and exposes them via MCP tools in
+   `internal/mcpserver/aum_tools.go`: `list_aum_sessions`, `get_aum_session`
+   (full flat layout as `structuredContent`), `diff_aum_session` (compare a
+   session's channel-control mappings against the server AUM mixer CC
+   convention), `import_aum_session` (match each hosted node to a staged
+   `auv3-probe` dump by component tuple and propose `{logical, device, channel}`
+   bindings), `author_aum_session` / `edit_aum_session` (generate/mutate → stage
+   for download), and `export_aum_midimap`. The iPad app stays a thin byte-ferry
+   — **Go owns all serialization** — so no Swift `NSKeyedArchiver` work is
+   needed. Open format gap: the **Program Change / Pitch Bend / Channel
+   Pressure** `type` codes are still unknown (the corpus is unmapped (v13) or
+   CC/Note only (v10)), so `export_aum_midimap` for those message types is
+   blocked until one enabled sample is captured; CC/Note work now.
 
 All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
 remaining work is **YAML definitions + MIDI-learn**, not core code.

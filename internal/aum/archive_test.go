@@ -1,8 +1,75 @@
 package aum
 
 import (
+	"math"
 	"testing"
 )
+
+// TestSanitizeNonFinite pins the non-finite clamp for both float widths. The
+// float32 paths are the regression guard: math.MaxFloat64 overflows back to
+// +Inf when narrowed to float32, so the clamp must use the float32 sentinels.
+func TestSanitizeNonFinite(t *testing.T) {
+	a := &Archive{
+		Top: map[string]any{},
+		Objects: []any{
+			"$null",
+			math.NaN(),                      // float64 NaN -> 0
+			math.Inf(1),                     // float64 +Inf -> MaxFloat64
+			math.Inf(-1),                    // float64 -Inf -> -MaxFloat64
+			float32(math.Inf(1)),            // float32 +Inf -> MaxFloat32
+			float32(math.Inf(-1)),           // float32 -Inf -> -MaxFloat32
+			float32(math.NaN()),             // float32 NaN -> 0
+			3.5,                             // finite float64, untouched
+			float32(2.5),                    // finite float32, untouched
+			[]any{math.Inf(1), 1.0},         // nested in a slice
+			map[string]any{"k": math.NaN()}, // nested in a map
+		},
+	}
+
+	n := a.SanitizeNonFinite()
+	if n != 8 {
+		t.Fatalf("changed count = %d, want 8", n)
+	}
+
+	checkFinite := func(label string, v any) {
+		t.Helper()
+		switch x := v.(type) {
+		case float64:
+			if math.IsNaN(x) || math.IsInf(x, 0) {
+				t.Fatalf("%s still non-finite: %v", label, x)
+			}
+		case float32:
+			if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+				t.Fatalf("%s still non-finite: %v", label, x)
+			}
+		default:
+			t.Fatalf("%s unexpected type %T", label, v)
+		}
+	}
+
+	for i := 1; i <= 6; i++ {
+		checkFinite("objects[scalar]", a.Objects[i])
+	}
+	if got := a.Objects[4].(float32); got != math.MaxFloat32 {
+		t.Fatalf("float32 +Inf clamped to %v, want MaxFloat32", got)
+	}
+	if got := a.Objects[5].(float32); got != -math.MaxFloat32 {
+		t.Fatalf("float32 -Inf clamped to %v, want -MaxFloat32", got)
+	}
+	if got := a.Objects[7].(float64); got != 3.5 {
+		t.Fatalf("finite float64 changed to %v", got)
+	}
+	if got := a.Objects[8].(float32); got != 2.5 {
+		t.Fatalf("finite float32 changed to %v", got)
+	}
+	checkFinite("nested slice", a.Objects[9].([]any)[0])
+	checkFinite("nested map", a.Objects[10].(map[string]any)["k"])
+
+	// Idempotent: a finite graph reports no further changes.
+	if n2 := a.SanitizeNonFinite(); n2 != 0 {
+		t.Fatalf("second pass changed %d values, want 0", n2)
+	}
+}
 
 // classDef builds a minimal NSKeyedArchiver class-definition object.
 func classDef(name string, parents ...string) map[string]any {

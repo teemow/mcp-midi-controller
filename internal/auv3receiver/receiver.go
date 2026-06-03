@@ -12,10 +12,7 @@
 package auv3receiver
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -23,7 +20,11 @@ import (
 	"time"
 
 	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 )
+
+// resp renders this receiver's LAN errors without leaking internal detail.
+var resp = lanhttp.Responder{Prefix: "auv3-probe receiver"}
 
 // maxBodyBytes bounds a single request body. The receiver binds the LAN, so an
 // unbounded JSON body would let any host on the network drive the daemon out of
@@ -40,68 +41,28 @@ type Result struct {
 	Staged   string `json:"staged"`
 }
 
-// Handler builds the receiver's HTTP routes. Dumps are staged in outDir. If
-// onStaged is non-nil it is invoked (synchronously) after each dump is written,
-// e.g. so the daemon can notify connected MCP clients that new data arrived.
+// Register adds the probe receiver's routes (NOT /healthz) to mux. The daemon
+// uses this to mount the probe surface alongside the AUM-session surface on one
+// shared LAN listener; Handler wraps it for standalone use.
 //
 // Routes:
 //
 //	POST /auv3-probe              stage one plugin's parameter-tree dump
 //	POST /auv3-probe/diagnostics  record a full probe-run report (incl. failures)
-//	GET  /healthz                 liveness, so the app can test connectivity
-func Handler(outDir string, onStaged func(device.ProbeDump, Result)) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", handleHealthz)
+func Register(mux *http.ServeMux, outDir string, onStaged func(device.ProbeDump, Result)) {
 	mux.HandleFunc("/auv3-probe/diagnostics", handleDiagnostics(outDir))
 	mux.HandleFunc("/auv3-probe", handleProbe(outDir, onStaged))
+}
+
+// Handler builds the standalone receiver: the probe routes plus a /healthz
+// liveness endpoint. Dumps are staged in outDir. If onStaged is non-nil it is
+// invoked (synchronously) after each dump is written, e.g. so the daemon can
+// notify connected MCP clients that new data arrived.
+func Handler(outDir string, onStaged func(device.ProbeDump, Result)) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", lanhttp.Healthz)
+	Register(mux, outDir, onStaged)
 	return mux
-}
-
-// Serve runs the receiver on addr until ctx is cancelled, then shuts it down
-// gracefully. outDir is created if missing. A blank addr is treated as an error
-// by the caller; the daemon disables the receiver before calling Serve in that
-// case.
-func Serve(ctx context.Context, addr, outDir string, onStaged func(device.ProbeDump, Result)) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("create out dir %s: %w", outDir, err)
-	}
-
-	// This listener faces the LAN, so set conservative timeouts and header
-	// limits to bound the resources a slow or hostile client can tie up.
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           Handler(outDir, onStaged),
-		ReadTimeout:       30 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("auv3-probe receiver listening on %s, staging dumps in %s", addr, outDir)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-		return ctx.Err()
-	case err := <-errCh:
-		return err
-	}
-}
-
-func handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte("ok\n"))
 }
 
 // handleProbe decodes and validates a ProbeDump, derives its id, and stages it
@@ -123,28 +84,28 @@ func handleProbe(outDir string, onStaged func(device.ProbeDump, Result)) http.Ha
 
 		var dump device.ProbeDump
 		if err := json.NewDecoder(r.Body).Decode(&dump); err != nil {
-			httpError(w, decodeErrStatus(err), "decode dump: %v", err)
+			resp.Error(w, lanhttp.DecodeErrStatus(err), "decode dump: %v", err)
 			return
 		}
 
 		id := device.ProbeID(dump)
 		if id == "" {
-			httpError(w, http.StatusBadRequest, "dump has no id source (empty component.subtype and name)")
+			resp.Error(w, http.StatusBadRequest, "dump has no id source (empty component.subtype and name)")
 			return
 		}
 
 		b, err := json.MarshalIndent(dump, "", "  ")
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "re-encode dump: %v", err)
+			resp.Error(w, http.StatusInternalServerError, "re-encode dump: %v", err)
 			return
 		}
 		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			httpError(w, http.StatusInternalServerError, "create out dir %s: %v", outDir, err)
+			resp.Error(w, http.StatusInternalServerError, "create out dir %s: %v", outDir, err)
 			return
 		}
 		path := filepath.Join(outDir, id+".json")
-		if err := writeFileAtomic(path, b, 0o644); err != nil {
-			httpError(w, http.StatusInternalServerError, "write %s: %v", path, err)
+		if err := lanhttp.WriteFileAtomic(path, b, 0o644); err != nil {
+			resp.Error(w, http.StatusInternalServerError, "write %s: %v", path, err)
 			return
 		}
 
@@ -190,26 +151,26 @@ func handleDiagnostics(outDir string) http.HandlerFunc {
 
 		var report device.ProbeReport
 		if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-			httpError(w, decodeErrStatus(err), "decode report: %v", err)
+			resp.Error(w, lanhttp.DecodeErrStatus(err), "decode report: %v", err)
 			return
 		}
 
 		b, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "re-encode report: %v", err)
+			resp.Error(w, http.StatusInternalServerError, "re-encode report: %v", err)
 			return
 		}
 		diagDir := filepath.Join(outDir, "_diagnostics")
 		if err := os.MkdirAll(diagDir, 0o755); err != nil {
-			httpError(w, http.StatusInternalServerError, "create diagnostics dir %s: %v", diagDir, err)
+			resp.Error(w, http.StatusInternalServerError, "create diagnostics dir %s: %v", diagDir, err)
 			return
 		}
 		// Nanosecond precision so two reports posted in the same second do not
 		// overwrite each other.
 		name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".json"
 		path := filepath.Join(diagDir, name)
-		if err := writeFileAtomic(path, b, 0o644); err != nil {
-			httpError(w, http.StatusInternalServerError, "write %s: %v", path, err)
+		if err := lanhttp.WriteFileAtomic(path, b, 0o644); err != nil {
+			resp.Error(w, http.StatusInternalServerError, "write %s: %v", path, err)
 			return
 		}
 
@@ -227,64 +188,4 @@ func handleDiagnostics(outDir string) http.HandlerFunc {
 			Total: total, Sent: sent, Empty: empty, Failed: failed, Stored: path,
 		})
 	}
-}
-
-// httpError logs the detailed cause server-side but returns only a generic,
-// status-derived message to the (untrusted LAN) client, so server filesystem
-// paths and internal error strings are never leaked over the network.
-func httpError(w http.ResponseWriter, code int, format string, args ...any) {
-	log.Printf("auv3-probe receiver: %s", fmt.Sprintf(format, args...))
-	http.Error(w, clientMessage(code), code)
-}
-
-// decodeErrStatus maps a body-decode error to a status: a body that exceeds the
-// MaxBytesReader cap is 413 Request Entity Too Large, anything else is a 400.
-func decodeErrStatus(err error) int {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		return http.StatusRequestEntityTooLarge
-	}
-	return http.StatusBadRequest
-}
-
-func clientMessage(code int) string {
-	switch code {
-	case http.StatusBadRequest:
-		return "bad request"
-	case http.StatusRequestEntityTooLarge:
-		return "request too large"
-	default:
-		return "internal error"
-	}
-}
-
-// writeFileAtomic writes data to a temp file in the same directory and renames
-// it into place, so a concurrent reader (or a second POST for the same id)
-// never observes a half-written file. The temp file is cleaned up on error.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Chmod(tmpName, perm); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
 }
