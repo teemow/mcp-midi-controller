@@ -13,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
@@ -28,6 +29,10 @@ type Server struct {
 	eng    *engine.Engine
 	mcp    *mcp.Server
 	scenes *scene.Store
+
+	// audio is the in-memory ProbeAudioTap state behind the get_audio_tap tool.
+	// nil when no audio receiver is wired (the tool is then not registered).
+	audio *audiotap.Store
 
 	// usbAllowWrites is the daemon's master USB write gate (config
 	// usb_allow_writes). With it off, USB write tools (set_param, write_pattern,
@@ -50,6 +55,12 @@ type Option func(*Server)
 // usb_allow_writes). Default (no option) is false: read-only over USB.
 func WithUSBAllowWrites(allow bool) Option {
 	return func(s *Server) { s.usbAllowWrites = allow }
+}
+
+// WithAudioTap attaches the ProbeAudioTap state store so the read-only
+// get_audio_tap tool is registered. Without it the tool is omitted.
+func WithAudioTap(store *audiotap.Store) Option {
+	return func(s *Server) { s.audio = store }
 }
 
 // New builds the MCP server, registers global tools, and generates a tool for
@@ -136,6 +147,34 @@ func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings 
 			"channels": channels,
 			"mappings": mappings,
 			"hint":     "inspect with get_aum_session, compare with diff_aum_session, propose bindings with import_aum_session",
+		},
+	}
+	ctx := context.Background()
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Log(ctx, p)
+	}
+}
+
+// NotifyAudioTap broadcasts to every connected session that a ProbeAudioTap
+// audio stream connected or disconnected, so an agent watching the rig knows it
+// has (or lost) "ears" without polling get_audio_tap. Like notifyInbound,
+// clients receive it only after setting a logging level. Per-frame levels are
+// intentionally NOT broadcast (they arrive ~10 Hz) — poll get_audio_tap for
+// live levels instead.
+func (s *Server) NotifyAudioTap(connected bool, remote string) {
+	state := "connected"
+	hint := "read live levels + waveform with get_audio_tap"
+	if !connected {
+		state = "disconnected"
+		hint = "no audio tap is streaming"
+	}
+	p := &mcp.LoggingMessageParams{
+		Level:  "info",
+		Logger: "audio-tap",
+		Data: map[string]any{
+			"state":  state,
+			"remote": remote,
+			"hint":   hint,
 		},
 	}
 	ctx := context.Background()

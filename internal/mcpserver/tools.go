@@ -107,6 +107,10 @@ func (s *Server) registerGlobalTools() {
 	// AUM session tools (list/get/diff/import/author/edit + export_aum_midimap)
 	// over the internal/aum library are wired in registerAUMTools.
 	s.registerAUMTools()
+	// get_audio_tap (the agent's "ears" — live levels + waveform from the
+	// ProbeAudioTap stream) is wired in registerAudioTools when WithAudioTap
+	// attached a store.
+	s.registerAudioTools()
 }
 
 func (s *Server) handleListDevices(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
