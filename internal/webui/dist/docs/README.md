@@ -84,6 +84,8 @@ cmd/auv3-probe/            standalone AUv3 dump receiver (same listener is now
 internal/
   auv3receiver/            the AUv3 probe receiver (LAN listener, write-only;
                            staged dumps feed list/get/import_auv3_probe)
+  audiotap/                ProbeAudioTap audio-stream WebSocket receiver +
+                           in-memory level/window store (feeds get_audio_tap)
 init/                      systemd user unit
 scripts/                   validate.sh (hardware-validation harness) + capture tooling
 .cursor/mcp.json           Cursor MCP client config (points at the loopback daemon)
@@ -129,13 +131,24 @@ The daemon binds loopback only; [`.cursor/mcp.json`](.cursor/mcp.json) points
 Cursor at it (`http://127.0.0.1:7799/`). If you change `listen_addr` in
 `config.yaml`, update that URL to match.
 
-In addition to the loopback MCP endpoint, the daemon runs the **AUv3 probe
-receiver** on a separate LAN address (`auv3_receiver_addr` in `config.yaml`,
-default `:7800`; set to `""` to disable). This is intentionally LAN-reachable so
-the [auv3-probe](https://github.com/teemow/auv3-probe) iPad app can POST
-parameter-tree dumps to it — it has a write-only surface (stage a dump as JSON;
-never touches hardware). If the daemon host runs a default-deny firewall, allow
-that port from your LAN. See [`docs/research/auv3-feedback.md`](docs/research/auv3-feedback.md).
+In addition to the loopback MCP endpoint, the daemon runs the **iPad receiver**
+on a separate LAN address (`auv3_receiver_addr` in `config.yaml`, default
+`:7800`; set to `""` to disable). This is intentionally LAN-reachable so the
+[auv3-probe](https://github.com/teemow/auv3-probe) iPad app can reach it. One
+listener carries three surfaces, none of which touch hardware:
+
+- **AUv3 probe** dumps POSTed by the probe app (staged as JSON for the
+  `list_auv3_probes` / `get_auv3_probe` tools).
+- **AUM sessions** ferried in/out for the `aum` tools.
+- **Audio tap** — a `GET /audio-stream` **WebSocket** that terminates the
+  ProbeAudioTap AUv3's stream (decimated mono PCM + RMS/peak features). It keeps
+  the latest levels and a short rolling window **in memory only** (audio is a
+  private rig signal, never written to disk) and exposes them read-only through
+  the `get_audio_tap` MCP tool — the agent's "ears". A tap connecting or dropping
+  is broadcast as an `audio-tap` log notification.
+
+If the daemon host runs a default-deny firewall, allow that port from your LAN.
+See [`docs/research/auv3-feedback.md`](docs/research/auv3-feedback.md).
 
 ## Web UI (signalwave)
 

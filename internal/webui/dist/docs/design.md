@@ -422,6 +422,23 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
    Pressure** `type` codes are still unknown (the corpus is unmapped (v13) or
    CC/Note only (v10)), so `export_aum_midimap` for those message types is
    blocked until one enabled sample is captured; CC/Note work now.
+10. **Audio tap (`internal/audiotap`)** — the agent's "ears". The auv3-probe
+    **ProbeAudioTap** AUv3 (`aufx`) is inserted on an AUM audio channel and
+    streams decimated mono PCM plus RMS/peak features over a WebSocket to the
+    daemon (`GET /audio-stream`, mounted on the same shared LAN listener as the
+    probe + session receivers — `auv3_receiver_addr`, default `:7800` — not the
+    loopback MCP endpoint). The receiver terminates the
+    [contract](https://github.com/teemow/auv3-probe/blob/main/docs/auv3-extension.md)
+    (one TEXT `format` message, BINARY little-endian `Float32` mono PCM, ~10 Hz
+    TEXT `features`) into an **in-memory** store: the latest levels plus a short
+    rolling PCM window (~6 s, capped). Nothing is written to disk — audio is a
+    private, volatile rig signal. The store backs the read-only `get_audio_tap`
+    MCP tool (connection state, last + window-derived RMS/peak, a short
+    peak-envelope waveform, and age metadata as `structuredContent`); a tap
+    connecting or dropping is broadcast as an `audio-tap` log notification.
+    Long-lived sockets clear the shared listener's read/write deadlines
+    (`http.ResponseController`) before upgrading so they are not dropped at the
+    60 s timeout.
 
 All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
 remaining work is **YAML definitions + MIDI-learn**, not core code.
