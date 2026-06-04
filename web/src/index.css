@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
 
 @layer base {
   :root {
@@ -59,7 +58,7 @@
   }
 
   .field {
-    @apply w-full rounded border border-cyan-500/20 bg-ink-900/80 px-2 py-1 text-sm text-cyan-100 outline-none transition focus:border-cyan-glow/60 focus:shadow-glow-cyan;
+    @apply w-full rounded border border-cyan-500/20 bg-ink-900/80 px-2 py-1 text-sm text-cyan-100 outline-none transition placeholder:text-cyan-100/40 focus:border-cyan-glow/60 focus:shadow-glow-cyan;
   }
 
   .label {
