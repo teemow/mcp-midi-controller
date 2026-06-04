@@ -123,7 +123,7 @@ func newUSBTestEngine(t *testing.T) (*Engine, *fakeUSBTransport) {
 	}
 	ft := newFakeUSBTransport("usbmidi")
 	eng := New(reg, ft)
-	if err := eng.Bind(Binding{Logical: "sl2usb", Endpoint: "USB1", DeviceID: "sl2test", Transport: "usbmidi"}); err != nil {
+	if err := eng.Bind(Binding{Logical: "sl2usb", DeviceID: "sl2test", USB: &USBSurface{Transport: "usbmidi", Endpoint: "USB1"}}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	return eng, ft
@@ -182,7 +182,7 @@ func TestUSBBindingKind(t *testing.T) {
 func TestUSBBindTransportMismatch(t *testing.T) {
 	eng, _ := newUSBTestEngine(t)
 	// usbhid transport does not match the device's usb transport (usbmidi).
-	err := eng.Bind(Binding{Logical: "bad", Endpoint: "USB1", DeviceID: "sl2test", Transport: "usbhid"})
+	err := eng.Bind(Binding{Logical: "bad", DeviceID: "sl2test", USB: &USBSurface{Transport: "usbhid", Endpoint: "USB1"}})
 	if err == nil {
 		t.Fatalf("expected mismatch error binding usbhid against a usbmidi usb profile")
 	}

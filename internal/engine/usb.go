@@ -89,14 +89,14 @@ func (e *Engine) usbContextFor(logical string) (*usbContext, error) {
 	if def.USB == nil {
 		return nil, fmt.Errorf("device %q has no usb profile", def.ID)
 	}
-	if !isUSBTransport(b.Transport) {
-		return nil, fmt.Errorf("%q is not a usb binding (transport %q)", logical, b.Transport)
+	if !b.HasUSB() {
+		return nil, fmt.Errorf("%q has no usb surface (bind it with transport usbmidi/usbhid)", logical)
 	}
 	codec, err := usbCodecFor(def.USB)
 	if err != nil {
 		return nil, fmt.Errorf("device %q: %w", def.ID, err)
 	}
-	endpoint := b.Endpoint
+	endpoint := b.USB.Endpoint
 	if endpoint == "" {
 		endpoint = def.USB.Endpoint
 	}
@@ -105,7 +105,7 @@ func (e *Engine) usbContextFor(logical string) (*usbContext, error) {
 		def:       def,
 		profile:   def.USB,
 		codec:     codec,
-		transport: b.Transport,
+		transport: b.USB.Transport,
 		endpoint:  endpoint,
 	}, nil
 }

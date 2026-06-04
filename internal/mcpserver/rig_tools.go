@@ -54,11 +54,15 @@ type bindingView struct {
 	Logical    string `json:"logical"`
 	Device     string `json:"device"`
 	DeviceName string `json:"device_name,omitempty"`
-	Endpoint   string `json:"endpoint"`
-	Channel    int    `json:"channel"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	Channel    int    `json:"channel,omitempty"`
 	Transport  string `json:"transport,omitempty"`
-	USB        bool   `json:"usb"`
-	Writable   bool   `json:"writable,omitempty"`
+	// USB reports whether the logical carries a USB editor/readback surface,
+	// with USBTransport/USBEndpoint describing it and Writable its write opt-in.
+	USB          bool   `json:"usb"`
+	USBTransport string `json:"usb_transport,omitempty"`
+	USBEndpoint  string `json:"usb_endpoint,omitempty"`
+	Writable     bool   `json:"writable,omitempty"`
 }
 
 func (s *Server) handleListBindings(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -71,8 +75,12 @@ func (s *Server) handleListBindings(context.Context, *mcp.CallToolRequest) (*mcp
 			Endpoint:  b.Endpoint,
 			Channel:   b.Channel,
 			Transport: b.Transport,
-			USB:       s.eng.IsUSBBinding(b.Logical),
-			Writable:  b.Writable,
+			USB:       b.HasUSB(),
+		}
+		if b.HasUSB() {
+			v.USBTransport = b.USB.Transport
+			v.USBEndpoint = b.USB.Endpoint
+			v.Writable = b.USB.Writable
 		}
 		if def, ok := s.eng.Registry().Get(b.DeviceID); ok {
 			v.DeviceName = def.Name
@@ -90,12 +98,15 @@ func (s *Server) handleListBindings(context.Context, *mcp.CallToolRequest) (*mcp
 		if name == "" {
 			name = v.Device
 		}
-		fmt.Fprintf(&b, "%s\t(device=%s, endpoint=%q, channel=%d", v.Logical, name, v.Endpoint, v.Channel)
+		fmt.Fprintf(&b, "%s\t(device=%s", v.Logical, name)
+		if v.Endpoint != "" {
+			fmt.Fprintf(&b, ", endpoint=%q, channel=%d", v.Endpoint, v.Channel)
+		}
 		if v.Transport != "" {
 			fmt.Fprintf(&b, ", transport=%s", v.Transport)
 		}
 		if v.USB {
-			b.WriteString(", usb")
+			fmt.Fprintf(&b, ", usb=%s:%q", v.USBTransport, v.USBEndpoint)
 			if v.Writable {
 				b.WriteString("/writable")
 			}

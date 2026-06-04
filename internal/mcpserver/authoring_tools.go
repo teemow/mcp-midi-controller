@@ -308,8 +308,7 @@ func (s *Server) handleSaveDeviceDefinition(_ context.Context, req *mcp.CallTool
 	var regenerated []string
 	for _, bind := range s.eng.Bindings() {
 		if bind.DeviceID == draft.ID {
-			s.removeToolsForBinding(bind.Logical, s.eng.IsUSBBinding(bind.Logical))
-			s.addToolsForBinding(bind)
+			s.refreshToolsForBinding(bind)
 			regenerated = append(regenerated, bind.Logical)
 		}
 	}

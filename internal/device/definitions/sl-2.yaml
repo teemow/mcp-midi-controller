@@ -101,3 +101,88 @@ controls:
 # authoring/destructive action and is intentionally NOT modeled as a control.
 # Tempo can also follow MIDI clock (F8/FA/FB/FC), which is system-real-time (no
 # channel) and handled at the transport level, not as a control.
+
+# --- USB editor/readback profile (Roland address SysEx over USB-MIDI) --------
+# The SL-2's USB-MIDI port speaks the full BOSS Tone Studio editor protocol
+# (RQ1 read / DT1 write over an address map) — the same protocol the sysex
+# controls above use, but READABLE. This is the only channel that can READ the
+# SL-2 back: the pedal has TRS MIDI IN only (no MIDI OUT), so BLE editing is
+# open-loop. The USB readback closes that loop (verify_control, scenes). Model
+# id is the 5-byte 00 00 00 00 1D; confirmed live read-only with
+# `cmd/usb-probe --device sl-2`. See docs/research/sl-2.md.
+usb:
+  protocol: roland-address-sysex
+  transport: usbmidi
+  endpoint: "SL-2"             # ALSA rawmidi port-name substring (the binding overrides this)
+  identity:
+    mfg: 0x41                  # Roland
+    model: "00 00 00 00 1D"    # SL-2 address-map model id (5 bytes)
+    device: 0x10
+  addr_bytes: 4
+  size_bytes: 4
+  handshake: editor-comm-mode  # DT1 0x7F000001 = 01 is sent by the codec before any write
+  regions:
+    system:  { base: 0x10000000 }                                 # tempo, EXP/CTL function, MIDI channel
+    temp:    { base: 0x20000000 }                                 # the temporary/edit patch (the LIVE sound)
+    patches: { base: 0x20100000, count: 88, stride: 0x00100000 }  # 88 stored patterns (7-bit-safe stride)
+  params:
+    # SYSTEM block (addr is an offset into the system region) ------------------
+    - name: tempo
+      region: system
+      addr: 0x00
+      enc: int4x4
+      min: 400
+      max: 3000
+      description: Master tempo as BPM x10 (400 = 40.0 BPM .. 3000 = 300.0 BPM); INTEGER4x4 nibble-packed (e.g. 1220 -> 00 04 0C 04 = 122.0 BPM).
+    - name: ctl_func
+      region: system
+      addr: 0x06
+      enc: int1x7
+      description: CTL footswitch function (MOMENTARY/TAP etc.).
+    - name: exp_func
+      region: system
+      addr: 0x07
+      enc: int1x7
+      values: { duty: 0, attack: 1, tempo: 2, balance: 3, output_level: 4 }
+      description: Parameter the EXP controller (CC#16) drives. Factory default 2 (TEMPO).
+    - name: midi_channel
+      region: system
+      addr: 0x08
+      enc: int1x7
+      min: 0
+      max: 10
+      description: MIDI receive channel (0 = ch1 .. 9 = ch10, 10 = All/omni).
+    # TEMPORARY (edit) patch — the running sound -------------------------------
+    - name: patch_name
+      region: temp
+      addr: 0x00
+      enc: ascii16
+      description: 16-character name of the temporary (edit) patch.
+    - name: slicer1_pattern
+      region: temp
+      addr: 0x1000
+      enc: int1x7
+      min: 0
+      max: 50
+      description: SLICER(1) slice pattern (NOT reachable by PC/CC; USB/DT1 only).
+    - name: slicer1_fx_type
+      region: temp
+      addr: 0x1002
+      enc: int1x7
+      min: 0
+      max: 6
+      description: SLICER(1) effect type.
+    - name: slicer1_step_number
+      region: temp
+      addr: 0x1003
+      enc: int1x7
+      min: 0
+      max: 3
+      description: SLICER(1) step count.
+    - name: slicer2_pattern
+      region: temp
+      addr: 0x2000
+      enc: int1x7
+      min: 0
+      max: 50
+      description: SLICER(2) slice pattern (used by DUAL patches).

@@ -170,6 +170,33 @@ func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.Re
 			e.state.Set(logical, name, controls[name])
 		}
 	}
+
+	// Patch-level USB blobs: write each captured blob back over USB (state the
+	// control surface cannot reach, e.g. an SL-2 slicer pattern). These are
+	// gated; with writes disabled the rest of the scene still recalls and the
+	// skipped blob is reported as a warning rather than aborting the recall.
+	usbLogicals := make([]string, 0, len(sc.USB))
+	for l := range sc.USB {
+		usbLogicals = append(usbLogicals, l)
+	}
+	sort.Strings(usbLogicals)
+	for _, logical := range usbLogicals {
+		b, ok := bindings[logical]
+		if !ok {
+			return warnings, fmt.Errorf("scene references unbound usb device %q; bind it (bind_device, transport usbmidi/usbhid) so its endpoint is known", logical)
+		}
+		if !b.HasUSB() {
+			return warnings, fmt.Errorf("scene usb patch %q has no usb surface; bind it with transport usbmidi/usbhid", logical)
+		}
+		if !e.usbWritesAllowed(b) {
+			warnings = append(warnings, fmt.Sprintf("skipped usb patch for %q: usb writes disabled (set usb_allow_writes and bind writable: true)", logical))
+			continue
+		}
+		if _, err := e.USBWritePatch(ctx, logical, sc.USB[logical], false); err != nil {
+			return warnings, fmt.Errorf("usb patch %q: %w", logical, err)
+		}
+	}
+
 	e.persistState()
 	return warnings, nil
 }

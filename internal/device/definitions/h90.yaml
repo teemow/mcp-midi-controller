@@ -295,3 +295,12 @@ controls:
     type: cc
     cc: 33            # convention (no factory default)
     value: { type: enum, values: { trigger: 127 } }
+
+# --- No USB editor/readback surface (resolved negative result) ---------------
+# Deliberately NO `usb:` profile. The H90 exposes no device-state readback or
+# editor protocol over USB: its USB port carries standard PC/CC/Clock and, in a
+# recovery context, a mass-storage volume for firmware — neither is a parameter
+# read/write channel. Deep editing and preset files are host-side in the H90
+# Control app, and control here stays on BLE (Program Change + the CC
+# conventions above). So verify_control has no USB ground-truth path for the
+# H90 (BLE-echo only). See docs/research/h90.md.

@@ -113,7 +113,7 @@ func (e *Engine) usbReadback(ctx context.Context, control Binding, def *device.D
 	if _, ok := def.USB.Param(name); !ok {
 		return // this control has no USB counterpart — common, best-effort
 	}
-	ub, ok := e.usbBindingForDevice(control.DeviceID)
+	ub, ok := e.usbBindingForControl(control)
 	if !ok {
 		return
 	}

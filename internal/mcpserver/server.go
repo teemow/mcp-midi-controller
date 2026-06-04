@@ -148,47 +148,57 @@ func (s *Server) Handler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
 }
 
-// addToolsForBinding generates the right MCP tool(s) for a binding: the USB
-// editor/readback family for a USB binding, otherwise the control_<logical>
-// tool. Both paths emit tools/list_changed.
+// addToolsForBinding generates every MCP tool a binding's surfaces warrant:
+// control_<logical> when it has a control surface, and the USB editor/readback
+// family when it has a USB surface. A logical that carries both gets both. Each
+// AddTool emits tools/list_changed.
 func (s *Server) addToolsForBinding(b engine.Binding) {
-	if s.eng.IsUSBBinding(b.Logical) {
+	if b.HasControl() {
+		s.AddDeviceTool(b)
+	}
+	if b.HasUSB() {
 		s.AddUSBDeviceTool(b)
-		return
 	}
-	s.AddDeviceTool(b)
 }
 
-// removeToolsForBinding removes whichever tool(s) a binding generated. The kind
-// must be resolved before the binding is dropped from the engine.
-func (s *Server) removeToolsForBinding(logical string, wasUSB bool) {
-	if wasUSB {
-		s.RemoveUSBDeviceTool(logical)
-		return
-	}
+// refreshToolsForBinding tears down and re-creates a binding's tools so a
+// re-bind (e.g. adding a USB surface to an existing control binding) lands the
+// current surface set without duplicate registrations. The binding must
+// already be present in the engine (RemoveUSBDeviceTool resolves it).
+func (s *Server) refreshToolsForBinding(b engine.Binding) {
+	s.RemoveDeviceTool(b.Logical)
+	s.RemoveUSBDeviceTool(b.Logical)
+	s.addToolsForBinding(b)
+}
+
+// removeToolsForBinding removes every tool a binding could have generated
+// (control_<logical> and the USB family). It must be called while the binding
+// is still present in the engine, since RemoveUSBDeviceTool resolves the USB
+// tool names from the binding's definition. Removing a tool that was never
+// registered is a no-op.
+func (s *Server) removeToolsForBinding(logical string) {
 	s.RemoveDeviceTool(logical)
+	s.RemoveUSBDeviceTool(logical)
 }
 
-// usbWritesAllowed reports whether write tools may be exposed for a USB binding:
-// both the daemon's master gate (usb_allow_writes) and the binding's own
-// writable opt-in must be set. This is the two-key safety model from
-// docs/usb-tools.md — writes change persistent/live device state.
+// usbWritesAllowed reports whether write tools may be exposed for a binding's
+// USB surface: both the daemon's master gate (usb_allow_writes) and the
+// surface's own writable opt-in must be set. This is the two-key safety model
+// from docs/usb-tools.md — writes change persistent/live device state.
 func (s *Server) usbWritesAllowed(b engine.Binding) bool {
-	return s.usbAllowWrites && b.Writable
+	return s.usbAllowWrites && b.USBWritable()
 }
 
-// AddDeviceTool generates and registers control_<logical> for a binding. Adding
-// the tool also emits notifications/tools/list_changed to connected clients.
+// AddDeviceTool generates and registers control_<logical> for a binding's
+// control surface. Adding the tool also emits
+// notifications/tools/list_changed to connected clients. It is a no-op for a
+// binding with no control surface (USB-only).
 func (s *Server) AddDeviceTool(b engine.Binding) {
 	def, ok := s.eng.Registry().Get(b.DeviceID)
 	if !ok {
 		return
 	}
-	// USB bindings expose the device's editor/readback surface, not the
-	// fire-and-forget control surface, so they do not get a control_<logical>
-	// tool. The generic usb_* tools (and the per-binding semantic USB tools)
-	// cover them instead.
-	if s.eng.IsUSBBinding(b.Logical) {
+	if !b.HasControl() {
 		return
 	}
 	s.mcp.AddTool(&mcp.Tool{
