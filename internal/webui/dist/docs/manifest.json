@@ -1,0 +1,68 @@
+{
+  "docs": [
+    {
+      "path": "README.md",
+      "title": "README"
+    },
+    {
+      "path": "design.md",
+      "title": "design"
+    },
+    {
+      "path": "usb-tools.md",
+      "title": "usb-tools"
+    },
+    {
+      "path": "research/aum-session.md",
+      "title": "research/aum-session"
+    },
+    {
+      "path": "research/aum.md",
+      "title": "research/aum"
+    },
+    {
+      "path": "research/auv3-feedback.md",
+      "title": "research/auv3-feedback"
+    },
+    {
+      "path": "research/auv3-plugins.md",
+      "title": "research/auv3-plugins"
+    },
+    {
+      "path": "research/eq-2.md",
+      "title": "research/eq-2"
+    },
+    {
+      "path": "research/h90.md",
+      "title": "research/h90"
+    },
+    {
+      "path": "research/md-200.md",
+      "title": "research/md-200"
+    },
+    {
+      "path": "research/ml10x.md",
+      "title": "research/ml10x"
+    },
+    {
+      "path": "research/opus.md",
+      "title": "research/opus"
+    },
+    {
+      "path": "research/sl-2.md",
+      "title": "research/sl-2"
+    },
+    {
+      "path": "research/usb.md",
+      "title": "research/usb"
+    },
+    {
+      "path": "research/widi.md",
+      "title": "research/widi"
+    },
+    {
+      "path": "research/x32.md",
+      "title": "research/x32"
+    }
+  ]
+}

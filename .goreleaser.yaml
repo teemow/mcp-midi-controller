@@ -4,6 +4,9 @@ version: 2
 before:
   hooks:
     - go mod tidy
+    # Build the signalwave SPA into internal/webui/dist (go:embed) before the Go
+    # builds. Pure Node, so it works under the per-arch CGO toolchains below.
+    - sh -c "cd web && npm ci && npm run build"
 
 builds:
   - id: mcp-midi-controller
