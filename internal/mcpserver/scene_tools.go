@@ -39,6 +39,17 @@ func (s *Server) registerSceneTools() {
 	}, s.handleRecallScene)
 
 	s.mcp.AddTool(&mcp.Tool{
+		Name: "capture_usb_patch",
+		Description: "Capture a USB device's memory blob into a scene (the patch-level part of a scene): " +
+			"reads device state the control surface cannot express (e.g. a Boss SL-2 slicer pattern/type) over " +
+			"USB and stores it in the named scene, creating the scene if it does not exist. On recall the blob is " +
+			"written back over USB (gated by usb_allow_writes + a writable binding). device is a USB-bound logical " +
+			"device; with region set, addr is an offset into that region and index selects a repeated block. Set " +
+			"store to also persist the recalled patch into that stored slot (Roland PATCH_WRITE).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"device":{"type":"string"},"region":{"type":"string"},"index":{"type":"integer"},"addr":{"type":["integer","string"]},"size":{"type":"integer"},"store":{"type":"integer"}},"required":["name","device","size"]}`),
+	}, s.handleCaptureUSBPatch)
+
+	s.mcp.AddTool(&mcp.Tool{
 		Name: "export_scene_to_footswitch",
 		Description: "Compile a saved scene into the 'three' footswitch's on-device schema " +
 			"(program-change before CC, per-device settle baked in; OSC devices such as the " +
@@ -130,7 +141,59 @@ func (s *Server) handleRecallScene(ctx context.Context, req *mcp.CallToolRequest
 	if len(warnings) > 0 {
 		warn = "\nwarnings:\n  - " + strings.Join(warnings, "\n  - ")
 	}
-	return textResult(fmt.Sprintf("recalled scene %q (%s) onto %d device(s)%s", sc.Name, mode, len(sc.Devices), warn), false), nil
+	usbNote := ""
+	if len(sc.USB) > 0 {
+		usbNote = fmt.Sprintf(" + %d usb patch(es)", len(sc.USB))
+	}
+	return textResult(fmt.Sprintf("recalled scene %q (%s) onto %d device(s)%s%s", sc.Name, mode, len(sc.Devices), usbNote, warn), false), nil
+}
+
+func (s *Server) handleCaptureUSBPatch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Name   string `json:"name"`
+		Device string `json:"device"`
+		Region string `json:"region"`
+		Index  int    `json:"index"`
+		Addr   any    `json:"addr"`
+		Size   int    `json:"size"`
+		Store  *int   `json:"store"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	if args.Name == "" {
+		return textResult("/name: required", true), nil
+	}
+	if args.Device == "" {
+		return textResult("/device: required", true), nil
+	}
+	if args.Size <= 0 {
+		return textResult("/size: must be positive", true), nil
+	}
+	addr, err := parseAddrArg(args.Addr)
+	if err != nil {
+		return textResult("/addr: "+err.Error(), true), nil
+	}
+
+	patch, err := s.eng.CaptureUSBPatch(ctx, args.Device, args.Region, args.Index, addr, args.Size)
+	if err != nil {
+		return textResult("capture_usb_patch failed: "+err.Error(), true), nil
+	}
+	patch.Store = args.Store
+
+	// Merge into the existing scene if there is one, otherwise start a new one.
+	sc, err := s.scenes.Load(args.Name)
+	if err != nil {
+		sc = &scene.Scene{Name: args.Name}
+	}
+	if sc.USB == nil {
+		sc.USB = map[string]scene.USBPatch{}
+	}
+	sc.USB[args.Device] = patch
+	if err := s.scenes.Save(sc); err != nil {
+		return textResult("could not persist scene: "+err.Error(), true), nil
+	}
+	return textResult(fmt.Sprintf("captured %d-byte usb patch from %q into scene %q (region=%q index=%d addr=0x%X)", len(patch.Hex)/2, args.Device, args.Name, args.Region, args.Index, addr), false), nil
 }
 
 func (s *Server) handleListScenes(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

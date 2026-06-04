@@ -69,6 +69,9 @@ func main() {
 	}
 
 	eng := engine.New(reg, transports...)
+	// Share the USB write gate with the engine so patch-level scene recall obeys
+	// the same usb_allow_writes master switch as the MCP write tools.
+	eng.SetUSBAllowWrites(cfg.USBAllowWrites)
 
 	// Restore the persisted desired-state so the daemon resumes the last applied
 	// values, and keep writing it back after each change.

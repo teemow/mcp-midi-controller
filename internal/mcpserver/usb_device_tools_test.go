@@ -156,6 +156,42 @@ func TestUSBDeviceToolsNeuro(t *testing.T) {
 	}
 }
 
+// TestBundledProfilesGenerateTools loads the SHIPPED device definitions and
+// confirms their authored usb: profiles produce the expected semantic tool set
+// — the end-to-end check that the YAML data layer drives tool generation.
+func TestBundledProfilesGenerateTools(t *testing.T) {
+	reg, err := device.LoadBundled()
+	if err != nil {
+		t.Fatalf("load bundled: %v", err)
+	}
+	s := &Server{eng: engine.New(reg)}
+
+	cases := []struct {
+		device string
+		want   []string
+	}{
+		{"sl-2", []string{"sl2_read", "sl2_get_param", "sl2_read_system", "sl2_list_patterns", "sl2_set_param", "sl2_recall_pattern", "sl2_write_pattern"}},
+		{"eq-2", []string{"eq2_read", "eq2_list_presets", "eq2_read_preset", "eq2_select_preset"}},
+		{"ml10x", []string{"ml10x_read", "ml10x_list", "ml10x_get_preset"}},
+	}
+	for _, c := range cases {
+		def, ok := reg.Get(c.device)
+		if !ok || def.USB == nil {
+			t.Fatalf("bundled %q has no usb profile", c.device)
+		}
+		logical := strings.ReplaceAll(c.device, "-", "")
+		got := map[string]bool{}
+		for _, sp := range s.usbDeviceTools(logical, def.USB) {
+			got[sp.name] = true
+		}
+		for _, n := range c.want {
+			if !got[n] {
+				t.Errorf("%s: missing generated tool %q (have %v)", c.device, n, got)
+			}
+		}
+	}
+}
+
 func TestUSBWritesAllowedTwoKey(t *testing.T) {
 	cases := []struct {
 		global, writable, want bool
@@ -167,7 +203,8 @@ func TestUSBWritesAllowedTwoKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		s := &Server{usbAllowWrites: c.global}
-		if got := s.usbWritesAllowed(engine.Binding{Writable: c.writable}); got != c.want {
+		b := engine.Binding{USB: &engine.USBSurface{Transport: "usbmidi", Writable: c.writable}}
+		if got := s.usbWritesAllowed(b); got != c.want {
 			t.Fatalf("usbWritesAllowed(global=%v, writable=%v) = %v, want %v", c.global, c.writable, got, c.want)
 		}
 	}
@@ -179,7 +216,7 @@ func TestUSBWriteGateBlocksRealWrite(t *testing.T) {
 		t.Fatalf("add def: %v", err)
 	}
 	eng := engine.New(reg, fakeUSBMIDI{})
-	if err := eng.Bind(engine.Binding{Logical: "sl2usb", Endpoint: "SL-2", DeviceID: "sl-2", Transport: "usbmidi", Writable: true}); err != nil {
+	if err := eng.Bind(engine.Binding{Logical: "sl2usb", DeviceID: "sl-2", USB: &engine.USBSurface{Transport: "usbmidi", Endpoint: "SL-2", Writable: true}}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	// Writes are NOT globally enabled, so a real usb_write is refused even
@@ -223,5 +260,56 @@ func TestBindDeviceRoutesUSB(t *testing.T) {
 	}
 	if !eng.IsUSBBinding("sl2usb") {
 		t.Fatalf("sl2usb should be a USB binding")
+	}
+}
+
+// TestBindDeviceMergesSurfaces is the one-logical-two-surfaces model: binding a
+// control surface and then a USB surface under the SAME logical accrues both
+// onto one binding, so the pedal carries control_<logical> and the USB tool
+// family under one name (no separate "sl2usb" logical needed).
+func TestBindDeviceMergesSurfaces(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	reg := device.NewRegistry()
+	if err := reg.AddDefinition(rolandProfileDef()); err != nil {
+		t.Fatalf("add def: %v", err)
+	}
+	eng := engine.New(reg, fakeBLE{}, fakeUSBMIDI{})
+	s := New(eng)
+
+	// 1) control surface over BLE.
+	res := call(t, s.handleBindDevice, map[string]any{
+		"logical": "sl2", "endpoint": "BLE:AA", "channel": 5, "device": "sl-2",
+	})
+	if res.IsError {
+		t.Fatalf("control bind failed: %s", resultText(res))
+	}
+
+	// 2) USB editor surface over usbmidi, SAME logical — must merge, not replace.
+	res = call(t, s.handleBindDevice, map[string]any{
+		"logical": "sl2", "endpoint": "SL-2", "device": "sl-2", "transport": "usbmidi",
+	})
+	if res.IsError {
+		t.Fatalf("usb bind failed: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "alongside control_sl2") {
+		t.Fatalf("usb bind should note it sits alongside the control tool: %s", resultText(res))
+	}
+
+	b, ok := eng.BindingFor("sl2")
+	if !ok {
+		t.Fatalf("sl2 not bound")
+	}
+	if !b.HasControl() || b.Endpoint != "BLE:AA" || b.Channel != 5 {
+		t.Fatalf("control surface lost after USB merge: %+v", b)
+	}
+	if !b.HasUSB() || b.USB.Transport != "usbmidi" || b.USB.Endpoint != "SL-2" {
+		t.Fatalf("usb surface missing/wrong after merge: %+v", b)
+	}
+
+	// list_bindings should show one logical carrying both surfaces.
+	res = call(t, s.handleListBindings, map[string]any{})
+	txt := resultText(res)
+	if !strings.Contains(txt, "endpoint=\"BLE:AA\"") || !strings.Contains(txt, "usb=usbmidi") {
+		t.Fatalf("list_bindings should show both surfaces for sl2: %s", txt)
 	}
 }

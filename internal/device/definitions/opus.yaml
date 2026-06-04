@@ -412,3 +412,20 @@ controls:
     type: cc
     cc: 69
     value: { type: enum, values: { off: 0, on: 1 } }
+
+# --- USB profile placeholder (Torpedo Remote HID) ---------------------------
+# The Opus is the only rig pedal with NO USB-MIDI: its sole USB function is a
+# vendor HID interface (the channel the Torpedo Remote editor uses), a raw
+# 64-byte bidirectional vendor pipe with no report ids. The command layout has
+# been largely decoded from the editor binary (docs/research/opus.md), but the
+# torpedo-hid codec stays NON-DESTRUCTIVE: it never synthesises a request
+# (BuildRead/BuildWrite/BuildIdentify all return nil), so no read/write/identify
+# tools function. The profile exists so the slot is reserved and the device can
+# be monitored: bind it usbhid + writable:false and use usb_monitor to drain the
+# 64-byte Input reports the Opus emits on its own (front-panel edits, preset
+# recalls). No regions or params are mapped (per-parameter value scaling is not
+# decoded). See docs/research/opus.md.
+usb:
+  protocol: torpedo-hid
+  transport: usbhid
+  endpoint: "0483:A334"   # VID:PID (STMicroelectronics; the binding may override with /dev/hidrawN)

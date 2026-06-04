@@ -175,3 +175,28 @@ controls:
     type: cc
     cc: 29
     value: { type: enum, values: { trigger: 127 } }
+
+# --- USB editor/readback profile (Morningstar editor SysEx over USB-MIDI) ----
+# The ML10X's config read rides its USB-MIDI interface (NOT the CDC serial
+# port), using Morningstar's own editor framing
+# `F0 00 21 24 07 00 <op1> <op2> <8-byte payload> <cksum> F7` (model id 0x07,
+# XOR&0x7F checksum). Reverse-engineered read-only from a live editor capture
+# (docs/research/ml10x.md). Only the bank-addressed read (op2 0x16, bank in the
+# payload) is DETERMINISTIC without the editor's stateful bulk session, so the
+# profile models the 4 banks as a repeated region: <logical>_get_preset (index
+# = bank 0..3) issues op2 0x16 and returns that bank's active-preset block as a
+# raw TLV payload. WRITE opcodes are not yet decoded (BuildWrite returns nil),
+# so this surface is READ-ONLY. The codec has no identity request; presence is
+# confirmed by any reply carrying model 0x07.
+usb:
+  protocol: morningstar-sysex
+  transport: usbmidi
+  endpoint: "ML10X"        # ALSA rawmidi port-name substring (the binding overrides this)
+  identity:
+    model: "07"            # ML10X model id (manufacturer defaults to 00 21 24)
+  # The "address" the codec reads is an opcode, not a memory address: its low 7
+  # bits are op2 and (for op2 0x16) the next byte is the bank. Modeling the 4
+  # banks as base 0x16 + index*0x100 makes <logical>_get_preset index N issue
+  # op2 0x16 with bank N.
+  regions:
+    banks: { base: 0x16, count: 4, stride: 0x100 }

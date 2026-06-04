@@ -164,7 +164,7 @@ func (s *Server) handleUSBWrite(ctx context.Context, req *mcp.CallToolRequest) (
 			return textResult(fmt.Sprintf("unknown logical device %q", args.Device), true), nil
 		}
 		if !s.usbWritesAllowed(b) {
-			return textResult(usbWriteDeniedMsg(s.usbAllowWrites, b.Writable), true), nil
+			return textResult(usbWriteDeniedMsg(s.usbAllowWrites, b.USBWritable()), true), nil
 		}
 	}
 	frame, err := s.eng.USBWrite(ctx, args.Device, addr, data, dryRun)

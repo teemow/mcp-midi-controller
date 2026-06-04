@@ -78,13 +78,17 @@ type Manifest struct {
 //
 // Routes:
 //
-//	POST /aum-session             stage one uploaded .aumproj (raw bplist bytes)
-//	GET  /aum-session             manifest of stageable sessions/midimaps (JSON)
-//	GET  /aum-session/{file}      download a staged .aumproj / .aum_midimap
+//	POST   /aum-session           stage one uploaded .aumproj (raw bplist bytes)
+//	GET    /aum-session           manifest of stageable sessions/midimaps (JSON)
+//	GET    /aum-session/{file}    download a staged .aumproj / .aum_midimap
+//	DELETE /aum-session/{file}    remove one staged file
+//	DELETE /aum-session           clear all staged files
 func Register(mux *http.ServeMux, outDir string, onStaged func(Result)) {
 	mux.HandleFunc("POST /aum-session", handleUpload(outDir, onStaged))
 	mux.HandleFunc("GET /aum-session", handleManifest(outDir))
 	mux.HandleFunc("GET /aum-session/{file}", handleDownload(outDir))
+	mux.HandleFunc("DELETE /aum-session/{file}", handleDelete(outDir))
+	mux.HandleFunc("DELETE /aum-session", handleDeleteAll(outDir))
 }
 
 // Handler builds the standalone receiver: the AUM-session routes plus a
@@ -141,6 +145,13 @@ func handleUpload(outDir string, onStaged func(Result)) http.HandlerFunc {
 		if err := lanhttp.WriteFileAtomic(path, data, 0o644); err != nil {
 			resp.Error(w, http.StatusInternalServerError, "write %s: %v", path, err)
 			return
+		}
+		// Preserve the uploader's original modified time when supplied, so the
+		// manifest date matches what the device shows for the same file.
+		if mod := r.URL.Query().Get("modified"); mod != "" {
+			if t, perr := time.Parse(time.RFC3339, mod); perr == nil {
+				_ = os.Chtimes(path, t, t)
+			}
 		}
 
 		res := Result{
@@ -250,6 +261,71 @@ func handleDownload(outDir string) http.HandlerFunc {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 		_, _ = w.Write(data)
 	}
+}
+
+// handleDelete removes one staged file. The {file} segment is client-supplied,
+// so it is constrained to a bare .aumproj / .aum_midimap filename (no traversal),
+// exactly like handleDownload. Deleting a missing file is a 404, not a silent ok.
+func handleDelete(outDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("file")
+		if !safeStagedName(name) {
+			resp.Error(w, http.StatusBadRequest, "invalid file name %q", name)
+			return
+		}
+		path := filepath.Join(outDir, name)
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				resp.Error(w, http.StatusNotFound, "no staged file %q", name)
+				return
+			}
+			resp.Error(w, http.StatusInternalServerError, "delete %s: %v", path, err)
+			return
+		}
+		log.Printf("deleted staged AUM session %s", path)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// DeleteAllResult reports how many staged files a clear-all removed.
+type DeleteAllResult struct {
+	Deleted int `json:"deleted"`
+}
+
+// handleDeleteAll removes every staged .aumproj / .aum_midimap (leaving any
+// other files and subdirs untouched). A missing dir is not an error: there is
+// simply nothing to clear.
+func handleDeleteAll(outDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		entries, err := os.ReadDir(outDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeJSON(w, DeleteAllResult{Deleted: 0})
+				return
+			}
+			resp.Error(w, http.StatusInternalServerError, "read out dir %s: %v", outDir, err)
+			return
+		}
+		deleted := 0
+		for _, e := range entries {
+			if e.IsDir() || aum.FileKind(e.Name()) == "" {
+				continue
+			}
+			path := filepath.Join(outDir, e.Name())
+			if err := os.Remove(path); err != nil {
+				resp.Error(w, http.StatusInternalServerError, "delete %s: %v", path, err)
+				return
+			}
+			deleted++
+		}
+		log.Printf("cleared %d staged AUM session(s) from %s", deleted, outDir)
+		writeJSON(w, DeleteAllResult{Deleted: deleted})
+	}
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // deriveID turns an upload's ?name= filename (preferred) or session title into a

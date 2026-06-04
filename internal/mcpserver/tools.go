@@ -50,12 +50,12 @@ func (s *Server) registerGlobalTools() {
 	}, s.handlePairEndpoint)
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "bind_device",
-		Description: "Bind an endpoint to a device definition. Default (blemidi/osc) generates a control_<logical> tool. Set transport to usbmidi|usbhid for a device with a usb profile to bind its editor/readback surface instead (generates the USB tool family; channel is ignored, optional writable opts the binding in to gated write tools).",
+		Description: "Bind an endpoint to a device definition for one logical device. Default (blemidi/osc) configures the control surface and generates a control_<logical> tool. Set transport to usbmidi|usbhid for a device with a usb profile to configure its editor/readback surface instead (generates the USB tool family; channel is ignored, optional writable opts the surface in to gated write tools). Both calls merge onto the same logical, so one physical device can carry both a control surface and a USB surface under one name — bind it twice (once per transport).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"},"endpoint":{"type":"string"},"channel":{"type":"integer"},"device":{"type":"string"},"transport":{"type":"string"},"writable":{"type":"boolean"}},"required":["logical","endpoint","device"]}`),
 	}, s.handleBindDevice)
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "unbind_device",
-		Description: "Remove a logical device binding (removes its control_<logical> tool).",
+		Description: "Remove a logical device binding entirely (removes its control_<logical> tool and any USB tool family).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"}},"required":["logical"]}`),
 	}, s.handleUnbindDevice)
 	s.mcp.AddTool(&mcp.Tool{
@@ -124,15 +124,26 @@ func (s *Server) handleListDevices(context.Context, *mcp.CallToolRequest) (*mcp.
 			Endpoint:  bind.Endpoint,
 			Channel:   bind.Channel,
 			Transport: bind.Transport,
-			USB:       s.eng.IsUSBBinding(bind.Logical),
-			Writable:  bind.Writable,
+			USB:       bind.HasUSB(),
+		}
+		if bind.HasUSB() {
+			v.USBTransport = bind.USB.Transport
+			v.USBEndpoint = bind.USB.Endpoint
+			v.Writable = bind.USB.Writable
 		}
 		if def, ok := s.eng.Registry().Get(bind.DeviceID); ok {
 			name = def.Name
 			v.DeviceName = def.Name
 		}
 		views = append(views, v)
-		fmt.Fprintf(&b, "%s\t(device=%s, endpoint=%q, channel=%d)\n", bind.Logical, name, bind.Endpoint, bind.Channel)
+		fmt.Fprintf(&b, "%s\t(device=%s", bind.Logical, name)
+		if bind.HasControl() {
+			fmt.Fprintf(&b, ", endpoint=%q, channel=%d", bind.Endpoint, bind.Channel)
+		}
+		if bind.HasUSB() {
+			fmt.Fprintf(&b, ", usb=%s", bind.USB.Transport)
+		}
+		b.WriteString(")\n")
 	}
 	return structResult(b.String(), map[string]any{"devices": views}), nil
 }
@@ -287,30 +298,45 @@ func (s *Server) handleBindDevice(_ context.Context, req *mcp.CallToolRequest) (
 	if args.Channel < 0 || args.Channel > 15 {
 		return textResult(fmt.Sprintf("/channel: %d out of range (must be 0..15; note the wire form is 0-based)", args.Channel), true), nil
 	}
-	b := engine.Binding{
-		Logical:   args.Logical,
-		Endpoint:  args.Endpoint,
-		Channel:   args.Channel,
-		DeviceID:  args.Device,
-		Transport: args.Transport,
-		Writable:  args.Writable,
+	usbSurface := args.Transport == device.USBTransportMIDI || args.Transport == device.USBTransportHID
+	// Merge onto any existing binding for this logical so one physical device
+	// can accrue both surfaces under one name: a usbmidi/usbhid call configures
+	// the USB surface (preserving an existing control surface), any other call
+	// configures the control surface (preserving an existing USB surface).
+	b, _ := s.eng.BindingFor(args.Logical)
+	b.Logical = args.Logical
+	b.DeviceID = args.Device
+	if usbSurface {
+		b.USB = &engine.USBSurface{Transport: args.Transport, Endpoint: args.Endpoint, Writable: args.Writable}
+	} else {
+		b.Endpoint = args.Endpoint
+		b.Channel = args.Channel
+		b.Transport = args.Transport
 	}
 	if err := s.eng.Bind(b); err != nil {
 		return textResult(err.Error(), true), nil
 	}
-	s.addToolsForBinding(b)
+	s.refreshToolsForBinding(b)
 	persistNote := ""
 	if err := s.persistBindings(); err != nil {
 		persistNote = fmt.Sprintf(" (warning: could not persist bindings: %v)", err)
 	}
-	if s.eng.IsUSBBinding(args.Logical) {
+	if usbSurface {
 		write := "read-only"
 		if s.usbWritesAllowed(b) {
 			write = "writable"
 		}
-		return textResult(fmt.Sprintf("bound %s -> %s over %s on %q (%s; USB tool family generated)%s", args.Logical, args.Device, args.Transport, args.Endpoint, write, persistNote), false), nil
+		ctlNote := ""
+		if b.HasControl() {
+			ctlNote = fmt.Sprintf(" alongside control_%s", args.Logical)
+		}
+		return textResult(fmt.Sprintf("bound %s -> %s usb surface over %s on %q (%s; USB tool family generated%s)%s", args.Logical, args.Device, args.Transport, args.Endpoint, write, ctlNote, persistNote), false), nil
 	}
-	return textResult(fmt.Sprintf("bound %s -> %s on %q channel %d (tool control_%s)%s", args.Logical, args.Device, args.Endpoint, args.Channel, args.Logical, persistNote), false), nil
+	usbNote := ""
+	if b.HasUSB() {
+		usbNote = " (usb surface preserved)"
+	}
+	return textResult(fmt.Sprintf("bound %s -> %s on %q channel %d (tool control_%s)%s%s", args.Logical, args.Device, args.Endpoint, args.Channel, args.Logical, usbNote, persistNote), false), nil
 }
 
 func (s *Server) handleUnbindDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -320,11 +346,10 @@ func (s *Server) handleUnbindDevice(_ context.Context, req *mcp.CallToolRequest)
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
-	// Resolve the binding kind before dropping it, so we remove the matching
-	// tool family.
-	wasUSB := s.eng.IsUSBBinding(args.Logical)
+	// Remove the tools while the binding is still present (RemoveUSBDeviceTool
+	// resolves the USB tool names from the binding's definition), then drop it.
+	s.removeToolsForBinding(args.Logical)
 	s.eng.Unbind(args.Logical)
-	s.removeToolsForBinding(args.Logical, wasUSB)
 	if err := s.persistBindings(); err != nil {
 		return textResult(fmt.Sprintf("unbound %s (warning: could not persist bindings: %v)", args.Logical, err), false), nil
 	}

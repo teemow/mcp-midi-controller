@@ -92,6 +92,68 @@ func TestDefinitionValidateWithUSB(t *testing.T) {
 	}
 }
 
+// TestBundledUSBProfiles asserts the shipped device definitions carry the USB
+// profiles the semantic tools are generated from (the data layer that turns the
+// USB subsystem on), with the protocol/transport/region/param shape from the
+// research docs — and that the H90 deliberately has none.
+func TestBundledUSBProfiles(t *testing.T) {
+	reg, err := LoadBundled()
+	if err != nil {
+		t.Fatalf("load bundled: %v", err)
+	}
+
+	cases := []struct{ id, protocol, transport string }{
+		{"sl-2", USBProtocolRoland, USBTransportMIDI},
+		{"eq-2", USBProtocolNeuro, USBTransportHID},
+		{"ml10x", USBProtocolMorningstar, USBTransportMIDI},
+		{"opus", USBProtocolTorpedo, USBTransportHID},
+	}
+	for _, c := range cases {
+		d, ok := reg.Get(c.id)
+		if !ok {
+			t.Fatalf("no bundled definition %q", c.id)
+		}
+		if d.USB == nil {
+			t.Fatalf("%q has no usb profile", c.id)
+		}
+		if d.USB.Protocol != c.protocol {
+			t.Errorf("%q usb protocol = %q, want %q", c.id, d.USB.Protocol, c.protocol)
+		}
+		if d.USB.Transport != c.transport {
+			t.Errorf("%q usb transport = %q, want %q", c.id, d.USB.Transport, c.transport)
+		}
+	}
+
+	// The H90 is the resolved negative result: no USB readback surface.
+	if d, ok := reg.Get("h90"); !ok || d.USB != nil {
+		t.Errorf("h90 should have no usb profile, got %+v", d.USB)
+	}
+
+	// SL-2: the 88-pattern region + a curated nibble-packed param.
+	sl2, _ := reg.Get("sl-2")
+	if r, ok := sl2.USB.Regions["patches"]; !ok || r.Count != 88 || r.Base != 0x20100000 || r.Stride != 0x00100000 {
+		t.Errorf("sl-2 patches region = %+v", r)
+	}
+	if p, ok := sl2.USB.Param("tempo"); !ok || p.Enc != "int4x4" || p.Region != "system" {
+		t.Errorf("sl-2 tempo param = %+v ok=%v", p, ok)
+	}
+	if _, ok := sl2.USB.Param("slicer1_pattern"); !ok {
+		t.Errorf("sl-2 missing slicer1_pattern param")
+	}
+
+	// EQ2: the 128-preset region (HID has no params yet — offsets undecoded).
+	eq2, _ := reg.Get("eq-2")
+	if r, ok := eq2.USB.Regions["presets"]; !ok || r.Count != 128 || r.Stride != 0x1000 || r.Base != 0x080000 {
+		t.Errorf("eq-2 presets region = %+v", r)
+	}
+
+	// ML10X: 4 banks modeled so op2 0x16 + bank is reachable as a repeated read.
+	ml10x, _ := reg.Get("ml10x")
+	if r, ok := ml10x.USB.Regions["banks"]; !ok || r.Count != 4 {
+		t.Errorf("ml10x banks region = %+v", r)
+	}
+}
+
 // TestUSBProfileYAMLHexAddresses confirms yaml.v3 resolves 0x.. hex ints so the
 // research addresses can be written verbatim in the definitions.
 func TestUSBProfileYAMLHexAddresses(t *testing.T) {

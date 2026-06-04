@@ -344,7 +344,23 @@ Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binar
 6. **OSC transport (X32)** — a second, non-MIDI backend (keeps the abstraction honest).
 7. **USB editor/readback tools** — USB-MIDI + vendor-HID transports exposing the
    pedals' deep editor protocols (read device state, author SL-2 patterns, verify
-   what BLE writes landed). First design: `docs/usb-tools.md`.
+   what BLE writes landed). First design: `docs/usb-tools.md`. Implemented: the
+   `usbmidi`/`usbhid` transports, the four protocol codecs (`internal/usbcodec`:
+   roland / morningstar / neuro / torpedo), the value encodings, the
+   request/reply session + engine USB API (`internal/engine/usb.go`), the USB
+   binding kind, the generic `usb_*` and semantic per-binding tools
+   (`internal/mcpserver/usb_tools.go` + `usb_device_tools.go`), the two-key write
+   gate, and USB-backed `verify_control`. The device **profiles** that drive it
+   are now authored in the bundled definitions: `sl-2` (roland address SysEx, full
+   read + gated write), `eq-2` (neuro HID, 128-preset read + select), `ml10x`
+   (morningstar editor, bank read), and an `opus` torpedo-HID monitor-only
+   placeholder; the `h90` is documented as having no USB surface. **Patch-level
+   scenes** are supported: a scene may carry a captured USB memory blob per
+   logical device (`capture_usb_patch` → `scene.USBPatch`) that `recall_scene`
+   writes back over USB (gated), the only way to capture the SL-2's
+   pattern/type. Remaining: hardware re-verification of writes and the
+   not-yet-decoded surfaces (ML10X write opcodes, EQ2 per-parameter byte offsets,
+   Opus value scaling).
 8. **AUv3 feedback (`auv3-probe`)** — an off-daemon iPad utility that dumps each
    plugin's `AUParameterTree` to verify the plugin definitions are correct and
    cover the maximum functionality (AUM doesn't echo MIDI, so this replaces the
