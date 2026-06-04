@@ -1,0 +1,148 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-900 text-cyan-100/90 font-mono antialiased;
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(34, 211, 238, 0.06), transparent 40%),
+      radial-gradient(circle at 80% 0%, rgba(244, 114, 208, 0.06), transparent 40%);
+  }
+
+  /* CRT scanline overlay */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.02) 0px,
+      rgba(255, 255, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index: 50;
+    mix-blend-mode: overlay;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-md border border-cyan-500/20 bg-ink-800/70 backdrop-blur-sm;
+    box-shadow:
+      inset 0 0 0 1px rgba(34, 211, 238, 0.05),
+      0 0 24px rgba(0, 0, 0, 0.5);
+  }
+
+  .panel-header {
+    @apply border-b border-cyan-500/20 px-4 py-2 text-xs uppercase tracking-[0.2em] text-cyan-glow/80;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-1 rounded border border-cyan-500/30 bg-ink-700/80 px-3 py-1.5 text-xs uppercase tracking-wider text-cyan-100 transition hover:border-cyan-glow/70 hover:text-cyan-glow hover:shadow-glow-cyan disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-cyan-500/30 disabled:hover:text-cyan-100 disabled:hover:shadow-none;
+  }
+
+  .btn-magenta {
+    @apply border-magenta-glow/30 hover:border-magenta-glow/70 hover:text-magenta-glow hover:shadow-glow-magenta;
+  }
+
+  .field {
+    @apply w-full rounded border border-cyan-500/20 bg-ink-900/80 px-2 py-1 text-sm text-cyan-100 outline-none transition focus:border-cyan-glow/60 focus:shadow-glow-cyan;
+  }
+
+  .label {
+    @apply mb-1 block text-[0.65rem] uppercase tracking-[0.2em] text-cyan-100/50;
+  }
+
+  .tag {
+    @apply inline-flex items-center rounded-sm border border-cyan-500/30 bg-ink-700/60 px-1.5 py-0.5 text-[0.65rem] uppercase tracking-wider text-cyan-100/70;
+  }
+}
+
+/* Lightweight markdown styling for the Docs tab (no typography plugin). */
+.docs-prose h1,
+.docs-prose h2,
+.docs-prose h3,
+.docs-prose h4 {
+  @apply mb-2 mt-5 font-bold uppercase tracking-wider text-cyan-glow;
+}
+.docs-prose h1 {
+  @apply text-xl;
+}
+.docs-prose h2 {
+  @apply text-lg;
+}
+.docs-prose h3 {
+  @apply text-base;
+}
+.docs-prose p {
+  @apply my-3;
+}
+.docs-prose a {
+  @apply text-magenta-glow underline decoration-magenta-glow/40 hover:decoration-magenta-glow;
+}
+.docs-prose ul {
+  @apply my-3 list-disc pl-6;
+}
+.docs-prose ol {
+  @apply my-3 list-decimal pl-6;
+}
+.docs-prose li {
+  @apply my-1;
+}
+.docs-prose code {
+  @apply rounded bg-ink-900/80 px-1 py-0.5 text-cyan-glow;
+}
+.docs-prose pre {
+  @apply my-3 overflow-auto rounded border border-cyan-500/20 bg-ink-900/80 p-3;
+}
+.docs-prose pre code {
+  @apply bg-transparent p-0 text-cyan-100/80;
+}
+.docs-prose blockquote {
+  @apply my-3 border-l-2 border-cyan-500/40 pl-3 text-cyan-100/60;
+}
+.docs-prose table {
+  @apply my-3 w-full border-collapse text-xs;
+}
+.docs-prose th,
+.docs-prose td {
+  @apply border border-cyan-500/20 px-2 py-1 text-left;
+}
+.docs-prose th {
+  @apply bg-ink-700/60 uppercase tracking-wider text-cyan-100/70;
+}
+.docs-prose hr {
+  @apply my-5 border-cyan-500/20;
+}
+.docs-prose img {
+  @apply max-w-full;
+}
+
+/* Slim neon scrollbars to match the CRT aesthetic. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(5, 7, 13, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.25);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.45);
+}

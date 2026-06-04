@@ -253,14 +253,32 @@ func (s *Server) handleDiscoverEndpoints(ctx context.Context, _ *mcp.CallToolReq
 		return textResult("discover failed: "+err.Error(), true), nil
 	}
 	if len(eps) == 0 {
-		return textResult("no endpoints found", false), nil
+		return structResult("no endpoints found", map[string]any{"endpoints": []endpointView{}}), nil
 	}
 	sort.Slice(eps, func(i, j int) bool { return eps[i].ID < eps[j].ID })
 	var b strings.Builder
+	views := make([]endpointView, 0, len(eps))
 	for _, ep := range eps {
 		fmt.Fprintf(&b, "%s\t%q\t(transport=%s, paired=%t, connected=%t)\n", ep.ID, ep.Name, ep.Transport, ep.Paired, ep.Connected)
+		views = append(views, endpointView{
+			ID:        ep.ID,
+			Name:      ep.Name,
+			Transport: ep.Transport,
+			Paired:    ep.Paired,
+			Connected: ep.Connected,
+		})
 	}
-	return textResult(b.String(), false), nil
+	return structResult(b.String(), map[string]any{"endpoints": views}), nil
+}
+
+// endpointView is the machine-readable shape of one discovered endpoint for
+// discover_endpoints' structuredContent.
+type endpointView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	Paired    bool   `json:"paired"`
+	Connected bool   `json:"connected"`
 }
 
 func (s *Server) handlePairEndpoint(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

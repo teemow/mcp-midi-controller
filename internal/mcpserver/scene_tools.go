@@ -201,10 +201,13 @@ func (s *Server) handleListScenes(context.Context, *mcp.CallToolRequest) (*mcp.C
 	if err != nil {
 		return textResult("list_scenes failed: "+err.Error(), true), nil
 	}
-	if len(names) == 0 {
-		return textResult("no scenes saved yet", false), nil
+	if names == nil {
+		names = []string{}
 	}
-	return textResult(strings.Join(names, "\n"), false), nil
+	if len(names) == 0 {
+		return structResult("no scenes saved yet", map[string]any{"scenes": names}), nil
+	}
+	return structResult(strings.Join(names, "\n"), map[string]any{"scenes": names}), nil
 }
 
 func (s *Server) handleExportSceneToFootswitch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

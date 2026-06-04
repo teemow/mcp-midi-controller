@@ -10,6 +10,13 @@
 # Go
 /vendor/
 
+# Web UI (signalwave). node_modules and the docs bundle staged by the Vite
+# prebuild step are generated; the built SPA in internal/webui/dist is committed
+# (consumed by go:embed) so the Go binary builds without Node.
+/web/node_modules/
+/web/public/docs/
+/web/*.tsbuildinfo
+
 # Editor / OS
 *.swp
 .DS_Store

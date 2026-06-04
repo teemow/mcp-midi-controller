@@ -21,11 +21,34 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       - name: Install ALSA headers (CGO USB-MIDI driver)
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libasound2-dev
+
+      - name: Build web UI (signalwave SPA)
+        run: |
+          set -euo pipefail
+          cd web
+          npm ci
+          npm run build
+
+      - name: Verify committed embed dir is up to date
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- internal/webui/dist; then
+            echo "internal/webui/dist is out of date — run 'make web' and commit the result."
+            git --no-pager diff --stat -- internal/webui/dist
+            exit 1
+          fi
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9

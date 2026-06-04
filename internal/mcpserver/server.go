@@ -17,6 +17,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/mcp-midi-controller/internal/webui"
 )
 
 // Version is reported to MCP clients.
@@ -143,9 +144,16 @@ func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings 
 	}
 }
 
-// Handler returns the streamable-HTTP handler to mount on a loopback listener.
+// Handler returns the HTTP handler to mount on a loopback listener. It muxes
+// two surfaces on one listener: "/app/" serves the embedded "signalwave" SPA
+// (a real in-browser MCP client), and "/" stays the MCP streamable-HTTP handler
+// so existing MCP clients (e.g. Cursor) are unaffected.
 func (s *Server) Handler() http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
+	mux := http.NewServeMux()
+	mux.Handle(webui.MountPath, webui.Handler())
+	mux.Handle("/", mcpHandler)
+	return mux
 }
 
 // addToolsForBinding generates every MCP tool a binding's surfaces warrant:
