@@ -1,7 +1,7 @@
-// Package engine is the reusable core: it owns the device registry, the set of
-// transports, the bindings (logical devices), the authoritative desired-state,
-// and scene orchestration. The MCP daemon (and any future stdio adapter) is a
-// thin layer on top of this package.
+// Package engine is the reusable core: it owns the device-type registry, the set
+// of transports, the devices (the rig), the authoritative desired-state, and
+// scene orchestration. The MCP daemon (and any future stdio adapter) is a thin
+// layer on top of this package.
 package engine
 
 import (
@@ -42,7 +42,7 @@ type Engine struct {
 
 	registry   *device.Registry
 	transports map[string]transport.Transport
-	bindings   map[string]Binding // logical -> binding
+	devices    map[string]Device // logical -> device
 	state      *DesiredState
 	observed   *ObservedState
 	connected  map[connKey]bool // open data paths
@@ -90,7 +90,7 @@ func New(reg *device.Registry, transports ...transport.Transport) *Engine {
 	return &Engine{
 		registry:    reg,
 		transports:  tm,
-		bindings:    map[string]Binding{},
+		devices:     map[string]Device{},
 		state:       NewDesiredState(),
 		observed:    NewObservedState(),
 		connected:   map[connKey]bool{},
@@ -119,14 +119,14 @@ func (e *Engine) SetUSBAllowWrites(allow bool) {
 	e.mu.Unlock()
 }
 
-// usbWritesAllowed reports whether USB writes may run for a binding: both the
-// master gate and the binding's own Writable opt-in must be set (the two-key
+// usbWritesAllowed reports whether USB writes may run for a device: both the
+// master gate and the device's own Writable opt-in must be set (the two-key
 // model from docs/usb-tools.md).
-func (e *Engine) usbWritesAllowed(b Binding) bool {
+func (e *Engine) usbWritesAllowed(d Device) bool {
 	e.mu.RLock()
 	global := e.usbAllowWrites
 	e.mu.RUnlock()
-	return global && b.USBWritable()
+	return global && d.USBWritable()
 }
 
 // persistState writes desired-state to disk if persistence is enabled. Errors
@@ -191,72 +191,68 @@ func (e *Engine) State() *DesiredState { return e.state }
 // Observed exposes the observed-state model (reverse-mapped inbound MIDI).
 func (e *Engine) Observed() *ObservedState { return e.observed }
 
-// isUSBTransport reports whether a transport id selects the USB
-// editor/readback surface (as opposed to the control surface).
-func isUSBTransport(id string) bool {
-	return id == device.USBTransportMIDI || id == device.USBTransportHID
-}
-
-// Bind adds (or replaces) a logical device, validating each surface it carries:
-// the control surface (if any) against the device's control transport, and the
-// USB surface (if any) against the device's USB profile and transport. A
-// binding must expose at least one surface. Caller is responsible for
-// (re)generating the MCP tools and emitting tools/list_changed.
-func (e *Engine) Bind(b Binding) error {
-	b = normalizeBinding(b)
-	def, ok := e.registry.Get(b.DeviceID)
+// Bind adds (or replaces) a device, validating each connection it carries: the
+// control connection (if any) against the device type's transport, and the USB
+// connection (if any) against the device type's USB profile and transport. A
+// device must carry at least one connection, and every connection's transport
+// must be one the device type speaks. Caller is responsible for (re)generating
+// the MCP tools and emitting tools/list_changed.
+func (e *Engine) Bind(d Device) error {
+	def, ok := e.registry.Get(d.DeviceID)
 	if !ok {
-		return fmt.Errorf("bind %q: unknown device definition %q", b.Logical, b.DeviceID)
+		return fmt.Errorf("bind %q: unknown device type %q", d.Name, d.DeviceID)
 	}
-	if !b.HasControl() && !b.HasUSB() {
-		return fmt.Errorf("bind %q: binding has neither a control endpoint nor a usb surface", b.Logical)
+	if !d.HasControl() && !d.HasUSB() {
+		return fmt.Errorf("bind %q: device has no connections", d.Name)
 	}
-	if b.HasControl() {
-		ct := e.controlTransport(b, def)
-		if _, ok := e.transports[ct]; !ok {
-			return fmt.Errorf("bind %q: no transport %q for device %q", b.Logical, ct, b.DeviceID)
+	if d.HasControl() {
+		if _, ok := e.transports[def.Transport]; !ok {
+			return fmt.Errorf("bind %q: no transport %q for device type %q", d.Name, def.Transport, d.DeviceID)
 		}
 	}
-	if b.HasUSB() {
+	if d.HasUSB() {
 		if def.USB == nil {
-			return fmt.Errorf("bind %q: usb surface requires a usb profile, but device %q has none", b.Logical, def.ID)
+			return fmt.Errorf("bind %q: usb connection requires a usb profile, but device type %q has none", d.Name, def.ID)
 		}
-		if b.USB.Transport != def.USB.Transport {
-			return fmt.Errorf("bind %q: usb surface transport %q does not match device %q usb transport %q", b.Logical, b.USB.Transport, def.ID, def.USB.Transport)
+		usbTr, _, _ := d.USBConnection()
+		if usbTr != def.USB.Transport {
+			return fmt.Errorf("bind %q: usb connection transport %q does not match device type %q usb transport %q", d.Name, usbTr, def.ID, def.USB.Transport)
 		}
-		if _, ok := e.transports[b.USB.Transport]; !ok {
-			return fmt.Errorf("bind %q: no transport %q for usb surface of %q", b.Logical, b.USB.Transport, def.ID)
+		if _, ok := e.transports[def.USB.Transport]; !ok {
+			return fmt.Errorf("bind %q: no transport %q for usb connection of %q", d.Name, def.USB.Transport, def.ID)
+		}
+	}
+	// Reject connections on a transport the device type does not speak (its
+	// control transport or its USB transport) so a typo cannot silently bind an
+	// unroutable connection.
+	for tr := range d.Connections {
+		switch {
+		case tr == def.Transport:
+		case def.USB != nil && tr == def.USB.Transport:
+		default:
+			return fmt.Errorf("bind %q: device type %q does not speak transport %q", d.Name, def.ID, tr)
 		}
 	}
 	e.mu.Lock()
-	e.bindings[b.Logical] = b
+	e.devices[d.Name] = d
 	e.mu.Unlock()
 	return nil
 }
 
-// controlTransport returns the transport id a binding's control surface uses:
-// its Transport override when set, otherwise the device's control transport.
-func (e *Engine) controlTransport(b Binding, def *device.Definition) string {
-	if b.Transport != "" {
-		return b.Transport
-	}
-	return def.Transport
-}
-
-// Unbind removes a logical device.
+// Unbind removes a device.
 func (e *Engine) Unbind(logical string) {
 	e.mu.Lock()
-	delete(e.bindings, logical)
+	delete(e.devices, logical)
 	e.mu.Unlock()
 }
 
-// Bindings returns the current bindings.
-func (e *Engine) Bindings() []Binding {
+// Devices returns the current devices.
+func (e *Engine) Devices() []Device {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]Binding, 0, len(e.bindings))
-	for _, b := range e.bindings {
-		out = append(out, b)
+	out := make([]Device, 0, len(e.devices))
+	for _, d := range e.devices {
+		out = append(out, d)
 	}
 	return out
 }
@@ -268,14 +264,14 @@ func (e *Engine) Bindings() []Binding {
 // the model at the offending field; everything else is a plain error.
 func (e *Engine) SetControl(ctx context.Context, logical, control string, value any) error {
 	e.mu.RLock()
-	b, ok := e.bindings[logical]
+	d, ok := e.devices[logical]
 	e.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("unknown logical device %q", logical)
 	}
-	def, ok := e.registry.Get(b.DeviceID)
+	def, ok := e.registry.Get(d.DeviceID)
 	if !ok {
-		return fmt.Errorf("logical %q: unknown device %q", logical, b.DeviceID)
+		return fmt.Errorf("logical %q: unknown device %q", logical, d.DeviceID)
 	}
 	c, ok := def.Control(control)
 	if !ok {
@@ -286,7 +282,7 @@ func (e *Engine) SetControl(ctx context.Context, logical, control string, value 
 	if err != nil {
 		return err
 	}
-	events, err := renderControl(def, c, b.Channel, resolved)
+	events, err := renderControl(def, c, d.ControlChannel(), resolved)
 	if err != nil {
 		return err
 	}
@@ -295,11 +291,12 @@ func (e *Engine) SetControl(ctx context.Context, logical, control string, value 
 	if !ok {
 		return fmt.Errorf("no transport %q for device %q", def.Transport, def.ID)
 	}
-	if err := e.ensureConnected(ctx, tr, b.Endpoint); err != nil {
-		return fmt.Errorf("connect %q: %w", b.Endpoint, err)
+	endpoint := d.ControlEndpoint()
+	if err := e.ensureConnected(ctx, tr, endpoint); err != nil {
+		return fmt.Errorf("connect %q: %w", endpoint, err)
 	}
 	for _, ev := range events {
-		if err := tr.Send(ctx, b.Endpoint, ev); err != nil {
+		if err := tr.Send(ctx, endpoint, ev); err != nil {
 			return fmt.Errorf("send to %s: %w", logical, err)
 		}
 	}
@@ -420,60 +417,56 @@ func (e *Engine) transportFor(deviceID string) string {
 	return ""
 }
 
-// transportForBinding returns the transport id a binding's control surface
-// listens/sends on: its Transport override when set, otherwise the device's
-// control transport. This is the binding-aware form the inbound/reverse-map
-// (control feedback/learn) paths use. The USB surface drives its own sessions
-// over USB.Transport (see usbContextFor), independent of this.
-func (e *Engine) transportForBinding(b Binding) string {
-	if b.Transport != "" {
-		return b.Transport
-	}
-	return e.transportFor(b.DeviceID)
+// transportForDevice returns the transport id a device's control connection
+// listens/sends on: its device type's transport. This is the device-aware form
+// the inbound/reverse-map (control feedback/learn) paths use. The USB connection
+// drives its own sessions over the type's USB transport (see usbContextFor),
+// independent of this.
+func (e *Engine) transportForDevice(d Device) string {
+	return e.transportFor(d.DeviceID)
 }
 
-// IsUSBBinding reports whether the named logical device carries a USB
+// IsUSBDevice reports whether the named logical device carries a USB
 // editor/readback surface.
-func (e *Engine) IsUSBBinding(logical string) bool {
+func (e *Engine) IsUSBDevice(logical string) bool {
 	e.mu.RLock()
-	b, ok := e.bindings[logical]
+	d, ok := e.devices[logical]
 	e.mu.RUnlock()
-	return ok && b.HasUSB()
+	return ok && d.HasUSB()
 }
 
-// binding returns a copy of the named binding.
-func (e *Engine) binding(logical string) (Binding, bool) {
+// device returns a copy of the named device.
+func (e *Engine) device(logical string) (Device, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	b, ok := e.bindings[logical]
-	return b, ok
+	d, ok := e.devices[logical]
+	return d, ok
 }
 
-// BindingFor returns a copy of the named logical device's binding.
-func (e *Engine) BindingFor(logical string) (Binding, bool) { return e.binding(logical) }
+// DeviceFor returns a copy of the named logical device.
+func (e *Engine) DeviceFor(logical string) (Device, bool) { return e.device(logical) }
 
-// usbBindingForControl returns the binding whose USB surface should answer a
-// USB readback for a given control binding. It prefers the control's own
-// logical when that already carries a USB surface (the one-logical-two-surfaces
-// model), and otherwise falls back to any other logical that shares the same
-// device id and has a USB surface (scanned in sorted logical order for a
-// deterministic choice). It is how verify_control finds the USB readback path.
-func (e *Engine) usbBindingForControl(control Binding) (Binding, bool) {
+// usbDeviceForControl returns the device whose USB connection should answer a
+// USB readback for a given control device. It prefers the control device's own
+// USB connection, and otherwise falls back to any other device that shares the
+// same device-type id and has a USB connection (scanned in sorted name order for
+// a deterministic choice). It is how verify_control finds the USB readback path.
+func (e *Engine) usbDeviceForControl(control Device) (Device, bool) {
 	if control.HasUSB() {
 		return control, true
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	logicals := make([]string, 0, len(e.bindings))
-	for l := range e.bindings {
+	logicals := make([]string, 0, len(e.devices))
+	for l := range e.devices {
 		logicals = append(logicals, l)
 	}
 	sort.Strings(logicals)
 	for _, l := range logicals {
-		b := e.bindings[l]
-		if b.DeviceID == control.DeviceID && b.HasUSB() {
-			return b, true
+		d := e.devices[l]
+		if d.DeviceID == control.DeviceID && d.HasUSB() {
+			return d, true
 		}
 	}
-	return Binding{}, false
+	return Device{}, false
 }

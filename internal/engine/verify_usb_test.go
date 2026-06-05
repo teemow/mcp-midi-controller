@@ -57,10 +57,10 @@ func newVerifyUSBEngine(t *testing.T) (*Engine, *fakeTransport, *fakeUSBTranspor
 	ble := newFakeTransport()
 	usb := newFakeUSBTransport("usbmidi")
 	eng := New(reg, ble, usb)
-	if err := eng.Bind(Binding{Logical: "v", Endpoint: "EP1", Channel: 0, DeviceID: "vdev"}); err != nil {
+	if err := eng.Bind(Device{Name: "v", DeviceID: "vdev", Endpoint: "EP1", Channel: 0}); err != nil {
 		t.Fatalf("bind control: %v", err)
 	}
-	if err := eng.Bind(Binding{Logical: "vusb", Endpoint: "USB1", DeviceID: "vdev", Transport: "usbmidi"}); err != nil {
+	if err := eng.Bind(Device{Name: "vusb", DeviceID: "vdev", Connections: map[string]Connection{"usbmidi": {Endpoint: "USB1"}}}); err != nil {
 		t.Fatalf("bind usb: %v", err)
 	}
 	return eng, ble, usb

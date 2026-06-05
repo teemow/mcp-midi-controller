@@ -10,7 +10,7 @@ import (
 func cc(n int) *int { return &n }
 
 func TestControlToolSchemaPerControlOneOf(t *testing.T) {
-	def := &device.Definition{
+	def := &device.DeviceType{
 		ID:        "d",
 		Name:      "Dev",
 		Transport: "blemidi",

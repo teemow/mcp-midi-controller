@@ -25,15 +25,15 @@ conversationally.
 - Cross-platform BLE (macOS/Windows). Linux-first; the transport interface
   leaves a clean seam for a CoreBluetooth/WinRT backend later.
 
-## Target device classes (v1)
+## Target device categories (v1)
 
-The device classes below are the v1 targets — a generic catalog of what the
+The categories below are the v1 targets — a generic catalog of what the
 server models, not a description of any one installation. The concrete inventory
 of a particular rig (which units, which endpoints, which channels) is
 installation-specific; a documented example is kept in `docs/private/`
 (gitignored).
 
-| Device | Class | Transport | Notes | Reference |
+| Device | Category | Transport | Notes | Reference |
 |--------|-------|-----------|-------|-----------|
 | Boss MD-200 | pedal | BLE-MIDI | Pure CC. Full CC map known (see below). | — (CC map inlined below) |
 | Boss SL-2 | pedal | BLE-MIDI (TRS) | 3 CCs only (CC16/80/81) + MIDI-clock sync. No PC; pattern/type not MIDI-addressable. | [SL-2 MIDI](https://static.roland.com/manuals/sl-2/eng/33861479.html) |
@@ -42,13 +42,13 @@ installation-specific; a documented example is kept in `docs/private/`
 | Two Notes Opus | pedal | BLE-MIDI | CC + program change. | [Opus MIDI chart](https://wiki.two-notes.com/doku.php?id=opus:opus_user_s_manual#midi_chart) |
 | Morningstar ML10X | controller/hub | BLE-MIDI | CC. Also the live foot controller. | [ML10X CC messages](https://help.morningstar.io/en/article/ml10x-user-manual-262ann/#3-control-change-messages) |
 | Behringer X32 | mixer | OSC/UDP | OSC (`/ch/01/mix/fader`), not MIDI. On WiFi. | [X32 MIDI table](https://behringer.world/wiki/doku.php?id=x32_midi_table) |
-| AUM (iPad) | host | BLE-MIDI | Mixer/transport/routing via AUM MIDI control. | [AUM help](https://kymatica.com/aum/help) |
-| AUv3 plugins/synths | software | BLE-MIDI (via AUM) | Battalion, iSem, Agonizer, iMS-20, FabFilter, … | see plugin list below |
+| AUM (iPad) | host | auv3midi | Mixer/transport/routing via AUM MIDI control. | [AUM help](https://kymatica.com/aum/help) |
+| AUv3 plugins/synths | software | auv3midi | Battalion, iSem, Agonizer, iMS-20, FabFilter, … | see plugin list below |
 
 ### Boss MD-200 — default CC map
 
 The MD-200 has no public manual link here; the default CC numbers are recorded
-directly (also bundled in `internal/device/definitions/md-200.yaml`):
+directly (also bundled in `internal/device/device-types/md-200.yaml`):
 
 | Control | CC# | Control | CC# |
 |---------|-----|---------|-----|
@@ -70,7 +70,7 @@ references rather than MIDI specs:
 - **Kai Aras Agonizer** — <https://apps.apple.com/app/agonizer/id1583662383>
 - **Korg iMS-20** — <https://www.korg.com/products/software/ims20/>
 - **FabFilter plugins** — <https://www.fabfilter.com/products>
-- …and other AUv3 instruments/effects (add a YAML definition per plugin).
+- …and other AUv3 instruments/effects (add a YAML device type per plugin).
 
 A typical pedalboard hangs off a multi-port **BLE-MIDI hub** (e.g. a CME WIDI
 Thru6): a *single* BLE endpoint fans out to all pedals on the DIN chain,
@@ -84,30 +84,28 @@ in this design doc.
 ## Architecture
 
 ```
-                         ┌──────────────────────────────────────────┐
-   MCP client            │            mcp-midi-controller daemon      │
- (Cursor / Claude) ──────┤  (systemd user unit, streamable-HTTP,     │
-   HTTP 127.0.0.1        │   127.0.0.1 only)                          │
-                         │                                            │
-                         │  ┌──────────┐   generates   ┌───────────┐ │
-                         │  │ mcpserver │◀─────────────▶│  engine   │ │
-                         │  │ (go-sdk)  │  tools per     │ registry  │ │
-                         │  └──────────┘  bound device   │ bindings  │ │
-                         │                                │ state     │ │
-                         │                                │ scenes    │ │
-                         │                                └─────┬─────┘ │
-                         │                                      │       │
-                         │                       ┌──────────────┼─────┐ │
-                         │                       ▼              ▼     ▼ │
-                         │                  ┌────────┐   ┌────────┐ ┌────────┐
-                         │                  │ blemidi │   │  osc   │ │ usbmidi│
-                         │                  │(BlueZ   │   │ (X32)  │ │(gomidi)│
-                         │                  │ D-Bus)  │   └────────┘ │ bonus  │
-                         │                  └────┬────┘              └────────┘
-                         └───────────────────────┼─────────────────────────────┘
-                                                 ▼
-                                     BLE-MIDI peripherals
-                                 (BLE-MIDI hub → pedals, iPad)
+                         ┌───────────────────────────────────────────────┐
+   MCP client            │            mcp-midi-controller daemon          │
+ (Cursor / Claude) ──────┤  (systemd user unit, streamable-HTTP,          │
+   HTTP 127.0.0.1        │   127.0.0.1 only)                              │
+                         │                                                │
+                         │  ┌──────────┐   generates    ┌─────────────┐   │
+                         │  │ mcpserver │◀─────────────▶│  engine     │   │
+                         │  │ (go-sdk)  │  one tool      │ type registry│  │
+                         │  └──────────┘  per device     │ devices     │   │
+                         │                               │ state       │   │
+                         │                               │ scenes      │   │
+                         │                               └─────┬───────┘   │
+                         │      ┌─────────┬─────────┬──────────┼───────┐   │
+                         │      ▼         ▼         ▼          ▼       ▼   │
+                         │ ┌────────┐ ┌────────┐ ┌──────┐ ┌─────┐ ┌────────┐
+                         │ │ blemidi │ │ usbmidi│ │usbhid│ │ osc │ │auv3midi│
+                         │ │(BlueZ)  │ │ (ALSA) │ │(hid) │ │(X32)│ │ (AUM)  │
+                         │ └───┬─────┘ └───┬────┘ └──┬───┘ └──┬──┘ └───┬────┘
+                         └─────┼───────────┼─────────┼────────┼────────┼─────┘
+                               ▼           ▼         ▼        ▼        ▼
+                         BLE-MIDI peripherals      USB        X32   iPad / AUM
+                       (hub → pedals, iPad)      editors          (mixer + AUv3)
 ```
 
 The **engine is a library**; the daemon is a thin process on top. A stdio MCP
@@ -139,20 +137,39 @@ Backends:
   keeps pairing and the data path in one place, and gives us the inbound notify
   channel that powers MIDI-learn.
 - **`osc`** — UDP OSC to the X32 (`host:port`). No pairing.
-- **`usbmidi`** *(bonus)* — `gitlab.com/gomidi/midi/v2` over ALSA (`rtmididrv`).
+- **`usbmidi`** — ALSA rawmidi (SysEx editor protocols, e.g. Boss/Roland).
+- **`usbhid`** — hidraw vendor reports (HID editor protocols, e.g. Source Audio Neuro, Two Notes Torpedo).
+- **`auv3midi`** — the LAN control channel into AUM on the iPad. CC/PC/note/transport
+  commands are delivered to AUM's MIDI control matrix, which routes them to the hosted
+  AUv3 plugin parameters. This is how every software device (the AUM mixer and each
+  plugin node) is controlled. No pairing.
 
-### Device definitions (the extension mechanism)
+### The three concepts
 
-A device is described by a **declarative YAML definition** — no Go code. The
-definition doubles as the **validation schema** for that device's generated MCP
-tool. A `Control` has a semantic name, a wire `type`, an address, and a value
-spec:
+The whole system is built from exactly three concepts. Everything else
+(transports, codecs, probe dumps, AUM internals) is plumbing that never appears in
+the vocabulary.
+
+1. **Device type** — *what a kind of gear is.* Its parameters, how each parameter
+   is addressed (CC#, program change, OSC address, an addressed memory location),
+   and the **transport it speaks**. Device types ship with the app; you can add
+   your own. (Go type: `device.DeviceType`.)
+2. **Device** — *one device in your rig.* A device **of** a device type, plus
+   **where it is** (endpoint + channel). (Go type: `engine.Device`.)
+3. **Scene** — *parameter settings across all your devices.*
+
+### Device types (the extension mechanism)
+
+A device type is a **declarative YAML file** — no Go code. It doubles as the
+**validation schema** for that device's generated MCP tool. It declares the
+**transport it speaks** and a list of controls; each `Control` has a semantic
+name, a wire `type`, an address, and a value spec:
 
 ```yaml
 id: md-200
 name: Boss MD-200
 manufacturer: Boss
-transport: blemidi
+transport: blemidi    # the transport this kind of gear speaks
 settle_ms: 0          # delay after a program change before CC is accepted
 controls:
   - name: rate
@@ -167,70 +184,100 @@ controls:
 ```
 
 Value specs: `range` (min/max), `enum` (label→wire value, with human-units like
-`dB` allowed via `unit`), `float`/`int`, and `string` (free text payloads such
-as OSC scribble-strip names). The **channel is not in the
-definition** — it is supplied by the *binding*, so one definition (e.g. H90) can
-be bound on different channels.
+`dB` allowed via `unit`), `float`/`int`, and `string` (free text payloads such as
+OSC scribble-strip names).
 
-Bundled definitions ship inside the binary via `go:embed` (source of truth:
-`internal/device/definitions/*.yaml`). User definitions in
-`$XDG_CONFIG_HOME/mcp-midi-controller/devices/*.yaml` **override bundled ones by
-definition `id`** (not by filename — the loader keys the registry on the `id:`
-field, so a user file with a bundled id replaces it whatever the file is named)
-and add new ones.
+The **transport is a property of the device type** (a BLE pedal speaks `blemidi`,
+an AUv3 plugin speaks `auv3midi`, the X32 speaks `osc`). The **channel and
+endpoint are not** — those are supplied by the device instance, so one device type
+(e.g. H90) can be used by several devices on different channels.
+
+A device type may address its parameters over **more than one transport**: a Boss
+SL-2 exposes live controls over `blemidi` and deep memory (slicer patterns) over a
+`usbmidi` editor protocol. The type records which parameter travels over which
+transport; the engine routes each parameter to the matching connection on the
+device. This is internal — to the user it is one device type with one set of
+parameters.
+
+Device types ship inside the binary via `go:embed` (source of truth:
+`internal/device/device-types/*.yaml`). User device types in
+`$XDG_CONFIG_HOME/mcp-midi-controller/device-types/*.yaml` **override bundled ones
+by `id`** (not by filename — the loader keys the registry on the `id:` field, so a
+user file with a bundled id replaces it whatever the file is named) and add new
+ones.
 
 #### `generic-midi` fallback
 
-A built-in definition whose controls are **parametric** — the CC/NRPN/program
-number is supplied at call time. Binding any unmodeled endpoint+channel to
-`generic-midi` makes it controllable immediately (by raw number), while still
+A built-in device type whose controls are **parametric** — the CC/NRPN/program
+number is supplied at call time. Using `generic-midi` for any unmodeled
+endpoint+channel makes it controllable immediately (by raw number), while still
 flowing through desired-state and scenes (unlike `send_raw`, which is untracked).
 
-### Bindings & logical devices
+### Devices (the rig)
+
+A **device** is a device type + **where it is**, addressed by its `name`. The name
+generates the device's control tool (`control_<name>`) and is the key scenes and
+desired-state use. The common single-transport device is flat:
 
 ```yaml
-# bindings.yaml — illustrative only. Real per-rig bindings (actual endpoint
+# devices.yaml — illustrative only. Real per-rig devices (actual endpoint
 # names + channel assignments) live in the user's config dir and are not
 # committed; see docs/private/ for a documented example.
-- logical: h90        # logical device name -> generates tool control_h90
+- name: h90           # device name -> generates tool control_h90
+  type: h90           # device type id
   endpoint: "<ble-midi-hub>"   # transport endpoint id (a BLE-MIDI hub)
   channel: 1
-  device: h90         # definition id
-- logical: md200
+- name: md200
+  type: md-200
   endpoint: "<ble-midi-hub>"
   channel: 2
-  device: md-200
 ```
 
-A **binding** = `(endpoint, channel, definition)` → a named **logical device**.
-Bindings persist so the daemon restores the rig on restart. Binding/unbinding
-generates/removes the per-device tool at runtime and emits
+A device that reaches its parameters over more than one transport carries a
+`connections` map (transport → where), instead of the flat `endpoint`/`channel`:
+
+```yaml
+- name: sl2
+  type: sl-2
+  connections:
+    blemidi: { endpoint: "<ble-midi-hub>", channel: 5 }   # live controls
+    usbmidi: { endpoint: "SL-2", writable: true }         # deep memory editor
+```
+
+The flat form is shorthand for a one-entry `connections` map. The engine sends
+each parameter over the connection its device type assigned. How a device reaches
+its parameters is therefore **internal** — you see one device with one set of
+parameters regardless of how many transports it speaks.
+
+Devices persist so the daemon restores the rig on restart. Adding or removing a
+device generates/removes its tool at runtime and emits
 `notifications/tools/list_changed`.
 
 ### MCP tools
 
-Generated **per logical device** (`control_<logical>`): the tool's input schema
-accepts a **batch** of `{control, value}`. Each batch item is a `oneOf` of
-per-control objects derived from the YAML — `control` is pinned to a `const`
-name and `value` carries that control's own value schema (integer range, enum
-labels + wire ints, float bounds + unit, string, or the parametric
-`{number, value}` shape) — so the model sees valid ranges/enums up front. The
-**value** is still validated in-handler against the YAML value spec as the
-authoritative safety net, returning `CallToolResult{IsError:true}` with an
-RFC-6901 JSON-pointer path on failure (SEP-1303). Tool count = number of bound
-devices + the globals below.
+Generated **per device** (`control_<name>`): the tool's input schema accepts a
+**batch** of `{control, value}`. Each batch item is a `oneOf` of per-control
+objects derived from the device type — `control` is pinned to a `const` name and
+`value` carries that control's own value schema (integer range, enum labels + wire
+ints, float bounds + unit, string, or the parametric `{number, value}` shape) — so
+the model sees valid ranges/enums up front. The **value** is still validated
+in-handler against the value spec as the authoritative safety net, returning
+`CallToolResult{IsError:true}` with an RFC-6901 JSON-pointer path on failure
+(SEP-1303). Tool count = number of devices + the globals below.
 
 Global tools:
 
-- `list_devices` — bound logical devices + their definitions.
-- `describe_device` — controls, types, ranges/enums for one device.
-- `list_bindings` / `list_definitions` / `get_definition` — machine-readable
-  rig-reasoning views: the bindings (logical→device/endpoint/channel/transport),
-  every loaded definition (bundled + user dir, bound or not), and one
-  definition's full control detail. These plus `list_devices`, `describe_device`
-  and `read_state` emit `structuredContent` (JSON) alongside the human text so
-  the web client / agents get structured data, not just prose.
-- `bind_device` / `unbind_device` — manage bindings (→ `list_changed`).
+- `list_devices` — the devices in your rig and, with the `available` flag, the
+  **device types you could add** (the catalog of known gear, bound or not).
+- `describe_device` — the controls, types, ranges/enums of one device (or device
+  type). `list_devices`, `describe_device` and `read_state` emit
+  `structuredContent` (JSON) alongside the human text so the web client / agents
+  get structured data, not just prose.
+- `bind_device` / `unbind_device` — add or remove a device in the rig (→
+  `list_changed`).
+- `discover_devices` — one aggregated view of everything you could add: transport
+  endpoints (BLE/USB/OSC), the AUv3 device-type catalog, and the nodes of a loaded
+  AUM session — each annotated with where it was found and a suggested device type.
 - `discover_endpoints` / `pair_endpoint` — BLE discovery + pairing.
 - `save_scene` / `recall_scene` / `list_scenes`.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
@@ -241,22 +288,27 @@ Global tools:
 - WIDI dongle config: `widi_read_config` / `widi_write_setting` / `widi_set_group`
   / `widi_clear_group` — read/write a CME WIDI dongle's persistent flash settings
   (BLE role, TX power, MIDI-thru, wireless groups) via the `internal/widi` library
-  over the BLE-MIDI characteristic. Addressed by endpoint + product (not a binding),
+  over the BLE-MIDI characteristic. Addressed by endpoint + product (not a device),
   request/reply, and deliberately **outside** the scene/desired-state path.
-- Authoring: `create_device_definition` / `add_control` / `save_device_definition`.
+- Authoring a device type: `create_device_type` / `add_control` /
+  `save_device_type`.
 - MIDI-learn: `learn_start` / `learn_capture` (reads the inbound notify channel
   to capture the CC/NRPN the user moves).
 
 ### State & scenes
 
-- The server keeps an **authoritative desired-state**: per logical device, the
+- The server keeps an **authoritative desired-state**: per device, the
   last value sent per control. Updated on every control set and **persisted as
   JSON** under the state dir (`$XDG_STATE_HOME/mcp-midi-controller/desired-state.json`)
   so it survives a daemon restart; optionally reconciled from inbound MIDI
   (hand-tweaks on hardware).
-- A **scene** is a named snapshot of **only the controls that have been set**
-  (so scenes are small, partial, and **layerable**). For preset-based devices
-  (H90/Opus) it stores the **program number plus CC overrides**.
+- A **scene** is a named snapshot of parameter settings **across all your
+  devices** — only the controls that have been set (so scenes are small, partial,
+  and **layerable**). For preset-based devices (H90/Opus) it stores the **program
+  number plus CC overrides**. A device parameter that is not reachable as a
+  CC/PC — such as a Boss SL-2 slicer pattern captured over its USB editor — is
+  stored as an ordinary parameter value of that device (an opaque blob); the device
+  realizes it over the right transport on recall. A scene never names a transport.
 - **Recall** replays **program-change before CC**, with a per-device
   `settle_ms` delay, and supports **additive** (apply over current state) and
   **exact** (reset to scene) modes.
@@ -266,14 +318,14 @@ Global tools:
   event list and pushed into a standalone BLE-MIDI footswitch (HTTP over WiFi),
   which then replays it live with no laptop in the path. The footswitch is a
   faithful player: it does not re-derive recall semantics. See
-  `export_scene_to_footswitch`. Each event keeps its binding's MIDI channel, so
+  `export_scene_to_footswitch`. Each event keeps its device's MIDI channel, so
   the **routing host** the footswitch is connected to live (e.g. AUM on the iPad)
   must fan the replayed messages out to the gear by channel — the footswitch does
   not address the pedal hub directly. Verified end-to-end against real hardware
   (push → store → inbound-trigger → BLE replay → host relay → MIDI hub → pedal
-  recalled its program). Note: this is also why a per-device **binding channel**
-  must be correct (0-based wire channel); a wrong channel silently routes to the
-  wrong pedal even though the push/replay path is fine.
+  recalled its program). Note: this is also why a per-device **channel** must be
+  correct (0-based wire channel); a wrong channel silently routes to the wrong
+  pedal even though the push/replay path is fine.
 
 ### AUv3 plugins & AUM — the convention model
 
@@ -286,21 +338,28 @@ Global tools:
 > the measured proof, and the open gaps are in
 > [aum-brain-control.md](aum-brain-control.md).
 
-Hardware pedals have **fixed, manufacturer-assigned CC#s**. AUv3 plugins do
-**not**: a parameter only responds to a CC if *you* map it inside AUM (AUM's MIDI
-control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
-**arbitrary convention the server invents**, and AUM must be configured to match.
+An **AUM session is the rig *inside the iPad*** — the mirror of the hardware rig
+this server controls. Its mixer strips and the AUv3 plugins hosted on them are
+**devices**, controlled over the `auv3midi` transport (the LAN channel into AUM).
 
-- The server's **YAML is the source of truth** for each plugin's
-  `param → (channel, CC)` convention.
-- The authoring tools emit an **AUM mapping cheat-sheet** (per plugin: channel +
-  CC list) so configuring AUM is mechanical.
+- **AUv3 plugins are device types** (`transport: auv3midi`). Unlike hardware
+  pedals, their parameters have no manufacturer-assigned CC#s — a parameter only
+  responds to a CC if it is mapped inside AUM. So the device type's
+  `param → (channel, CC)` mapping is a **convention the server defines**, and the
+  AUM session is configured to match. Device types for plugins are generated
+  directly from an `auv3-probe` parameter dump (see the probe tooling below).
+- **AUM session nodes are devices.** Importing a session creates one device per
+  hosted plugin node (and a session-derived AUM mixer device), each on the channel
+  the session's **MIDI control matrix** assigns it. That matrix is the addressing
+  that lets a scene set a node's parameters; it is read from the session, not
+  guessed.
+- The authoring tools emit an **AUM mapping cheat-sheet** (per device type:
+  channel + CC list) so configuring a session by hand stays mechanical.
 - MIDI-learn (capture inbound CC) is the primary path for **hardware**; for
-  **plugins** it is optional. AUM does **not** echo parameter changes as MIDI
-  (input-only), so plugin control is **open-loop** and definitions are verified
-  at authoring time, not by a live echo — see `docs/research/auv3-feedback.md`.
-- AUM itself and each plugin are ordinary **logical devices** bound to the
-  iPad's BLE-MIDI endpoint on **distinct MIDI channels**.
+  plugins it is unnecessary. AUM does **not** echo parameter changes as MIDI
+  (input-only), so plugin control is **open-loop** and device types are verified
+  at authoring time against the probe dump, not by a live echo — see
+  `docs/research/auv3-feedback.md`.
 
 ## Deployment
 
@@ -312,7 +371,7 @@ control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
   then the provided user unit `init/mcp-midi-controller.service`
   (`systemctl --user enable --now …`). See the README for the exact steps.
 - **Startup is serve-first**: the loopback MCP endpoint binds and starts serving
-  immediately; restoring bindings is synchronous (cheap), but inbound BLE
+  immediately; restoring devices is synchronous (cheap), but inbound BLE
   listening is kicked off in the **background** so an unreachable/powered-off
   endpoint can never gate the daemon from coming up. Unreachable endpoints are
   retried on demand by verify/learn/probe.
@@ -328,15 +387,15 @@ control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
 ```
 $XDG_CONFIG_HOME/mcp-midi-controller/     # rig-as-code — git init here
   config.yaml                             #   daemon listen addr, defaults
-  devices/*.yaml                          #   custom/learned definitions (override bundled by definition id)
-  bindings.yaml                           #   endpoints+channels → devices
+  device-types/*.yaml                     #   custom/learned device types (override bundled by id)
+  devices.yaml                            #   your devices (type + where it is) → the rig
   scenes/*.yaml                           #   saved scenes
 $XDG_STATE_HOME/mcp-midi-controller/      # volatile — not versioned
   desired-state.json                      #   last applied state (resume on restart)
   *.log
 ```
 
-Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binary).
+Bundled device types: `internal/device/device-types/*.yaml` (embedded in the binary).
 
 ## Build order (risk-first)
 
@@ -345,11 +404,11 @@ Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binar
    **MD-200** (flip On/Off CC 28, sweep Rate CC 17, read back an inbound CC).
    De-risks the whole project.
 2. **Engine library** — transport interface + `blemidi`; YAML loader (embed +
-   user dir); binding model; desired-state; control rendering (CC/PC/NRPN/SysEx).
+   user dir); device model; desired-state; control rendering (CC/PC/NRPN/SysEx).
 3. **MCP daemon** — go-sdk over loopback streamable-HTTP (systemd user unit);
    globals; dynamic per-device tools + `list_changed`; in-handler validation.
 4. **Scenes** — save/recall/list; PC→CC ordering + settle delay; additive/exact.
-5. **Authoring + MIDI-learn** — definition authoring tools + inbound capture.
+5. **Authoring + MIDI-learn** — device-type authoring tools + inbound capture.
 6. **OSC transport (X32)** — a second, non-MIDI backend (keeps the abstraction honest).
 7. **USB editor/readback tools** — USB-MIDI + vendor-HID transports exposing the
    pedals' deep editor protocols (read device state, author SL-2 patterns, verify
@@ -357,29 +416,29 @@ Bundled definitions: `internal/device/definitions/*.yaml` (embedded in the binar
    `usbmidi`/`usbhid` transports, the four protocol codecs (`internal/usbcodec`:
    roland / morningstar / neuro / torpedo), the value encodings, the
    request/reply session + engine USB API (`internal/engine/usb.go`), the USB
-   binding kind, the generic `usb_*` and semantic per-binding tools
+   transport connection, the generic `usb_*` and semantic per-device tools
    (`internal/mcpserver/usb_tools.go` + `usb_device_tools.go`), the two-key write
    gate, and USB-backed `verify_control`. The device **profiles** that drive it
-   are now authored in the bundled definitions: `sl-2` (roland address SysEx, full
+   are authored in the bundled device types: `sl-2` (roland address SysEx, full
    read + gated write), `eq-2` (neuro HID, 128-preset read + select), `ml10x`
    (morningstar editor, bank read), and an `opus` torpedo-HID monitor-only
-   placeholder; the `h90` is documented as having no USB surface. **Patch-level
-   scenes** are supported: a scene may carry a captured USB memory blob per
-   logical device (`capture_usb_patch` → `scene.USBPatch`) that `recall_scene`
-   writes back over USB (gated), the only way to capture the SL-2's
-   pattern/type. Remaining: hardware re-verification of writes and the
-   not-yet-decoded surfaces (ML10X write opcodes, EQ2 per-parameter byte offsets,
-   Opus value scaling).
+   placeholder; the `h90` has no USB editor protocol. **Patch-level scenes** are
+   supported: a scene may carry a captured USB memory blob as an opaque parameter
+   value of a device (`capture_usb_patch`) that `recall_scene` writes back over USB
+   (gated) — the only way to capture the SL-2's pattern/type. Remaining: hardware
+   re-verification of writes and the not-yet-decoded parameters (ML10X write
+   opcodes, EQ2 per-parameter byte offsets, Opus value scaling).
 8. **AUv3 feedback (`auv3-probe`)** — an off-daemon iPad utility that dumps each
-   plugin's `AUParameterTree` to verify the plugin definitions are correct and
-   cover the maximum functionality (AUM doesn't echo MIDI, so this replaces the
-   BLE echo for plugins). Design: `docs/research/auv3-feedback.md`. Implemented:
+   plugin's `AUParameterTree`, the source from which the plugin's device type is
+   generated and verified to cover the maximum functionality (AUM doesn't echo
+   MIDI, so this replaces the BLE echo for plugins). Design:
+   `docs/research/auv3-feedback.md`. Implemented:
    the iPad app lives in its own repo
    ([github.com/teemow/auv3-probe](https://github.com/teemow/auv3-probe)) and
 POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
   separate from the loopback MCP endpoint, `internal/auv3receiver`, config
   `auv3_receiver_addr`, default `:7800`). Staged dumps are exposed to agents
-  via `list_auv3_probes` / `get_auv3_probe` and turned into definitions via
+  via `list_auv3_probes` / `get_auv3_probe` and turned into device types via
   `import_auv3_probe`. The standalone `cmd/auv3-probe` still exists for running
   the receiver apart from the daemon. The receiver also accepts a per-run
   **diagnostics report** (`POST /auv3-probe/diagnostics`, stored under
@@ -423,8 +482,10 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
    (full flat layout as `structuredContent`), `diff_aum_session` (compare a
    session's channel-control mappings against the server AUM mixer CC
    convention), `import_aum_session` (match each hosted node to a staged
-   `auv3-probe` dump by component tuple and propose `{logical, device, channel}`
-   bindings), `author_aum_session` / `edit_aum_session` (generate/mutate → stage
+   `auv3-probe` dump by component tuple and create one device per node — `{name,
+   type, channel}` — on its session-derived channel, plus a session-derived AUM
+   mixer device; falls back to proposing devices when a channel can't be inferred),
+   `author_aum_session` / `edit_aum_session` (generate/mutate → stage
    for download), and `export_aum_midimap`. The iPad app stays a thin byte-ferry
    — **Go owns all serialization** — so no Swift `NSKeyedArchiver` work is
    needed. Open format gap: the **Program Change / Pitch Bend / Channel
@@ -476,8 +537,8 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
     but a feature is "done" only when the live loop passes against the real
     iPad/AUM/synth rig over the LAN.
 
-All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
-remaining work is **YAML definitions + MIDI-learn**, not core code.
+All listed devices are v1; beyond the transports most of the remaining work is
+**YAML device types + MIDI-learn**, not core code.
 
 ## Key references
 
@@ -486,7 +547,7 @@ remaining work is **YAML definitions + MIDI-learn**, not core code.
 - **Eventide H90** — global/MIDI implementation:
   <https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html>
 - **Boss MD-200** — default CC map inlined above (no public manual link); also in
-  `internal/device/definitions/md-200.yaml`.
+  `internal/device/device-types/md-200.yaml`.
 - **Boss SL-2** — "Controlling This Unit from an External MIDI Device" (3 CCs +
   MIDI clock; no PC): <https://static.roland.com/manuals/sl-2/eng/33861479.html>
   (research note: `docs/research/sl-2.md`).
@@ -506,7 +567,7 @@ remaining work is **YAML definitions + MIDI-learn**, not core code.
 
 ### AUv3 plugins / synths (controlled via the AUM CC convention)
 
-- Verifying plugin definitions (no AUM MIDI echo; `auv3-probe` →
+- Verifying plugin device types (no AUM MIDI echo; `auv3-probe` →
   `AUParameterTree` dump): `docs/research/auv3-feedback.md`
 - Unfiltered Audio Battalion — <https://www.unfilteredaudio.com/products/battalion>
 - Arturia iSEM — <https://www.arturia.com/products/ios-instruments/isem/overview>

@@ -5,28 +5,32 @@ import (
 	"regexp"
 )
 
-// idPattern constrains a definition ID to a filesystem-safe token. The ID is
-// used directly as a filename (devices/<id>.yaml) and as a probe/registry key,
+// idPattern constrains a device-type ID to a filesystem-safe token. The ID is
+// used directly as a filename (device-types/<id>.yaml) and as a probe/registry key,
 // so it must not contain path separators, "..", or other path-significant
 // characters. Allowing only lowercase alphanumerics plus "-"/"_" (starting
 // alphanumeric) keeps authored/learned IDs from escaping the config dir.
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// Definition is a declarative description of a controllable device. It is the
-// primary extension mechanism: adding a device means writing one of these (no
-// Go code). The definition also doubles as the validation schema for the
+// DeviceType is a declarative description of a kind of controllable device:
+// its parameters, how each is addressed, and the transport it speaks. It is the
+// primary extension mechanism: adding a device type means writing one of these
+// (no Go code). The device type also doubles as the validation schema for the
 // device's generated MCP tool.
 //
-// Note: the MIDI channel is intentionally NOT part of the definition. It is
-// supplied by a binding, so a single definition can be bound on different
-// channels (e.g. multiple pedals behind one WIDI Thru6 hub).
-type Definition struct {
+// Note: the MIDI channel is intentionally NOT part of the device type. It is
+// supplied by a Device instance, so a single device type can be used on
+// different channels (e.g. multiple pedals behind one WIDI Thru6 hub).
+type DeviceType struct {
 	ID           string `yaml:"id"`
 	Name         string `yaml:"name"`
 	Manufacturer string `yaml:"manufacturer,omitempty"`
 	Description  string `yaml:"description,omitempty"`
 
-	// Transport is the backend id this device speaks: blemidi | osc | usbmidi.
+	// Transport is the transport that devices of this type speak (authoritative):
+	// blemidi | osc | usbmidi | usbhid | auv3midi. It is a property of the device
+	// type, not the instance — there is no per-instance transport override. The
+	// engine resolves the send path from this transport directly.
 	Transport string `yaml:"transport"`
 
 	// SettleMS is an optional delay applied after a program change before CC
@@ -43,7 +47,7 @@ type Definition struct {
 }
 
 // Control returns the named control, if present.
-func (d *Definition) Control(name string) (*Control, bool) {
+func (d *DeviceType) Control(name string) (*Control, bool) {
 	for i := range d.Controls {
 		if d.Controls[i].Name == name {
 			return &d.Controls[i], true
@@ -54,7 +58,7 @@ func (d *Definition) Control(name string) (*Control, bool) {
 
 // ControlNames returns the control names in declaration order. Used to build
 // the control-name enum in the generated MCP tool's input schema.
-func (d *Definition) ControlNames() []string {
+func (d *DeviceType) ControlNames() []string {
 	names := make([]string, len(d.Controls))
 	for i := range d.Controls {
 		names[i] = d.Controls[i].Name
@@ -62,18 +66,18 @@ func (d *Definition) ControlNames() []string {
 	return names
 }
 
-// Validate checks the definition for internal consistency: it must have an id
+// Validate checks the device type for internal consistency: it must have an id
 // and transport, control names must be unique and non-empty, and each control's
 // addressing must match its type (cc needs a CC number, osc needs an address,
 // sysex needs a template, etc.) unless the control is parametric (the address
 // number is supplied at call time). It does not check that the transport is one
 // the engine has registered — that is enforced at bind time.
-func (d *Definition) Validate() error {
+func (d *DeviceType) Validate() error {
 	if d.ID == "" {
-		return fmt.Errorf("device definition: missing id")
+		return fmt.Errorf("device type: missing id")
 	}
 	if !idPattern.MatchString(d.ID) {
-		return fmt.Errorf("device definition: invalid id %q (must match %s)", d.ID, idPattern.String())
+		return fmt.Errorf("device type: invalid id %q (must match %s)", d.ID, idPattern.String())
 	}
 	if d.Transport == "" {
 		return fmt.Errorf("device %q: missing transport", d.ID)

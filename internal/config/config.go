@@ -20,8 +20,9 @@ type Config struct {
 	// USBAllowWrites is the master gate for USB writes (set_param, write_pattern,
 	// recall_pattern, select_preset, and real — non-dry-run — usb_write). It
 	// defaults to false: a fresh install is read-only over USB. Even with it on,
-	// a USB binding must additionally opt in with writable: true before its write
-	// tools are exposed (see engine.Binding.Writable and docs/usb-tools.md).
+	// a device's USB connection must additionally opt in with writable: true
+	// before its write tools are exposed (see engine.Connection.Writable and
+	// docs/usb-tools.md).
 	USBAllowWrites bool `yaml:"usb_allow_writes"`
 
 	// AUv3ReceiverAddr is the LAN bind address for the iPad receiver — the
@@ -58,14 +59,15 @@ func StateDir() string {
 	return filepath.Join(base, appName)
 }
 
-// DevicesDir is where user device definitions live (override bundled by name).
-func DevicesDir() string { return filepath.Join(ConfigDir(), "devices") }
+// DeviceTypesDir is where user device types live (override bundled by id).
+func DeviceTypesDir() string { return filepath.Join(ConfigDir(), "device-types") }
 
 // ScenesDir is where saved scenes live.
 func ScenesDir() string { return filepath.Join(ConfigDir(), "scenes") }
 
-// BindingsPath is the persisted bindings file.
-func BindingsPath() string { return filepath.Join(ConfigDir(), "bindings.yaml") }
+// DevicesPath is the persisted rig file: the set of controllable Device
+// instances (devices.yaml).
+func DevicesPath() string { return filepath.Join(ConfigDir(), "devices.yaml") }
 
 // DesiredStatePath is the persisted desired-state cache (volatile).
 func DesiredStatePath() string { return filepath.Join(StateDir(), "desired-state.json") }

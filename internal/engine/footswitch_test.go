@@ -40,7 +40,7 @@ func newFootswitchTestEngine(t *testing.T) *Engine {
 	eng := New(reg, newFakeTransport())
 	// Bind on MIDI channel 2 (binding channel is 0-based -> wire nibble 1 ->
 	// firmware-facing channel 2).
-	if err := eng.Bind(Binding{Logical: "pedal", Endpoint: "EP1", Channel: 1, DeviceID: "pedal"}); err != nil {
+	if err := eng.Bind(Device{Name: "pedal", DeviceID: "pedal", Endpoint: "EP1", Channel: 1}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	return eng
@@ -130,7 +130,7 @@ func newOSCFootswitchTestEngine(t *testing.T, endpoint string) *Engine {
 	}
 	eng := New(reg, &fakeOSCTransport{*newFakeTransport()})
 	// Channel is irrelevant for OSC; the UDP target comes from the endpoint.
-	if err := eng.Bind(Binding{Logical: "x32", Endpoint: endpoint, Channel: 0, DeviceID: "x32mini"}); err != nil {
+	if err := eng.Bind(Device{Name: "x32", DeviceID: "x32mini", Endpoint: endpoint, Channel: 0}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	return eng

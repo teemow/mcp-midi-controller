@@ -47,7 +47,7 @@ func (e *Engine) USBWritePatch(ctx context.Context, logical string, p scene.USBP
 	if err != nil {
 		return nil, err
 	}
-	if !dryRun && !e.usbWritesAllowed(c.binding) {
+	if !dryRun && !e.usbWritesAllowed(c.dev) {
 		return nil, fmt.Errorf("usb writes are disabled for %q (set usb_allow_writes and bind writable: true)", logical)
 	}
 	if p.Store != nil && c.profile.Protocol != device.USBProtocolRoland {

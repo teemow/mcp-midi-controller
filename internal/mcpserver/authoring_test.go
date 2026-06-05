@@ -101,7 +101,7 @@ func TestAuthoringRoundTrip(t *testing.T) {
 	}
 
 	// The file was written.
-	path := filepath.Join(cfgDir, "mcp-midi-controller", "devices", "mypedal.yaml")
+	path := filepath.Join(cfgDir, "mcp-midi-controller", "device-types", "mypedal.yaml")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("definition file not written: %v", err)
 	}

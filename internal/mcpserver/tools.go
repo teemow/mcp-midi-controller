@@ -22,18 +22,22 @@ import (
 // discoverable while the engine is filled in.
 func (s *Server) registerGlobalTools() {
 	objSchema := json.RawMessage(`{"type":"object"}`)
-	deviceArgSchema := json.RawMessage(`{"type":"object","properties":{"device":{"type":"string"}},"required":["device"]}`)
+	deviceArgSchema := json.RawMessage(`{"type":"object","properties":{"device":{"type":"string","description":"A device in your rig (its name) or a device type id (see list_devices available=true)."}},"required":["device"]}`)
 
-	// Implemented: a real read-only view of the bound rig.
+	// The two read tools the user surface speaks: the rig (devices) and, with
+	// available=true, the catalog (device types). Both emit structuredContent.
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "list_devices",
-		Description: "List the bound logical devices and their definitions.",
-		InputSchema: objSchema,
+		Name: "list_devices",
+		Description: "List the devices in your rig: name, device type, control transport, connection(s) (endpoint/channel per transport, USB editor + write flag). " +
+			"Set available=true to also list the device types you could add (the catalog of known gear) — each flagged known when a device in your rig already uses it. " +
+			"Emits structuredContent {devices:[...], types:[...]}.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"available":{"type":"boolean","description":"Also list the available device-type catalog, not just the rig."}}}`),
 	}, s.handleListDevices)
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "describe_device",
-		Description: "Describe a device's controls, types and value ranges/enums.",
+		Name: "describe_device",
+		Description: "Describe one device's (or device type's) controls: every control with its type, addressing (cc/nrpn/program/sysex/osc), value spec (range/enum/unit) and description, plus whether it has a USB editor surface. " +
+			"Select by a device name (see list_devices) or a device type id (see list_devices available=true). Emits the device type detail as structuredContent.",
 		InputSchema: deviceArgSchema,
 	}, s.handleDescribeDevice)
 
@@ -43,6 +47,9 @@ func (s *Server) registerGlobalTools() {
 		Description: "Scan for reachable transport endpoints (BLE peripherals, OSC hosts, USB-MIDI ports, USB-HID VID:PIDs).",
 		InputSchema: objSchema,
 	}, s.handleDiscoverEndpoints)
+	// Unified discovery across endpoints + AUv3 catalog + AUM session nodes,
+	// each annotated with its (transient) source and a suggested device type.
+	s.registerDiscoverTools()
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "pair_endpoint",
 		Description: "Pair/bond with a BLE endpoint and open its data path. Pass transport to target a non-default backend.",
@@ -50,13 +57,13 @@ func (s *Server) registerGlobalTools() {
 	}, s.handlePairEndpoint)
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "bind_device",
-		Description: "Bind an endpoint to a device definition for one logical device. Default (blemidi/osc) configures the control surface and generates a control_<logical> tool. Set transport to usbmidi|usbhid for a device with a usb profile to configure its editor/readback surface instead (generates the USB tool family; channel is ignored, optional writable opts the surface in to gated write tools). Both calls merge onto the same logical, so one physical device can carry both a control surface and a USB surface under one name — bind it twice (once per transport).",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"},"endpoint":{"type":"string"},"channel":{"type":"integer"},"device":{"type":"string"},"transport":{"type":"string"},"writable":{"type":"boolean"}},"required":["logical","endpoint","device"]}`),
+		Description: "Add a device to your rig: bind an endpoint to a device type under one name. Default (blemidi/osc/auv3midi) configures the control connection and generates a control_<name> tool. Set transport to usbmidi|usbhid for a device type with a usb profile to configure its editor/readback connection instead (generates the USB tool family; channel is ignored, optional writable opts the connection in to gated write tools). Both calls merge onto the same name, so one physical device can carry both a control and a USB connection — bind it twice (once per transport).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"The device's name in your rig (generates control_<name>)."},"endpoint":{"type":"string"},"channel":{"type":"integer"},"device":{"type":"string","description":"The device type id (see list_devices available=true)."},"transport":{"type":"string"},"writable":{"type":"boolean"}},"required":["name","endpoint","device"]}`),
 	}, s.handleBindDevice)
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "unbind_device",
-		Description: "Remove a logical device binding entirely (removes its control_<logical> tool and any USB tool family).",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"logical":{"type":"string"}},"required":["logical"]}`),
+		Description: "Remove a device from your rig entirely (removes its control_<name> tool and any USB tool family).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"The device name to remove."}},"required":["name"]}`),
 	}, s.handleUnbindDevice)
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "send_raw",
@@ -91,10 +98,6 @@ func (s *Server) registerGlobalTools() {
 		InputSchema: objSchema,
 	}, s.handleLearnCapture)
 
-	// Rig-reasoning read tools (list_bindings / list_definitions /
-	// get_definition) — the machine-readable companions to list_devices /
-	// describe_device — are wired in registerRigTools.
-	s.registerRigTools()
 	// Generic USB editor/readback tools (usb_identify/read/dump/write +
 	// usb_probe/usb_monitor) are wired in registerUSBTools.
 	s.registerUSBTools()
@@ -122,43 +125,63 @@ func (s *Server) registerGlobalTools() {
 	s.registerMidiTools()
 }
 
-func (s *Server) handleListDevices(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	bindings := s.eng.Bindings()
-	if len(bindings) == 0 {
-		return structResult("no devices bound yet; use discover_endpoints + bind_device", map[string]any{"devices": []bindingView{}}), nil
+func (s *Server) handleListDevices(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Available bool `json:"available"`
 	}
-	views := make([]bindingView, 0, len(bindings))
+	if len(req.Params.Arguments) > 0 {
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return textResult("invalid arguments: "+err.Error(), true), nil
+		}
+	}
+
+	devices := s.eng.Devices()
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
+	views := make([]deviceView, 0, len(devices))
 	var b strings.Builder
-	for _, bind := range bindings {
-		name := bind.DeviceID
-		v := bindingView{
-			Logical:   bind.Logical,
-			Device:    bind.DeviceID,
-			Endpoint:  bind.Endpoint,
-			Channel:   bind.Channel,
-			Transport: bind.Transport,
-			USB:       bind.HasUSB(),
-		}
-		if bind.HasUSB() {
-			v.USBTransport = bind.USB.Transport
-			v.USBEndpoint = bind.USB.Endpoint
-			v.Writable = bind.USB.Writable
-		}
-		if def, ok := s.eng.Registry().Get(bind.DeviceID); ok {
-			name = def.Name
-			v.DeviceName = def.Name
-		}
+	if len(devices) == 0 {
+		b.WriteString("no devices in your rig yet; use discover_devices + bind_device\n")
+	}
+	for _, dev := range devices {
+		v := s.deviceViewFor(dev)
 		views = append(views, v)
-		fmt.Fprintf(&b, "%s\t(device=%s", bind.Logical, name)
-		if bind.HasControl() {
-			fmt.Fprintf(&b, ", endpoint=%q, channel=%d", bind.Endpoint, bind.Channel)
+		typeName := v.TypeName
+		if typeName == "" {
+			typeName = v.Type
 		}
-		if bind.HasUSB() {
-			fmt.Fprintf(&b, ", usb=%s", bind.USB.Transport)
+		fmt.Fprintf(&b, "%s\t(type=%s", dev.Name, typeName)
+		if dev.HasControl() {
+			fmt.Fprintf(&b, ", endpoint=%q, channel=%d", dev.ControlEndpoint(), dev.ControlChannel())
+		}
+		if v.USB {
+			fmt.Fprintf(&b, ", usb=%s", v.USBTransport)
 		}
 		b.WriteString(")\n")
 	}
-	return structResult(b.String(), map[string]any{"devices": views}), nil
+
+	out := map[string]any{"devices": views}
+	if args.Available {
+		types := s.deviceTypeCatalog()
+		out["types"] = types
+		fmt.Fprintf(&b, "\navailable device types (%d) — bind_device to add one:\n", len(types))
+		for _, t := range types {
+			mfr := t.Manufacturer
+			if mfr == "" {
+				mfr = "?"
+			}
+			flag := ""
+			if t.Known {
+				flag = " *in rig"
+			}
+			fmt.Fprintf(&b, "  %-20s %s [%s, transport=%s]: %d control(s)", t.ID, t.Name, mfr, t.Transport, t.Controls)
+			if t.USB {
+				b.WriteString(" +usb")
+			}
+			b.WriteString(flag)
+			b.WriteByte('\n')
+		}
+	}
+	return structResult(b.String(), out), nil
 }
 
 func (s *Server) handleDescribeDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -168,20 +191,27 @@ func (s *Server) handleDescribeDevice(_ context.Context, req *mcp.CallToolReques
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
-	// Accept either a logical device name or a definition id.
-	defID := args.Device
-	for _, bind := range s.eng.Bindings() {
-		if bind.Logical == args.Device {
-			defID = bind.DeviceID
+	if args.Device == "" {
+		return textResult("/device: required (a device name or a device type id)", true), nil
+	}
+	// Accept either a device name (resolved via the rig) or a device type id.
+	typeID := args.Device
+	for _, dev := range s.eng.Devices() {
+		if dev.Name == args.Device {
+			typeID = dev.DeviceID
 			break
 		}
 	}
-	def, ok := s.eng.Registry().Get(defID)
+	def, ok := s.eng.Registry().Get(typeID)
 	if !ok {
-		return textResult(fmt.Sprintf("unknown device %q", args.Device), true), nil
+		return textResult(fmt.Sprintf("unknown device %q (see list_devices / list_devices available=true)", args.Device), true), nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s (%s, transport=%s)\n", def.Name, def.ID, def.Transport)
+	fmt.Fprintf(&b, "%s (%s, transport=%s)", def.Name, def.ID, def.Transport)
+	if def.USB != nil {
+		b.WriteString(" +usb")
+	}
+	b.WriteByte('\n')
 	names := def.ControlNames()
 	sort.Strings(names)
 	for _, n := range names {
@@ -195,7 +225,7 @@ func (s *Server) handleDescribeDevice(_ context.Context, req *mcp.CallToolReques
 		}
 		b.WriteByte('\n')
 	}
-	return structResult(b.String(), newDefinitionView(def)), nil
+	return structResult(b.String(), newDeviceTypeDetail(def)), nil
 }
 
 // describeValueSpec renders a control's accepted-value domain (range/enum/unit)
@@ -313,7 +343,7 @@ func (s *Server) handlePairEndpoint(ctx context.Context, req *mcp.CallToolReques
 
 func (s *Server) handleBindDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
-		Logical   string `json:"logical"`
+		Name      string `json:"name"`
 		Endpoint  string `json:"endpoint"`
 		Channel   int    `json:"channel"`
 		Device    string `json:"device"`
@@ -330,61 +360,73 @@ func (s *Server) handleBindDevice(_ context.Context, req *mcp.CallToolRequest) (
 		return textResult(fmt.Sprintf("/channel: %d out of range (must be 0..15; note the wire form is 0-based)", args.Channel), true), nil
 	}
 	usbSurface := args.Transport == device.USBTransportMIDI || args.Transport == device.USBTransportHID
-	// Merge onto any existing binding for this logical so one physical device
-	// can accrue both surfaces under one name: a usbmidi/usbhid call configures
-	// the USB surface (preserving an existing control surface), any other call
-	// configures the control surface (preserving an existing USB surface).
-	b, _ := s.eng.BindingFor(args.Logical)
-	b.Logical = args.Logical
-	b.DeviceID = args.Device
-	if usbSurface {
-		b.USB = &engine.USBSurface{Transport: args.Transport, Endpoint: args.Endpoint, Writable: args.Writable}
-	} else {
-		b.Endpoint = args.Endpoint
-		b.Channel = args.Channel
-		b.Transport = args.Transport
+	def, ok := s.eng.Registry().Get(args.Device)
+	if !ok {
+		return textResult(fmt.Sprintf("unknown device type %q", args.Device), true), nil
 	}
-	if err := s.eng.Bind(b); err != nil {
+	if usbSurface && def.USB == nil {
+		return textResult(fmt.Sprintf("device type %q has no usb profile", args.Device), true), nil
+	}
+	// Merge onto any existing device for this logical so one physical device can
+	// accrue connections on several transports under one name: a usbmidi/usbhid
+	// call configures the USB connection (preserving the control connection),
+	// any other call configures the control connection (preserving the USB
+	// connection). Transport is a property of the device type, so the connection
+	// key comes from the type, not the caller.
+	d, found := s.eng.DeviceFor(args.Name)
+	d.Name = args.Name
+	d.DeviceID = args.Device
+	conns := map[string]engine.Connection{}
+	if found {
+		conns = d.ConnectionsMap(def.Transport)
+	}
+	if usbSurface {
+		conns[def.USB.Transport] = engine.Connection{Endpoint: args.Endpoint, Writable: args.Writable}
+	} else {
+		conns[def.Transport] = engine.Connection{Endpoint: args.Endpoint, Channel: args.Channel}
+	}
+	d = d.WithConnections(def.Transport, conns)
+	if err := s.eng.Bind(d); err != nil {
 		return textResult(err.Error(), true), nil
 	}
-	s.refreshToolsForBinding(b)
+	s.refreshToolsForDevice(d)
 	persistNote := ""
-	if err := s.persistBindings(); err != nil {
-		persistNote = fmt.Sprintf(" (warning: could not persist bindings: %v)", err)
+	if err := s.persistDevices(); err != nil {
+		persistNote = fmt.Sprintf(" (warning: could not persist devices: %v)", err)
 	}
 	if usbSurface {
 		write := "read-only"
-		if s.usbWritesAllowed(b) {
+		if s.usbWritesAllowed(d) {
 			write = "writable"
 		}
 		ctlNote := ""
-		if b.HasControl() {
-			ctlNote = fmt.Sprintf(" alongside control_%s", args.Logical)
+		if d.HasControl() {
+			ctlNote = fmt.Sprintf(" alongside control_%s", args.Name)
 		}
-		return textResult(fmt.Sprintf("bound %s -> %s usb surface over %s on %q (%s; USB tool family generated%s)%s", args.Logical, args.Device, args.Transport, args.Endpoint, write, ctlNote, persistNote), false), nil
+		return textResult(fmt.Sprintf("bound %s -> %s usb surface over %s on %q (%s; USB tool family generated%s)%s", args.Name, args.Device, args.Transport, args.Endpoint, write, ctlNote, persistNote), false), nil
 	}
 	usbNote := ""
-	if b.HasUSB() {
+	if d.HasUSB() {
 		usbNote = " (usb surface preserved)"
 	}
-	return textResult(fmt.Sprintf("bound %s -> %s on %q channel %d (tool control_%s)%s%s", args.Logical, args.Device, args.Endpoint, args.Channel, args.Logical, usbNote, persistNote), false), nil
+	return textResult(fmt.Sprintf("bound %s -> %s on %q channel %d (tool control_%s)%s%s", args.Name, args.Device, args.Endpoint, args.Channel, args.Name, usbNote, persistNote), false), nil
 }
 
 func (s *Server) handleUnbindDevice(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
-		Logical string `json:"logical"`
+		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
-	// Remove the tools while the binding is still present (RemoveUSBDeviceTool
-	// resolves the USB tool names from the binding's definition), then drop it.
-	s.removeToolsForBinding(args.Logical)
-	s.eng.Unbind(args.Logical)
-	if err := s.persistBindings(); err != nil {
-		return textResult(fmt.Sprintf("unbound %s (warning: could not persist bindings: %v)", args.Logical, err), false), nil
+	// Remove the tools while the device is still present (RemoveUSBDeviceTool
+	// resolves the USB tool names from the device's definition), then drop it.
+	s.removeToolsForDevice(args.Name)
+	s.eng.Unbind(args.Name)
+	if err := s.persistDevices(); err != nil {
+		return textResult(fmt.Sprintf("unbound %s (warning: could not persist devices: %v)", args.Name, err), false), nil
 	}
-	return textResult(fmt.Sprintf("unbound %s", args.Logical), false), nil
+	return textResult(fmt.Sprintf("unbound %s", args.Name), false), nil
 }
 
 func (s *Server) handleSendRaw(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -437,7 +479,7 @@ func (s *Server) handleReadState(_ context.Context, req *mcp.CallToolRequest) (*
 
 	logicals := s.stateLogicals(args.Device)
 	if args.Device != "" && len(logicals) == 0 {
-		return textResult(fmt.Sprintf("unknown logical device %q", args.Device), true), nil
+		return textResult(fmt.Sprintf("unknown device %q", args.Device), true), nil
 	}
 	out := map[string]any{}
 	for _, l := range logicals {
@@ -457,16 +499,16 @@ func (s *Server) handleReadState(_ context.Context, req *mcp.CallToolRequest) (*
 // one (resolved from a logical name) or every bound device.
 func (s *Server) stateLogicals(device string) []string {
 	if device != "" {
-		for _, b := range s.eng.Bindings() {
-			if b.Logical == device {
+		for _, d := range s.eng.Devices() {
+			if d.Name == device {
 				return []string{device}
 			}
 		}
 		return nil
 	}
 	var out []string
-	for _, b := range s.eng.Bindings() {
-		out = append(out, b.Logical)
+	for _, d := range s.eng.Devices() {
+		out = append(out, d.Name)
 	}
 	sort.Strings(out)
 	return out
@@ -544,9 +586,10 @@ func (s *Server) handleLearnCapture(context.Context, *mcp.CallToolRequest) (*mcp
 	return textResult(string(b), false), nil
 }
 
-// persistBindings writes the current bindings to the rig-as-code bindings file.
-func (s *Server) persistBindings() error {
-	return engine.SaveBindingsFile(config.BindingsPath(), s.eng.Bindings())
+// persistDevices writes the current devices to the rig-as-code devices file
+// (devices.yaml).
+func (s *Server) persistDevices() error {
+	return engine.SaveDevicesFile(config.DevicesPath(), s.eng.Devices())
 }
 
 // controlToolSchema builds the input schema for a control_<logical> tool: a
@@ -556,7 +599,7 @@ func (s *Server) persistBindings() error {
 // guidance for the model only — the engine's in-handler device.Resolve
 // validation remains the authoritative safety net (a client that ignores the
 // schema is still validated server-side).
-func controlToolSchema(def *device.Definition) json.RawMessage {
+func controlToolSchema(def *device.DeviceType) json.RawMessage {
 	oneOf := make([]any, 0, len(def.Controls))
 	for i := range def.Controls {
 		c := &def.Controls[i]

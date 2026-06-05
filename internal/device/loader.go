@@ -20,32 +20,32 @@ func isYAMLName(name string) bool {
 	return ext == ".yaml" || ext == ".yml"
 }
 
-// Registry holds the loaded device definitions, keyed by definition ID. It is
+// Registry holds the loaded device types, keyed by device-type ID. It is
 // safe for concurrent use: authoring tools mutate it via AddDefinition while
 // MCP handlers read it via Get/All from concurrent streamable-HTTP requests.
 type Registry struct {
 	mu   sync.RWMutex
-	defs map[string]*Definition
+	defs map[string]*DeviceType
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{defs: map[string]*Definition{}}
+	return &Registry{defs: map[string]*DeviceType{}}
 }
 
-// LoadBundled loads the definitions embedded in the binary.
+// LoadBundled loads the device types embedded in the binary.
 func LoadBundled() (*Registry, error) {
 	r := NewRegistry()
-	if err := r.loadFS(bundledFS, "definitions"); err != nil {
-		return nil, fmt.Errorf("load bundled definitions: %w", err)
+	if err := r.loadFS(bundledFS, "device-types"); err != nil {
+		return nil, fmt.Errorf("load bundled device types: %w", err)
 	}
 	return r, nil
 }
 
-// LoadDir loads (and overrides) definitions from a directory of *.yaml/*.yml
-// files. A definition with an ID that already exists replaces the bundled one.
+// LoadDir loads (and overrides) device types from a directory of *.yaml/*.yml
+// files. A device type with an ID that already exists replaces the bundled one.
 //
-// A single malformed or invalid user definition is skipped (logged) rather than
+// A single malformed or invalid user device type is skipped (logged) rather than
 // aborting the load, so one bad file in the config dir cannot gate the daemon
 // from coming up — consistent with the serve-first startup model. Only a
 // directory-level read error (other than "not exist") is returned.
@@ -67,7 +67,7 @@ func (r *Registry) LoadDir(dir string) error {
 			continue
 		}
 		if err := r.add(b, e.Name()); err != nil {
-			log.Printf("device: skipping invalid definition %s: %v", e.Name(), err)
+			log.Printf("device: skipping invalid device type %s: %v", e.Name(), err)
 			continue
 		}
 	}
@@ -95,7 +95,7 @@ func (r *Registry) loadFS(fsys fs.FS, dir string) error {
 }
 
 func (r *Registry) add(b []byte, src string) error {
-	var d Definition
+	var d DeviceType
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true) // reject misspelled/unknown keys rather than silently dropping them
 	if err := dec.Decode(&d); err != nil {
@@ -110,12 +110,12 @@ func (r *Registry) add(b []byte, src string) error {
 	return nil
 }
 
-// AddDefinition validates and inserts (or replaces) a definition in the
-// registry so an authored device hot-loads without a daemon restart. The
-// definition must have an id.
-func (r *Registry) AddDefinition(d *Definition) error {
+// AddDefinition validates and inserts (or replaces) a device type in the
+// registry so an authored device type hot-loads without a daemon restart. The
+// device type must have an id.
+func (r *Registry) AddDefinition(d *DeviceType) error {
 	if d == nil {
-		return fmt.Errorf("nil definition")
+		return fmt.Errorf("nil device type")
 	}
 	if err := d.Validate(); err != nil {
 		return err
@@ -126,18 +126,18 @@ func (r *Registry) AddDefinition(d *Definition) error {
 	return nil
 }
 
-// Get returns the definition with the given ID.
-func (r *Registry) Get(id string) (*Definition, bool) {
+// Get returns the device type with the given ID.
+func (r *Registry) Get(id string) (*DeviceType, bool) {
 	r.mu.RLock()
 	d, ok := r.defs[id]
 	r.mu.RUnlock()
 	return d, ok
 }
 
-// All returns every definition, sorted by ID.
-func (r *Registry) All() []*Definition {
+// All returns every device type, sorted by ID.
+func (r *Registry) All() []*DeviceType {
 	r.mu.RLock()
-	out := make([]*Definition, 0, len(r.defs))
+	out := make([]*DeviceType, 0, len(r.defs))
 	for _, d := range r.defs {
 		out = append(out, d)
 	}

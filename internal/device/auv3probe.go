@@ -2,6 +2,7 @@ package device
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/teemow/mcp-midi-controller/internal/sanitize"
@@ -9,7 +10,7 @@ import (
 
 // This file turns an AUv3 parameter-tree dump (produced by the off-daemon
 // cmd/auv3-probe utility, see docs/research/auv3-feedback.md) into a device
-// Definition draft and diffs a dump against an existing definition. Because AUM
+// DeviceType draft and diffs a dump against an existing device type. Because AUM
 // does not echo MIDI, the parameter tree is the only truth-source for verifying
 // that a plugin's YAML is correct and covers the plugin's maximum controllable
 // functionality. Enumeration is instance-independent, so any instance of the
@@ -118,12 +119,12 @@ type ProbeDump struct {
 	SupportsUserPresets bool `json:"supportsUserPresets,omitempty"`
 }
 
-// ProbeID derives the sanitized definition/file id for a dump (from the
+// ProbeID derives the sanitized device-type/file id for a dump (from the
 // component subtype, falling back to the name). The off-daemon receiver names
-// staged dumps <ProbeID>.json so import_auv3_probe and DefinitionFromProbe
+// staged dumps <ProbeID>.json so import_auv3_probe and DeviceTypeFromProbe
 // agree on the id.
 func ProbeID(dump ProbeDump) string {
-	return sanitizeName(firstNonEmpty(dump.Component.Subtype, dump.Name))
+	return sanitizeName(FirstNonEmpty(dump.Component.Subtype, dump.Name))
 }
 
 // label returns the most human-friendly identifier for a parameter, preferring
@@ -141,23 +142,36 @@ func (p ProbeParam) label() string {
 	}
 }
 
-// ProbeOptions tunes DefinitionFromProbe. Zero value uses the project defaults
-// (CC convention starting at 30, capping at 127, enum for <=8 valueStrings).
+// ProbeOptions tunes DeviceTypeFromProbe. Zero value uses the project defaults
+// (CC convention starting at 30, capping at 127, enum for <=8 valueStrings,
+// preset enum up to one PC bank).
 type ProbeOptions struct {
-	// ID overrides the derived definition id (otherwise from Component.Subtype
+	// ID overrides the derived device-type id (otherwise from Component.Subtype
 	// or Name, sanitized).
 	ID string
-	// Name overrides the derived definition name (otherwise the dump Name).
+	// Name overrides the derived device-type name (otherwise the dump Name).
 	Name string
 	// StartCC is the first convention CC assigned (default 30, per
 	// docs/research/auv3-plugins.md).
 	StartCC int
-	// MaxCC is the last usable CC (default 127). Params that would exceed it are
-	// reported in ProbeBuildReport.Overflow rather than dropped silently.
+	// MaxCC is the last usable CC (default 127). Params that would exceed the
+	// curated CC budget are reported in ProbeBuildReport.Overflow rather than
+	// dropped silently.
 	MaxCC int
 	// EnumMax is the largest valueStrings count still modeled as an enum control
 	// (default 8). Above it the param becomes a plain range control.
 	EnumMax int
+	// Select lists params (matched by identifier, displayName, or keyPath) to
+	// map first — ahead of group representatives and other writable params —
+	// when the writable-param count exceeds the curated CC budget. Empty means
+	// "no explicit curation": fall back to one representative per group, then
+	// remaining non-meta params, then meta params, in parameter-tree order.
+	Select []string
+	// PresetEnumMax is the largest recallable-preset count still modeled as an
+	// enum (preset name -> program number) on the preset control (default 128,
+	// one Program Change bank). Above it the preset control is a plain range
+	// 0..maxNumber recalled by number.
+	PresetEnumMax int
 }
 
 func (o ProbeOptions) withDefaults() ProbeOptions {
@@ -170,16 +184,20 @@ func (o ProbeOptions) withDefaults() ProbeOptions {
 	if o.EnumMax == 0 {
 		o.EnumMax = 8
 	}
+	if o.PresetEnumMax == 0 {
+		o.PresetEnumMax = 128
+	}
 	return o
 }
 
-// ProbeBuildReport accompanies a generated Definition: it records the writable
-// params that did not fit in the CC range (so a human can curate them onto a
-// second channel/file) and the read-only params that were skipped (not
-// AUM-mappable).
+// ProbeBuildReport accompanies a generated DeviceType: it records the writable
+// params that did not fit the curated CC budget (so a human can curate them onto
+// a second channel/file), the read-only params that were skipped (not
+// AUM-mappable), and the preset control that was synthesized.
 type ProbeBuildReport struct {
-	// Overflow lists writable params beyond the CC cap (start..max). They are
-	// reported, not dropped, so coverage gaps are explicit.
+	// Overflow lists writable params that did not fit the curated CC budget
+	// (start..max minus the reserved AUM convention band). They are reported,
+	// not dropped, so coverage gaps are explicit.
 	Overflow []ProbeParam
 	// SkippedReadOnly lists params that are not writable; AUM can only map
 	// writable params, so these get no control.
@@ -195,16 +213,41 @@ type ProbeBuildReport struct {
 	// moves them; they are reported (not silently dropped) so a human can
 	// curate any they still want mapped directly.
 	DerivedSkipped []ProbeParam
+	// PresetControl is the name of the generated preset (Program Change) control,
+	// empty when the dump exposes no recallable (number >= 0) presets.
+	PresetControl string
+	// Presets is the number of recallable presets folded into the preset control.
+	Presets int
+	// BankSelect reports that the preset control spans more than 128 presets, so
+	// recall emits Bank Select (CC 0/32) before the Program Change.
+	BankSelect bool
 }
 
-// DefinitionFromProbe builds a device.Definition draft from a parameter-tree
-// dump. Transport is blemidi (the AUM-over-BLE path). One cc control is emitted
-// per writable param in tree order, assigning the convention CC starting at
-// opts.StartCC. The wire value spec is range 0-127 (AUM scales the 7-bit CC
-// onto the AU float range); the AU displayName/range/unit/valueStrings are
-// recorded in the control Description. Small indexed params (valueStrings,
-// <=opts.EnumMax) become enum controls. The returned definition is validated.
-func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeBuildReport, error) {
+// DeviceTypeFromProbe builds a device.DeviceType straight from a parameter-tree
+// dump (a probe dump is a throwaway intermediary, not a standing concept). The
+// transport is auv3midi — the LAN channel into AUM that drives the hosted AUv3
+// plugin.
+//
+// The generator is preset-first and bounded:
+//
+//   - Preset-first: recallable presets (number >= 0) become the primary control,
+//     a single Program Change ("preset"). For big synths preset recall dominates
+//     per-param tweaking. More than 128 presets are addressed by Bank Select +
+//     Program Change (Control.Bank).
+//   - Curated CC subset within budget: a single MIDI channel has only 128 CCs,
+//     and the AUM mixer/transport convention already claims a band of them, so
+//     writable params cannot all be mapped for the larger plugins. Params are
+//     selected by priority (explicit opts.Select > one representative per group >
+//     remaining non-meta params > meta params) and assigned the available CCs in
+//     opts.StartCC..opts.MaxCC, skipping the reserved convention band. Params
+//     beyond the budget are reported in ProbeBuildReport.Overflow, not dropped.
+//
+// Read-only params are skipped (AUM can only map writable params); macro/meta
+// params keep their CC while the params they drive are skipped (the macro's CC
+// moves them). Small indexed params (valueStrings, <=opts.EnumMax) become enum
+// controls; the AU displayName/range/unit/valueStrings are recorded in the
+// control Description. The returned device type is validated.
+func DeviceTypeFromProbe(dump ProbeDump, opts ProbeOptions) (*DeviceType, ProbeBuildReport, error) {
 	opts = opts.withDefaults()
 	var report ProbeBuildReport
 
@@ -213,16 +256,28 @@ func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeB
 		id = ProbeID(dump)
 	}
 	if id == "" {
-		return nil, report, fmt.Errorf("auv3 probe: cannot derive a definition id (empty subtype and name)")
+		return nil, report, fmt.Errorf("auv3 probe: cannot derive a device-type id (empty subtype and name)")
 	}
-	name := firstNonEmpty(opts.Name, dump.Name, id)
+	name := FirstNonEmpty(opts.Name, dump.Name, id)
 
-	def := &Definition{
+	def := &DeviceType{
 		ID:           id,
 		Name:         name,
 		Manufacturer: dump.Component.Manufacturer,
 		Description:  fmt.Sprintf("Generated from an AUv3 parameter-tree probe (component %s/%s).", dump.Component.Type, dump.Component.Subtype),
-		Transport:    "blemidi",
+		Transport:    "auv3midi",
+	}
+
+	usedNames := map[string]bool{}
+
+	// Preset-first: synthesize the preset control before the per-param CCs so it
+	// reads as the device's primary control.
+	if pc, count, ok := presetControl(dump, opts); ok {
+		usedNames[pc.Name] = true
+		def.Controls = append(def.Controls, pc)
+		report.PresetControl = pc.Name
+		report.Presets = count
+		report.BankSelect = pc.Bank
 	}
 
 	// A macro/meta param drives the params it lists in dependentParameters.
@@ -235,8 +290,8 @@ func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeB
 		}
 	}
 
-	usedNames := map[string]bool{}
-	nextCC := opts.StartCC
+	// Build the candidate set: writable params that are not driven by a macro.
+	var candidates []ProbeParam
 	for _, p := range dump.Parameters {
 		if !p.Writable {
 			report.SkippedReadOnly = append(report.SkippedReadOnly, p)
@@ -248,15 +303,21 @@ func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeB
 			report.DerivedSkipped = append(report.DerivedSkipped, p)
 			continue
 		}
-		if nextCC > opts.MaxCC {
+		candidates = append(candidates, p)
+	}
+
+	// Curate the candidates into a priority order, then assign them the CCs that
+	// are free in the convention band. Anything past the budget is overflow.
+	ordered := curateParams(candidates, opts)
+	ccs := availableCCs(opts.StartCC, opts.MaxCC)
+	for i, p := range ordered {
+		if i >= len(ccs) {
 			report.Overflow = append(report.Overflow, p)
 			continue
 		}
-		cc := nextCC
-		nextCC++
-
+		cc := ccs[i]
 		c := Control{
-			Name:        uniqueName(sanitizeName(p.label()), usedNames),
+			Name:        UniqueName(sanitizeName(p.label()), usedNames),
 			Description: probeParamDescription(p),
 			Type:        ControlCC,
 			CC:          &cc,
@@ -273,9 +334,162 @@ func DefinitionFromProbe(dump ProbeDump, opts ProbeOptions) (*Definition, ProbeB
 	}
 
 	if err := def.Validate(); err != nil {
-		return nil, report, fmt.Errorf("auv3 probe: generated definition is invalid: %w", err)
+		return nil, report, fmt.Errorf("auv3 probe: generated device type is invalid: %w", err)
 	}
 	return def, report, nil
+}
+
+// presetControl synthesizes the preset (Program Change) control from a dump's
+// factory + user presets. Only presets with a non-negative number are recallable
+// (a Program Change byte is unsigned; the AU convention numbers user presets
+// negatively). The control is an enum (name -> program number) when the count
+// fits opts.PresetEnumMax and every preset is named, so an agent can recall a
+// preset by name; otherwise it is a plain range 0..maxNumber recalled by number.
+// When the highest number exceeds 127 the control is banked (Control.Bank), so
+// recall emits Bank Select + Program Change. ok is false when no preset is
+// recallable.
+func presetControl(dump ProbeDump, opts ProbeOptions) (Control, int, bool) {
+	type preset struct {
+		num  int
+		name string
+	}
+	seen := map[int]bool{}
+	var list []preset
+	add := func(ps []ProbePreset) {
+		for _, p := range ps {
+			if p.Number < 0 || seen[p.Number] {
+				continue
+			}
+			seen[p.Number] = true
+			list = append(list, preset{num: p.Number, name: strings.TrimSpace(p.Name)})
+		}
+	}
+	add(dump.FactoryPresets)
+	add(dump.UserPresets)
+	if len(list) == 0 {
+		return Control{}, 0, false
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].num < list[j].num })
+	maxNum := list[len(list)-1].num
+
+	c := Control{
+		Name:        "preset",
+		Description: fmt.Sprintf("Recall a preset by Program Change (%d preset(s), numbers 0..%d).", len(list), maxNum),
+		Type:        ControlProgramChange,
+		Bank:        maxNum > 127,
+	}
+
+	named := true
+	for _, p := range list {
+		if p.name == "" {
+			named = false
+			break
+		}
+	}
+	if len(list) <= opts.PresetEnumMax && named {
+		values := make(map[string]int, len(list))
+		used := map[string]bool{}
+		for _, p := range list {
+			values[UniqueName(p.name, used)] = p.num
+		}
+		c.Value = ValueSpec{Type: ValueEnum, Values: values}
+	} else {
+		lo, hi := float64(0), float64(maxNum)
+		c.Value = ValueSpec{Type: ValueRange, Min: &lo, Max: &hi}
+	}
+	return c, len(list), true
+}
+
+// availableCCs lists the CCs in start..max that a probe-derived param may take,
+// skipping the reserved convention band (ConventionReservedCCs) so a node
+// parameter never collides with the AUM mixer/transport CCs or a MIDI-reserved
+// controller. The result is the curated CC budget.
+func availableCCs(start, max int) []int {
+	reserved := ConventionReservedCCs()
+	var out []int
+	for cc := start; cc <= max; cc++ {
+		if reserved[cc] {
+			continue
+		}
+		out = append(out, cc)
+	}
+	return out
+}
+
+// curateParams orders candidate params by priority so that, when the CC budget
+// is smaller than the candidate count, the most useful params are mapped first:
+//
+//  1. explicit selection (opts.Select, matched by identifier/displayName/keyPath)
+//  2. one representative per parameter group (so coverage spans the groups
+//     instead of exhausting the budget within a single group)
+//  3. remaining non-meta params, in parameter-tree order
+//  4. remaining meta params, in parameter-tree order (lowest priority)
+//
+// Within every tier parameter-tree order is preserved, so the output is stable.
+func curateParams(candidates []ProbeParam, opts ProbeOptions) []ProbeParam {
+	sel := map[string]bool{}
+	for _, s := range opts.Select {
+		if k := sanitizeName(s); k != "" {
+			sel[k] = true
+		}
+	}
+	isSelected := func(p ProbeParam) bool {
+		for _, k := range matchKeys(p) {
+			if sel[k] {
+				return true
+			}
+		}
+		return false
+	}
+
+	placed := make([]bool, len(candidates))
+	var tier1, tier2, tier3, tier4 []ProbeParam
+
+	if len(sel) > 0 {
+		for i, p := range candidates {
+			if isSelected(p) {
+				tier1 = append(tier1, p)
+				placed[i] = true
+			}
+		}
+	}
+
+	groupSeen := map[string]bool{}
+	for i, p := range candidates {
+		if placed[i] {
+			if p.Group != "" {
+				groupSeen[p.Group] = true // an explicit pick already represents its group
+			}
+			continue
+		}
+		if p.Group == "" || groupSeen[p.Group] {
+			continue
+		}
+		groupSeen[p.Group] = true
+		tier2 = append(tier2, p)
+		placed[i] = true
+	}
+
+	for i, p := range candidates {
+		if placed[i] || p.IsMeta {
+			continue
+		}
+		tier3 = append(tier3, p)
+		placed[i] = true
+	}
+	for i, p := range candidates {
+		if placed[i] {
+			continue
+		}
+		tier4 = append(tier4, p)
+	}
+
+	out := make([]ProbeParam, 0, len(candidates))
+	out = append(out, tier1...)
+	out = append(out, tier2...)
+	out = append(out, tier3...)
+	out = append(out, tier4...)
+	return out
 }
 
 // probeParamDescription renders the AU metadata we keep alongside a control so
@@ -291,7 +505,7 @@ func probeParamDescription(p ProbeParam) string {
 		meta = append(meta, "keyPath="+p.KeyPath)
 	}
 	meta = append(meta, fmt.Sprintf("range=%g..%g", p.Min, p.Max))
-	if u := firstNonEmpty(p.UnitName, p.Unit); u != "" {
+	if u := FirstNonEmpty(p.UnitName, p.Unit); u != "" {
 		meta = append(meta, "unit="+u)
 	}
 	if len(p.ValueStrings) > 0 {
@@ -308,20 +522,14 @@ func probeParamDescription(p ProbeParam) string {
 // indexed param). Labels are kept verbatim so they read naturally in the tool.
 func enumValues(labels []string) map[string]int {
 	m := make(map[string]int, len(labels))
+	used := map[string]bool{}
 	for i, l := range labels {
 		l = strings.TrimSpace(l)
 		if l == "" {
 			l = fmt.Sprintf("value_%d", i)
 		}
 		// On the rare duplicate label, disambiguate so no entry is lost.
-		key := l
-		for j := 1; ; j++ {
-			if _, clash := m[key]; !clash {
-				break
-			}
-			key = fmt.Sprintf("%s_%d", l, j)
-		}
-		m[key] = i
+		m[UniqueName(l, used)] = i
 	}
 	return m
 }
@@ -335,8 +543,8 @@ type ProbeMismatch struct {
 }
 
 // ProbeDiff is the coverage + correctness report of a dump against an existing
-// definition. MissingFromDefinition is uncovered plugin functionality (writable
-// params with no control); StaleControls are definition controls with no
+// device type. MissingFromDefinition is uncovered plugin functionality (writable
+// params with no control); StaleControls are device-type controls with no
 // matching param (likely wrong/renamed); Mismatches are unit/enum
 // discrepancies on matched controls.
 type ProbeDiff struct {
@@ -351,11 +559,11 @@ func (d ProbeDiff) HasFindings() bool {
 }
 
 // DiffProbeAgainstDefinition compares a live parameter-tree dump to an existing
-// definition. A param matches a control when the control's name equals the
+// device type. A param matches a control when the control's name equals the
 // sanitized identifier, displayName, or keyPath of the param. It reports
 // uncovered writable params, stale controls, and enum/unit mismatches on the
 // matched pairs.
-func DiffProbeAgainstDefinition(dump ProbeDump, def *Definition) ProbeDiff {
+func DiffProbeAgainstDefinition(dump ProbeDump, def *DeviceType) ProbeDiff {
 	var diff ProbeDiff
 	if def == nil {
 		diff.MissingFromDefinition = writableParams(dump)
@@ -415,7 +623,7 @@ func controlParamMismatch(c *Control, p ProbeParam) (ProbeMismatch, bool) {
 	}
 
 	if c.Value.Unit != "" {
-		want := firstNonEmpty(p.UnitName, p.Unit)
+		want := FirstNonEmpty(p.UnitName, p.Unit)
 		if want != "" && !strings.EqualFold(c.Value.Unit, want) {
 			return mk(fmt.Sprintf("unit %q does not match param unit %q", c.Value.Unit, want))
 		}
@@ -456,9 +664,11 @@ func writableParams(dump ProbeDump) []ProbeParam {
 // identifier rule: lowercase, non-alphanumeric runs collapse to one underscore).
 func sanitizeName(s string) string { return sanitize.ID(s) }
 
-// uniqueName ensures a control name is unique within a definition by suffixing
-// _2, _3, … on collision. It records the chosen name in used.
-func uniqueName(base string, used map[string]bool) string {
+// UniqueName ensures a name is unique within a set by suffixing _2, _3, … on
+// collision, recording the chosen name in used. It is the shared de-dup helper
+// for generated control names, enum labels and AUM target keys (so callers do
+// not each re-implement the suffix loop). An empty base becomes "param".
+func UniqueName(base string, used map[string]bool) string {
 	if base == "" {
 		base = "param"
 	}
@@ -470,7 +680,10 @@ func uniqueName(base string, used map[string]bool) string {
 	return name
 }
 
-func firstNonEmpty(ss ...string) string {
+// FirstNonEmpty returns the first non-empty string in ss, or "". It is the
+// shared "prefer x, else y, else z" helper used across the device and mcpserver
+// packages.
+func FirstNonEmpty(ss ...string) string {
 	for _, s := range ss {
 		if s != "" {
 			return s

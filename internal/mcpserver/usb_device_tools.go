@@ -19,7 +19,7 @@ import (
 // <logical>_read_system, <logical>_list_patterns, <logical>_list_presets) that
 // sits above the generic usb_* escape hatches in usb_tools.go. Tools are
 // generated per USB binding via AddUSBDeviceTool (called from
-// addToolsForBinding) and torn down by RemoveUSBDeviceTool. Write tools are only
+// addToolsForDevice) and torn down by RemoveUSBDeviceTool. Write tools are only
 // generated when the write gate is open for that binding (see
 // usbWritesAllowed). Adding/removing tools emits tools/list_changed. See
 // docs/usb-tools.md.
@@ -46,15 +46,15 @@ type usbDeviceTool struct {
 }
 
 // AddUSBDeviceTool generates and registers the semantic USB tool family for a
-// USB binding from its device profile, emitting tools/list_changed. It is a
-// no-op for a logical with no USB profile.
-func (s *Server) AddUSBDeviceTool(b engine.Binding) {
-	def, ok := s.eng.Registry().Get(b.DeviceID)
+// USB device from its device profile, emitting tools/list_changed. It is a
+// no-op for a device with no USB profile.
+func (s *Server) AddUSBDeviceTool(d engine.Device) {
+	def, ok := s.eng.Registry().Get(d.DeviceID)
 	if !ok || def.USB == nil {
 		return
 	}
-	writes := s.usbWritesAllowed(b)
-	for _, t := range s.usbDeviceTools(b.Logical, def.USB) {
+	writes := s.usbWritesAllowed(d)
+	for _, t := range s.usbDeviceTools(d.Name, def.USB) {
 		if t.write && !writes {
 			continue
 		}
@@ -68,11 +68,11 @@ func (s *Server) AddUSBDeviceTool(b engine.Binding) {
 // the (still-registered) definition; callers must remove the binding's tools
 // before forgetting the definition.
 func (s *Server) RemoveUSBDeviceTool(logical string) {
-	b, ok := s.eng.BindingFor(logical)
+	d, ok := s.eng.DeviceFor(logical)
 	if !ok {
 		return
 	}
-	def, ok := s.eng.Registry().Get(b.DeviceID)
+	def, ok := s.eng.Registry().Get(d.DeviceID)
 	if !ok || def.USB == nil {
 		return
 	}
@@ -373,11 +373,11 @@ func (s *Server) handleUSBReadParams(logical, region string) mcp.ToolHandler {
 				region = args.Region
 			}
 		}
-		b, ok := s.eng.BindingFor(logical)
+		d, ok := s.eng.DeviceFor(logical)
 		if !ok {
-			return textResult(fmt.Sprintf("unknown logical device %q", logical), true), nil
+			return textResult(fmt.Sprintf("unknown device %q", logical), true), nil
 		}
-		def, ok := s.eng.Registry().Get(b.DeviceID)
+		def, ok := s.eng.Registry().Get(d.DeviceID)
 		if !ok || def.USB == nil {
 			return textResult(fmt.Sprintf("device %q has no usb profile", logical), true), nil
 		}
@@ -548,6 +548,6 @@ func usbWriteDeniedMsg(global, writable bool) string {
 	case !global:
 		return "usb writes are disabled: set usb_allow_writes in config.yaml (use dry_run to preview the bytes)"
 	default:
-		return "usb writes are disabled for this binding: re-bind it with writable: true (use dry_run to preview the bytes)"
+		return "usb writes are disabled for this device: re-add it with writable: true (use dry_run to preview the bytes)"
 	}
 }

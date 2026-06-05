@@ -1,12 +1,12 @@
-package mcpserver
+package midicontrol
 
 import "testing"
 
-// TestBrainCommandFromMIDI checks the raw-MIDI -> brain command-frame decode
-// used by recall_scene's brain path: channel nibble -> 1-based channel, the
+// TestCommandFromMIDI checks the raw-MIDI -> brain command-frame decode used by
+// the auv3midi transport: channel nibble -> 1-based channel, the
 // note-on-velocity-0 -> note-off convention, and the supported/unsupported
 // message split.
-func TestBrainCommandFromMIDI(t *testing.T) {
+func TestCommandFromMIDI(t *testing.T) {
 	cases := []struct {
 		name    string
 		data    []byte
@@ -32,7 +32,7 @@ func TestBrainCommandFromMIDI(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd, ok := brainCommandFromMIDI(c.data)
+			cmd, ok := CommandFromMIDI(c.data)
 			if ok != c.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
 			}

@@ -59,7 +59,7 @@ func (s *Server) registerProbeSound() {
 					"items": {
 						"type": "object",
 						"properties": {
-							"device": {"type": "string", "description": "Logical device name for a control set (use with control+value)."},
+							"device": {"type": "string", "description": "The device's name in your rig (use with control+value)."},
 							"control": {"type": "string", "description": "Control name on the device."},
 							"cc": {"type": "integer", "minimum": 0, "maximum": 127, "description": "Raw CC controller number (alternative to device/control); sent over the brain channel."},
 							"value": {"description": "Control value (device path) or 0-127 CC value (cc path)."},

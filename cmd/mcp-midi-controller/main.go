@@ -26,6 +26,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/mcpserver"
 	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
 	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/mcp-midi-controller/internal/transport/auv3midi"
 	"github.com/teemow/mcp-midi-controller/internal/transport/blemidi"
 	"github.com/teemow/mcp-midi-controller/internal/transport/osc"
 	"github.com/teemow/mcp-midi-controller/internal/transport/usbhid"
@@ -55,20 +56,28 @@ func main() {
 
 	reg, err := device.LoadBundled()
 	if err != nil {
-		log.Fatalf("load bundled definitions: %v", err)
+		log.Fatalf("load bundled device types: %v", err)
 	}
-	// A malformed user definition must not gate the daemon from starting: a bad
+	// A malformed user device type must not gate the daemon from starting: a bad
 	// file is logged and skipped inside LoadDir. Only a directory-level read
 	// error is surfaced here, and even then we serve the bundled set.
-	if err := reg.LoadDir(config.DevicesDir()); err != nil {
-		log.Printf("load user definitions: %v (serving bundled set)", err)
+	if err := reg.LoadDir(config.DeviceTypesDir()); err != nil {
+		log.Printf("load user device types: %v (serving bundled set)", err)
 	}
+
+	// The MIDI control hub holds the live ProbeMidiBrain channel (the agent's
+	// "hands"): the daemon pushes note/CC/PC/transport commands the brain AUv3
+	// emits on its host MIDI-out. It backs the auv3midi transport (so device
+	// types declaring transport: auv3midi route over it) and the play_notes /
+	// send_midi / set_transport tools, and is fed by the LAN receiver below.
+	midiHub := midicontrol.NewHub()
 
 	transports := []transport.Transport{
 		mustTransport(blemidi.New()),
 		mustTransport(osc.New()),
 		mustTransport(usbmidi.New()),
 		mustTransport(usbhid.New()),
+		auv3midi.New(midiHub),
 	}
 
 	eng := engine.New(reg, transports...)
@@ -82,17 +91,17 @@ func main() {
 		log.Printf("restore desired-state: %v", err)
 	}
 
-	// Restore the rig-as-code bindings so the daemon comes back up with the same
+	// Restore the rig-as-code devices so the daemon comes back up with the same
 	// logical devices (and their control_<logical> tools) it had before. A
-	// malformed bindings file must not stop the daemon: log it and start with
-	// no bindings (they can be re-created via the authoring tools).
-	bindings, err := engine.LoadBindingsFile(config.BindingsPath())
+	// malformed file must not stop the daemon: log it and start with no devices
+	// (they can be re-created via the authoring tools).
+	devices, err := engine.LoadDevicesFile(config.DevicesPath())
 	if err != nil {
-		log.Printf("load bindings: %v (starting with no bindings)", err)
+		log.Printf("load devices: %v (starting with no devices)", err)
 	}
-	for _, b := range bindings {
-		if err := eng.Bind(b); err != nil {
-			log.Printf("skip binding %q: %v", b.Logical, err)
+	for _, d := range devices {
+		if err := eng.Bind(d); err != nil {
+			log.Printf("skip device %q: %v", d.Name, err)
 		}
 	}
 
@@ -100,12 +109,6 @@ func main() {
 	// only — audio is a private, volatile rig signal). It backs the read-only
 	// get_audio_tap MCP tool and is fed by the LAN receiver below.
 	audioStore := audiotap.NewStore()
-
-	// The MIDI control hub holds the live ProbeMidiBrain channel (the agent's
-	// "hands"): the daemon pushes note/CC/PC/transport commands the brain AUv3
-	// emits on its host MIDI-out. It backs play_notes / send_midi /
-	// set_transport and is fed by the LAN receiver below.
-	midiHub := midicontrol.NewHub()
 
 	// The host-diagnostics store holds the latest snapshot an auv3-probe
 	// extension reports (the live view of "what can the appex see about its
@@ -143,7 +146,7 @@ func main() {
 	// coming up. Endpoints that are not reachable now are retried on demand by
 	// verify/learn/probe.
 	go func() {
-		if err := eng.StartInboundForBindings(ctx); err != nil {
+		if err := eng.StartInboundForDevices(ctx); err != nil {
 			log.Printf("inbound listeners: %v", err)
 		}
 	}()

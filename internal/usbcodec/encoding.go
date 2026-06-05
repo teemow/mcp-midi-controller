@@ -44,7 +44,7 @@ type encSpec struct {
 }
 
 // parseEncoding parses an encoding string into its spec. Returns an error for
-// any unknown or malformed encoding so callers (e.g. Definition.Validate) can
+// any unknown or malformed encoding so callers (e.g. DeviceType.Validate) can
 // reject bad profiles early.
 func parseEncoding(enc string) (encSpec, error) {
 	switch {
@@ -82,7 +82,7 @@ func parseEncoding(enc string) (encSpec, error) {
 }
 
 // KnownEncoding reports whether enc is a recognised, well-formed encoding. It is
-// used by Definition.Validate to reject bad profile param maps.
+// used by DeviceType.Validate to reject bad profile param maps.
 func KnownEncoding(enc string) bool {
 	_, err := parseEncoding(enc)
 	return err == nil

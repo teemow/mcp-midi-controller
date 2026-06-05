@@ -357,7 +357,7 @@ licensing are intentionally **out of scope** for this server.
 
 **Status: implemented.** WIDI config is handled by a dedicated, transport-agnostic
 library and a set of MCP tools, *not* by the YAML control model. The draft
-`internal/device/definitions/widi-master.yaml` has been **removed** — it was
+`internal/device/device-types/widi-master.yaml` has been **removed** — it was
 fire-and-forget only, while WIDI config is fundamentally request/reply (reads,
 read-back-verified writes) and includes multi-register, byte-reversed-MAC group
 writes that the single-value `sysex` control template cannot express.

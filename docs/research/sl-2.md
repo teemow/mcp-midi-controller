@@ -1,6 +1,6 @@
 # Boss SL-2 — MIDI implementation research
 
-Research note backing `internal/device/definitions/sl-2.yaml`. The SL-2 Slicer
+Research note backing `internal/device/device-types/sl-2.yaml`. The SL-2 Slicer
 is a Boss **compact** pedal (not a 200-series unit), but unlike most Boss
 compacts it has a **TRS MIDI IN** for clock sync and a small set of Control
 Change messages. It has **no Program Change** and **no preset recall over

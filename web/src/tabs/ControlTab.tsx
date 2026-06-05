@@ -3,7 +3,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { useMcp } from "../mcp/McpProvider";
 import { useAsync } from "../hooks/useAsync";
 import { structured, resultText } from "../mcp/result";
-import type { BindingView, ReadStateView } from "../mcp/types";
+import type { DeviceView, ReadStateView } from "../mcp/types";
 import { Panel } from "../components/Panel";
 import { Field } from "../components/Field";
 import { defaultForSchema, type JsonSchema } from "../components/schema";
@@ -18,9 +18,9 @@ interface ControlSpec {
   innerValueSchema?: JsonSchema;
 }
 
-// parseControls extracts one ControlSpec per entry in the control_<logical>
-// tool's settings.items.oneOf, which the daemon builds from the device
-// definition (tools.go controlToolSchema).
+// parseControls extracts one ControlSpec per entry in the control_<name>
+// tool's settings.items.oneOf, which the daemon builds from the device type
+// (tools.go controlToolSchema).
 function parseControls(tool: Tool | undefined): ControlSpec[] {
   const schema = tool?.inputSchema as JsonSchema | undefined;
   const items = schema?.properties?.settings?.items;
@@ -50,7 +50,7 @@ export function ControlTab() {
 
   const devices = useAsync(async () => {
     const r = await callTool("list_devices");
-    return structured<{ devices: BindingView[] }>(r)?.devices ?? [];
+    return structured<{ devices: DeviceView[] }>(r)?.devices ?? [];
   });
   const state = useAsync(async (dev: string) => {
     const r = await callTool("read_state", { device: dev });
@@ -65,10 +65,10 @@ export function ControlTab() {
   // Default to the first control-bearing device once devices load.
   useEffect(() => {
     if (!logical && devices.data) {
-      const first = devices.data.find((d) => tools.some((t) => t.name === `control_${d.logical}`));
+      const first = devices.data.find((d) => tools.some((t) => t.name === `control_${d.name}`));
       if (first) {
-        setLogical(first.logical);
-        void state.run(first.logical);
+        setLogical(first.name);
+        void state.run(first.name);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,7 +78,7 @@ export function ControlTab() {
   const specs = useMemo(() => parseControls(controlTool), [controlTool]);
 
   const controllable = (devices.data ?? []).filter((d) =>
-    tools.some((t) => t.name === `control_${d.logical}`),
+    tools.some((t) => t.name === `control_${d.name}`),
   );
 
   const observed = logical ? state.data?.[logical]?.observed ?? {} : {};
@@ -95,18 +95,18 @@ export function ControlTab() {
           )}
           {controllable.map((d) => (
             <button
-              key={d.logical}
+              key={d.name}
               onClick={() => {
-                setLogical(d.logical);
-                void state.run(d.logical);
+                setLogical(d.name);
+                void state.run(d.name);
               }}
               className={`rounded border px-3 py-1.5 text-xs uppercase tracking-wider transition ${
-                logical === d.logical
+                logical === d.name
                   ? "border-cyan-glow/70 bg-cyan-glow/10 text-cyan-glow shadow-glow-cyan"
                   : "border-cyan-500/20 text-cyan-100/60 hover:border-cyan-glow/40"
               }`}
             >
-              {d.logical}
+              {d.name}
             </button>
           ))}
           {logical && (

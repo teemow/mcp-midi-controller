@@ -27,10 +27,12 @@ type InboundEvent struct {
 	HasNum  bool   `json:"has_number"`
 }
 
-// Observation is one reverse-mapped inbound event: a logical device's control
-// was seen to take a value, decoded from an inbound message on some endpoint.
+// Observation is one reverse-mapped inbound event: a device's control was seen
+// to take a value, decoded from an inbound message on some endpoint. Device is
+// the device's name (the rig instance), matching the device-arg vocabulary the
+// tools speak.
 type Observation struct {
-	Logical string    `json:"logical"`
+	Device  string    `json:"device"`
 	Control string    `json:"control"`
 	Value   any       `json:"value"`
 	Wire    int       `json:"wire"`
@@ -94,15 +96,15 @@ func (e *Engine) StartInbound(ctx context.Context, transportID, endpoint string)
 	return nil
 }
 
-// StartInboundForBindings starts an inbound listener for every distinct
-// (transport, endpoint) referenced by the current bindings. Per-endpoint
+// StartInboundForDevices starts an inbound listener for every distinct
+// (transport, endpoint) referenced by the current devices. Per-endpoint
 // failures are collected and returned together so a single unreachable
 // endpoint does not abort the rest.
-func (e *Engine) StartInboundForBindings(ctx context.Context) error {
+func (e *Engine) StartInboundForDevices(ctx context.Context) error {
 	type te struct{ transport, endpoint string }
 	seen := map[te]bool{}
-	for _, b := range e.Bindings() {
-		key := te{e.transportForBinding(b), b.Endpoint}
+	for _, d := range e.Devices() {
+		key := te{e.transportForDevice(d), d.ControlEndpoint()}
 		if key.transport == "" || seen[key] {
 			continue
 		}
@@ -169,7 +171,7 @@ func (e *Engine) handleInbound(transportID, endpoint string, ev transport.Event)
 	in := decodeInbound(transportID, endpoint, ev)
 	obs := e.reverseMap(in)
 	for _, o := range obs {
-		e.observed.Set(o.Logical, o.Control, Observed{Value: o.Value, Wire: o.Wire, Source: o.Source, Time: o.Time})
+		e.observed.Set(o.Device, o.Control, Observed{Value: o.Value, Wire: o.Wire, Source: o.Source, Time: o.Time})
 	}
 
 	e.inboundMu.Lock()
@@ -255,15 +257,15 @@ func (e *Engine) reverseMap(in InboundEvent) []Observation {
 		return e.reverseMapOSC(in)
 	}
 	var out []Observation
-	for _, b := range e.Bindings() {
-		if e.transportForBinding(b) != in.Transport || b.Endpoint != in.Endpoint {
+	for _, d := range e.Devices() {
+		if e.transportForDevice(d) != in.Transport || d.ControlEndpoint() != in.Endpoint {
 			continue
 		}
 		// Program change carries the channel; note/cc match channel too.
-		if b.Channel != in.Channel {
+		if d.ControlChannel() != in.Channel {
 			continue
 		}
-		def, ok := e.registry.Get(b.DeviceID)
+		def, ok := e.registry.Get(d.DeviceID)
 		if !ok {
 			continue
 		}
@@ -273,7 +275,7 @@ func (e *Engine) reverseMap(in InboundEvent) []Observation {
 				continue
 			}
 			out = append(out, Observation{
-				Logical: b.Logical,
+				Device:  d.Name,
 				Control: c.Name,
 				Value:   reverseValue(c, in.Value),
 				Wire:    in.Value,
@@ -297,11 +299,11 @@ func (e *Engine) reverseMapOSC(in InboundEvent) []Observation {
 	}
 	value, wire := oscObservedValue(in.Event.OSCArgs)
 	var out []Observation
-	for _, b := range e.Bindings() {
-		if e.transportForBinding(b) != in.Transport || b.Endpoint != in.Endpoint {
+	for _, d := range e.Devices() {
+		if e.transportForDevice(d) != in.Transport || d.ControlEndpoint() != in.Endpoint {
 			continue
 		}
-		def, ok := e.registry.Get(b.DeviceID)
+		def, ok := e.registry.Get(d.DeviceID)
 		if !ok {
 			continue
 		}
@@ -311,7 +313,7 @@ func (e *Engine) reverseMapOSC(in InboundEvent) []Observation {
 				continue
 			}
 			out = append(out, Observation{
-				Logical: b.Logical,
+				Device:  d.Name,
 				Control: c.Name,
 				Value:   value,
 				Wire:    wire,

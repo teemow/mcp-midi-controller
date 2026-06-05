@@ -25,7 +25,7 @@ const defaultVerifyTimeout = 800 * time.Millisecond
 // value we sent? MIDI is fire-and-forget, so this only works for devices whose
 // CC-OUT/PC-OUT is enabled (or a second listening transport).
 type VerifyResult struct {
-	Logical     string `json:"logical"`
+	Device      string `json:"device"`
 	Control     string `json:"control"`
 	Status      string `json:"status"`
 	HasExpected bool   `json:"has_expected"`
@@ -52,13 +52,13 @@ func (e *Engine) VerifyControl(ctx context.Context, logical, control string, val
 	if timeout <= 0 {
 		timeout = defaultVerifyTimeout
 	}
-	b, def, c, err := e.lookupControl(logical, control)
+	d, def, c, err := e.lookupControl(logical, control)
 	if err != nil {
 		return VerifyResult{}, err
 	}
-	res := VerifyResult{Logical: logical, Control: control}
+	res := VerifyResult{Device: logical, Control: control}
 
-	expected, hasExpected, err := expectedWire(def, c, b.Channel, value)
+	expected, hasExpected, err := expectedWire(def, c, d.ControlChannel(), value)
 	if err != nil {
 		return VerifyResult{}, err
 	}
@@ -66,7 +66,7 @@ func (e *Engine) VerifyControl(ctx context.Context, logical, control string, val
 
 	// Make sure we are listening on this endpoint before we drive it, so the
 	// echo cannot race ahead of the subscription.
-	if err := e.StartInbound(ctx, def.Transport, b.Endpoint); err != nil {
+	if err := e.StartInbound(ctx, def.Transport, d.ControlEndpoint()); err != nil {
 		return VerifyResult{}, fmt.Errorf("verify: %w", err)
 	}
 	sub, cancel := e.subscribe()
@@ -98,7 +98,7 @@ func (e *Engine) VerifyControl(ctx context.Context, logical, control string, val
 	// is the authoritative check (it observes real device memory, not an echo),
 	// so it overrides the MIDI verdict when available. Best-effort: any failure
 	// leaves the MIDI result untouched.
-	e.usbReadback(ctx, b, def, control, value, &res)
+	e.usbReadback(ctx, d, def, control, value, &res)
 	return res, nil
 }
 
@@ -106,24 +106,24 @@ func (e *Engine) VerifyControl(ctx context.Context, logical, control string, val
 // same-device USB binding maps the control's parameter. It is a no-op (leaving
 // the MIDI verdict in place) when there is no such binding/param, no USB
 // transport, or the read fails.
-func (e *Engine) usbReadback(ctx context.Context, control Binding, def *device.Definition, name string, want any, res *VerifyResult) {
+func (e *Engine) usbReadback(ctx context.Context, control Device, def *device.DeviceType, name string, want any, res *VerifyResult) {
 	if def.USB == nil {
 		return
 	}
 	if _, ok := def.USB.Param(name); !ok {
 		return // this control has no USB counterpart — common, best-effort
 	}
-	ub, ok := e.usbBindingForControl(control)
+	ub, ok := e.usbDeviceForControl(control)
 	if !ok {
 		return
 	}
-	got, matched, err := e.USBReadbackParam(ctx, ub.Logical, name, want)
+	got, matched, err := e.USBReadbackParam(ctx, ub.Name, name, want)
 	if err != nil {
 		return
 	}
 	res.USBChecked = true
 	res.USBValue = got
-	res.USBSource = "usb:" + ub.Logical
+	res.USBSource = "usb:" + ub.Name
 	if matched {
 		res.Status = StatusConfirmed
 	} else {
@@ -135,7 +135,7 @@ func (e *Engine) usbReadback(ctx context.Context, control Binding, def *device.D
 // the empirical capability matrix the agent consults to decide whether
 // verify_control is worth attempting for a given (device, control).
 type ProbeResult struct {
-	Logical string   `json:"logical"`
+	Device  string   `json:"device"`
 	Control string   `json:"control"`
 	Status  string   `json:"status"`
 	Sources []string `json:"sources,omitempty"`
@@ -152,41 +152,41 @@ func (e *Engine) ProbeFeedback(ctx context.Context, logical string, timeout time
 	if timeout <= 0 {
 		timeout = defaultProbeTimeout
 	}
-	bindings := e.Bindings()
+	devices := e.Devices()
 	if logical != "" {
-		bindings = filterBindings(bindings, logical)
-		if len(bindings) == 0 {
+		devices = filterDevices(devices, logical)
+		if len(devices) == 0 {
 			return nil, fmt.Errorf("unknown logical device %q", logical)
 		}
 	}
-	sort.Slice(bindings, func(i, j int) bool { return bindings[i].Logical < bindings[j].Logical })
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
 
 	var out []ProbeResult
-	for _, b := range bindings {
-		def, ok := e.registry.Get(b.DeviceID)
+	for _, d := range devices {
+		def, ok := e.registry.Get(d.DeviceID)
 		if !ok {
 			continue
 		}
 		// Listen on the endpoint up front so echoes from any control land.
-		_ = e.StartInbound(ctx, def.Transport, b.Endpoint)
+		_ = e.StartInbound(ctx, def.Transport, d.ControlEndpoint())
 		for i := range def.Controls {
 			c := &def.Controls[i]
-			pr := ProbeResult{Logical: b.Logical, Control: c.Name}
-			value, ok := e.probeValue(b.Logical, c)
+			pr := ProbeResult{Device: d.Name, Control: c.Name}
+			value, ok := e.probeValue(d.Name, c)
 			if !ok {
 				pr.Status = StatusSkipped
 				out = append(out, pr)
 				continue
 			}
 			sub, cancel := e.subscribe()
-			if err := e.SetControl(ctx, b.Logical, c.Name, value); err != nil {
+			if err := e.SetControl(ctx, d.Name, c.Name, value); err != nil {
 				cancel()
 				pr.Status = StatusSkipped
 				out = append(out, pr)
 				continue
 			}
 			deadline := time.Now().Add(settleDelay(def) + timeout)
-			matches := e.awaitEcho(ctx, sub, b.Logical, c.Name, deadline)
+			matches := e.awaitEcho(ctx, sub, d.Name, c.Name, deadline)
 			cancel()
 			pr.Sources = distinctSources(matches)
 			if len(pr.Sources) > 0 {
@@ -206,7 +206,7 @@ func (e *Engine) ProbeFeedback(ctx context.Context, logical string, timeout time
 // to blemidi.
 func (e *Engine) LearnStart(ctx context.Context, transportID, endpoint string) error {
 	if endpoint == "" {
-		if err := e.StartInboundForBindings(ctx); err != nil {
+		if err := e.StartInboundForDevices(ctx); err != nil {
 			return err
 		}
 	} else if err := e.StartInbound(ctx, transportID, endpoint); err != nil {
@@ -282,7 +282,7 @@ func (e *Engine) awaitEcho(ctx context.Context, sub <-chan InboundEvent, logical
 				return matches
 			}
 			for _, o := range e.reverseMap(in) {
-				if o.Logical == logical && o.Control == control {
+				if o.Device == logical && o.Control == control {
 					matches = append(matches, o)
 				}
 			}
@@ -293,22 +293,22 @@ func (e *Engine) awaitEcho(ctx context.Context, sub <-chan InboundEvent, logical
 // lookupControl resolves a (logical, control) pair to its binding, definition
 // and control, mirroring SetControl's resolution so verify/probe report the
 // same errors.
-func (e *Engine) lookupControl(logical, control string) (Binding, *device.Definition, *device.Control, error) {
+func (e *Engine) lookupControl(logical, control string) (Device, *device.DeviceType, *device.Control, error) {
 	e.mu.RLock()
-	b, ok := e.bindings[logical]
+	d, ok := e.devices[logical]
 	e.mu.RUnlock()
 	if !ok {
-		return Binding{}, nil, nil, fmt.Errorf("unknown logical device %q", logical)
+		return Device{}, nil, nil, fmt.Errorf("unknown logical device %q", logical)
 	}
-	def, ok := e.registry.Get(b.DeviceID)
+	def, ok := e.registry.Get(d.DeviceID)
 	if !ok {
-		return Binding{}, nil, nil, fmt.Errorf("logical %q: unknown device %q", logical, b.DeviceID)
+		return Device{}, nil, nil, fmt.Errorf("logical %q: unknown device %q", logical, d.DeviceID)
 	}
 	c, ok := def.Control(control)
 	if !ok {
-		return Binding{}, nil, nil, &device.ValidationError{Pointer: "/control", Msg: fmt.Sprintf("device %q has no control %q", def.ID, control)}
+		return Device{}, nil, nil, &device.ValidationError{Pointer: "/control", Msg: fmt.Sprintf("device %q has no control %q", def.ID, control)}
 	}
-	return b, def, c, nil
+	return d, def, c, nil
 }
 
 // probeValue picks the value to drive a control with during probe_feedback: the
@@ -349,7 +349,7 @@ func (e *Engine) probeValue(logical string, c *device.Control) (any, bool) {
 // by verify_control to compare against the echo. It reuses the render path so
 // the comparison matches exactly what was sent. ok == false for controls whose
 // echo cannot be compared by a single value (nrpn/sysex/osc).
-func expectedWire(def *device.Definition, c *device.Control, channel int, value any) (int, bool, error) {
+func expectedWire(def *device.DeviceType, c *device.Control, channel int, value any) (int, bool, error) {
 	r, err := device.Resolve(c, value)
 	if err != nil {
 		return 0, false, err
@@ -372,18 +372,18 @@ func expectedWire(def *device.Definition, c *device.Control, channel int, value 
 }
 
 // settleDelay is the device's post-program-change settle window as a Duration.
-func settleDelay(def *device.Definition) time.Duration {
+func settleDelay(def *device.DeviceType) time.Duration {
 	if def.SettleMS <= 0 {
 		return 0
 	}
 	return time.Duration(def.SettleMS) * time.Millisecond
 }
 
-func filterBindings(bindings []Binding, logical string) []Binding {
-	var out []Binding
-	for _, b := range bindings {
-		if b.Logical == logical {
-			out = append(out, b)
+func filterDevices(devices []Device, logical string) []Device {
+	var out []Device
+	for _, d := range devices {
+		if d.Name == logical {
+			out = append(out, d)
 		}
 	}
 	return out

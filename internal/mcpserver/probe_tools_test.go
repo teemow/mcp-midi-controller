@@ -20,7 +20,7 @@ func probeTestServer(t *testing.T, toneHz float64) (*Server, *audiotap.Store) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	reg := device.NewRegistry()
-	def := &device.Definition{
+	def := &device.DeviceType{
 		ID:        "testsynth",
 		Name:      "Test Synth",
 		Transport: "blemidi",
@@ -46,12 +46,11 @@ func probeTestServer(t *testing.T, toneHz float64) (*Server, *audiotap.Store) {
 
 	s := New(eng, WithAudioTap(store))
 
-	b, _ := eng.BindingFor("synth")
-	b.Logical = "synth"
-	b.DeviceID = "testsynth"
-	b.Endpoint = "ep1"
-	b.Transport = "blemidi"
-	if err := eng.Bind(b); err != nil {
+	d, _ := eng.DeviceFor("synth")
+	d.Name = "synth"
+	d.DeviceID = "testsynth"
+	d.Endpoint = "ep1"
+	if err := eng.Bind(d); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	return s, store

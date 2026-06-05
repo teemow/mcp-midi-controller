@@ -5,7 +5,7 @@ package aum
 // hosted AUv3 nodes (their identity + mappable parameters taken from the
 // plugins' probe dumps), a parallel nodeArchives chain, and a full
 // midiCtrlState placeholder catalogue — optionally pre-wired to the server's CC
-// convention (docs/research/aum.md, internal/device/definitions/aum.yaml).
+// convention (docs/research/aum.md; the same convention MixerDeviceType emits).
 //
 // Authoring is "template-clone + mutate", not pure synthesis. Rather than
 // reconstructing AUM's exact class hierarchy and full default object set from
@@ -100,8 +100,8 @@ func NodeSpecFromDump(dump device.ProbeDump) NodeSpec {
 
 // Convention configures how BuildSession pre-wires the generated catalogue to
 // the server's CC convention. It mirrors the two conventions the server owns:
-// the AUM mixer convention for per-channel Volume/Mute/Solo/Rec (aum.yaml,
-// channels 1..8), and the AUv3 per-plugin convention for node parameters (one
+// the AUM mixer convention for per-channel Volume/Mute/Solo/Rec (channels
+// 1..8; see MixerDeviceType), and the AUv3 per-plugin convention for node parameters (one
 // CC each, from NodeStartCC, in parameter order).
 type Convention struct {
 	// Channel is the 1-based MIDI/send channel every assigned CC rides — the
@@ -372,7 +372,7 @@ func buildSlotCatalogue(b *Builder, n NodeSpec, report *BuildReport) map[string]
 		if !p.Writable {
 			continue
 		}
-		keys = append(keys, b.Intern(uniqueTarget(paramTarget(p), used)))
+		keys = append(keys, b.Intern(device.UniqueName(paramTarget(p), used)))
 		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
@@ -442,7 +442,7 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 		if ch.Kind == KindAudio && i != masterPos {
 			audioOrdinal++
 			for _, ctl := range audioChannelControls {
-				cc, ok := conventionMixerCC(audioOrdinal, ctl.name)
+				cc, ok := device.ConventionMixerCC(audioOrdinal, ctl.name)
 				if !ok {
 					continue
 				}
@@ -461,7 +461,7 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 				if !p.Writable {
 					continue
 				}
-				target := uniqueTarget(paramTarget(p), used)
+				target := device.UniqueName(paramTarget(p), used)
 				if cc > maxCC {
 					report.Overflow = append(report.Overflow, slotColl+"/"+target)
 					continue
@@ -479,7 +479,7 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 	// for play/stop/record/tempo. Wired once (not per channel) onto the
 	// Transport collection's verified trigger targets.
 	for _, t := range transportTargets {
-		cc, ok := conventionTransportCC(t)
+		cc, ok := device.ConventionTransportCC(t)
 		if !ok {
 			continue
 		}
@@ -489,56 +489,6 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 		report.AssignedCCs++
 	}
 	return nil
-}
-
-// conventionMixerCC returns the AUM mixer-convention CC for a non-master audio
-// strip's channel control. n is the 1-based audio-channel ordinal; ok is false
-// outside the convention's documented 1..8 range (aum.yaml) or for a target
-// with no mixer CC. Formulae mirror internal/device/definitions/aum.yaml.
-func conventionMixerCC(n int, target string) (int, bool) {
-	if n < 1 || n > 8 {
-		return 0, false
-	}
-	switch target {
-	case "Mute":
-		return 18 + 3*n, true
-	case "Volume":
-		return 19 + 3*n, true
-	case "Solo":
-		return 44 + n, true
-	case "Rec enable":
-		return 52 + n, true
-	default:
-		return 0, false
-	}
-}
-
-// conventionTransportCC returns the brain-control convention CC for a global
-// Transport-collection target. ok is false for targets the convention does not
-// cover. The CC numbers and target mapping mirror docs/research/aum.md
-// ("Transport / system") — the undefined-CC block (102-110) plus the single
-// CC 20 "Toggle play". Previous/Next bar, Tempo and Metronome on/off are now
-// corpus-confirmed key strings (probe capture 2026-06-05) and ARE catalogued as
-// placeholders by buildTransport, but they are intentionally left unwired here:
-// the wired convention covers the six transport actions a scene change drives,
-// and bar-step/tempo-value/metronome are left for the caller to assign.
-func conventionTransportCC(target string) (int, bool) {
-	switch target {
-	case "Toggle Play":
-		return 20, true
-	case "Start Play":
-		return 102, true
-	case "Stop/Rewind":
-		return 103, true
-	case "Rewind":
-		return 104, true
-	case "Toggle Record":
-		return 105, true
-	case "Tap Tempo":
-		return 108, true
-	default:
-		return 0, false
-	}
 }
 
 // lastAudioIndex returns the index of the last KindAudio channel (the master),
@@ -567,19 +517,4 @@ func paramTarget(p device.ProbeParam) string {
 	default:
 		return fmt.Sprintf("param_%d", p.Address)
 	}
-}
-
-// uniqueTarget disambiguates a target key within one collection, suffixing
-// _2, _3, … on collision so no two leaves share a key (NS dictionaries key by
-// string). It records the chosen name in used.
-func uniqueTarget(base string, used map[string]bool) string {
-	if base == "" {
-		base = "param"
-	}
-	name := base
-	for i := 2; used[name]; i++ {
-		name = fmt.Sprintf("%s_%d", base, i)
-	}
-	used[name] = true
-	return name
 }

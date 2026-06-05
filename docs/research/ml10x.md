@@ -1,7 +1,7 @@
 # Morningstar ML10X — Incoming MIDI control research
 
 Research note for the device definition at
-`internal/device/definitions/ml10x.yaml`. Scope: what the ML10X **responds to**
+`internal/device/device-types/ml10x.yaml`. Scope: what the ML10X **responds to**
 over MIDI so this MCP server can control/configure it. The ML10X is a
 MIDI-controlled reorderable loop switcher (10 loops over 5 TRS send/return
 ports). It is also a live foot controller, but its *outgoing* foot-controller

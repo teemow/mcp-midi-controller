@@ -67,5 +67,12 @@ type Control struct {
 	// controllable by raw number.
 	Parametric bool `yaml:"parametric,omitempty"`
 
+	// Bank marks a program_change control whose value may exceed 127: the
+	// renderer splits the value into a Bank Select pair (CC 0 MSB / CC 32 LSB,
+	// bank = value/128) followed by the Program Change (value % 128), so a
+	// plugin with more than 128 presets is fully addressable by a single
+	// preset control. Only meaningful for program_change controls.
+	Bank bool `yaml:"bank,omitempty"`
+
 	Value ValueSpec `yaml:"value"`
 }

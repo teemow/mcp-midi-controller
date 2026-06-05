@@ -64,48 +64,49 @@ type USBProbeResult struct {
 	Frames    [][]byte           `json:"frames,omitempty"`
 }
 
-// usbContext bundles a resolved USB binding: the binding, its definition + USB
+// usbContext bundles a resolved USB device: the device, its definition + USB
 // profile, the protocol codec, and the transport/endpoint to drive.
 type usbContext struct {
-	binding   Binding
-	def       *device.Definition
+	dev       Device
+	def       *device.DeviceType
 	profile   *device.USBProfile
 	codec     usbcodec.Codec
 	transport string
 	endpoint  string
 }
 
-// usbContext resolves a logical name to its USB binding context, erroring if it
-// is not a USB binding or the profile/codec is invalid.
+// usbContextFor resolves a logical name to its USB device context, erroring if
+// it has no USB surface or the profile/codec is invalid.
 func (e *Engine) usbContextFor(logical string) (*usbContext, error) {
-	b, ok := e.binding(logical)
+	d, ok := e.device(logical)
 	if !ok {
 		return nil, fmt.Errorf("unknown logical device %q", logical)
 	}
-	def, ok := e.registry.Get(b.DeviceID)
+	def, ok := e.registry.Get(d.DeviceID)
 	if !ok {
-		return nil, fmt.Errorf("logical %q: unknown device %q", logical, b.DeviceID)
+		return nil, fmt.Errorf("logical %q: unknown device %q", logical, d.DeviceID)
 	}
 	if def.USB == nil {
 		return nil, fmt.Errorf("device %q has no usb profile", def.ID)
 	}
-	if !b.HasUSB() {
-		return nil, fmt.Errorf("%q has no usb surface (bind it with transport usbmidi/usbhid)", logical)
+	_, conn, ok := d.USBConnection()
+	if !ok {
+		return nil, fmt.Errorf("%q has no usb connection (bind it with transport usbmidi/usbhid)", logical)
 	}
 	codec, err := usbCodecFor(def.USB)
 	if err != nil {
 		return nil, fmt.Errorf("device %q: %w", def.ID, err)
 	}
-	endpoint := b.USB.Endpoint
+	endpoint := conn.Endpoint
 	if endpoint == "" {
 		endpoint = def.USB.Endpoint
 	}
 	return &usbContext{
-		binding:   b,
+		dev:       d,
 		def:       def,
 		profile:   def.USB,
 		codec:     codec,
-		transport: b.USB.Transport,
+		transport: def.USB.Transport,
 		endpoint:  endpoint,
 	}, nil
 }

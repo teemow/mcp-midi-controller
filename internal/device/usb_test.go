@@ -71,7 +71,7 @@ func TestUSBProfileValidate(t *testing.T) {
 }
 
 func TestDefinitionValidateWithUSB(t *testing.T) {
-	d := &Definition{
+	d := &DeviceType{
 		ID:        "sl-2",
 		Transport: "blemidi",
 		USB: &USBProfile{

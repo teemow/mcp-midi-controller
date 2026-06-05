@@ -20,7 +20,7 @@ import (
 func (s *Server) registerUSBTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "usb_identify",
-		Description: "Ask a USB-bound device to identify itself (SysEx identity reply). device is a USB-bound logical name.",
+		Description: "Ask a USB-bound device to identify itself (SysEx identity reply). device is a USB-capable device's name.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"device":{"type":"string"}},"required":["device"]}`),
 	}, s.handleUSBIdentify)
 
@@ -159,12 +159,12 @@ func (s *Server) handleUSBWrite(ctx context.Context, req *mcp.CallToolRequest) (
 	// binding's writable opt-in. Dry runs (which only return the bytes) are
 	// always allowed.
 	if !dryRun {
-		b, ok := s.eng.BindingFor(args.Device)
+		d, ok := s.eng.DeviceFor(args.Device)
 		if !ok {
-			return textResult(fmt.Sprintf("unknown logical device %q", args.Device), true), nil
+			return textResult(fmt.Sprintf("unknown device %q", args.Device), true), nil
 		}
-		if !s.usbWritesAllowed(b) {
-			return textResult(usbWriteDeniedMsg(s.usbAllowWrites, b.USBWritable()), true), nil
+		if !s.usbWritesAllowed(d) {
+			return textResult(usbWriteDeniedMsg(s.usbAllowWrites, d.USBWritable()), true), nil
 		}
 	}
 	frame, err := s.eng.USBWrite(ctx, args.Device, addr, data, dryRun)
@@ -239,7 +239,7 @@ func (s *Server) handleUSBMonitor(ctx context.Context, req *mcp.CallToolRequest)
 	case args.Transport != "" && args.Endpoint != "":
 		frames, err = s.eng.USBMonitor(ctx, args.Transport, args.Endpoint, window)
 	default:
-		return textResult("provide either device (a USB-bound logical) or transport+endpoint", true), nil
+		return textResult("provide either device (a USB-capable device's name) or transport+endpoint", true), nil
 	}
 	if err != nil {
 		return textResult("usb_monitor failed: "+err.Error(), true), nil

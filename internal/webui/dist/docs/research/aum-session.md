@@ -398,7 +398,7 @@ routing needs to be diffed; the control surface for the convention is
   flattened to `{collection, target, type, number, channel, min, max,
   autoToggle}`. Stage under `StateDir()/aum-sessions/` (gitignored — channel
   names, plugin set, and mappings are a **private rig snapshot**).
-- **`import_aum_session`**: from the session map, propose `bindings.yaml`
+- **`import_aum_session`**: from the session map, propose `devices.yaml`
   (the AUM mixer + each plugin node on distinct MIDI channels), match each AUv3
   node to its staged probe dump by **component tuple** for param-accurate
   definitions, and emit a session-specific cheat-sheet with the real channel

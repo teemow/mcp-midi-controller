@@ -20,9 +20,9 @@
 #   audible/app  : md-200, h90, opus (no decoded USB readback)
 #
 # Usage:
-#   scripts/validate.sh control <logical> <control> <value-json>
-#   scripts/validate.sh verify  <logical> <control> <value-json> [timeout_ms]
-#   scripts/validate.sh read    [logical]
+#   scripts/validate.sh control <device> <control> <value-json>
+#   scripts/validate.sh verify  <device> <control> <value-json> [timeout_ms]
+#   scripts/validate.sh read    [device]
 #   scripts/validate.sh recall  <scene> [additive|exact]
 #   scripts/validate.sh raw     <tool> <json-args>
 #   scripts/validate.sh usb     <sl-2|ml10x|eq2|h90|opus> [extra usb-probe args...]
@@ -94,11 +94,11 @@ usage() { sed -n '2,40p' "$0"; exit "${1:-1}"; }
 cmd="${1:-}"; shift || true
 case "$cmd" in
   control)
-    [ $# -eq 3 ] || die "usage: control <logical> <control> <value-json>"
+    [ $# -eq 3 ] || die "usage: control <device> <control> <value-json>"
     mcp_call "control_$1" "{\"settings\":[{\"control\":\"$2\",\"value\":$3}]}"
     ;;
   verify)
-    [ $# -ge 3 ] || die "usage: verify <logical> <control> <value-json> [timeout_ms]"
+    [ $# -ge 3 ] || die "usage: verify <device> <control> <value-json> [timeout_ms]"
     local_to="${4:-}"
     if [ -n "$local_to" ]; then
       mcp_call verify_control "{\"device\":\"$1\",\"control\":\"$2\",\"value\":$3,\"timeout_ms\":$local_to}"

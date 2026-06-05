@@ -58,26 +58,17 @@ func (e *Engine) SaveScene(name, description string, devices []string) (*scene.S
 	return sc, nil
 }
 
-// RecallOptions configures how RecallSceneVia applies a scene.
-type RecallOptions struct {
-	// Mode selects additive (layer) vs exact (reset+replace) recall.
-	Mode scene.RecallMode
-
-	// Sink, when non-nil, receives every rendered wire event (program changes
-	// first, then the settle delay, then the rest) instead of each device's
-	// hardware transport — used to drive recall through the ProbeMidiBrain LAN
-	// channel, where the brain re-emits the MIDI inside AUM. The per-device
-	// binding is still required (it supplies the MIDI channel), but no hardware
-	// connection is opened. USB patch blobs are skipped (the brain has no USB
-	// surface) and reported as warnings. Desired-state is still updated.
-	Sink func(ctx context.Context, ev transport.Event) error
-}
-
-// RecallScene replays a stored scene live over each device's hardware transport:
-// for each referenced device it renders the scene's controls to wire events,
-// sends the program changes first, waits the device's settle_ms, then sends the
+// RecallScene replays a stored scene live over each device's transport: for
+// each referenced device it renders the scene's controls to wire events, sends
+// the program changes first, waits the device's settle_ms, then sends the
 // remaining events — the live equivalent of the footswitch compile ordering.
 // Desired-state is updated as it goes.
+//
+// Each device routes over the transport its device type speaks, resolved like
+// any other send: a device type with transport auv3midi reaches the
+// ProbeMidiBrain LAN channel (the brain re-emits inside AUM), a hardware device
+// reaches BLE/USB/OSC — there is no per-recall override, the transport is the
+// device type's property.
 //
 // In Additive mode the scene layers over the current desired-state; in Exact
 // mode each referenced device is first reset so its desired-state ends up
@@ -85,27 +76,18 @@ type RecallOptions struct {
 // error (its channel/endpoint is only known from the binding), mirroring
 // CompileFootswitchScene. Returns any non-fatal warnings.
 func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.RecallMode) ([]string, error) {
-	return e.RecallSceneVia(ctx, sc, RecallOptions{Mode: mode})
-}
-
-// RecallSceneVia is RecallScene with explicit options. With opts.Sink set the
-// rendered wire events are routed to the sink (the brain channel) rather than to
-// hardware transports; otherwise it behaves exactly like RecallScene.
-func (e *Engine) RecallSceneVia(ctx context.Context, sc *scene.Scene, opts RecallOptions) ([]string, error) {
 	if sc == nil {
 		return nil, fmt.Errorf("nil scene")
 	}
-	mode := opts.Mode
 	if mode == "" {
 		mode = scene.Additive
 	}
-	viaBrain := opts.Sink != nil
 
-	// Snapshot bindings so we do not hold the lock across sends/sleeps.
+	// Snapshot devices so we do not hold the lock across sends/sleeps.
 	e.mu.RLock()
-	bindings := make(map[string]Binding, len(e.bindings))
-	for k, v := range e.bindings {
-		bindings[k] = v
+	devices := make(map[string]Device, len(e.devices))
+	for k, v := range e.devices {
+		devices[k] = v
 	}
 	e.mu.RUnlock()
 
@@ -118,36 +100,16 @@ func (e *Engine) RecallSceneVia(ctx context.Context, sc *scene.Scene, opts Recal
 	var warnings []string
 	for _, logical := range logicals {
 		controls := sc.Devices[logical]
-		b, ok := bindings[logical]
+		d, ok := devices[logical]
 		if !ok {
 			return warnings, fmt.Errorf("scene references unbound device %q; bind it (bind_device) so its channel is known", logical)
 		}
-		def, ok := e.registry.Get(b.DeviceID)
+		def, ok := e.registry.Get(d.DeviceID)
 		if !ok {
-			return warnings, fmt.Errorf("device %q: unknown definition %q", logical, b.DeviceID)
+			return warnings, fmt.Errorf("device %q: unknown definition %q", logical, d.DeviceID)
 		}
 		if len(controls) == 0 {
 			continue
-		}
-
-		// send routes one event either to the brain sink or to the device's
-		// hardware transport. The hardware transport is only resolved/connected
-		// when not going through the brain.
-		var tr transport.Transport
-		if !viaBrain {
-			tr, ok = e.transports[def.Transport]
-			if !ok {
-				return warnings, fmt.Errorf("no transport %q for device %q", def.Transport, def.ID)
-			}
-			if err := e.ensureConnected(ctx, tr, b.Endpoint); err != nil {
-				return warnings, fmt.Errorf("connect %q: %w", b.Endpoint, err)
-			}
-		}
-		send := func(ev transport.Event) error {
-			if viaBrain {
-				return opts.Sink(ctx, ev)
-			}
-			return tr.Send(ctx, b.Endpoint, ev)
 		}
 
 		// In exact mode the device is reset to exactly the scene's values.
@@ -155,89 +117,102 @@ func (e *Engine) RecallSceneVia(ctx context.Context, sc *scene.Scene, opts Recal
 			e.state.ClearDevice(logical)
 		}
 
-		// Deterministic control order, then split PCs from the rest.
+		// A scene names no transport: split this device's parameter values into
+		// opaque USB-memory blobs (realized over the device's USB connection)
+		// and ordinary controls (rendered to wire events over the control
+		// transport). Which path a value takes is decided here from its shape,
+		// not from the scene.
+		var patches []scene.USBPatch
 		names := make([]string, 0, len(controls))
-		for n := range controls {
+		for n, v := range controls {
+			if p, ok := scene.AsUSBPatch(v); ok {
+				patches = append(patches, p)
+				continue
+			}
 			names = append(names, n)
 		}
 		sort.Strings(names)
 
-		var pcs, rest []transport.Event
-		var hadPC bool
-		for _, name := range names {
-			c, ok := def.Control(name)
+		// Ordinary controls: resolve and open the device type's transport, then
+		// send each event over it. auv3midi resolves to the brain channel,
+		// hardware to BLE/etc. A device carrying only a USB blob (no control
+		// values) never touches a control transport.
+		if len(names) > 0 {
+			endpoint := d.ControlEndpoint()
+			tr, ok := e.transports[def.Transport]
 			if !ok {
-				return warnings, fmt.Errorf("device %q (%s) has no control %q", logical, def.ID, name)
+				return warnings, fmt.Errorf("no transport %q for device %q", def.Transport, def.ID)
 			}
-			resolved, err := device.Resolve(c, controls[name])
-			if err != nil {
-				return warnings, fmt.Errorf("%s.%s: %w", logical, name, err)
+			if err := e.ensureConnected(ctx, tr, endpoint); err != nil {
+				return warnings, fmt.Errorf("connect %q: %w", endpoint, err)
 			}
-			events, err := renderControl(def, c, b.Channel, resolved)
-			if err != nil {
-				return warnings, fmt.Errorf("%s.%s: %w", logical, name, err)
+			send := func(ev transport.Event) error {
+				return tr.Send(ctx, endpoint, ev)
 			}
-			if c.Type == device.ControlProgramChange {
-				pcs = append(pcs, events...)
-				hadPC = true
-			} else {
-				rest = append(rest, events...)
+
+			var pcs, rest []transport.Event
+			var hadPC bool
+			for _, name := range names {
+				c, ok := def.Control(name)
+				if !ok {
+					return warnings, fmt.Errorf("device %q (%s) has no control %q", logical, def.ID, name)
+				}
+				resolved, err := device.Resolve(c, controls[name])
+				if err != nil {
+					return warnings, fmt.Errorf("%s.%s: %w", logical, name, err)
+				}
+				events, err := renderControl(def, c, d.ControlChannel(), resolved)
+				if err != nil {
+					return warnings, fmt.Errorf("%s.%s: %w", logical, name, err)
+				}
+				if c.Type == device.ControlProgramChange {
+					pcs = append(pcs, events...)
+					hadPC = true
+				} else {
+					rest = append(rest, events...)
+				}
+			}
+
+			for _, ev := range pcs {
+				if err := send(ev); err != nil {
+					return warnings, fmt.Errorf("send program change to %s: %w", logical, err)
+				}
+			}
+			// Give the device time to load its preset before the CC overrides land.
+			if hadPC && len(rest) > 0 && def.SettleMS > 0 {
+				if err := sleepCtx(ctx, time.Duration(def.SettleMS)*time.Millisecond); err != nil {
+					return warnings, err
+				}
+			}
+			for _, ev := range rest {
+				if err := send(ev); err != nil {
+					return warnings, fmt.Errorf("send to %s: %w", logical, err)
+				}
+			}
+
+			// Record desired-state for the ordinary controls we applied. USB
+			// blobs are not desired-state (they are captured, not "set").
+			for _, name := range names {
+				e.state.Set(logical, name, controls[name])
 			}
 		}
 
-		for _, ev := range pcs {
-			if err := send(ev); err != nil {
-				return warnings, fmt.Errorf("send program change to %s: %w", logical, err)
+		// USB-memory blobs: write each captured blob back over the device's USB
+		// connection (state the control surface cannot reach, e.g. an SL-2
+		// slicer pattern). These are gated; with writes disabled the rest of the
+		// scene still recalls and the skipped blob is reported as a warning
+		// rather than aborting the recall.
+		for _, p := range patches {
+			if !d.HasUSB() {
+				return warnings, fmt.Errorf("scene usb patch for %q has no usb connection; bind it with transport usbmidi/usbhid", logical)
 			}
-		}
-		// Give the device time to load its preset before the CC overrides land.
-		if hadPC && len(rest) > 0 && def.SettleMS > 0 {
-			if err := sleepCtx(ctx, time.Duration(def.SettleMS)*time.Millisecond); err != nil {
-				return warnings, err
+			if !e.usbWritesAllowed(d) {
+				warnings = append(warnings, fmt.Sprintf("skipped usb patch for %q: usb writes disabled (set usb_allow_writes and bind writable: true)", logical))
+				continue
 			}
-		}
-		for _, ev := range rest {
-			if err := send(ev); err != nil {
-				return warnings, fmt.Errorf("send to %s: %w", logical, err)
+			if _, err := e.USBWritePatch(ctx, logical, p, false); err != nil {
+				return warnings, fmt.Errorf("usb patch %q: %w", logical, err)
 			}
-		}
-
-		// Record desired-state for everything we applied.
-		for _, name := range names {
-			e.state.Set(logical, name, controls[name])
-		}
-	}
-
-	// Patch-level USB blobs: write each captured blob back over USB (state the
-	// control surface cannot reach, e.g. an SL-2 slicer pattern). These are
-	// gated; with writes disabled the rest of the scene still recalls and the
-	// skipped blob is reported as a warning rather than aborting the recall.
-	// The brain channel has no USB surface, so over-the-brain recall skips them.
-	usbLogicals := make([]string, 0, len(sc.USB))
-	for l := range sc.USB {
-		usbLogicals = append(usbLogicals, l)
-	}
-	sort.Strings(usbLogicals)
-	if viaBrain && len(usbLogicals) > 0 {
-		for _, logical := range usbLogicals {
-			warnings = append(warnings, fmt.Sprintf("skipped usb patch for %q: recall via brain has no usb surface (use hardware recall for usb blobs)", logical))
-		}
-		usbLogicals = nil
-	}
-	for _, logical := range usbLogicals {
-		b, ok := bindings[logical]
-		if !ok {
-			return warnings, fmt.Errorf("scene references unbound usb device %q; bind it (bind_device, transport usbmidi/usbhid) so its endpoint is known", logical)
-		}
-		if !b.HasUSB() {
-			return warnings, fmt.Errorf("scene usb patch %q has no usb surface; bind it with transport usbmidi/usbhid", logical)
-		}
-		if !e.usbWritesAllowed(b) {
-			warnings = append(warnings, fmt.Sprintf("skipped usb patch for %q: usb writes disabled (set usb_allow_writes and bind writable: true)", logical))
-			continue
-		}
-		if _, err := e.USBWritePatch(ctx, logical, sc.USB[logical], false); err != nil {
-			return warnings, fmt.Errorf("usb patch %q: %w", logical, err)
 		}
 	}
 

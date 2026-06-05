@@ -1,7 +1,7 @@
 # USB tools — first design
 
 A design for exposing the **USB editor/readback protocols** of the rig's pedals
-as MCP tools, alongside the existing BLE-MIDI control surface.
+as MCP tools, alongside the BLE-MIDI control path.
 
 This is the productization of the USB research (`docs/research/usb.md` +
 per-device notes). The protocols are already proven by the throwaway spike
@@ -11,7 +11,7 @@ addressing, and a safety model.
 
 ## Why a separate tool family
 
-The BLE control model (`control_<logical>`) renders one semantic control into
+The BLE control model (`control_<name>`) renders one semantic control into
 one fire-and-forget MIDI message (CC/PC/NRPN), validated by a YAML value spec.
 The USB editor protocols are a **different shape**:
 
@@ -24,8 +24,10 @@ The USB editor protocols are a **different shape**:
   `internal/engine/feedback.go`) and to **back up / author full patches**.
 
 So USB tools are modeled as their own family (`usb_*` generic + `<device>_*`
-semantic), with their own binding kind, while reusing the engine's registry,
-desired-state, and scene machinery.
+semantic), reached over the device's `usbmidi`/`usbhid` connection, while reusing
+the engine's type registry, devices, desired-state, and scene machinery. The USB
+editor protocol is just another transport a device type speaks — not a separate
+kind of device.
 
 ## Per-device USB capability matrix
 
@@ -49,7 +51,7 @@ neither current transport offers.
 > The SL-2 parses Roland DT1 SysEx on its TRS MIDI IN (verified: `EXP_FUNC`
 > written over BLE, read back changed over USB). So the SL-2's *write* side
 > (`sl2_set_param`, `sl2_write_pattern`, `sl2_recall_pattern`) can be driven over
-> the existing **BLE** binding — no laptop/USB host needed live. Only **reads**
+> the existing **BLE** connection — no laptop/USB host needed live. Only **reads**
 > (`sl2_read_*`) require USB, because the SL-2 has TRS MIDI IN only (no MIDI OUT),
 > making BLE editing **open-loop** (write absolute values, no readback). This
 > blurs the "USB tools vs BLE control" split for the SL-2: deep *editing* is a
@@ -122,7 +124,7 @@ A device's USB capability is described by a **profile** that pairs a protocol
 codec (Go) with a declarative **address/parameter map** (YAML, where tabular):
 
 ```yaml
-# internal/device/definitions/sl-2.yaml  (new `usb:` section, alongside controls:)
+# internal/device/device-types/sl-2.yaml  (the `usb:` section, alongside controls:)
 usb:
   protocol: roland-address-sysex      # codec id (Go): framing + checksum + handshake
   identity: { mfg: 0x41, model: "00 00 00 00 1D", device: 0x10 }
@@ -170,51 +172,42 @@ USB values aren't all 7-bit CC bytes. The map's `enc` selects a codec
 `ofs` (signed offset, e.g. pitch ±12 stored as 0–24) is carried per-param like
 the BLE value spec.
 
-## Addressing & bindings
+## Addressing & connections
 
-USB devices are addressed by **USB endpoint**, not `(endpoint, channel)`:
+A USB editor connection is addressed by **USB endpoint**, not `(endpoint, channel)`:
 
 - USB-MIDI: an ALSA rawmidi port name substring (e.g. `"SL-2"`, `"ML10X"`).
 - HID: a `VID:PID` (e.g. `29A4:0400`) or explicit `/dev/hidrawN`.
 
-A pedal is **one logical device** that can expose **two surfaces at once** — a
-BLE/OSC control surface and an addressed USB editor/readback surface — under a
-single name. The `Binding` carries the control fields (`endpoint`, `channel`)
-plus an optional `usb:` block:
+A pedal that exposes both a BLE/OSC control path and a USB editor/readback path is
+**one device** whose device type addresses some parameters over the MIDI/OSC
+transport and others over the USB editor protocol. The device carries one
+`connections` map (transport → where), so the two paths are just two entries:
 
 ```yaml
-# bindings.yaml — one logical device, both surfaces.
-- logical: sl2
-  endpoint: "10:2E:AB:DA:AC:66"   # BLE control endpoint (WIDI hub)
-  channel: 5                      # control surface (CC/PC)
-  device: sl-2
-  usb:                            # USB editor/readback surface of the same pedal
-    transport: usbmidi            # usbmidi | usbhid
-    endpoint: "SL-2"              # ALSA rawmidi port substring (or VID:PID for usbhid)
-    # writable: true              # opt this surface in to gated write tools
-- logical: eq2
-  endpoint: "10:2E:AB:DA:AC:66"
-  channel: 0
-  device: eq-2
-  usb:
-    transport: usbhid
-    endpoint: "29A4:0400"         # VID:PID
+# devices.yaml — one device, two connections.
+- name: sl2
+  type: sl-2
+  connections:
+    blemidi: { endpoint: "10:2E:AB:DA:AC:66", channel: 5 }  # live controls
+    usbmidi: { endpoint: "SL-2", writable: true }           # USB editor/readback
+- name: eq2
+  type: eq-2
+  connections:
+    blemidi: { endpoint: "10:2E:AB:DA:AC:66", channel: 0 }
+    usbhid:  { endpoint: "29A4:0400" }                       # VID:PID
 ```
 
-`control_<logical>` is generated from the control surface and the USB tool
-family (`usb_*`, `<logical>_*`) from the `usb:` surface — both under the one
-`logical`. A USB-only device omits `endpoint`/`channel` and keeps just `usb:`.
-At the MCP layer, `bind_device` merges surfaces: call it once per transport
-(default = control, `usbmidi`/`usbhid` = USB) and both accrue onto the same
-logical. `channel`/`endpoint` on the USB call configure the USB surface; the
-control surface is preserved (and vice-versa).
-
-(Legacy bindings whose top-level `transport` was `usbmidi`/`usbhid` — the old
-"separate `sl2-usb` logical" model — are migrated to a `usb:` surface on load.)
+`control_<name>` is generated from the controls the device type sends over its
+MIDI/OSC connection; the USB tool family (`usb_*`, `<name>_*`) is generated when
+the device type has USB-addressed parameters and the device has a `usbmidi`/
+`usbhid` connection — all under the one device `name`. A USB-only device simply has
+only a `usbmidi`/`usbhid` connection. The engine routes each parameter to the
+connection its device type assigned; the user sees one device.
 
 ## Tools
 
-### Generic (escape hatch / discovery), per USB binding
+### Generic (escape hatch / discovery), per USB device
 
 | Tool | Action | Safety |
 |------|--------|--------|
@@ -263,20 +256,20 @@ profile slot exists).
 
 ## Integration with state / scenes / verify
 
-- **`verify_control` gains a real readback path.** When a logical device's USB
-  surface maps the BLE control's parameter (the same logical, or any logical
-  sharing the device id), `verify_control` reads the actual value over USB
-  instead of (or in addition to) the BLE echo.
-  This closes the open-loop gap called out in the research intro. (Many BLE
-  controls have no USB counterpart — e.g. SL-2 CC#80 on/off is not a stored
-  param — so this is best-effort per parameter.)
+- **`verify_control` gains a real readback path.** When a device's USB connection
+  maps the same parameter as a MIDI control (on the same device, or any device of
+  the same device type), `verify_control` reads the actual value over USB instead
+  of (or in addition to) the BLE echo. This closes the open-loop gap called out in
+  the research intro. (Many MIDI controls have no USB counterpart — e.g. SL-2
+  CC#80 on/off is not a stored param — so this is best-effort per parameter.)
 - **Patch-level scenes.** For SL-2 (and later ML10X), a scene can store a **full
-  patch dump** (blob) and recall it by writing the temp patch + `write_pattern`.
-  This is richer than the CC-snapshot scene and is the only way to capture the
-  SL-2's pattern/type (not BLE-addressable). Stored under the existing
-  `scenes/` dir; the blob is versioned as hex/base64 in the scene YAML.
-- **Desired-state.** USB `set_param`/`write` update the same per-logical-device
-  desired-state map, so USB and BLE edits reconcile in one place.
+  patch dump** as an ordinary (opaque) parameter value of the device, recalled by
+  writing the temp patch + `write_pattern`. This is richer than a CC snapshot and
+  is the only way to capture the SL-2's pattern/type (not MIDI-addressable). It is
+  just another value in the device's scene entry — the scene never names a
+  transport; the device writes it back over its USB connection on recall.
+- **Desired-state.** USB `set_param`/`write` update the same per-device
+  desired-state map, so USB and MIDI edits reconcile in one place.
 
 ## Safety model
 
@@ -284,7 +277,7 @@ Reads are unconditionally safe. Writes change persistent device state (DT1,
 `PATCH_WRITE`, preset select), so:
 
 1. **Global write gate** — a daemon config flag `usb_allow_writes` (default
-   `false`) and/or a per-binding `writable: true`. With writes disabled, only
+   `false`) and/or a per-connection `writable: true`. With writes disabled, only
    `usb_read`/`*_read_*`/`*_list_*`/`identify` are exposed.
 2. **Dry-run** — write tools accept `{dry_run: true}` returning the exact bytes
    that *would* be sent (the spike is the reference for byte-accuracy).
@@ -299,20 +292,21 @@ Reads are unconditionally safe. Writes change persistent device state (DT1,
 
 > **Status (implemented).** Steps 1–7 are shipped: both transports, the four
 > codecs + value encodings, the request/reply session and engine USB API, the
-> USB binding kind, the generic `usb_*` and semantic per-binding tools, the
-> two-key write gate, USB-backed `verify_control`, and **patch-level scenes**
-> (`capture_usb_patch` → a `scene.USBPatch` blob that `recall_scene` writes back,
-> gated). The device **profiles** are authored in the bundled definitions: SL-2
-> (full R/W), EQ2 (read + select), ML10X (bank read), an Opus torpedo-HID
-> monitor-only placeholder (step 8), and the H90 documented as no-USB. Open
-> per-device work: ML10X write opcodes, EQ2 per-parameter byte offsets, Opus
-> value scaling — and hardware re-verification of the write paths.
+> `usbmidi`/`usbhid` connections, the generic `usb_*` and semantic per-device
+> tools, the two-key write gate, USB-backed `verify_control`, and **patch-level
+> scenes** (`capture_usb_patch` stores an opaque parameter value that
+> `recall_scene` writes back, gated). The device **profiles** are authored in the
+> bundled device types: SL-2 (full R/W), EQ2 (read + select), ML10X (bank read),
+> an Opus torpedo-HID monitor-only placeholder (step 8), and the H90 with no USB
+> editor protocol. Open per-device work: ML10X write opcodes, EQ2 per-parameter
+> byte offsets, Opus value scaling — and hardware re-verification of the write
+> paths.
 
 1. **Finish `usbmidi` transport** (stub → real) + the request/reply session;
    port the SL-2 codec out of `cmd/usb-probe` into `internal/usbcodec/roland`.
 2. **SL-2 read tools** (`sl2_read_system`/`read_patch`/`list_patterns`/`get_param`)
    — read-only, highest value, fully confirmed.
-3. **USB binding kind** + `list_devices`/`describe_device` integration.
+3. **USB connection** + `list_devices`/`describe_device` integration.
 4. **SL-2 write tools** behind the write gate (`set_param`/`write_pattern`),
    with dry-run; first real write test on hardware.
 5. **`usbhid` transport** + `neuro-hid` codec → **EQ2 read tools** (`list/read

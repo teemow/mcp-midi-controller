@@ -49,6 +49,33 @@ func TestRenderProgramChange(t *testing.T) {
 	}
 }
 
+func TestRenderBankedProgramChange(t *testing.T) {
+	// A preset control spanning >128 presets (banked): index 300 -> bank 2,
+	// program 44, emitted as Bank Select MSB/LSB + Program Change.
+	c := &device.Control{
+		Type:  device.ControlProgramChange,
+		Bank:  true,
+		Value: device.ValueSpec{Type: device.ValueRange, Min: f(0), Max: f(789)},
+	}
+	evs, err := renderControl(nil, c, 1, mustResolve(t, c, float64(300)))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	wants := [][]byte{
+		{0xB1, 0, 0},  // Bank Select MSB (bank 2 fits the LSB)
+		{0xB1, 32, 2}, // Bank Select LSB
+		{0xC1, 44},    // Program Change (300 % 128)
+	}
+	if len(evs) != len(wants) {
+		t.Fatalf("got %d events, want %d", len(evs), len(wants))
+	}
+	for i, w := range wants {
+		if !bytes.Equal(evs[i].Data, w) {
+			t.Fatalf("event %d = % X, want % X", i, evs[i].Data, w)
+		}
+	}
+}
+
 func TestRenderNRPN(t *testing.T) {
 	c := &device.Control{Type: device.ControlNRPN, NRPN: iptr(1000), Value: device.ValueSpec{Type: device.ValueRange, Max: f(16383)}}
 	evs, err := renderControl(nil, c, 0, mustResolve(t, c, float64(8192)))
