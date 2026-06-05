@@ -132,6 +132,7 @@ func (s *Server) registerAUMTools() {
 					}
 				},
 				"bare": {"type": "boolean", "description": "Skip the default convention and author an untouched placeholder session (AUM's default, what an unmapped real session looks like). Ignored when a convention object is supplied."},
+				"full_control": {"type": "boolean", "description": "Bank EVERY mappable target collision-free across channels (mixer/transport on the convention channel, node params + triggers banked from ch2 upward, CC then Note) instead of the single-channel convention. Use for dense multi-node sessions so node params never collide. Overrides bare/convention. See instrument_aum_session."},
 				"convention": {
 					"type": "object",
 					"description": "Override the standard brain-control convention pre-assigned to the generated placeholders. Omit to bake the standard map (channel 1); set bare:true to skip it entirely.",
@@ -182,6 +183,50 @@ func (s *Server) registerAUMTools() {
 			"required": ["synth_probe", "brain_probe", "tap_probe", "host"]
 		}`),
 	}, s.handleAuthorLoopSession)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "instrument_aum_session",
+		Description: "Give a session FULL control: bank every mappable target (mixer strips, transport, system, node reserved triggers, and every hosted plugin parameter) onto collision-free MIDI triggers, then re-stage it for download to the iPad. " +
+			"The global channel (default 1) keeps the mixer/transport CC convention so a session-derived AUM mixer device still resolves; everything else banks from start_channel (default 2) upward, CC 0..127 then Note 0..127, advancing channels until 16. " +
+			"This is also the \"update an existing session\" tool: with preserve_existing (default true) every already-enabled mapping is left untouched and routed around, so it is safe to re-run and to layer full control on top of a hand-mapped session. Overflowing targets (dense FX past channel 16) are reported, not fatal. dry_run returns the plan without writing.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"session_id": {"type": "string", "description": "Staged session id to instrument. See list_aum_sessions."},
+				"file": {"type": "string", "description": "Explicit path to a .aumproj (overrides session_id)."},
+				"out_id": {"type": "string", "description": "Staging id to write (defaults to <session>_golden)."},
+				"global_channel": {"type": "integer", "description": "1-based channel for the global block (transport/system/preset) and the mixer-strip convention CCs. Default 1, or the session's existing convention channel when it already has one."},
+				"start_channel": {"type": "integer", "description": "1-based channel the banked pool (node params, reserved triggers, non-convention strip targets) starts from. Default 2."},
+				"use_notes": {"type": "boolean", "description": "Allow the pool to spill into the Note space once a channel's 128 CCs are full, before advancing channels. Default true. A control Note also reaches instruments on that channel, so use play_channels to exclude played channels."},
+				"play_channels": {"type": "array", "items": {"type": "integer"}, "description": "1-based channels to exclude from Note allocation (their CC space is still used), so control Notes never sound on a channel an instrument plays."},
+				"preserve_existing": {"type": "boolean", "description": "Leave already-enabled mappings untouched and route new ones around them. Default true (safe re-run / update)."},
+				"dry_run": {"type": "boolean", "description": "Return the allocation report without writing a file."}
+			}
+		}`),
+	}, s.handleInstrumentAUMSession)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "author_probe_session",
+		Description: "Author a minimal probe rig .aumproj in one call: a MIDI strip hosting ProbeMidiBrain (the hands), an audio strip hosting ProbeAudioTap (the ears), and a master strip — no synth (the difference from author_loop_session). " +
+			"Wires the brain's MIDI OUT to AUM's MIDI Control and authors the brain/tap AuStateDoc with the daemon host so both auto-connect on load. " +
+			"By default the standard brain-control convention (channel 1) is baked in; set full_control:true to instead bank every mappable target collision-free (see instrument_aum_session).",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"brain_probe": {"type": "string", "description": "Staged probe id of ProbeMidiBrain (run the auv3 probe for it once)."},
+				"brain_file": {"type": "string", "description": "Explicit ProbeMidiBrain probe dump path (overrides brain_probe)."},
+				"tap_probe": {"type": "string", "description": "Staged probe id of ProbeAudioTap."},
+				"tap_file": {"type": "string", "description": "Explicit ProbeAudioTap probe dump path (overrides tap_probe)."},
+				"host": {"type": "string", "description": "Daemon LAN host[:port] (e.g. \"box:7800\") embedded into the brain + tap config so they dial back automatically. Installation-specific; never committed."},
+				"title": {"type": "string", "description": "Session title (default \"Probe Rig\")."},
+				"out_id": {"type": "string", "description": "Staging id / filename stem (default from title)."},
+				"tempo": {"type": "number", "description": "Session tempo BPM (default 120)."},
+				"decimation": {"type": "integer", "description": "Tap PCM decimation factor (default 4)."},
+				"full_control": {"type": "boolean", "description": "Bank every mappable target collision-free instead of the single-channel convention."}
+			},
+			"required": ["brain_probe", "tap_probe", "host"]
+		}`),
+	}, s.handleAuthorProbeSession)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "edit_aum_session",
@@ -788,8 +833,9 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 				State         map[string]string `json:"state"`
 			} `json:"nodes"`
 		} `json:"channels"`
-		Bare       bool `json:"bare"`
-		Convention *struct {
+		Bare        bool `json:"bare"`
+		FullControl bool `json:"full_control"`
+		Convention  *struct {
 			Channel int `json:"channel"`
 			StartCC int `json:"start_cc"`
 			MaxCC   int `json:"max_cc"`
@@ -851,6 +897,8 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 		spec.Channels = append(spec.Channels, cs)
 	}
 	switch {
+	case args.FullControl:
+		// Build a plain placeholder catalogue, then bank every target below.
 	case args.Convention != nil:
 		spec.Convention = &aum.Convention{
 			Channel:     args.Convention.Channel,
@@ -871,6 +919,13 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 	sess, report, err := aum.BuildSession(spec)
 	if err != nil {
 		return textResult("build session: "+err.Error(), true), nil
+	}
+	var instReport aum.InstrumentReport
+	if args.FullControl {
+		instReport, err = sess.Instrument(aum.InstrumentOptions{UseNotes: true})
+		if err != nil {
+			return textResult("instrument session: "+err.Error(), true), nil
+		}
 	}
 	data, err := sess.Archive().Encode()
 	if err != nil {
@@ -898,7 +953,9 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 		fmt.Fprintf(&b, ", %d MIDI route(s)", report.Routes)
 	}
 	b.WriteByte('\n')
-	if len(report.Overflow) > 0 {
+	if args.FullControl {
+		writeFullControl(&b, instReport)
+	} else if len(report.Overflow) > 0 {
 		fmt.Fprintf(&b, "  %d node-param target(s) overflowed the CC cap and stayed unassigned\n", len(report.Overflow))
 	}
 	fmt.Fprintf(&b, "download from the iPad: GET /aum-session/%s\n", file)
@@ -909,6 +966,9 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 		"path":     path,
 		"download": "/aum-session/" + file,
 		"report":   report,
+	}
+	if args.FullControl {
+		structured["instrumentReport"] = instReport
 	}
 	return structResult(b.String(), structured), nil
 }
@@ -930,6 +990,19 @@ func loopNodeSpec(field, probeID, probeFile string) (aum.NodeSpec, string) {
 		return aum.NodeSpec{}, fmt.Sprintf("%s: read probe: %v", field, derr)
 	}
 	return aum.NodeSpecFromDump(dump), ""
+}
+
+// configureBrainTap authors the ProbeMidiBrain + ProbeAudioTap AuStateDoc so
+// both auto-connect to the daemon on load: brain control enabled and tap
+// streaming enabled, both pointed at host. A decimation <= 0 falls back to 4.
+func configureBrainTap(brain, tap *aum.NodeSpec, host string, decimation int) {
+	brainCfg, _ := json.Marshal(map[string]any{"host": host, "controlEnabled": true})
+	brain.StateDoc = map[string][]byte{"probeMidiBrainConfig": brainCfg}
+	if decimation <= 0 {
+		decimation = 4
+	}
+	tapCfg, _ := json.Marshal(map[string]any{"host": host, "streaming": true, "decimation": decimation})
+	tap.StateDoc = map[string][]byte{"probeAudioTapConfig": tapCfg}
 }
 
 func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -969,14 +1042,7 @@ func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolReq
 
 	// Author the two plugins' AuStateDoc so they auto-connect to the daemon on
 	// load: brain control + tap streaming both enabled, pointed at host.
-	brainCfg, _ := json.Marshal(map[string]any{"host": args.Host, "controlEnabled": true})
-	brain.StateDoc = map[string][]byte{"probeMidiBrainConfig": brainCfg}
-	decim := args.Decimation
-	if decim <= 0 {
-		decim = 4
-	}
-	tapCfg, _ := json.Marshal(map[string]any{"host": args.Host, "streaming": true, "decimation": decim})
-	tap.StateDoc = map[string][]byte{"probeAudioTapConfig": tapCfg}
+	configureBrainTap(&brain, &tap, args.Host, args.Decimation)
 	if args.SynthPreset != nil {
 		synth.Preset = args.SynthPreset
 	}
@@ -1042,6 +1108,248 @@ func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolReq
 		"path":     path,
 		"download": "/aum-session/" + file,
 		"report":   report,
+	}
+	return structResult(b.String(), structured), nil
+}
+
+// --- instrument -----------------------------------------------------------
+
+func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		SessionID        string `json:"session_id"`
+		File             string `json:"file"`
+		OutID            string `json:"out_id"`
+		GlobalChannel    int    `json:"global_channel"`
+		StartChannel     int    `json:"start_channel"`
+		UseNotes         *bool  `json:"use_notes"`
+		PlayChannels     []int  `json:"play_channels"`
+		PreserveExisting *bool  `json:"preserve_existing"`
+		DryRun           bool   `json:"dry_run"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	path, err := resolveAUMSessionPath(args.File, args.SessionID)
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	sess, err := aum.OpenFile(path)
+	if err != nil {
+		return textResult("open session: "+err.Error(), true), nil
+	}
+
+	opts := aum.InstrumentOptions{
+		GlobalChannel:    args.GlobalChannel,
+		StartChannel:     args.StartChannel,
+		UseNotes:         args.UseNotes == nil || *args.UseNotes,                 // default true
+		PreserveExisting: args.PreserveExisting == nil || *args.PreserveExisting, // default true
+		PlayChannels:     args.PlayChannels,
+	}
+	// Seed the global channel from the session's existing convention channel
+	// (so re-instrumenting a wired session keeps the same convention channel)
+	// unless the caller pinned one explicitly.
+	if args.GlobalChannel == 0 {
+		if wire, ok := sess.ConventionChannel(); ok {
+			opts.GlobalChannel = wire + 1
+		}
+	}
+
+	report, err := sess.Instrument(opts)
+	if err != nil {
+		return textResult("instrument session: "+err.Error(), true), nil
+	}
+
+	srcID := aum.StripExt(filepath.Base(path))
+	id := sanitize.ID(args.OutID)
+	if id == "" {
+		id = sanitize.ID(srcID + "_golden")
+	}
+
+	var b strings.Builder
+	if args.DryRun {
+		fmt.Fprintf(&b, "instrument plan for %q (dry run, nothing written)\n", sess.Title())
+	} else {
+		fmt.Fprintf(&b, "instrumented %q\n", sess.Title())
+	}
+	writeInstrumentReport(&b, report)
+
+	structured := map[string]any{
+		"sessionID": srcID,
+		"title":     sess.Title(),
+		"dryRun":    args.DryRun,
+		"report":    report,
+	}
+	if args.DryRun {
+		return structResult(b.String(), structured), nil
+	}
+
+	data, err := sess.Archive().Encode()
+	if err != nil {
+		return textResult("encode session: "+err.Error(), true), nil
+	}
+	if _, err := aum.Open(data); err != nil {
+		return textResult("instrumented session failed re-decode: "+err.Error(), true), nil
+	}
+	outPath, file, err := stageAUMFile(id, ".aumproj", data)
+	if err != nil {
+		return textResult("stage session: "+err.Error(), true), nil
+	}
+	fmt.Fprintf(&b, "staged -> %s\ndownload from the iPad: GET /aum-session/%s\n", outPath, file)
+	structured["id"] = id
+	structured["file"] = file
+	structured["path"] = outPath
+	structured["download"] = "/aum-session/" + file
+	return structResult(b.String(), structured), nil
+}
+
+// writeFullControl renders the "full control" banking summary under an authored
+// session (the full_control flag path), shared by the author handlers.
+func writeFullControl(b *strings.Builder, r aum.InstrumentReport) {
+	b.WriteString("  full control:\n")
+	writeInstrumentReport(b, r)
+}
+
+// writeInstrumentReport renders an InstrumentReport as human text: the totals,
+// the per-class breakdown, and the first overflowed targets.
+func writeInstrumentReport(b *strings.Builder, r aum.InstrumentReport) {
+	fmt.Fprintf(b, "  assigned %d (CC %d, Note %d, PC %d) across %d channel(s)", r.Assigned, r.CCs, r.Notes, r.PCs, r.ChannelsUsed)
+	if r.Preserved > 0 {
+		fmt.Fprintf(b, ", %d preserved", r.Preserved)
+	}
+	b.WriteByte('\n')
+	if len(r.ByClass) > 0 {
+		classes := make([]string, 0, len(r.ByClass))
+		for c := range r.ByClass {
+			classes = append(classes, c)
+		}
+		sort.Strings(classes)
+		b.WriteString("  by class:")
+		for _, c := range classes {
+			fmt.Fprintf(b, " %s=%d", c, r.ByClass[c])
+		}
+		b.WriteByte('\n')
+	}
+	if n := len(r.Overflow); n > 0 {
+		fmt.Fprintf(b, "  %d target(s) overflowed channel 16 (left unassigned):\n", n)
+		const show = 10
+		for i, o := range r.Overflow {
+			if i >= show {
+				fmt.Fprintf(b, "    ... and %d more\n", n-show)
+				break
+			}
+			fmt.Fprintf(b, "    %s\n", o)
+		}
+	}
+}
+
+// --- author_probe_session -------------------------------------------------
+
+func (s *Server) handleAuthorProbeSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		BrainProbe  string  `json:"brain_probe"`
+		BrainFile   string  `json:"brain_file"`
+		TapProbe    string  `json:"tap_probe"`
+		TapFile     string  `json:"tap_file"`
+		Host        string  `json:"host"`
+		Title       string  `json:"title"`
+		OutID       string  `json:"out_id"`
+		Tempo       float64 `json:"tempo"`
+		Decimation  int     `json:"decimation"`
+		FullControl bool    `json:"full_control"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	if strings.TrimSpace(args.Host) == "" {
+		return textResult("host: a daemon host[:port] is required so the brain and tap can dial back", true), nil
+	}
+
+	brain, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile)
+	if e != "" {
+		return textResult(e, true), nil
+	}
+	tap, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile)
+	if e != "" {
+		return textResult(e, true), nil
+	}
+
+	configureBrainTap(&brain, &tap, args.Host, args.Decimation)
+
+	title := device.FirstNonEmpty(args.Title, "Probe Rig")
+	tempo := args.Tempo
+	if tempo <= 0 {
+		tempo = 120
+	}
+
+	// Channel layout (0-based): 0 = MIDI brain, 1 = tap audio strip, 2 = master.
+	spec := aum.BuildSpec{
+		Title: title,
+		Tempo: tempo,
+		Channels: []aum.ChannelSpec{
+			{Kind: aum.KindMIDI, Title: "Brain", Nodes: []aum.NodeSpec{brain}},
+			{Kind: aum.KindAudio, Title: "Main", Nodes: []aum.NodeSpec{tap}},
+			{Kind: aum.KindAudio, Title: "Master"},
+		},
+		// Brain MIDI OUT -> AUM MIDI Control (so transport / global MIDI control
+		// see the brain's output). There is no synth to feed.
+		Routes: []aum.MIDIRoute{{
+			From: aum.MIDIEndpoint{Channel: 0, Slot: 0},
+			To:   []aum.MIDIEndpoint{{Builtin: "MIDI Control"}},
+		}},
+	}
+	// Default: bake the standard single-channel convention. full_control runs
+	// the banking allocator on the placeholder catalogue instead.
+	if !args.FullControl {
+		spec.Convention = &aum.Convention{Channel: 1}
+	}
+
+	sess, report, err := aum.BuildSession(spec)
+	if err != nil {
+		return textResult("build session: "+err.Error(), true), nil
+	}
+	var instReport aum.InstrumentReport
+	if args.FullControl {
+		instReport, err = sess.Instrument(aum.InstrumentOptions{UseNotes: true})
+		if err != nil {
+			return textResult("instrument session: "+err.Error(), true), nil
+		}
+	}
+
+	data, err := sess.Archive().Encode()
+	if err != nil {
+		return textResult("encode session: "+err.Error(), true), nil
+	}
+	if _, err := aum.Open(data); err != nil {
+		return textResult("authored session failed re-decode: "+err.Error(), true), nil
+	}
+
+	id := device.FirstNonEmpty(sanitize.ID(args.OutID), sanitize.ID(title), "probe-rig")
+	path, file, err := stageAUMFile(id, ".aumproj", data)
+	if err != nil {
+		return textResult("stage session: "+err.Error(), true), nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "authored probe session -> %s\n", path)
+	fmt.Fprintf(&b, "  brain[ch0/slot0] -> AUM MIDI Control; tap[ch1/slot0]; master[ch2]\n")
+	fmt.Fprintf(&b, "  %d channel(s), %d node(s), %d MIDI route(s); brain+tap configured for host %q\n", report.Channels, report.Nodes, report.Routes, args.Host)
+	if args.FullControl {
+		writeFullControl(&b, instReport)
+	} else {
+		fmt.Fprintf(&b, "  %d convention CC(s) on ch1\n", report.AssignedCCs)
+	}
+	fmt.Fprintf(&b, "next: load via the iPad (push & open), then play_notes / get_audio_tap\n")
+	fmt.Fprintf(&b, "download from the iPad: GET /aum-session/%s\n", file)
+
+	structured := map[string]any{
+		"id":       id,
+		"file":     file,
+		"path":     path,
+		"download": "/aum-session/" + file,
+		"report":   report,
+	}
+	if args.FullControl {
+		structured["instrumentReport"] = instReport
 	}
 	return structResult(b.String(), structured), nil
 }
