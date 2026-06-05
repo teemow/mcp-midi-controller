@@ -24,39 +24,42 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
     Thru6).
   - **Behringer X32** over OSC/UDP (on WiFi).
   - **AUM on iPad** and its **AUv3 plugins/synths** (Battalion, iSem, Agonizer,
-    Korg iMS-20, FabFilter, …) over BLE-MIDI. Plugin definitions are verified
-    with the companion **[auv3-probe](https://github.com/teemow/auv3-probe)**
-    iPad app, which dumps each plugin's `AUParameterTree` to the daemon's
-    built-in **probe receiver** (a LAN listener separate from the loopback MCP
-    endpoint). Agents then see what's available and configurable via the
-    `list_auv3_probes` / `get_auv3_probe` tools and scaffold definitions with
-    `import_auv3_probe`.
+    Korg iMS-20, FabFilter, …) over the `auv3midi` LAN channel into AUM. Plugin
+    device types are generated and verified with the companion
+    **[auv3-probe](https://github.com/teemow/auv3-probe)** iPad app, which dumps
+    each plugin's `AUParameterTree` to the daemon's built-in **probe receiver** (a
+    LAN listener separate from the loopback MCP endpoint). Agents then see what's
+    available via the `list_auv3_probes` / `get_auv3_probe` tools and turn a dump
+    into a device type with `import_auv3_probe`.
 - **Owns BLE discovery + pairing** itself (via BlueZ over D-Bus) — no manual
   `bluetoothctl`.
-- **Extendable without writing Go**: add a device by dropping a YAML definition,
-  or have an agent author one via **MIDI-learn**.
+- **Extendable without writing Go**: add gear by dropping a YAML device type, or
+  have an agent author one via **MIDI-learn**.
 - **Scenes**: snapshot and recall sounds across the whole rig; scenes are
   partial and layerable.
-- **Rig-as-code**: your definitions, bindings and scenes live in one
+- **Rig-as-code**: your device types, devices and scenes live in one
   git-trackable directory.
 
 ## How it is wired
 
 ```
 MCP client (Cursor/Claude)  ──HTTP 127.0.0.1──▶  mcp-midi-controller daemon
-                                                  ├─ engine (registry, bindings,
+                                                  ├─ engine (type registry, devices,
                                                   │          desired-state, scenes)
                                                   └─ transports
                                                      ├─ blemidi  (BlueZ D-Bus + BLE-MIDI GATT)
+                                                     ├─ usbmidi  (ALSA rawmidi editors)
+                                                     ├─ usbhid   (hidraw editors)
                                                      ├─ osc      (X32)
-                                                     └─ usbmidi  (gomidi, bonus)
+                                                     └─ auv3midi (LAN channel into AUM)
 ```
 
-A device is a **YAML definition** (its controls, with CC / PC / NRPN / SysEx /
-OSC addressing) bound to a transport **endpoint + MIDI channel**. Each bound
-logical device gets its own generated MCP tool (`control_<name>`) whose schema
-enumerates that device's controls and validates values before anything hits the
-wire.
+There are three concepts. A **device type** describes a *kind* of gear — its
+controls (with CC / PC / NRPN / SysEx / OSC addressing) and the transport it
+speaks. A **device** is one piece of gear in your rig: a device type plus where it
+is (endpoint + MIDI channel). A **scene** is parameter settings across all your
+devices. Each device gets its own generated MCP tool (`control_<name>`) whose
+schema enumerates its controls and validates values before anything hits the wire.
 
 See [`docs/design.md`](docs/design.md) for the full design and rationale.
 
@@ -72,10 +75,10 @@ See [`docs/design.md`](docs/design.md) for the full design and rationale.
 cmd/mcp-midi-controller/   daemon entrypoint
 internal/
   config/                  XDG paths + config.yaml
-  device/                  YAML definition model, loader, validation, bundled defs
-    definitions/           bundled device definitions (go:embed)
-  transport/               Transport interface + backends (blemidi, osc, usbmidi)
-  engine/                  registry, bindings, desired-state, scene orchestration
+  device/                  YAML device-type model, loader, validation, bundled types
+    device-types/          bundled device types (go:embed)
+  transport/               Transport interface + backends (blemidi, usbmidi, usbhid, osc, auv3midi)
+  engine/                  type registry, devices, desired-state, scene orchestration
   scene/                   scene model + persistence
   mcpserver/               MCP layer (official go-sdk): tool generation + handlers
 cmd/usb-probe/             read-only USB readback spike (validation oracle)
@@ -97,8 +100,8 @@ docs/design.md             full design
 ```
 $XDG_CONFIG_HOME/mcp-midi-controller/   # git init this
   config.yaml
-  devices/*.yaml                        # your definitions (override bundled by filename)
-  bindings.yaml                         # endpoints+channels → devices
+  device-types/*.yaml                   # your device types (override bundled by id)
+  devices.yaml                          # your devices (type + where it is) → the rig
   scenes/*.yaml
 $XDG_STATE_HOME/mcp-midi-controller/    # volatile (desired-state cache, logs)
 ```
@@ -181,11 +184,11 @@ http://127.0.0.1:7799/app/
 
 (adjust the host/port to match `listen_addr`). It is a real in-browser MCP
 client — it talks to the daemon's `/` MCP endpoint over streamable-HTTP (same
-origin, no extra config) — with tabs for devices/bindings, definitions and
-authoring, schema-driven device control, WIDI, scenes, USB, the iPad
-(AUM/AUv3) surface, a live activity feed of inbound MIDI and probe/session
-arrivals, a generic tool tester, and the bundled docs. The `/` endpoint stays
-pure MCP, so existing clients (Cursor) are unaffected.
+origin, no extra config) — with tabs for devices, device types and authoring,
+schema-driven device control, WIDI, scenes, USB, the iPad (AUM/AUv3) surface, a
+live activity feed of inbound MIDI and probe/session arrivals, a generic tool
+tester, and the bundled docs. The `/` endpoint stays pure MCP, so existing clients
+(Cursor) are unaffected.
 
 The SPA source lives in [`web/`](web) (Vite + React + TypeScript + Tailwind) and
 is built into `internal/webui/dist`, which is committed and consumed by

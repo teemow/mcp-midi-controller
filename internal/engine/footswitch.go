@@ -60,6 +60,14 @@ type FootswitchTrigger struct {
 
 // FootswitchScene is the compiled, pushable unit (a scene as the footswitch
 // stores it). It marshals to exactly the JSON the device expects.
+//
+// It is a one-way, derived export of a scene.Scene, never a source of truth: a
+// scene.Scene holds the rig's parameter settings keyed by device (and names no
+// transport), while CompileFootswitchScene flattens one scene into the ordered
+// wire events a dumb BLE footswitch replays. The footswitch cannot realize a
+// device's USB-memory blob (a USBPatch parameter value), so those are dropped
+// during compile with a warning — they only recall through the live engine path
+// (RecallScene), which writes them over the device's USB connection.
 type FootswitchScene struct {
 	ID      string             `json:"id"`
 	Name    string             `json:"name"`
@@ -95,11 +103,11 @@ func (e *Engine) CompileFootswitchScene(sc *scene.Scene, opts FootswitchCompileO
 		return nil, nil, fmt.Errorf("nil scene")
 	}
 
-	// Snapshot the bindings so we do not hold the lock across rendering.
+	// Snapshot the devices so we do not hold the lock across rendering.
 	e.mu.RLock()
-	bindings := make(map[string]Binding, len(e.bindings))
-	for k, v := range e.bindings {
-		bindings[k] = v
+	devices := make(map[string]Device, len(e.devices))
+	for k, v := range e.devices {
+		devices[k] = v
 	}
 	e.mu.RUnlock()
 
@@ -127,35 +135,46 @@ func (e *Engine) CompileFootswitchScene(sc *scene.Scene, opts FootswitchCompileO
 		if len(controls) == 0 {
 			continue
 		}
-		b, ok := bindings[logical]
+		d, ok := devices[logical]
 		if !ok {
 			return nil, nil, fmt.Errorf("scene references unbound device %q; bind it (bind_device) so its channel is known", logical)
 		}
-		def, ok := e.registry.Get(b.DeviceID)
+		def, ok := e.registry.Get(d.DeviceID)
 		if !ok {
-			return nil, nil, fmt.Errorf("device %q: unknown definition %q", logical, b.DeviceID)
+			return nil, nil, fmt.Errorf("device %q: unknown definition %q", logical, d.DeviceID)
 		}
-		// OSC devices need the UDP target from the binding endpoint; warn (and
+		// OSC devices need the UDP target from the control endpoint; warn (and
 		// skip the device) rather than emit unsendable OSC events if it is
 		// missing or malformed.
 		var oscHost string
 		var oscPort int
 		if def.Transport == "osc" {
-			oscHost, oscPort = splitOSCEndpoint(b.Endpoint)
+			oscHost, oscPort = splitOSCEndpoint(d.ControlEndpoint())
 			if oscHost == "" {
-				warnings = append(warnings, fmt.Sprintf("skipped %q: OSC device has no host in its binding endpoint %q (bind it to host:port, e.g. 192.168.1.50:%d)", logical, b.Endpoint, defaultOSCPort))
+				warnings = append(warnings, fmt.Sprintf("skipped %q: OSC device has no host in its control endpoint %q (bind it to host:port, e.g. 192.168.1.50:%d)", logical, d.ControlEndpoint(), defaultOSCPort))
 				continue
 			}
 		}
 
 		var pcs, rest []FootswitchEvent
 
-		// Deterministic control order.
+		// Deterministic control order. USB-memory blobs (USBPatch parameter
+		// values) cannot be expressed as footswitch wire events — the footswitch
+		// only speaks MIDI/OSC, not the device's USB editor protocol — so they
+		// are skipped here with a warning and recall only through RecallScene.
 		names := make([]string, 0, len(controls))
-		for n := range controls {
+		var skippedPatch bool
+		for n, v := range controls {
+			if _, ok := scene.AsUSBPatch(v); ok {
+				skippedPatch = true
+				continue
+			}
 			names = append(names, n)
 		}
 		sort.Strings(names)
+		if skippedPatch {
+			warnings = append(warnings, fmt.Sprintf("skipped usb memory patch for %q: the footswitch cannot realize USB memory blobs (recall the scene live instead)", logical))
+		}
 
 		for _, name := range names {
 			c, ok := def.Control(name)
@@ -166,7 +185,7 @@ func (e *Engine) CompileFootswitchScene(sc *scene.Scene, opts FootswitchCompileO
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s.%s: %w", logical, name, err)
 			}
-			events, err := renderControl(def, c, b.Channel, resolved)
+			events, err := renderControl(def, c, d.ControlChannel(), resolved)
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s.%s: %w", logical, name, err)
 			}

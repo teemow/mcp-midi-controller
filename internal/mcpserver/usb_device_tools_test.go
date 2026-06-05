@@ -28,8 +28,8 @@ func ip(n int) *int { return &n }
 
 // rolandProfileDef is an SL-2-like definition carrying a USB profile with a
 // system region, a repeated patches region, and a couple of params.
-func rolandProfileDef() *device.Definition {
-	return &device.Definition{
+func rolandProfileDef() *device.DeviceType {
+	return &device.DeviceType{
 		ID:        "sl-2",
 		Name:      "Boss SL-2",
 		Transport: "blemidi",
@@ -53,8 +53,8 @@ func rolandProfileDef() *device.Definition {
 
 // neuroProfileDef is an EQ2-like definition with a HID profile: a repeated
 // presets region and no params.
-func neuroProfileDef() *device.Definition {
-	return &device.Definition{
+func neuroProfileDef() *device.DeviceType {
+	return &device.DeviceType{
 		ID:        "eq-2",
 		Name:      "Source Audio EQ2",
 		Transport: "blemidi",
@@ -203,7 +203,7 @@ func TestUSBWritesAllowedTwoKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		s := &Server{usbAllowWrites: c.global}
-		b := engine.Binding{USB: &engine.USBSurface{Transport: "usbmidi", Writable: c.writable}}
+		b := engine.Device{Connections: map[string]engine.Connection{"usbmidi": {Writable: c.writable}}}
 		if got := s.usbWritesAllowed(b); got != c.want {
 			t.Fatalf("usbWritesAllowed(global=%v, writable=%v) = %v, want %v", c.global, c.writable, got, c.want)
 		}
@@ -216,7 +216,7 @@ func TestUSBWriteGateBlocksRealWrite(t *testing.T) {
 		t.Fatalf("add def: %v", err)
 	}
 	eng := engine.New(reg, fakeUSBMIDI{})
-	if err := eng.Bind(engine.Binding{Logical: "sl2usb", DeviceID: "sl-2", USB: &engine.USBSurface{Transport: "usbmidi", Endpoint: "SL-2", Writable: true}}); err != nil {
+	if err := eng.Bind(engine.Device{Name: "sl2usb", DeviceID: "sl-2", Connections: map[string]engine.Connection{"usbmidi": {Endpoint: "SL-2", Writable: true}}}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	// Writes are NOT globally enabled, so a real usb_write is refused even
@@ -249,7 +249,7 @@ func TestBindDeviceRoutesUSB(t *testing.T) {
 	s := New(eng, WithUSBAllowWrites(true))
 
 	res := call(t, s.handleBindDevice, map[string]any{
-		"logical": "sl2usb", "endpoint": "SL-2", "device": "sl-2",
+		"name": "sl2usb", "endpoint": "SL-2", "device": "sl-2",
 		"transport": "usbmidi", "writable": true,
 	})
 	if res.IsError {
@@ -258,8 +258,8 @@ func TestBindDeviceRoutesUSB(t *testing.T) {
 	if !strings.Contains(resultText(res), "USB tool family") {
 		t.Fatalf("bind message should mention the USB tool family: %s", resultText(res))
 	}
-	if !eng.IsUSBBinding("sl2usb") {
-		t.Fatalf("sl2usb should be a USB binding")
+	if !eng.IsUSBDevice("sl2usb") {
+		t.Fatalf("sl2usb should be a USB device")
 	}
 }
 
@@ -278,15 +278,15 @@ func TestBindDeviceMergesSurfaces(t *testing.T) {
 
 	// 1) control surface over BLE.
 	res := call(t, s.handleBindDevice, map[string]any{
-		"logical": "sl2", "endpoint": "BLE:AA", "channel": 5, "device": "sl-2",
+		"name": "sl2", "endpoint": "BLE:AA", "channel": 5, "device": "sl-2",
 	})
 	if res.IsError {
 		t.Fatalf("control bind failed: %s", resultText(res))
 	}
 
-	// 2) USB editor surface over usbmidi, SAME logical — must merge, not replace.
+	// 2) USB editor surface over usbmidi, SAME name — must merge, not replace.
 	res = call(t, s.handleBindDevice, map[string]any{
-		"logical": "sl2", "endpoint": "SL-2", "device": "sl-2", "transport": "usbmidi",
+		"name": "sl2", "endpoint": "SL-2", "device": "sl-2", "transport": "usbmidi",
 	})
 	if res.IsError {
 		t.Fatalf("usb bind failed: %s", resultText(res))
@@ -295,21 +295,22 @@ func TestBindDeviceMergesSurfaces(t *testing.T) {
 		t.Fatalf("usb bind should note it sits alongside the control tool: %s", resultText(res))
 	}
 
-	b, ok := eng.BindingFor("sl2")
+	d, ok := eng.DeviceFor("sl2")
 	if !ok {
 		t.Fatalf("sl2 not bound")
 	}
-	if !b.HasControl() || b.Endpoint != "BLE:AA" || b.Channel != 5 {
-		t.Fatalf("control surface lost after USB merge: %+v", b)
+	if !d.HasControl() || d.ControlEndpoint() != "BLE:AA" || d.ControlChannel() != 5 {
+		t.Fatalf("control connection lost after USB merge: %+v", d)
 	}
-	if !b.HasUSB() || b.USB.Transport != "usbmidi" || b.USB.Endpoint != "SL-2" {
-		t.Fatalf("usb surface missing/wrong after merge: %+v", b)
+	usbTr, usbConn, ok := d.USBConnection()
+	if !ok || usbTr != "usbmidi" || usbConn.Endpoint != "SL-2" {
+		t.Fatalf("usb connection missing/wrong after merge: %+v", d)
 	}
 
-	// list_bindings should show one logical carrying both surfaces.
-	res = call(t, s.handleListBindings, map[string]any{})
+	// list_devices should show one device carrying both connections.
+	res = call(t, s.handleListDevices, map[string]any{})
 	txt := resultText(res)
 	if !strings.Contains(txt, "endpoint=\"BLE:AA\"") || !strings.Contains(txt, "usb=usbmidi") {
-		t.Fatalf("list_bindings should show both surfaces for sl2: %s", txt)
+		t.Fatalf("list_devices should show both connections for sl2: %s", txt)
 	}
 }

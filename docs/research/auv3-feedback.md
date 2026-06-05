@@ -153,7 +153,7 @@ functionality?"**:
 Like `widi-probe` / `usb-probe` it is a **utility spike, not part of the shipped
 daemon**. Its output is what turns the "convention we invented" tables in
 `docs/research/auv3-plugins.md` into **measured** tables, and can feed the
-`create_device_definition` / `add_control` authoring tools (generate a YAML
+`create_device_type` / `add_control` authoring tools (generate a YAML
 skeleton from the dumped tree; a human curates names).
 
 **Proposed dump shape** (one file per plugin, consumed by the authoring tools):
@@ -247,8 +247,8 @@ actual parameter. No advantage over the (absent) BLE echo for our purposes.
 - **No daemon transport change for option 1/2.** The probe and session parser
   are off-daemon utilities; their product is verified facts + generated YAML, not
   a new runtime data path.
-- **Authoring tools gain a real source.** `create_device_definition` /
-  `add_control` can ingest an `auv3-probe` dump to scaffold a definition with
+- **Authoring tools gain a real source.** `create_device_type` /
+  `add_control` can ingest an `auv3-probe` dump to scaffold a device type with
   correct ranges/units/enums, instead of starting from a hand-guessed CC block.
 - **`verify_control` honesty.** For blemidi-via-AUM bindings, the echo will be
   `no_feedback` by design; the AUv3 "verify" is the build-time tree/mapping check,

@@ -1,7 +1,7 @@
 # AUM (iPad host) — MIDI control research
 
 Research note for the device definition at
-`internal/device/definitions/aum.yaml`. Scope: what AUM **can be controlled by**
+`internal/device/device-types/aum.yaml`. Scope: what AUM **can be controlled by**
 over MIDI so this MCP server can drive its mixer/transport, and how AUM's MIDI
 mapping system works. AUM is Kymatica's iOS audio mixer / AUv3 + IAA host; this
 server reaches it over **BLE-MIDI** (the iPad's WIDI dongle), so

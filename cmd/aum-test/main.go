@@ -138,8 +138,25 @@ func main() {
 		return
 	}
 
-	b := engine.Binding{Logical: "aum", Endpoint: *endpoint, Channel: *channel, DeviceID: "aum"}
-	if err := eng.Bind(b); err != nil {
+	// The AUM mixer device type is no longer bundled (it is session-derived now,
+	// see internal/aum.MixerDeviceType). For this BLE-direct harness, register a
+	// tiny standalone "aum" type carrying just the transport toggle on blemidi so
+	// the convenience --control path keeps working without a session.
+	cc20 := 20
+	aumType := &device.DeviceType{
+		ID:        "aum",
+		Name:      "AUM (harness)",
+		Transport: "blemidi",
+		Controls: []device.Control{{
+			Name: "transport", Type: device.ControlCC, CC: &cc20,
+			Value: device.ValueSpec{Type: device.ValueEnum, Values: map[string]int{"stop": 0, "start": 127}},
+		}},
+	}
+	if err := reg.AddDefinition(aumType); err != nil {
+		log.Fatalf("register aum harness type: %v", err)
+	}
+	d := engine.Device{Name: "aum", DeviceID: "aum", Endpoint: *endpoint, Channel: *channel}
+	if err := eng.Bind(d); err != nil {
 		log.Fatalf("bind aum: %v", err)
 	}
 	log.Printf("bound aum -> endpoint %s, wire channel %d (human %d)", *endpoint, *channel, *channel+1)

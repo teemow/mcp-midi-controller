@@ -11,9 +11,8 @@ export function resultText(res: CallToolResult): string {
 }
 
 // structured returns the machine-readable structuredContent of a result, typed
-// as the caller expects. The rig-reasoning read tools (list_devices,
-// list_bindings, list_definitions, discover_endpoints, list_scenes, ...) emit
-// it.
+// as the caller expects. The read tools (list_devices, describe_device,
+// discover_endpoints, list_scenes, read_state, ...) emit it.
 export function structured<T = unknown>(res: CallToolResult): T | undefined {
   return res.structuredContent as T | undefined;
 }

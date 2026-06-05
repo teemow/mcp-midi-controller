@@ -20,7 +20,7 @@ const (
 )
 
 // Event is a fully-rendered control change ready to emit on a transport. The
-// engine renders a (Definition, Control, value) tuple into one or more Events.
+// engine renders a (DeviceType, Control, value) tuple into one or more Events.
 type Event struct {
 	Kind EventKind
 

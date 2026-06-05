@@ -14,7 +14,7 @@ func writableUSBEngine(t *testing.T) (*Engine, *fakeUSBTransport) {
 	t.Helper()
 	eng, ft := newUSBTestEngine(t)
 	eng.SetUSBAllowWrites(true)
-	if err := eng.Bind(Binding{Logical: "sl2usb", DeviceID: "sl2test", USB: &USBSurface{Transport: "usbmidi", Endpoint: "USB1", Writable: true}}); err != nil {
+	if err := eng.Bind(Device{Name: "sl2usb", DeviceID: "sl2test", Connections: map[string]Connection{"usbmidi": {Endpoint: "USB1", Writable: true}}}); err != nil {
 		t.Fatalf("rebind writable: %v", err)
 	}
 	return eng, ft
@@ -112,7 +112,7 @@ func TestRecallSceneUSBPatch(t *testing.T) {
 	// Gate closed: the rest of the scene recalls, the blob is skipped with a
 	// warning instead of aborting.
 	eng, ft := newUSBTestEngine(t)
-	sc := &scene.Scene{Name: "t", USB: map[string]scene.USBPatch{"sl2usb": patch}}
+	sc := &scene.Scene{Name: "t", Devices: map[string]map[string]any{"sl2usb": {scene.USBPatchControl: patch}}}
 	warnings, err := eng.RecallScene(context.Background(), sc, scene.Additive)
 	if err != nil {
 		t.Fatalf("recall (gate closed): %v", err)
@@ -140,7 +140,7 @@ func TestRecallSceneUSBPatch(t *testing.T) {
 
 func TestRecallSceneUSBPatchUnbound(t *testing.T) {
 	eng, _ := newUSBTestEngine(t)
-	sc := &scene.Scene{Name: "t", USB: map[string]scene.USBPatch{"ghost": {Hex: "01"}}}
+	sc := &scene.Scene{Name: "t", Devices: map[string]map[string]any{"ghost": {scene.USBPatchControl: scene.USBPatch{Hex: "01"}}}}
 	if _, err := eng.RecallScene(context.Background(), sc, scene.Additive); err == nil {
 		t.Fatalf("expected an error for a usb patch referencing an unbound device")
 	}

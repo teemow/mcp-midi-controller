@@ -28,14 +28,14 @@ func (s *Server) registerSceneTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "save_scene",
-		Description: "Snapshot the current desired-state (last values sent) as a named scene. Pass devices to restrict the snapshot to a subset of logical devices.",
+		Description: "Snapshot the current desired-state (last values sent) as a named scene. Pass devices to restrict the snapshot to a subset of devices (by name).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"devices":{"type":"array","items":{"type":"string"}}},"required":["name"]}`),
 	}, s.handleSaveScene)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "recall_scene",
-		Description: "Replay a saved scene live: program changes first, per-device settle delay, then the remaining CC/OSC events. mode=additive (default) layers over current state; mode=exact resets each referenced device to exactly the scene's values. via=auto (default) sends through the ProbeMidiBrain LAN channel when a brain is connected (the brain re-emits inside AUM, laptop-free) and falls back to the hardware transports otherwise; via=brain forces the brain (errors if none); via=hardware forces the device transports (BLE/OSC). USB patch blobs only recall over hardware.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"mode":{"type":"string","enum":["additive","exact"]},"via":{"type":"string","enum":["auto","brain","hardware"]}},"required":["name"]}`),
+		Description: "Replay a saved scene live: program changes first, per-device settle delay, then the remaining CC/OSC events. mode=additive (default) layers over current state; mode=exact resets each referenced device to exactly the scene's values. Each device routes over the transport its device type speaks: an AUv3/AUM device (transport auv3midi) reaches the ProbeMidiBrain LAN channel (the brain re-emits inside AUM, laptop-free) when a brain is connected; hardware devices reach BLE/OSC/USB. USB patch blobs recall over the device's USB connection.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"mode":{"type":"string","enum":["additive","exact"]}},"required":["name"]}`),
 	}, s.handleRecallScene)
 
 	s.mcp.AddTool(&mcp.Tool{
@@ -43,8 +43,8 @@ func (s *Server) registerSceneTools() {
 		Description: "Capture a USB device's memory blob into a scene (the patch-level part of a scene): " +
 			"reads device state the control surface cannot express (e.g. a Boss SL-2 slicer pattern/type) over " +
 			"USB and stores it in the named scene, creating the scene if it does not exist. On recall the blob is " +
-			"written back over USB (gated by usb_allow_writes + a writable binding). device is a USB-bound logical " +
-			"device; with region set, addr is an offset into that region and index selects a repeated block. Set " +
+			"written back over USB (gated by usb_allow_writes + a writable USB connection). device is a USB-capable device's " +
+			"name; with region set, addr is an offset into that region and index selects a repeated block. Set " +
 			"store to also persist the recalled patch into that stored slot (Roland PATCH_WRITE).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"device":{"type":"string"},"region":{"type":"string"},"index":{"type":"integer"},"addr":{"type":["integer","string"]},"size":{"type":"integer"},"store":{"type":"integer"}},"required":["name","device","size"]}`),
 	}, s.handleCaptureUSBPatch)
@@ -53,7 +53,7 @@ func (s *Server) registerSceneTools() {
 		Name: "export_scene_to_footswitch",
 		Description: "Compile a saved scene into the 'three' footswitch's on-device schema " +
 			"(program-change before CC, per-device settle baked in; OSC devices such as the " +
-			"X32 become 'osc' events with the UDP target baked from their binding) and " +
+			"X32 become 'osc' events with the UDP target baked from their device) and " +
 			"optionally push it over HTTP. Omit footswitch (or set dry_run) to preview the " +
 			"compiled JSON without sending.",
 		InputSchema: json.RawMessage(`{
@@ -111,7 +111,6 @@ func (s *Server) handleRecallScene(ctx context.Context, req *mcp.CallToolRequest
 	var args struct {
 		Name string `json:"name"`
 		Mode string `json:"mode"`
-		Via  string `json:"via"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -128,63 +127,37 @@ func (s *Server) handleRecallScene(ctx context.Context, req *mcp.CallToolRequest
 	default:
 		return textResult("/mode: must be additive or exact", true), nil
 	}
-	via := strings.ToLower(strings.TrimSpace(args.Via))
-	switch via {
-	case "", "auto", "brain", "hardware":
-	default:
-		return textResult("/via: must be auto, brain or hardware", true), nil
-	}
 
 	sc, err := s.scenes.Load(args.Name)
 	if err != nil {
 		return textResult(fmt.Sprintf("cannot load scene %q: %v", args.Name, err), true), nil
 	}
 
-	// Decide the path. "auto" prefers the brain when one is connected, else
-	// hardware; "brain"/"hardware" force it. The brain path renders the scene to
-	// wire events and pushes them through the LAN control channel (the brain
-	// re-emits inside AUM); the hardware path drives each device's transport.
-	useBrain := via == "brain"
-	if via == "" || via == "auto" {
-		useBrain = s.brainConnected()
-	}
-
-	var (
-		warnings []string
-		path     string
-	)
-	if useBrain {
-		warnings, err = s.eng.RecallSceneVia(ctx, sc, engine.RecallOptions{Mode: mode, Sink: s.brainEventSink()})
-		path = "brain channel"
-		// On an explicit via=brain with no brain, surface a clear error.
-		if err != nil && via == "brain" {
-			return textResult("recall_scene (brain) failed: "+err.Error(), true), nil
-		}
-		// On auto, a brain send error (e.g. it dropped mid-recall) falls back to
-		// hardware so the recall still completes.
-		if err != nil {
-			warnings = append(warnings, "brain recall failed ("+err.Error()+"); fell back to hardware")
-			useBrain = false
-		}
-	}
-	if !useBrain {
-		warnings2, herr := s.eng.RecallScene(ctx, sc, mode)
-		warnings = append(warnings, warnings2...)
-		if herr != nil {
-			return textResult("recall_scene failed: "+herr.Error(), true), nil
-		}
-		path = "hardware transports"
+	// Each device routes over the transport its device type speaks: an auv3midi
+	// device reaches the brain channel (the brain re-emits inside AUM), hardware
+	// devices reach BLE/OSC/USB. There is no per-recall override.
+	warnings, err := s.eng.RecallScene(ctx, sc, mode)
+	if err != nil {
+		return textResult("recall_scene failed: "+err.Error(), true), nil
 	}
 
 	warn := ""
 	if len(warnings) > 0 {
 		warn = "\nwarnings:\n  - " + strings.Join(warnings, "\n  - ")
 	}
-	usbNote := ""
-	if len(sc.USB) > 0 {
-		usbNote = fmt.Sprintf(" + %d usb patch(es)", len(sc.USB))
+	usbCount := 0
+	for _, controls := range sc.Devices {
+		for _, v := range controls {
+			if _, ok := scene.AsUSBPatch(v); ok {
+				usbCount++
+			}
+		}
 	}
-	return textResult(fmt.Sprintf("recalled scene %q (%s) onto %d device(s) via %s%s%s", sc.Name, mode, len(sc.Devices), path, usbNote, warn), false), nil
+	usbNote := ""
+	if usbCount > 0 {
+		usbNote = fmt.Sprintf(" + %d usb patch(es)", usbCount)
+	}
+	return textResult(fmt.Sprintf("recalled scene %q (%s) onto %d device(s)%s%s", sc.Name, mode, len(sc.Devices), usbNote, warn), false), nil
 }
 
 func (s *Server) handleCaptureUSBPatch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -221,14 +194,19 @@ func (s *Server) handleCaptureUSBPatch(ctx context.Context, req *mcp.CallToolReq
 	patch.Store = args.Store
 
 	// Merge into the existing scene if there is one, otherwise start a new one.
+	// The blob is stored as one parameter value of the device (under the
+	// reserved USBPatchControl name), not a separate transport-named section.
 	sc, err := s.scenes.Load(args.Name)
 	if err != nil {
 		sc = &scene.Scene{Name: args.Name}
 	}
-	if sc.USB == nil {
-		sc.USB = map[string]scene.USBPatch{}
+	if sc.Devices == nil {
+		sc.Devices = map[string]map[string]any{}
 	}
-	sc.USB[args.Device] = patch
+	if sc.Devices[args.Device] == nil {
+		sc.Devices[args.Device] = map[string]any{}
+	}
+	sc.Devices[args.Device][scene.USBPatchControl] = patch
 	if err := s.scenes.Save(sc); err != nil {
 		return textResult("could not persist scene: "+err.Error(), true), nil
 	}

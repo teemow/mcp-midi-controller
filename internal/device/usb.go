@@ -9,7 +9,7 @@ import (
 // USBProfile describes a device's USB editor/readback surface, alongside (and
 // independent of) the BLE/OSC control surface in Controls. It pairs a protocol
 // codec (Go, by name) with a declarative address/parameter map (this struct).
-// One Definition can carry both a control surface and a USB profile, so a single
+// One DeviceType can carry both a control surface and a USB profile, so a single
 // device serves the BLE binding and the USB read/write binding (see
 // docs/usb-tools.md). A nil USB means the device has no USB surface.
 //
@@ -21,7 +21,7 @@ type USBProfile struct {
 	Protocol string `yaml:"protocol"`
 
 	// Transport is the backend that moves frames: usbmidi (ALSA rawmidi) or
-	// usbhid (hidraw). It is distinct from the Definition's control Transport.
+	// usbhid (hidraw). It is distinct from the DeviceType's control Transport.
 	Transport string `yaml:"transport"`
 
 	// Endpoint is an optional default endpoint hint (an ALSA port-name substring

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useMcp } from "./mcp/McpProvider";
 import { Oscilloscope } from "./components/Oscilloscope";
 import { DevicesTab } from "./tabs/DevicesTab";
-import { DefinitionsTab } from "./tabs/DefinitionsTab";
 import { ControlTab } from "./tabs/ControlTab";
 import { WidiTab } from "./tabs/WidiTab";
 import { ScenesTab } from "./tabs/ScenesTab";
@@ -14,7 +13,6 @@ import { DocsTab } from "./tabs/DocsTab";
 
 const TABS = [
   { id: "devices", label: "Devices", el: <DevicesTab /> },
-  { id: "definitions", label: "Definitions", el: <DefinitionsTab /> },
   { id: "control", label: "Control", el: <ControlTab /> },
   { id: "widi", label: "WIDI", el: <WidiTab /> },
   { id: "scenes", label: "Scenes", el: <ScenesTab /> },

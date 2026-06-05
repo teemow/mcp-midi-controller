@@ -18,7 +18,7 @@ import (
 // definition lacks the address its type needs, or a parametric control invoked
 // without a number) and are wrapped as *device.ValidationError so the MCP layer
 // surfaces them on the offending value path.
-func renderControl(def *device.Definition, c *device.Control, channel int, r device.Resolved) ([]transport.Event, error) {
+func renderControl(def *device.DeviceType, c *device.Control, channel int, r device.Resolved) ([]transport.Event, error) {
 	ch := channel & 0x0F
 	switch c.Type {
 	case device.ControlCC:
@@ -36,6 +36,9 @@ func renderControl(def *device.Definition, c *device.Control, channel int, r dev
 		prog := r.Int
 		if c.Program != nil && !c.Parametric {
 			prog = *c.Program
+		}
+		if c.Bank {
+			return bankProgramEvents(ch, prog)
 		}
 		p, err := dataByte(prog)
 		if err != nil {
@@ -115,6 +118,28 @@ func addressNumber(c *device.Control, r device.Resolved, kind string, max int) (
 		return 0, &device.ValidationError{Pointer: ptr, Msg: fmt.Sprintf("%s number must be in [0, %d]", kind, max)}
 	}
 	return num, nil
+}
+
+// bankProgramEvents realizes a banked program change: a 14-bit preset index is
+// split into a Bank Select pair (CC 0 = bank MSB, CC 32 = bank LSB, where bank =
+// index/128) followed by the Program Change (index % 128). This lets one
+// program_change control address more than 128 presets (e.g. a synth with
+// hundreds of factory presets), which a bare 7-bit PC cannot reach.
+func bankProgramEvents(ch, index int) ([]transport.Event, error) {
+	// A full Bank Select is 14-bit (MSB + LSB) and the Program Change adds 7
+	// more bits, so the addressable range is 0..(2^21 - 1). Capping at the
+	// 14-bit bank keeps the MSB meaningful rather than always zero.
+	if index < 0 || index > 0x1FFFFF {
+		return nil, &device.ValidationError{Pointer: "/value", Msg: "banked program value must be in [0, 2097151] (14-bit bank + 7-bit program)"}
+	}
+	bank := index >> 7
+	program := index & 0x7F
+	status := statusByte(0xB0, ch)
+	return []transport.Event{
+		midiEvent(ch, []byte{status, 0, byte((bank >> 7) & 0x7F)}),
+		midiEvent(ch, []byte{status, 32, byte(bank & 0x7F)}),
+		midiEvent(ch, []byte{statusByte(0xC0, ch), byte(program)}),
+	}, nil
 }
 
 // nrpnEvents builds the standard NRPN sequence: select the parameter (CC 99/98)

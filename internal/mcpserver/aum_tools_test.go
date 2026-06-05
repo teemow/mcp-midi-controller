@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,33 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/transport"
 )
+
+// fakeAUv3 is a no-op transport claiming the "auv3midi" id, so the AUM import
+// auto-create path (which binds devices over auv3midi) finds a registered
+// transport. Binding only validates the transport is present; it never sends.
+type fakeAUv3 struct{}
+
+func (fakeAUv3) ID() string                                             { return "auv3midi" }
+func (fakeAUv3) Discover(context.Context) ([]transport.Endpoint, error) { return nil, nil }
+func (fakeAUv3) Pair(context.Context, string) error                     { return nil }
+func (fakeAUv3) Connect(context.Context, string) error                  { return nil }
+func (fakeAUv3) Disconnect(context.Context, string) error               { return nil }
+func (fakeAUv3) Send(context.Context, string, transport.Event) error    { return nil }
+func (fakeAUv3) Listen(context.Context, string) (<-chan transport.Event, error) {
+	ch := make(chan transport.Event)
+	return ch, nil
+}
+
+// newAUMServerWithBrain is newAUMServer plus a registered auv3midi transport, so
+// import_aum_session can auto-create the AUM session rig (mixer + nodes).
+func newAUMServerWithBrain(t *testing.T) *Server {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	return New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}))
+}
 
 // stageProbe writes a minimal AUv3 probe dump into the staging dir so the
 // author/import tools can source/match a node from it.
@@ -191,6 +218,112 @@ func TestAUMImportProposesBindings(t *testing.T) {
 	}
 	if !strings.Contains(text, "channel=3") {
 		t.Fatalf("import did not infer the channel:\n%s", text)
+	}
+}
+
+func TestAUMImportAutoCreatesDevices(t *testing.T) {
+	s := newAUMServerWithBrain(t)
+	stageProbe(t)
+
+	// Author a session: Gitarre (hosting the probe) + Master, convention ch 3.
+	if res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"out_id": "rig2",
+		"title":  "Rig Two",
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+		"convention": map[string]any{"channel": 3, "start_cc": 30},
+	}); res.IsError {
+		t.Fatalf("author failed: %s", resultText(res))
+	}
+
+	res := call(t, s.handleImportAUMSession, map[string]any{"session_id": "rig2"})
+	if res.IsError {
+		t.Fatalf("import failed: %s", resultText(res))
+	}
+	text := resultText(res)
+	if !strings.Contains(text, "auto-created") {
+		t.Fatalf("import did not auto-create:\n%s", text)
+	}
+
+	// The session-derived mixer device was created (bound on wire ch 2 = send 3).
+	mixer, ok := s.eng.DeviceFor("aum")
+	if !ok {
+		t.Fatalf("mixer device not created:\n%s", text)
+	}
+	if mixer.DeviceID != "aum_rig2" {
+		t.Fatalf("mixer device type = %q, want aum_rig2", mixer.DeviceID)
+	}
+	if mixer.ControlChannel() != 2 {
+		t.Fatalf("mixer wire channel = %d, want 2", mixer.ControlChannel())
+	}
+	if mixer.ControlEndpoint() != "brain" {
+		t.Fatalf("mixer endpoint = %q, want brain", mixer.ControlEndpoint())
+	}
+	if _, ok := s.eng.Registry().Get("aum_rig2"); !ok {
+		t.Fatal("session-derived mixer device type not registered")
+	}
+
+	// The hosted node became a device on its matrix-derived channel (wire 2).
+	node, ok := s.eng.DeviceFor("gitarre")
+	if !ok {
+		t.Fatalf("node device not created:\n%s", text)
+	}
+	if node.DeviceID != "gtr1" || node.ControlChannel() != 2 {
+		t.Fatalf("node device = %q ch %d, want gtr1 ch 2", node.DeviceID, node.ControlChannel())
+	}
+	if _, ok := s.eng.Registry().Get("gtr1"); !ok {
+		t.Fatal("node device type (gtr1) not registered")
+	}
+
+	// Both generated device types were staged to disk, and the rig persisted.
+	for _, id := range []string{"aum_rig2", "gtr1"} {
+		if _, err := os.Stat(filepath.Join(config.DeviceTypesDir(), id+".yaml")); err != nil {
+			t.Fatalf("device type %q not staged: %v", id, err)
+		}
+	}
+	if _, err := os.Stat(config.DevicesPath()); err != nil {
+		t.Fatalf("devices.yaml not persisted: %v", err)
+	}
+
+	// The generated mixer type carries session-derived strip controls named from
+	// the strip title (Gitarre) plus the global transport block.
+	mt, _ := s.eng.Registry().Get("aum_rig2")
+	if _, ok := mt.Control("gitarre_level"); !ok {
+		t.Fatal("mixer type missing gitarre_level control")
+	}
+	if _, ok := mt.Control("transport"); !ok {
+		t.Fatal("mixer type missing transport control")
+	}
+}
+
+func TestAUMImportProposeOnlyDoesNotCreate(t *testing.T) {
+	s := newAUMServerWithBrain(t)
+	stageProbe(t)
+
+	if res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"out_id": "rig3",
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+		"convention": map[string]any{"channel": 3, "start_cc": 30},
+	}); res.IsError {
+		t.Fatalf("author failed: %s", resultText(res))
+	}
+
+	// propose_only must not create anything even when auv3midi is available.
+	res := call(t, s.handleImportAUMSession, map[string]any{"session_id": "rig3", "propose_only": true})
+	if res.IsError {
+		t.Fatalf("import failed: %s", resultText(res))
+	}
+	text := resultText(res)
+	if !strings.Contains(text, "probe=gtr1") || !strings.Contains(text, "channel=3") {
+		t.Fatalf("propose_only output missing proposal:\n%s", text)
+	}
+	if len(s.eng.Devices()) != 0 {
+		t.Fatalf("propose_only created %d device(s), want 0", len(s.eng.Devices()))
 	}
 }
 

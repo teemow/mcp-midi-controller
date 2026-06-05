@@ -98,7 +98,7 @@ func newTestEngine(t *testing.T) (*Engine, *fakeTransport) {
 	}
 	ft := newFakeTransport()
 	eng := New(reg, ft)
-	if err := eng.Bind(Binding{Logical: "amp", Endpoint: "EP1", Channel: 4, DeviceID: "testdev"}); err != nil {
+	if err := eng.Bind(Device{Name: "amp", DeviceID: "testdev", Endpoint: "EP1", Channel: 4}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	return eng, ft
@@ -143,7 +143,7 @@ func TestReverseMapCCAndEnumAndPC(t *testing.T) {
 
 	// CC 17 on channel 4 -> amp.level = 100 (range, stays an int).
 	obs := eng.reverseMap(decodeInbound("fake", "EP1", transport.Event{Kind: transport.MIDIEvent, Data: []byte{0xB4, 17, 100}}))
-	if len(obs) != 1 || obs[0].Logical != "amp" || obs[0].Control != "level" || obs[0].Value != 100 {
+	if len(obs) != 1 || obs[0].Device != "amp" || obs[0].Control != "level" || obs[0].Value != 100 {
 		t.Fatalf("level obs = %+v", obs)
 	}
 
@@ -291,7 +291,7 @@ func TestReverseMapOSCFloatAndInt(t *testing.T) {
 		t.Fatalf("kind = %q, want osc", in.Kind)
 	}
 	obs := eng.reverseMap(in)
-	if len(obs) != 1 || obs[0].Logical != "x32" || obs[0].Control != "ch01_fader" {
+	if len(obs) != 1 || obs[0].Device != "x32" || obs[0].Control != "ch01_fader" {
 		t.Fatalf("fader obs = %+v", obs)
 	}
 	if f, ok := obs[0].Value.(float32); !ok || f != 0.42 {

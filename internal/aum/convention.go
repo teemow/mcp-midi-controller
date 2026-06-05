@@ -6,7 +6,11 @@ package aum
 // report whether a session is "wired to the convention" or not. The ordinal /
 // master-strip rules mirror applyConvention so author→diff round-trips agree.
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/teemow/mcp-midi-controller/internal/device"
+)
 
 // ConventionCheck is the per-target result of comparing one channel-control
 // mapping against the mixer CC convention. ActualCC/Channel are -1 when the
@@ -87,7 +91,7 @@ func (s *Session) CheckMixerConvention() ConventionReport {
 		ordinal++
 		coll := fmt.Sprintf("Channels/chan%d/Channel controls", i)
 		for _, ctl := range audioChannelControls {
-			cc, ok := conventionMixerCC(ordinal, ctl.name)
+			cc, ok := device.ConventionMixerCC(ordinal, ctl.name)
 			if !ok {
 				continue
 			}
@@ -110,13 +114,13 @@ func (s *Session) CheckMixerConvention() ConventionReport {
 // bar, tempo value, metronome on/off) — now corpus-confirmed and catalogued as
 // placeholders, but intentionally left unwired by applyConvention — are
 // excluded here too, so "expected" stays equal to what BuildSession actually
-// wires (conventionTransportCC returns ok=false for them).
+// wires (device.ConventionTransportCC returns ok=false for them).
 func (s *Session) CheckConvention() ConventionReport {
 	rep := s.CheckMixerConvention()
 
 	actual := s.actualMappings()
 	for _, target := range transportTargets {
-		cc, ok := conventionTransportCC(target)
+		cc, ok := device.ConventionTransportCC(target)
 		if !ok {
 			continue
 		}

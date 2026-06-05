@@ -1,17 +1,28 @@
 // Mirror of the daemon's structuredContent view shapes (see internal/mcpserver
-// rig_tools.go / tools.go). Only the fields the SPA consumes are typed.
+// rig_tools.go / tools.go). The surface speaks only the three concepts: a
+// device (an instance in the rig), a device type (a kind of gear), and a scene.
+// Only the fields the SPA consumes are typed.
 
-export interface BindingView {
-  logical: string;
-  device: string;
-  device_name?: string;
+export interface ConnectionView {
+  transport: string;
   endpoint?: string;
   channel?: number;
+  writable?: boolean;
+  usb?: boolean;
+}
+
+export interface DeviceView {
+  name: string;
+  type: string;
+  type_name?: string;
   transport?: string;
+  endpoint?: string;
+  channel?: number;
   usb: boolean;
   usb_transport?: string;
   usb_endpoint?: string;
   writable?: boolean;
+  connections?: ConnectionView[];
 }
 
 export interface EndpointView {
@@ -22,13 +33,15 @@ export interface EndpointView {
   connected: boolean;
 }
 
-export interface DefinitionSummary {
+export interface DeviceTypeSummary {
   id: string;
   name: string;
   manufacturer?: string;
   transport: string;
   controls: number;
   usb: boolean;
+  // known reports whether a device in the rig already uses this type.
+  known: boolean;
 }
 
 export interface ValueSpecView {
@@ -53,7 +66,7 @@ export interface ControlView {
   value: ValueSpecView;
 }
 
-export interface DefinitionView {
+export interface DeviceTypeDetail {
   id: string;
   name: string;
   manufacturer?: string;

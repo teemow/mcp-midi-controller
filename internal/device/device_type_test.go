@@ -5,9 +5,9 @@ import "testing"
 func TestDefinitionValidateID(t *testing.T) {
 	good := []string{"md-200", "eq2", "fabfilter_pro_q", "x32", "a"}
 	bad := []string{"", "../etc/passwd", "a/b", "a..b", "..", "Up", "a b", "a.b", "-leading"}
-	mk := func(id string) Definition {
+	mk := func(id string) DeviceType {
 		cc := 1
-		return Definition{ID: id, Transport: "blemidi", Controls: []Control{
+		return DeviceType{ID: id, Transport: "blemidi", Controls: []Control{
 			{Name: "c", Type: ControlCC, CC: &cc, Value: ValueSpec{Type: ValueRange}},
 		}}
 	}
@@ -31,71 +31,71 @@ func TestDefinitionValidateAddressing(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		def     Definition
+		def     DeviceType
 		wantErr bool
 	}{
 		{
 			name: "good cc",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "level", Type: ControlCC, CC: cc(17), Value: ValueSpec{Type: ValueRange}},
 			}},
 		},
 		{
 			name: "cc missing number",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "level", Type: ControlCC, Value: ValueSpec{Type: ValueRange}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "parametric cc needs no number",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "cc", Type: ControlCC, Parametric: true, Value: ValueSpec{Type: ValueRange}},
 			}},
 		},
 		{
 			name: "osc missing address",
-			def: Definition{ID: "d", Transport: "osc", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "osc", Controls: []Control{
 				{Name: "fader", Type: ControlOSC, Value: ValueSpec{Type: ValueFloat}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "sysex missing template",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "x", Type: ControlSysEx, Value: ValueSpec{Type: ValueRange}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "enum without values",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "sw", Type: ControlCC, CC: cc(1), Value: ValueSpec{Type: ValueEnum}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "min greater than max",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "x", Type: ControlCC, CC: cc(1), Value: ValueSpec{Type: ValueRange, Min: bound(100), Max: bound(10)}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "unknown control type",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "x", Type: "weird", Value: ValueSpec{Type: ValueRange}},
 			}},
 			wantErr: true,
 		},
 		{
 			name:    "missing transport",
-			def:     Definition{ID: "d"},
+			def:     DeviceType{ID: "d"},
 			wantErr: true,
 		},
 		{
 			name: "duplicate control names",
-			def: Definition{ID: "d", Transport: "blemidi", Controls: []Control{
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
 				{Name: "x", Type: ControlCC, CC: cc(1), Value: ValueSpec{Type: ValueRange}},
 				{Name: "x", Type: ControlCC, CC: cc(2), Value: ValueSpec{Type: ValueRange}},
 			}},
@@ -119,7 +119,7 @@ func TestRegistryAddDefinition(t *testing.T) {
 	r := NewRegistry()
 
 	cc := 17
-	good := &Definition{ID: "newdev", Name: "New Device", Transport: "blemidi", Controls: []Control{
+	good := &DeviceType{ID: "newdev", Name: "New Device", Transport: "blemidi", Controls: []Control{
 		{Name: "level", Type: ControlCC, CC: &cc, Value: ValueSpec{Type: ValueRange}},
 	}}
 	if err := r.AddDefinition(good); err != nil {
@@ -131,7 +131,7 @@ func TestRegistryAddDefinition(t *testing.T) {
 	}
 
 	// Invalid definitions are rejected and not inserted.
-	bad := &Definition{ID: "baddev", Transport: "blemidi", Controls: []Control{
+	bad := &DeviceType{ID: "baddev", Transport: "blemidi", Controls: []Control{
 		{Name: "x", Type: ControlCC, Value: ValueSpec{Type: ValueRange}}, // cc missing
 	}}
 	if err := r.AddDefinition(bad); err == nil {

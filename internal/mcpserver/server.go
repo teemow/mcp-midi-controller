@@ -55,11 +55,11 @@ type Server struct {
 	// WithUSBAllowWrites and docs/usb-tools.md.
 	usbAllowWrites bool
 
-	// drafts holds in-progress device definitions being authored via
-	// create_device_definition / add_control, keyed by draft (definition) id,
-	// until save_device_definition persists them. Guarded by draftsMu.
+	// drafts holds in-progress device types being authored via
+	// create_device_type / add_control, keyed by draft (device-type) id,
+	// until save_device_type persists them. Guarded by draftsMu.
 	draftsMu sync.Mutex
-	drafts   map[string]*device.Definition
+	drafts   map[string]*device.DeviceType
 
 	// audioSnaps holds labeled audio snapshots for A/B comparison via
 	// capture_audio_snapshot / compare_audio, and lastProbe is the most recent
@@ -113,7 +113,7 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		eng:        eng,
 		mcp:        mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
 		scenes:     scene.NewStore(config.ScenesDir()),
-		drafts:     map[string]*device.Definition{},
+		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},
 	}
 	for _, o := range opts {
@@ -121,8 +121,8 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 	}
 	s.registerGlobalTools()
 	s.registerWIDITools()
-	for _, b := range eng.Bindings() {
-		s.addToolsForBinding(b)
+	for _, d := range eng.Devices() {
+		s.addToolsForDevice(d)
 	}
 	// Stream inbound MIDI (reverse-mapped) to clients as log notifications so an
 	// agent can watch the rig react in real time (hand-tweaks, echoes).
@@ -177,7 +177,7 @@ func (s *Server) NotifyAUv3Probe(id, name string, params, writable int) {
 		"name":     name,
 		"params":   params,
 		"writable": writable,
-		"hint":     "inspect with get_auv3_probe, scaffold a definition with import_auv3_probe",
+		"hint":     "inspect with get_auv3_probe, scaffold a device type with import_auv3_probe",
 	})
 }
 
@@ -193,7 +193,7 @@ func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings 
 		"version":  version,
 		"channels": channels,
 		"mappings": mappings,
-		"hint":     "inspect with get_aum_session, compare with diff_aum_session, propose bindings with import_aum_session",
+		"hint":     "inspect with get_aum_session, compare with diff_aum_session, import devices with import_aum_session",
 	})
 }
 
@@ -244,64 +244,64 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// addToolsForBinding generates every MCP tool a binding's surfaces warrant:
+// addToolsForDevice generates every MCP tool a device's surfaces warrant:
 // control_<logical> when it has a control surface, and the USB editor/readback
-// family when it has a USB surface. A logical that carries both gets both. Each
+// family when it has a USB surface. A device that carries both gets both. Each
 // AddTool emits tools/list_changed.
-func (s *Server) addToolsForBinding(b engine.Binding) {
-	if b.HasControl() {
-		s.AddDeviceTool(b)
+func (s *Server) addToolsForDevice(d engine.Device) {
+	if d.HasControl() {
+		s.AddDeviceTool(d)
 	}
-	if b.HasUSB() {
-		s.AddUSBDeviceTool(b)
+	if d.HasUSB() {
+		s.AddUSBDeviceTool(d)
 	}
 }
 
-// refreshToolsForBinding tears down and re-creates a binding's tools so a
-// re-bind (e.g. adding a USB surface to an existing control binding) lands the
-// current surface set without duplicate registrations. The binding must
-// already be present in the engine (RemoveUSBDeviceTool resolves it).
-func (s *Server) refreshToolsForBinding(b engine.Binding) {
-	s.RemoveDeviceTool(b.Logical)
-	s.RemoveUSBDeviceTool(b.Logical)
-	s.addToolsForBinding(b)
+// refreshToolsForDevice tears down and re-creates a device's tools so a re-bind
+// (e.g. adding a USB surface to an existing control device) lands the current
+// surface set without duplicate registrations. The device must already be
+// present in the engine (RemoveUSBDeviceTool resolves it).
+func (s *Server) refreshToolsForDevice(d engine.Device) {
+	s.RemoveDeviceTool(d.Name)
+	s.RemoveUSBDeviceTool(d.Name)
+	s.addToolsForDevice(d)
 }
 
-// removeToolsForBinding removes every tool a binding could have generated
-// (control_<logical> and the USB family). It must be called while the binding
+// removeToolsForDevice removes every tool a device could have generated
+// (control_<logical> and the USB family). It must be called while the device
 // is still present in the engine, since RemoveUSBDeviceTool resolves the USB
-// tool names from the binding's definition. Removing a tool that was never
+// tool names from the device's definition. Removing a tool that was never
 // registered is a no-op.
-func (s *Server) removeToolsForBinding(logical string) {
+func (s *Server) removeToolsForDevice(logical string) {
 	s.RemoveDeviceTool(logical)
 	s.RemoveUSBDeviceTool(logical)
 }
 
-// usbWritesAllowed reports whether write tools may be exposed for a binding's
+// usbWritesAllowed reports whether write tools may be exposed for a device's
 // USB surface: both the daemon's master gate (usb_allow_writes) and the
 // surface's own writable opt-in must be set. This is the two-key safety model
 // from docs/usb-tools.md — writes change persistent/live device state.
-func (s *Server) usbWritesAllowed(b engine.Binding) bool {
-	return s.usbAllowWrites && b.USBWritable()
+func (s *Server) usbWritesAllowed(d engine.Device) bool {
+	return s.usbAllowWrites && d.USBWritable()
 }
 
-// AddDeviceTool generates and registers control_<logical> for a binding's
+// AddDeviceTool generates and registers control_<logical> for a device's
 // control surface. Adding the tool also emits
 // notifications/tools/list_changed to connected clients. It is a no-op for a
-// binding with no control surface (USB-only).
-func (s *Server) AddDeviceTool(b engine.Binding) {
-	def, ok := s.eng.Registry().Get(b.DeviceID)
+// device with no control surface (USB-only).
+func (s *Server) AddDeviceTool(d engine.Device) {
+	def, ok := s.eng.Registry().Get(d.DeviceID)
 	if !ok {
 		return
 	}
-	if !b.HasControl() {
+	if !d.HasControl() {
 		return
 	}
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "control_" + b.Logical,
-		Description: fmt.Sprintf("Set one or more controls on %q (%s). Use describe_device for ranges/enums.", b.Logical, def.Name),
+		Name:        "control_" + d.Name,
+		Description: fmt.Sprintf("Set one or more controls on %q (%s). Use describe_device for ranges/enums.", d.Name, def.Name),
 		InputSchema: controlToolSchema(def),
-	}, s.handleControl(b.Logical))
+	}, s.handleControl(d.Name))
 }
 
 // RemoveDeviceTool removes control_<logical> (emits list_changed).

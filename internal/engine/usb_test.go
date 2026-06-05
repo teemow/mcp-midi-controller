@@ -123,7 +123,7 @@ func newUSBTestEngine(t *testing.T) (*Engine, *fakeUSBTransport) {
 	}
 	ft := newFakeUSBTransport("usbmidi")
 	eng := New(reg, ft)
-	if err := eng.Bind(Binding{Logical: "sl2usb", DeviceID: "sl2test", USB: &USBSurface{Transport: "usbmidi", Endpoint: "USB1"}}); err != nil {
+	if err := eng.Bind(Device{Name: "sl2usb", DeviceID: "sl2test", Connections: map[string]Connection{"usbmidi": {Endpoint: "USB1"}}}); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	return eng, ft
@@ -166,15 +166,15 @@ func rolandReplier(t *testing.T, data []byte) func(transport.Event) []transport.
 
 func TestUSBBindingKind(t *testing.T) {
 	eng, _ := newUSBTestEngine(t)
-	if !eng.IsUSBBinding("sl2usb") {
-		t.Fatalf("sl2usb should be a USB binding")
+	if !eng.IsUSBDevice("sl2usb") {
+		t.Fatalf("sl2usb should be a USB device")
 	}
 
-	// A control binding on the same device (no transport) is NOT a USB binding.
-	if err := eng.Bind(Binding{Logical: "sl2ctl", Endpoint: "AA:BB", Channel: 1, DeviceID: "sl2test"}); err == nil {
-		// blemidi transport is not registered in this engine, so Bind should
-		// fail for the control binding — confirming kind resolution chose the
-		// control path (which validates def.Transport).
+	// A control binding on the same device (flat shorthand) routes over the
+	// device type's control transport (blemidi), which is NOT registered in this
+	// engine, so Bind must fail — confirming the flat connection resolves to the
+	// control transport, not the USB one.
+	if err := eng.Bind(Device{Name: "sl2ctl", DeviceID: "sl2test", Endpoint: "AA:BB", Channel: 1}); err == nil {
 		t.Fatalf("control binding should fail without its control transport registered")
 	}
 }
@@ -182,7 +182,7 @@ func TestUSBBindingKind(t *testing.T) {
 func TestUSBBindTransportMismatch(t *testing.T) {
 	eng, _ := newUSBTestEngine(t)
 	// usbhid transport does not match the device's usb transport (usbmidi).
-	err := eng.Bind(Binding{Logical: "bad", DeviceID: "sl2test", USB: &USBSurface{Transport: "usbhid", Endpoint: "USB1"}})
+	err := eng.Bind(Device{Name: "bad", DeviceID: "sl2test", Connections: map[string]Connection{"usbhid": {Endpoint: "USB1"}}})
 	if err == nil {
 		t.Fatalf("expected mismatch error binding usbhid against a usbmidi usb profile")
 	}

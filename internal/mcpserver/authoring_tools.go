@@ -17,22 +17,22 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 )
 
-// registerAuthoringTools wires the device-authoring path: build a definition
-// draft, add controls to it (manually or from a MIDI-learn capture), then
+// registerAuthoringTools wires the device-type authoring path: build a device
+// type draft, add controls to it (manually or from a MIDI-learn capture), then
 // validate + persist it so it hot-loads without a daemon restart. This is the
 // "extend the rig without writing Go" mechanism.
 func (s *Server) registerAuthoringTools() {
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "create_device_definition",
-		Description: "Begin authoring a new device definition (a draft held in memory). Add controls with add_control, then persist with save_device_definition.",
+		Name:        "create_device_type",
+		Description: "Begin authoring a new device type (a draft held in memory) — a kind of gear and its controls. Add controls with add_control, then persist with save_device_type.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"id": {"type": "string", "description": "Definition id (also the YAML filename); lowercase, no spaces."},
-				"name": {"type": "string", "description": "Human-readable device name."},
+				"id": {"type": "string", "description": "Device type id (also the YAML filename); lowercase, no spaces."},
+				"name": {"type": "string", "description": "Human-readable device-type name."},
 				"manufacturer": {"type": "string"},
 				"description": {"type": "string"},
-				"transport": {"type": "string", "description": "Transport the device speaks: blemidi | osc | usbmidi."},
+				"transport": {"type": "string", "description": "Transport this kind of gear speaks: blemidi | osc | usbmidi | auv3midi."},
 				"settle_ms": {"type": "integer", "description": "Optional delay after a program change before CCs during scene recall."}
 			},
 			"required": ["id", "name", "transport"]
@@ -41,12 +41,12 @@ func (s *Server) registerAuthoringTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "add_control",
-		Description: "Add a control to a definition draft. Provide addressing for its type (cc/nrpn/program/sysex/address) and a value spec, " +
+		Description: "Add a control to a device-type draft. Provide addressing for its type (cc/nrpn/program/sysex/address) and a value spec, " +
 			"or set from_learn=true to pre-fill type+number from the most recent learn_capture.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"device": {"type": "string", "description": "Draft id (from create_device_definition)."},
+				"device": {"type": "string", "description": "Draft id (from create_device_type)."},
 				"name": {"type": "string", "description": "Control name (unique within the device)."},
 				"type": {"type": "string", "enum": ["cc", "nrpn", "program_change", "sysex", "osc", "note_on", "note_off"]},
 				"description": {"type": "string"},
@@ -75,8 +75,8 @@ func (s *Server) registerAuthoringTools() {
 	}, s.handleAddControl)
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "save_device_definition",
-		Description: "Validate a definition draft, write it to the user devices dir, hot-load it into the registry, regenerate control_<logical> tools for any binding using it, and return an AUM mapping cheat-sheet.",
+		Name:        "save_device_type",
+		Description: "Validate a device-type draft, write it to the user device-types dir, hot-load it into the registry, regenerate control_<name> tools for any device using it, and return an AUM mapping cheat-sheet.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"device":{"type":"string","description":"Draft id to persist."}},"required":["device"]}`),
 	}, s.handleSaveDeviceDefinition)
 
@@ -104,14 +104,14 @@ func (s *Server) registerAuthoringTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "import_auv3_probe",
 		Description: "Ingest an AUv3 parameter-tree dump (the AUv3 analog of a USB patch dump; AUM cannot echo MIDI). " +
-			"mode=draft builds a device definition draft (one cc per writable param, convention CC from 30, range 0-127, AU metadata in the description) ready for save_device_definition. " +
-			"mode=diff compares the dump against an existing definition and reports uncovered params, stale controls, and unit/enum mismatches.",
+			"mode=draft builds a device type draft (one cc per writable param, convention CC from 30, range 0-127, AU metadata in the description) ready for save_device_type. " +
+			"mode=diff compares the dump against an existing device type and reports uncovered params, stale controls, and unit/enum mismatches.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"file": {"type": "string", "description": "Explicit path to a dump JSON. If omitted, device_id selects <device_id>.json from the staging dir."},
-				"device_id": {"type": "string", "description": "Staged dump id (draft mode) / existing definition id to diff against (diff mode). Optional in draft mode if file is given."},
-				"mode": {"type": "string", "enum": ["draft", "diff"], "description": "draft = build a definition draft; diff = compare against an existing definition. Default draft."}
+				"device_id": {"type": "string", "description": "Staged dump id (draft mode) / existing device type id to diff against (diff mode). Optional in draft mode if file is given."},
+				"mode": {"type": "string", "enum": ["draft", "diff"], "description": "draft = build a device type draft; diff = compare against an existing device type. Default draft."}
 			}
 		}`),
 	}, s.handleImportAUv3Probe)
@@ -133,7 +133,7 @@ func (s *Server) handleCreateDeviceDefinition(_ context.Context, req *mcp.CallTo
 		return textResult("/id, /name and /transport are required", true), nil
 	}
 
-	d := &device.Definition{
+	d := &device.DeviceType{
 		ID:           args.ID,
 		Name:         args.Name,
 		Manufacturer: args.Manufacturer,
@@ -149,7 +149,7 @@ func (s *Server) handleCreateDeviceDefinition(_ context.Context, req *mcp.CallTo
 	if !s.eng.HasTransport(args.Transport) {
 		note = fmt.Sprintf(" (warning: transport %q is not registered; known: %s)", args.Transport, strings.Join(s.eng.TransportIDs(), ", "))
 	}
-	return textResult(fmt.Sprintf("created draft %q (%s, transport=%s); add controls with add_control%s", args.ID, args.Name, args.Transport, note), false), nil
+	return textResult(fmt.Sprintf("created device-type draft %q (%s, transport=%s); add controls with add_control%s", args.ID, args.Name, args.Transport, note), false), nil
 }
 
 func (s *Server) handleAddControl(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -185,7 +185,7 @@ func (s *Server) handleAddControl(_ context.Context, req *mcp.CallToolRequest) (
 	defer s.draftsMu.Unlock()
 	draft, ok := s.drafts[args.Device]
 	if !ok {
-		return textResult(fmt.Sprintf("no draft %q; start one with create_device_definition", args.Device), true), nil
+		return textResult(fmt.Sprintf("no draft %q; start one with create_device_type", args.Device), true), nil
 	}
 
 	c := device.Control{
@@ -260,7 +260,7 @@ func (s *Server) handleSaveDeviceDefinition(_ context.Context, req *mcp.CallTool
 	// race a concurrent add_control. Everything below operates on the copy.
 	s.draftsMu.Lock()
 	live, ok := s.drafts[args.Device]
-	var draft *device.Definition
+	var draft *device.DeviceType
 	if ok {
 		cp := *live
 		cp.Controls = append([]device.Control(nil), live.Controls...)
@@ -268,7 +268,7 @@ func (s *Server) handleSaveDeviceDefinition(_ context.Context, req *mcp.CallTool
 	}
 	s.draftsMu.Unlock()
 	if !ok {
-		return textResult(fmt.Sprintf("no draft %q; start one with create_device_definition", args.Device), true), nil
+		return textResult(fmt.Sprintf("no draft %q; start one with create_device_type", args.Device), true), nil
 	}
 	if len(draft.Controls) == 0 {
 		return textResult(fmt.Sprintf("draft %q has no controls; add some with add_control first", args.Device), true), nil
@@ -280,19 +280,19 @@ func (s *Server) handleSaveDeviceDefinition(_ context.Context, req *mcp.CallTool
 		return textResult(fmt.Sprintf("/transport: %q is not a registered transport (known: %s)", draft.Transport, strings.Join(s.eng.TransportIDs(), ", ")), true), nil
 	}
 
-	// Persist to the user devices dir (overrides the bundled definition of the
-	// same id by name, per the loader's precedence).
+	// Persist to the user definitions dir (overrides the bundled definition of
+	// the same id, per the loader's precedence).
 	b, err := yaml.Marshal(draft)
 	if err != nil {
-		return textResult("encode definition: "+err.Error(), true), nil
+		return textResult("encode device type: "+err.Error(), true), nil
 	}
-	dir := config.DevicesDir()
+	dir := config.DeviceTypesDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return textResult("create devices dir: "+err.Error(), true), nil
+		return textResult("create device-types dir: "+err.Error(), true), nil
 	}
 	path := filepath.Join(dir, draft.ID+".yaml")
 	if err := os.WriteFile(path, b, 0o644); err != nil {
-		return textResult("write definition: "+err.Error(), true), nil
+		return textResult("write device type: "+err.Error(), true), nil
 	}
 
 	// Hot-load a copy into the registry so further draft edits do not mutate the
@@ -300,16 +300,16 @@ func (s *Server) handleSaveDeviceDefinition(_ context.Context, req *mcp.CallTool
 	loaded := *draft
 	loaded.Controls = append([]device.Control(nil), draft.Controls...)
 	if err := s.eng.Registry().AddDefinition(&loaded); err != nil {
-		return textResult("register definition: "+err.Error(), true), nil
+		return textResult("register device type: "+err.Error(), true), nil
 	}
 
 	// Regenerate the tool(s) for every binding that uses this definition (a
 	// control_<logical> tool, or the USB tool family for a USB binding).
 	var regenerated []string
-	for _, bind := range s.eng.Bindings() {
-		if bind.DeviceID == draft.ID {
-			s.refreshToolsForBinding(bind)
-			regenerated = append(regenerated, bind.Logical)
+	for _, dev := range s.eng.Devices() {
+		if dev.DeviceID == draft.ID {
+			s.refreshToolsForDevice(dev)
+			regenerated = append(regenerated, dev.Name)
 		}
 	}
 	sort.Strings(regenerated)
@@ -319,13 +319,35 @@ func (s *Server) handleSaveDeviceDefinition(_ context.Context, req *mcp.CallTool
 	s.draftsMu.Unlock()
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "saved device definition %q to %s (%d control(s))\n", draft.ID, path, len(draft.Controls))
+	fmt.Fprintf(&out, "saved device type %q to %s (%d control(s))\n", draft.ID, path, len(draft.Controls))
 	if len(regenerated) > 0 {
 		fmt.Fprintf(&out, "regenerated control tool(s) for: %s\n", strings.Join(regenerated, ", "))
 	}
 	out.WriteString("\n")
-	out.WriteString(aumCheatSheet(draft, s.eng.Bindings()))
+	out.WriteString(aumCheatSheet(draft, s.eng.Devices()))
 	return textResult(out.String(), false), nil
+}
+
+// registerDeviceType validates+hot-loads a device type into the registry and
+// persists it to the user device-types dir (so it survives a daemon restart),
+// exactly like save_device_type does for an authored draft. It is the
+// shared "stage a generated device type" path used by the AUM auto-create flow.
+func (s *Server) registerDeviceType(dt *device.DeviceType) error {
+	if err := s.eng.Registry().AddDefinition(dt); err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(dt)
+	if err != nil {
+		return fmt.Errorf("encode device type: %w", err)
+	}
+	dir := config.DeviceTypesDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create device-types dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, dt.ID+".yaml"), b, 0o644); err != nil {
+		return fmt.Errorf("write device type: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleListAUv3Probes(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -418,7 +440,7 @@ func (s *Server) handleGetAUv3Probe(_ context.Context, req *mcp.CallToolRequest)
 
 	var out strings.Builder
 	comp := strings.TrimSpace(dump.Component.Type + "/" + dump.Component.Subtype)
-	fmt.Fprintf(&out, "AUv3 probe %q — %s [%s %s]\n", device.ProbeID(dump), dump.Name, firstNonEmptyStr(dump.Component.Manufacturer, "?"), comp)
+	fmt.Fprintf(&out, "AUv3 probe %q — %s [%s %s]\n", device.ProbeID(dump), dump.Name, device.FirstNonEmpty(dump.Component.Manufacturer, "?"), comp)
 	fmt.Fprintf(&out, "%d params, %d writable (writable params are the configurable / AUM-mappable ones)\n", len(dump.Parameters), writable)
 	if meta := probeUnitMeta(dump); meta != "" {
 		out.WriteString(meta)
@@ -524,14 +546,14 @@ func probeParamDetail(p device.ProbeParam) string {
 		keyPath = " keyPath=" + p.KeyPath
 	}
 
-	unit := firstNonEmptyStr(p.UnitName, p.Unit)
+	unit := device.FirstNonEmpty(p.UnitName, p.Unit)
 	if unit != "" {
 		unit = " " + unit
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "  [%s] %s%s%s addr=%d range=%g..%g%s value=%g",
-		flags, firstNonEmptyStr(p.DisplayName, p.Identifier, p.KeyPath), id, keyPath, p.Address, p.Min, p.Max, unit, p.Value)
+		flags, device.FirstNonEmpty(p.DisplayName, p.Identifier, p.KeyPath), id, keyPath, p.Address, p.Min, p.Max, unit, p.Value)
 	if len(p.ValueStrings) > 0 {
 		fmt.Fprintf(&b, "\n      enum (%d): %s", len(p.ValueStrings), strings.Join(p.ValueStrings, " | "))
 	}
@@ -543,15 +565,6 @@ func probeParamDetail(p device.ProbeParam) string {
 		fmt.Fprintf(&b, "\n      meta/macro: drives %d param(s) at addr %s", len(p.DependentParameters), strings.Join(addrs, ", "))
 	}
 	return b.String()
-}
-
-func firstNonEmptyStr(ss ...string) string {
-	for _, s := range ss {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func (s *Server) handleImportAUv3Probe(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -588,10 +601,10 @@ func (s *Server) handleImportAUv3Probe(_ context.Context, req *mcp.CallToolReque
 }
 
 // importAUv3Draft builds a definition draft from the dump, stores it under its
-// derived id (so the existing save_device_definition persists it), and returns
+// derived id (so the existing save_device_type persists it), and returns
 // the build report plus an AUM cheat-sheet preview.
 func (s *Server) importAUv3Draft(dump device.ProbeDump, path string) *mcp.CallToolResult {
-	def, report, err := device.DefinitionFromProbe(dump, device.ProbeOptions{})
+	def, report, err := device.DeviceTypeFromProbe(dump, device.ProbeOptions{})
 	if err != nil {
 		return textResult("build draft: "+err.Error(), true)
 	}
@@ -602,11 +615,22 @@ func (s *Server) importAUv3Draft(dump device.ProbeDump, path string) *mcp.CallTo
 	s.drafts[def.ID] = &loaded
 	s.draftsMu.Unlock()
 
+	ccControls := len(def.Controls)
+	if report.PresetControl != "" {
+		ccControls-- // the preset control is a Program Change, not a CC param
+	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "imported %s -> draft %q (%s): %d control(s) from %d writable param(s)\n",
-		filepath.Base(path), def.ID, def.Name, len(def.Controls), len(def.Controls)+len(report.Overflow))
+	fmt.Fprintf(&out, "imported %s -> draft %q (%s): %d CC control(s) from %d writable param(s); transport=%s\n",
+		filepath.Base(path), def.ID, def.Name, ccControls, ccControls+len(report.Overflow), def.Transport)
+	if report.PresetControl != "" {
+		bank := ""
+		if report.BankSelect {
+			bank = " with Bank Select (>128 presets)"
+		}
+		fmt.Fprintf(&out, "PRESET: control %q recalls %d preset(s) by Program Change%s\n", report.PresetControl, report.Presets, bank)
+	}
 	if len(report.Overflow) > 0 {
-		fmt.Fprintf(&out, "OVERFLOW: %d writable param(s) did not fit the CC cap and got no control (curate onto a second channel/file):\n", len(report.Overflow))
+		fmt.Fprintf(&out, "OVERFLOW: %d writable param(s) did not fit the curated CC budget and got no control (curate with import Select or a second channel/file):\n", len(report.Overflow))
 		for _, p := range report.Overflow {
 			fmt.Fprintf(&out, "  - %s\n", p.DisplayName)
 		}
@@ -630,8 +654,8 @@ func (s *Server) importAUv3Draft(dump device.ProbeDump, path string) *mcp.CallTo
 		fmt.Fprintf(&out, "MACRO/META: %d control(s) drive other params (map the macro, not its derived params): %s\n",
 			len(names), strings.Join(names, ", "))
 	}
-	fmt.Fprintf(&out, "review the draft, then persist it with save_device_definition device=%q\n\n", def.ID)
-	out.WriteString(aumCheatSheetMeta(def, s.eng.Bindings(), macro))
+	fmt.Fprintf(&out, "review the draft, then persist it with save_device_type device=%q\n\n", def.ID)
+	out.WriteString(aumCheatSheetMeta(def, s.eng.Devices(), macro))
 	return textResult(out.String(), false)
 }
 
@@ -640,20 +664,20 @@ func (s *Server) importAUv3Draft(dump device.ProbeDump, path string) *mcp.CallTo
 func (s *Server) importAUv3Diff(dump device.ProbeDump, deviceID string) *mcp.CallToolResult {
 	targetID := deviceID
 	if targetID == "" {
-		if d, _, err := device.DefinitionFromProbe(dump, device.ProbeOptions{}); err == nil {
+		if d, _, err := device.DeviceTypeFromProbe(dump, device.ProbeOptions{}); err == nil {
 			targetID = d.ID
 		}
 	}
 	def, ok := s.eng.Registry().Get(targetID)
 	if !ok {
-		return textResult(fmt.Sprintf("no definition %q to diff against; pass /device_id of an existing definition (or import in draft mode first)", targetID), true)
+		return textResult(fmt.Sprintf("no device type %q to diff against; pass /device_id of an existing device type (or import in draft mode first)", targetID), true)
 	}
 
 	diff := device.DiffProbeAgainstDefinition(dump, def)
 	var out strings.Builder
-	fmt.Fprintf(&out, "diff of probe %q against definition %q:\n", dump.Name, def.ID)
+	fmt.Fprintf(&out, "diff of probe %q against device type %q:\n", dump.Name, def.ID)
 	if !diff.HasFindings() {
-		out.WriteString("  no findings — the definition covers every writable param and matches its units/enums\n")
+		out.WriteString("  no findings — the device type covers every writable param and matches its units/enums\n")
 		return textResult(out.String(), false)
 	}
 	if len(diff.MissingFromDefinition) > 0 {
@@ -730,22 +754,22 @@ func readProbeDump(path string) (device.ProbeDump, error) {
 // aumCheatSheet renders the per-control (channel, CC) mapping a user must
 // configure in AUM's MIDI matrix (or the plugin's MIDI-learn) so the device's
 // server-invented CC convention matches the host. Channels come from any
-// binding(s) of this definition (a definition can be bound on several
+// device(s) using this definition (a definition can be bound on several
 // channels); when unbound it lists the CC convention without a channel.
-func aumCheatSheet(def *device.Definition, bindings []engine.Binding) string {
-	return aumCheatSheetMeta(def, bindings, nil)
+func aumCheatSheet(def *device.DeviceType, devices []engine.Device) string {
+	return aumCheatSheetMeta(def, devices, nil)
 }
 
 // aumCheatSheetMeta is aumCheatSheet with optional macro annotation: macro is
 // the set of control names whose AU param drives other params
 // (dependentParameters). Those rows get a marker so the user knows mapping the
 // macro's CC is enough — its derived params move with it. Callers without the
-// originating probe (e.g. save_device_definition) pass a nil set.
-func aumCheatSheetMeta(def *device.Definition, bindings []engine.Binding, macro map[string]bool) string {
+// originating probe (e.g. save_device_type) pass a nil set.
+func aumCheatSheetMeta(def *device.DeviceType, devices []engine.Device, macro map[string]bool) string {
 	var channels []int
-	for _, b := range bindings {
-		if b.DeviceID == def.ID {
-			channels = append(channels, b.Channel)
+	for _, d := range devices {
+		if d.DeviceID == def.ID && d.HasControl() {
+			channels = append(channels, d.ControlChannel())
 		}
 	}
 	sort.Ints(channels)
