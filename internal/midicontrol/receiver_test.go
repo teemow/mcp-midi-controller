@@ -1,0 +1,100 @@
+package midicontrol
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+// TestHubPushesCommands dials the receiver as a real WebSocket client (standing
+// in for ProbeMidiBrain), then asserts that hub.Send delivers command frames to
+// it and that the connect/disconnect callbacks fire.
+func TestHubPushesCommands(t *testing.T) {
+	hub := NewHub()
+	var connects, disconnects atomic.Int32
+
+	mux := http.NewServeMux()
+	Register(mux, hub,
+		func(string) { connects.Add(1) },
+		func(string) { disconnects.Add(1) },
+	)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/midi-control"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	// Wait for the server to register the connection. The handler calls
+	// hub.Connect before the onConnect callback, so gate on the connect counter
+	// (which implies Connected) to avoid racing the callback.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if connects.Load() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if connects.Load() != 1 {
+		t.Fatalf("connects = %d, want 1", connects.Load())
+	}
+	if !hub.Connected() {
+		t.Fatal("expected hub to report connected")
+	}
+
+	// Push a note-on and read it back on the client side.
+	if err := hub.Send(ctx, Command{Type: "noteOn", Channel: 1, Note: 60, Velocity: 100}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	typ, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if typ != websocket.MessageText {
+		t.Fatalf("frame type = %v, want text", typ)
+	}
+	var got Command
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != "noteOn" || got.Note != 60 || got.Velocity != 100 || got.Channel != 1 {
+		t.Fatalf("command not delivered as sent: %+v", got)
+	}
+
+	if st := hub.Status(); st.Sent != 1 {
+		t.Fatalf("Status.Sent = %d, want 1", st.Sent)
+	}
+
+	_ = c.Close(websocket.StatusNormalClosure, "done")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if disconnects.Load() == 1 && !hub.Connected() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if disconnects.Load() != 1 {
+		t.Fatalf("disconnects = %d, want 1", disconnects.Load())
+	}
+	if hub.Connected() {
+		t.Fatal("expected hub to report disconnected after close")
+	}
+
+	// With no brain connected, Send reports ErrNoBrain so callers can fall back.
+	if err := hub.Send(ctx, Command{Type: "transport", Action: "stop"}); err != ErrNoBrain {
+		t.Fatalf("Send after disconnect = %v, want ErrNoBrain", err)
+	}
+}

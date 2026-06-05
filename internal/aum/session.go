@@ -419,6 +419,7 @@ type MappingInfo struct {
 	Collection string  `json:"collection"`
 	Target     string  `json:"target"`
 	Type       int     `json:"type"`
+	TypeName   string  `json:"typeName"`
 	Data1      int     `json:"data1"`
 	Channel    int     `json:"channel"`
 	Min        float64 `json:"min"`
@@ -460,6 +461,7 @@ func (s *Session) Map() SessionMap {
 			Collection: m.Collection,
 			Target:     m.Target,
 			Type:       m.Spec.Type,
+			TypeName:   m.Spec.TypeName(),
 			Data1:      m.Spec.Data1,
 			Channel:    m.Spec.Channel,
 			Min:        m.Min,

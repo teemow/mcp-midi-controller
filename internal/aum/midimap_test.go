@@ -11,7 +11,7 @@ func TestExportAndReadMidiMap(t *testing.T) {
 	if err := s.SetMapping(coll, "Volume", TypeCC, 7, 1); err != nil {
 		t.Fatalf("assign Volume: %v", err)
 	}
-	if err := s.SetMapping(coll, "Mute", TypeNote, 60, 1); err != nil {
+	if err := s.SetMapping(coll, "Mute", SpecStateTypeNote, 60, 1); err != nil {
 		t.Fatalf("assign Mute: %v", err)
 	}
 
@@ -46,8 +46,11 @@ func TestExportAndReadMidiMap(t *testing.T) {
 		t.Fatalf("exported leaf should use specState encoding, got %v", vol.Spec.Encoding)
 	}
 	mute, ok := byTarget["Mute"]
-	if !ok || mute.Spec.Type != TypeNote || mute.Spec.Data1 != 60 {
+	if !ok || mute.Spec.Type != SpecStateTypeNote || mute.Spec.Data1 != 60 {
 		t.Fatalf("Mute leaf = %+v", mute.Spec)
+	}
+	if mute.Spec.TypeName() != "Note" {
+		t.Fatalf("Mute TypeName = %q, want Note", mute.Spec.TypeName())
 	}
 }
 

@@ -111,6 +111,15 @@ func (s *Server) registerGlobalTools() {
 	// ProbeAudioTap stream) is wired in registerAudioTools when WithAudioTap
 	// attached a store.
 	s.registerAudioTools()
+	// get_host_diagnostics (the live view of "what can the appex see about its
+	// host?" — transport/AU/MIDI/audio-session/CoreMIDI/environment from the
+	// auv3-probe extensions) is wired in registerDiagnosticsTools when
+	// WithDiagnostics attached a store.
+	s.registerDiagnosticsTools()
+	// play_notes / send_midi / set_transport (the agent's "hands" — pushing
+	// MIDI into the rig through the ProbeMidiBrain LAN channel) are wired in
+	// registerMidiTools.
+	s.registerMidiTools()
 }
 
 func (s *Server) handleListDevices(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

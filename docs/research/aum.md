@@ -23,6 +23,15 @@ into AUM's MIDI Control matrix on the bound MIDI channel.
 This mirrors the project's general "AUv3 / convention model" (see
 `docs/design.md` → "AUv3 plugins & AUM").
 
+> **Now measured, and the reason it matters.** That AUM responds to these mapped
+> messages is no longer just from the help page — the in-host `ProbeMidiBrain`
+> has driven tempo (20–500 BPM), channel mute, and a node parameter through AUM's
+> MIDI Control end-to-end (auv3-probe
+> [aum-control-surface.md](https://github.com/teemow/auv3-probe/blob/main/docs/aum-control-surface.md)).
+> The convention map below is therefore the **control surface the brain gets** —
+> author it into every session and the brain can run the whole rig, including
+> scene changes. The strategy + open gaps: `docs/aum-brain-control.md`.
+
 ## How AUM's MIDI Control works
 
 Source: <https://kymatica.com/aum/help> ("MIDI Control").

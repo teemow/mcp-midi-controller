@@ -30,8 +30,10 @@ func Register(mux *http.ServeMux, store *Store, onConnect func(remote string), o
 }
 
 // handleStream upgrades to a WebSocket and drains the ProbeAudioTap contract:
-// one TEXT "format" message, BINARY little-endian Float32 mono PCM, and ~10 Hz
-// TEXT "features" messages. Anything malformed is logged and skipped; a read
+// one TEXT "format" message, BINARY little-endian Float32 PCM (interleaved
+// across channels at the host rate), and ~10 Hz TEXT "features" messages. The
+// channel count comes from the format message; the binary frames are stored
+// as-is and indexed by stride. Anything malformed is logged and skipped; a read
 // error (client gone / shutdown) ends the session.
 func handleStream(store *Store, onConnect, onDisconnect func(string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -126,8 +128,9 @@ func handleText(store *Store, data []byte) {
 	}
 }
 
-// decodeFloat32LE reinterprets a binary frame as little-endian Float32 mono PCM.
-// A trailing partial sample (len not a multiple of 4) is ignored.
+// decodeFloat32LE reinterprets a binary frame as little-endian Float32 PCM
+// (interleaved across channels; the store applies the stride). A trailing
+// partial sample (len not a multiple of 4) is ignored.
 func decodeFloat32LE(data []byte) []float32 {
 	n := len(data) / 4
 	if n == 0 {

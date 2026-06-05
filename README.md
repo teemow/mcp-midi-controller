@@ -109,23 +109,33 @@ The server is a long-lived daemon (hardware connections, inbound listening and
 desired-state are long-lived), so run it as a **systemd user service**. A unit
 is provided at [`init/mcp-midi-controller.service`](init/mcp-midi-controller.service).
 
+Deployment is a single idempotent command — use it for the first install **and**
+to roll out a new build:
+
 ```bash
-# 1. Install the binary (lands in $GOBIN, or $GOPATH/bin = ~/.go/bin).
-go install ./cmd/mcp-midi-controller
-
-# 2. Install and enable the user unit (starts now and on every login).
-mkdir -p ~/.config/systemd/user
-cp init/mcp-midi-controller.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now mcp-midi-controller.service
-
-# Status / live logs:
-systemctl --user status mcp-midi-controller.service
-journalctl --user -u mcp-midi-controller.service -f
+make deploy        # == scripts/deploy.sh
 ```
 
-To keep it running when you are not logged in (e.g. a headless rig host), enable
-lingering: `loginctl enable-linger "$USER"`.
+That [`scripts/deploy.sh`](scripts/deploy.sh) builds the embedded SPA, installs
+the binary into `~/.go/bin` (the path the unit's `ExecStart` references),
+installs/refreshes the user unit, `daemon-reload`s, enables lingering (so the
+daemon survives logout on a headless rig host), then enables and (re)starts the
+service. Re-running it is always safe.
+
+Operate the running service with the helper targets:
+
+```bash
+make status        # systemctl --user status mcp-midi-controller.service
+make restart       # restart to pick up a manually-built binary
+make logs          # journalctl --user -u mcp-midi-controller.service -f
+```
+
+> **Consuming a release instead of building from source.** CI auto-tags `main`
+> and GoReleaser publishes `linux_amd64` / `linux_arm64` binaries (with the SPA
+> already embedded). On a host without Go/Node, drop the released binary into
+> `~/.go/bin/mcp-midi-controller`, copy `init/mcp-midi-controller.service` into
+> `~/.config/systemd/user/`, then `systemctl --user daemon-reload && systemctl
+> --user enable --now mcp-midi-controller.service`.
 
 The daemon binds loopback only; [`.cursor/mcp.json`](.cursor/mcp.json) points
 Cursor at it (`http://127.0.0.1:7799/`). If you change `listen_addr` in
@@ -144,11 +154,21 @@ listener carries three surfaces, none of which touch hardware:
   ProbeAudioTap AUv3's stream (decimated mono PCM + RMS/peak features). It keeps
   the latest levels and a short rolling window **in memory only** (audio is a
   private rig signal, never written to disk) and exposes them read-only through
-  the `get_audio_tap` MCP tool — the agent's "ears". A tap connecting or dropping
-  is broadcast as an `audio-tap` log notification.
+  the `get_audio_tap` / `get_audio_clip` MCP tools — the agent's "ears". A tap
+  connecting or dropping is broadcast as an `audio-tap` log notification.
+- **MIDI control** — a `GET /midi-control` **WebSocket** the ProbeMidiBrain AUv3
+  dials in to (`internal/midicontrol`). The daemon pushes note/CC/PC/transport
+  command frames the brain re-emits as MIDI — the agent's "hands", driven by the
+  `play_notes` / `send_midi` / `set_transport` tools (LAN primary, BLE fallback).
+  Brain connect/disconnect is broadcast as a `midi-control` log notification.
 
 If the daemon host runs a default-deny firewall, allow that port from your LAN.
-See [`docs/research/auv3-feedback.md`](docs/research/auv3-feedback.md).
+See [`docs/research/auv3-feedback.md`](docs/research/auv3-feedback.md) and, for
+the full author → load → play → hear → tweak loop,
+[`docs/research/agent-loop.md`](docs/research/agent-loop.md). For where this is
+heading — the in-host brain as a near-complete AUM remote, gated by how well we
+model sessions and a standard mapping for scene changes — see
+[`docs/aum-brain-control.md`](docs/aum-brain-control.md).
 
 ## Web UI (signalwave)
 

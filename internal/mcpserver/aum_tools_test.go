@@ -98,9 +98,10 @@ func TestAUMDiffUnwiredSession(t *testing.T) {
 	s := newAUMServer(t)
 	stageProbe(t)
 
-	// Author WITHOUT a convention: every leaf stays a placeholder.
+	// Author WITHOUT a convention (bare): every leaf stays a placeholder.
 	res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"out_id": "blank",
+		"bare":   true,
 		"channels": []any{
 			map[string]any{"kind": "audio", "title": "Ch1"},
 			map[string]any{"kind": "audio", "title": "Master"},

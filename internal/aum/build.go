@@ -43,6 +43,12 @@ type BuildSpec struct {
 	// leaf stays an unassigned placeholder — AUM's default, and what an
 	// untouched real session looks like.
 	Convention *Convention
+
+	// Routes, when non-empty, authors the inter-node MIDI routing matrix
+	// (root["midiMatrixState"]) so e.g. a brain node's MIDI OUT feeds a synth
+	// node and AUM's MIDI Control. Endpoints reference channels/slots in this
+	// spec. See SetMIDIRoutes.
+	Routes []MIDIRoute
 }
 
 // ChannelSpec is one mixer strip to author. Fader applies only to audio strips
@@ -66,6 +72,14 @@ type NodeSpec struct {
 	ComponentName string                // human "Manufacturer: Plugin"
 	AuMainParam   string                // optional headline param keyPath (archiveNodeState.AuMainParam)
 	Params        []device.ProbeParam   // the plugin's parameters; the writable ones become mappable targets
+
+	// StateDoc, when non-empty, is authored into the node's
+	// archiveNodeState["AuStateDoc"] — the plugin's saved fullState as
+	// key -> raw bytes (e.g. {"probeMidiBrainProgram": <JSON>}). Used to
+	// pre-configure our own plugins (brain program, tap host/streaming).
+	StateDoc map[string][]byte
+	// Preset, when non-nil, sets the node's AuPresetCtrl (factory preset index).
+	Preset *int
 }
 
 // NodeSpecFromDump builds a NodeSpec from an AUv3 probe dump: the component
@@ -114,6 +128,7 @@ type BuildReport struct {
 	Targets     int      // placeholder mapping targets enumerated (the catalogue size)
 	AssignedCCs int      // convention CCs assigned (0 when Convention is nil)
 	Overflow    []string // node-parameter target paths beyond the convention CC cap
+	Routes      int      // MIDI routes authored into midiMatrixState
 }
 
 // channelControl is one strip-level mappable target and whether it is a
@@ -129,20 +144,40 @@ type channelControl struct {
 var (
 	audioChannelControls = []channelControl{
 		{"Volume", false}, {"Mute", true}, {"Solo", true}, {"Rec enable", true},
+		{"ScrollToChannel", true},
 	}
 	midiChannelControls = []channelControl{
-		{"Mute", true}, {"Solo", true},
+		{"Mute", true}, {"Solo", true}, {"ScrollToChannel", true},
 	}
 )
 
 // nodeReservedTargets are the per-slot reserved trigger targets AUM enumerates
-// alongside an AUv3 node's own parameters.
-var nodeReservedTargets = []string{"_AUMNode:Bypass", "_AUMNode:ShowPlugin"}
+// alongside an AUv3 node's own parameters. Key strings confirmed from the probe
+// capture: Bypass, "Show & Front Plugin" (FrontPlugin) and "Show / Hide Plugin"
+// (TogglePlugin). The per-preset "_AUMNode:PresetLoadCtrl/<idx>:<prog>:<name>"
+// targets are dynamic (one per saved preset) and only appear once a preset
+// exists, so they are not enumerated here.
+var nodeReservedTargets = []string{
+	"_AUMNode:Bypass",
+	"_AUMNode:FrontPlugin",
+	"_AUMNode:TogglePlugin",
+}
 
-// transportTargets are the standard Transport collection actions enumerated as
-// trigger placeholders (mirroring the template + the research doc's key set).
+// transportTargets are the Transport collection actions enumerated as
+// placeholders. The first six are the convention-wired actions (see
+// conventionTransportCC); the rest are confirmed AUM targets that are
+// catalogued but left unwired so an authored session exposes AUM's full
+// transport surface.
 var transportTargets = []string{
 	"Toggle Play", "Start Play", "Stop/Rewind", "Rewind", "Toggle Record", "Tap Tempo",
+	"Previous bar", "Next bar", "Tempo", "Metronome on/off",
+}
+
+// systemTargets are the global System collection actions AUM enumerates
+// (confirmed key strings from the probe capture). They are catalogued as
+// placeholders; none are convention-wired.
+var systemTargets = []string{
+	"_AUM:ShowSelf", "_AUM:HideAllPlugins", "_AUM:UnSoloAll",
 }
 
 // BuildSession authors a complete session from spec, returning the typed
@@ -223,9 +258,10 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 	channelsColl := newNSDict(b, chanCollKeys, chanCollObjs)
 
 	transport := buildTransport(b, &report)
+	system := buildSystem(b, &report)
 	midiCtrlState := newNSDict(b,
-		[]any{b.Intern("Transport"), b.Intern("Channels")},
-		[]any{b.Intern(transport), b.Intern(channelsColl)},
+		[]any{b.Intern("Transport"), b.Intern("System"), b.Intern("Channels")},
+		[]any{b.Intern(transport), b.Intern(system), b.Intern(channelsColl)},
 	)
 
 	clock := newNSDict(b, []any{b.Intern("clockTempo")}, []any{b.Intern(tempo)})
@@ -251,6 +287,31 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 			return nil, report, err
 		}
 	}
+
+	// Author per-node saved state (AuStateDoc) and preset selection.
+	for ci, ch := range spec.Channels {
+		for slot, n := range ch.Nodes {
+			if len(n.StateDoc) > 0 {
+				if err := s.SetAuStateDoc(ci, slot, n.StateDoc); err != nil {
+					return nil, report, err
+				}
+			}
+			if n.Preset != nil {
+				if err := s.SetPreset(ci, slot, *n.Preset); err != nil {
+					return nil, report, err
+				}
+			}
+		}
+	}
+
+	// Author the inter-node MIDI routing matrix.
+	if len(spec.Routes) > 0 {
+		if err := s.SetMIDIRoutes(spec.Routes); err != nil {
+			return nil, report, err
+		}
+		report.Routes = len(spec.Routes)
+	}
+
 	return s, report, nil
 }
 
@@ -290,12 +351,8 @@ func buildChannelControls(b *Builder, ch ChannelSpec, report *BuildReport) map[s
 	keys := make([]any, 0, len(controls))
 	objs := make([]any, 0, len(controls))
 	for _, ctl := range controls {
-		typ := TypeValueDefault
-		if ctl.trigger {
-			typ = TypeTriggerDefault
-		}
 		keys = append(keys, b.Intern(ctl.name))
-		objs = append(objs, b.Intern(placeholderLeaf(b, typ)))
+		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
 	return newNSDict(b, keys, objs)
@@ -313,12 +370,12 @@ func buildSlotCatalogue(b *Builder, n NodeSpec, report *BuildReport) map[string]
 			continue
 		}
 		keys = append(keys, b.Intern(uniqueTarget(paramTarget(p), used)))
-		objs = append(objs, b.Intern(placeholderLeaf(b, TypeValueDefault)))
+		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
 	for _, r := range nodeReservedTargets {
 		keys = append(keys, b.Intern(r))
-		objs = append(objs, b.Intern(placeholderLeaf(b, TypeTriggerDefault)))
+		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
 	return newNSDict(b, keys, objs)
@@ -331,11 +388,25 @@ func buildTransport(b *Builder, report *BuildReport) map[string]any {
 	objs := make([]any, 0, len(transportTargets)+1)
 	for _, t := range transportTargets {
 		keys = append(keys, b.Intern(t))
-		objs = append(objs, b.Intern(placeholderLeaf(b, TypeTriggerDefault)))
+		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
 	keys = append(keys, b.Intern("Receive MMC"))
 	objs = append(objs, b.Intern(false))
+	return newNSDict(b, keys, objs)
+}
+
+// buildSystem builds the global System collection: trigger placeholders for the
+// app-level actions AUM enumerates (Switch to AUM, Hide all plugins, Un-solo
+// all). These are catalogued but not convention-wired.
+func buildSystem(b *Builder, report *BuildReport) map[string]any {
+	keys := make([]any, 0, len(systemTargets))
+	objs := make([]any, 0, len(systemTargets))
+	for _, t := range systemTargets {
+		keys = append(keys, b.Intern(t))
+		objs = append(objs, b.Intern(placeholderLeaf(b)))
+		report.Targets++
+	}
 	return newNSDict(b, keys, objs)
 }
 
@@ -397,6 +468,20 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 			}
 		}
 	}
+
+	// Global transport block: a session-wide control surface the brain drives
+	// for play/stop/record/tempo. Wired once (not per channel) onto the
+	// Transport collection's verified trigger targets.
+	for _, t := range transportTargets {
+		cc, ok := conventionTransportCC(t)
+		if !ok {
+			continue
+		}
+		if err := s.SetMapping("Transport", t, TypeCC, cc, channel); err != nil {
+			return err
+		}
+		report.AssignedCCs++
+	}
 	return nil
 }
 
@@ -417,6 +502,34 @@ func conventionMixerCC(n int, target string) (int, bool) {
 		return 44 + n, true
 	case "Rec enable":
 		return 52 + n, true
+	default:
+		return 0, false
+	}
+}
+
+// conventionTransportCC returns the brain-control convention CC for a global
+// Transport-collection target. ok is false for targets the convention does not
+// cover. The CC numbers and target mapping mirror docs/research/aum.md
+// ("Transport / system") — the undefined-CC block (102-110) plus the single
+// CC 20 "Toggle play". Only the targets buildTransport actually enumerates (and
+// whose on-disk key strings are corpus-verified) are wired; Previous/Next bar,
+// Tempo value and Metronome are part of the documented convention but their AUM
+// key strings are not yet corpus-confirmed, so they are left for a capture (see
+// the plan's Pillar 1 transport-catalogue row) and intentionally omitted here.
+func conventionTransportCC(target string) (int, bool) {
+	switch target {
+	case "Toggle Play":
+		return 20, true
+	case "Start Play":
+		return 102, true
+	case "Stop/Rewind":
+		return 103, true
+	case "Rewind":
+		return 104, true
+	case "Toggle Record":
+		return 105, true
+	case "Tap Tempo":
+		return 108, true
 	default:
 		return 0, false
 	}

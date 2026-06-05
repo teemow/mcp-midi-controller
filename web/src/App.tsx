@@ -45,11 +45,11 @@ export function App() {
         <Oscilloscope energy={energy} className="absolute inset-0 h-full w-full opacity-40" />
         <div className="relative flex items-center justify-between gap-4 px-5 py-4">
           <div>
-            <h1 className="text-2xl font-bold uppercase tracking-[0.4em] text-cyan-glow drop-shadow-[0_0_8px_rgba(34,211,238,0.6)]">
-              signalwave
+            <h1 className="text-2xl font-bold lowercase tracking-[0.15em] text-cyan-glow drop-shadow-[0_0_8px_rgba(34,211,238,0.6)]">
+              mcp-midi-controller
             </h1>
             <p className="mt-1 text-[0.65rem] uppercase tracking-[0.3em] text-cyan-100/40">
-              mcp-midi-controller · in-browser mcp client
+              in-browser mcp client
             </p>
           </div>
           <div className="flex flex-col items-end gap-1 text-xs">

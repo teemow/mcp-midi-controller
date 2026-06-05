@@ -438,7 +438,29 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
     connecting or dropping is broadcast as an `audio-tap` log notification.
     Long-lived sockets clear the shared listener's read/write deadlines
     (`http.ResponseController`) before upgrading so they are not dropped at the
-    60 s timeout.
+    60 s timeout. The window also carries **trusted Go-computed analysis** so the
+    agent never has to DSP base64 PCM: frequency-domain **spectral** features
+    (`internal/audiotap/spectral.go` — centroid, flatness, log bands) and a
+    **musical analysis** block (`internal/audiotap/analysis.go` — detected pitch
+    `f0`/note/cents/confidence via McLeod NSDF autocorrelation, harmonic partials
+    + harmonic-to-noise ratio, loudness/crest dBFS, and spectral-flux onsets),
+    surfaced in both `get_audio_tap`'s `structuredContent` and its human text.
+    The **sound-engineer iteration tools** build on this: `get_audio_clip`
+    (decimated mono PCM as base64 `f32le` + sample rate for an agent that wants
+    the raw signal), `probe_sound` (one call: optionally set device controls /
+    raw CCs, play notes for a duration, then return the analysis captured **during
+    the sustain** — collapsing the old control→play→read three-call loop, and
+    auto-reporting a delta vs the previous probe), and the A/B pair
+    `capture_audio_snapshot {label}` / `compare_audio {a,b}` (an in-memory,
+    label-keyed snapshot store returning signed `b-a` deltas — loudness dBFS,
+    pitch cents, spectral centroid/flatness, HNR, partial/onset counts — so a
+    tweak's effect "louder / brighter / more harmonic / detuned" is deterministic;
+    `internal/mcpserver/{audio,probe,compare}_tools.go`). These analysis/iterate/
+    compare features have a **mandatory live test loop** as their acceptance gate
+    (`scripts/sound-loop.sh` + `docs/research/sound-engineer-test-loop.md`): the
+    synthetic Go tests in `internal/audiotap` are the fast inner correctness loop,
+    but a feature is "done" only when the live loop passes against the real
+    iPad/AUM/synth rig over the LAN.
 
 All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
 remaining work is **YAML definitions + MIDI-learn**, not core code.

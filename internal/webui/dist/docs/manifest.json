@@ -13,6 +13,14 @@
       "title": "usb-tools"
     },
     {
+      "path": "research/agent-loop.md",
+      "title": "research/agent-loop"
+    },
+    {
+      "path": "research/aum-midi-matrix.md",
+      "title": "research/aum-midi-matrix"
+    },
+    {
       "path": "research/aum-session.md",
       "title": "research/aum-session"
     },
@@ -51,6 +59,10 @@
     {
       "path": "research/sl-2.md",
       "title": "research/sl-2"
+    },
+    {
+      "path": "research/sound-engineer-test-loop.md",
+      "title": "research/sound-engineer-test-loop"
     },
     {
       "path": "research/usb.md",

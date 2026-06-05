@@ -16,7 +16,9 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 )
@@ -34,6 +36,18 @@ type Server struct {
 	// nil when no audio receiver is wired (the tool is then not registered).
 	audio *audiotap.Store
 
+	// diag is the in-memory host-diagnostics state behind the
+	// get_host_diagnostics tool (the live view of "what can the appex see about
+	// its host?"). nil when no diagnostics receiver is wired (the tool is then
+	// not registered).
+	diag *diagnostics.Store
+
+	// midi is the ProbeMidiBrain control channel behind the play_notes /
+	// send_midi / set_transport tools (the agent's "hands"). nil when no brain
+	// receiver is wired (the tools then have no LAN target and fall back to a
+	// hardware transport only).
+	midi *midicontrol.Hub
+
 	// usbAllowWrites is the daemon's master USB write gate (config
 	// usb_allow_writes). With it off, USB write tools (set_param, write_pattern,
 	// recall_pattern, select_preset) are never registered and a real usb_write
@@ -46,6 +60,21 @@ type Server struct {
 	// until save_device_definition persists them. Guarded by draftsMu.
 	draftsMu sync.Mutex
 	drafts   map[string]*device.Definition
+
+	// audioSnaps holds labeled audio snapshots for A/B comparison via
+	// capture_audio_snapshot / compare_audio, and lastProbe is the most recent
+	// probe_sound snapshot so probe_sound can auto-report a delta vs the
+	// previous probe. Both guarded by audioSnapsMu. Snapshots are volatile rig
+	// signal and live only in RAM (like the audio store itself).
+	audioSnapsMu sync.Mutex
+	audioSnaps   map[string]audiotap.Snapshot
+	lastProbe    *audiotap.Snapshot
+
+	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
+	// so two probes never overlap on the shared audio tap. This is what makes
+	// each probe analyse a clean, isolated segment (and replaces the harness's
+	// old manual window-clear sleeps).
+	probeMu sync.Mutex
 }
 
 // Option configures a Server at construction.
@@ -63,14 +92,29 @@ func WithAudioTap(store *audiotap.Store) Option {
 	return func(s *Server) { s.audio = store }
 }
 
+// WithDiagnostics attaches the host-diagnostics state store so the read-only
+// get_host_diagnostics tool is registered. Without it the tool is omitted.
+func WithDiagnostics(store *diagnostics.Store) Option {
+	return func(s *Server) { s.diag = store }
+}
+
+// WithMidiControl attaches the ProbeMidiBrain control hub so the play_notes /
+// send_midi / set_transport tools target the LAN brain channel as their primary
+// path. Without it those tools still register but can only reach a hardware
+// transport (BLE) via an explicit endpoint.
+func WithMidiControl(hub *midicontrol.Hub) Option {
+	return func(s *Server) { s.midi = hub }
+}
+
 // New builds the MCP server, registers global tools, and generates a tool for
 // each currently bound device.
 func New(eng *engine.Engine, opts ...Option) *Server {
 	s := &Server{
-		eng:    eng,
-		mcp:    mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
-		scenes: scene.NewStore(config.ScenesDir()),
-		drafts: map[string]*device.Definition{},
+		eng:        eng,
+		mcp:        mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
+		scenes:     scene.NewStore(config.ScenesDir()),
+		drafts:     map[string]*device.Definition{},
+		audioSnaps: map[string]audiotap.Snapshot{},
 	}
 	for _, o := range opts {
 		o(s)
@@ -171,6 +215,61 @@ func (s *Server) NotifyAudioTap(connected bool, remote string) {
 	p := &mcp.LoggingMessageParams{
 		Level:  "info",
 		Logger: "audio-tap",
+		Data: map[string]any{
+			"state":  state,
+			"remote": remote,
+			"hint":   hint,
+		},
+	}
+	ctx := context.Background()
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Log(ctx, p)
+	}
+}
+
+// NotifyHostDiagnostics broadcasts to every connected session that an
+// auv3-probe extension started or stopped reporting host diagnostics, so an
+// agent knows whether it has a live view of the plugin's host surface without
+// polling get_host_diagnostics. Like NotifyAudioTap, clients receive it only
+// after setting a logging level. Per-tick snapshots are intentionally NOT
+// broadcast (they arrive ~1 Hz) — poll get_host_diagnostics for the latest.
+func (s *Server) NotifyHostDiagnostics(connected bool, remote string) {
+	state := "connected"
+	hint := "read the host surface with get_host_diagnostics"
+	if !connected {
+		state = "disconnected"
+		hint = "no auv3-probe extension is reporting diagnostics"
+	}
+	p := &mcp.LoggingMessageParams{
+		Level:  "info",
+		Logger: "host-diagnostics",
+		Data: map[string]any{
+			"state":  state,
+			"remote": remote,
+			"hint":   hint,
+		},
+	}
+	ctx := context.Background()
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Log(ctx, p)
+	}
+}
+
+// NotifyMidiControl broadcasts to every connected session that the
+// ProbeMidiBrain control channel connected or disconnected, so an agent knows
+// it has (or lost) "hands" on the rig without polling. The symmetric
+// counterpart of NotifyAudioTap. Like notifyInbound, clients receive it only
+// after setting a logging level.
+func (s *Server) NotifyMidiControl(connected bool, remote string) {
+	state := "connected"
+	hint := "drive the rig with play_notes / send_midi / set_transport"
+	if !connected {
+		state = "disconnected"
+		hint = "no brain channel; play_notes/send_midi need a hardware endpoint"
+	}
+	p := &mcp.LoggingMessageParams{
+		Level:  "info",
+		Logger: "midi-control",
 		Data: map[string]any{
 			"state":  state,
 			"remote": remote,

@@ -82,3 +82,45 @@ func (s *Session) CheckMixerConvention() ConventionReport {
 	}
 	return rep
 }
+
+// CheckConvention is the full-surface check: it extends CheckMixerConvention
+// with the global Transport block (Toggle Play / Start Play / Stop-Rewind /
+// Rewind / Toggle Record / Tap Tempo), so diff_aum_session reports coverage of
+// the whole brain-control convention an authored session bakes, not just the
+// mixer CCs. Pan/send (node-knob targets) and the not-yet-corpus-confirmed
+// transport extras (prev/next bar, tempo value, metronome) are part of the
+// documented convention but are not authored, so they are excluded here to keep
+// "expected" equal to what BuildSession actually wires.
+func (s *Session) CheckConvention() ConventionReport {
+	rep := s.CheckMixerConvention()
+
+	actual := map[string]Mapping{}
+	for _, m := range s.Mappings(true) {
+		actual[m.Collection+"\x00"+m.Target] = m
+	}
+	for _, target := range transportTargets {
+		cc, ok := conventionTransportCC(target)
+		if !ok {
+			continue
+		}
+		rep.Expected++
+		chk := ConventionCheck{
+			Collection: "Transport", Target: target,
+			ExpectedCC: cc, ActualCC: -1, Channel: -1,
+		}
+		if m, found := actual["Transport\x00"+target]; found && m.Spec.Enabled {
+			chk.ActualCC = m.Spec.Data1
+			chk.Channel = m.Spec.Channel
+			if m.Spec.Type == TypeCC && m.Spec.Data1 == cc {
+				chk.Status = "ok"
+				rep.Wired++
+			} else {
+				chk.Status = "mismatch"
+			}
+		} else {
+			chk.Status = "missing"
+		}
+		rep.Checks = append(rep.Checks, chk)
+	}
+	return rep
+}
