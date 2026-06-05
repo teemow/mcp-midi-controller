@@ -130,27 +130,41 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 	return s
 }
 
-// notifyInbound broadcasts a decoded inbound event (and any controls it
-// reverse-mapped to) to every connected session as an MCP log notification.
-// Clients receive it only after setting a logging level (per the MCP spec).
-func (s *Server) notifyInbound(in engine.InboundEvent, obs []engine.Observation) {
-	params := &mcp.LoggingMessageParams{
-		Level:  "info",
-		Logger: "inbound",
-		Data: map[string]any{
-			"transport": in.Transport,
-			"endpoint":  in.Endpoint,
-			"kind":      in.Kind,
-			"channel":   in.Channel,
-			"number":    in.Number,
-			"value":     in.Value,
-			"observed":  obs,
-		},
-	}
+// broadcast sends one info-level MCP log notification (under logger) to every
+// connected session. Clients receive it only after setting a logging level (per
+// the MCP spec). It is the shared body of every notify* method below.
+func (s *Server) broadcast(logger string, data map[string]any) {
+	p := &mcp.LoggingMessageParams{Level: "info", Logger: logger, Data: data}
 	ctx := context.Background()
 	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, params)
+		_ = sess.Log(ctx, p)
 	}
+}
+
+// broadcastConnState broadcasts a connected/disconnected transition for a LAN
+// channel, picking connHint or goneHint for the "hint" field. It is the shared
+// body of the symmetric NotifyAudioTap / NotifyHostDiagnostics / NotifyMidiControl
+// notifiers.
+func (s *Server) broadcastConnState(logger string, connected bool, remote, connHint, goneHint string) {
+	state, hint := "connected", connHint
+	if !connected {
+		state, hint = "disconnected", goneHint
+	}
+	s.broadcast(logger, map[string]any{"state": state, "remote": remote, "hint": hint})
+}
+
+// notifyInbound broadcasts a decoded inbound event (and any controls it
+// reverse-mapped to) to every connected session as an MCP log notification.
+func (s *Server) notifyInbound(in engine.InboundEvent, obs []engine.Observation) {
+	s.broadcast("inbound", map[string]any{
+		"transport": in.Transport,
+		"endpoint":  in.Endpoint,
+		"kind":      in.Kind,
+		"channel":   in.Channel,
+		"number":    in.Number,
+		"value":     in.Value,
+		"observed":  obs,
+	})
 }
 
 // NotifyAUv3Probe broadcasts to every connected session that a fresh AUv3
@@ -158,21 +172,13 @@ func (s *Server) notifyInbound(in engine.InboundEvent, obs []engine.Observation)
 // rig sees newly probed plugins arrive without polling list_auv3_probes. Like
 // notifyInbound, clients receive it only after setting a logging level.
 func (s *Server) NotifyAUv3Probe(id, name string, params, writable int) {
-	p := &mcp.LoggingMessageParams{
-		Level:  "info",
-		Logger: "auv3-probe",
-		Data: map[string]any{
-			"id":       id,
-			"name":     name,
-			"params":   params,
-			"writable": writable,
-			"hint":     "inspect with get_auv3_probe, scaffold a definition with import_auv3_probe",
-		},
-	}
-	ctx := context.Background()
-	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, p)
-	}
+	s.broadcast("auv3-probe", map[string]any{
+		"id":       id,
+		"name":     name,
+		"params":   params,
+		"writable": writable,
+		"hint":     "inspect with get_auv3_probe, scaffold a definition with import_auv3_probe",
+	})
 }
 
 // NotifyAUMSession broadcasts to every connected session that an AUM session
@@ -181,22 +187,14 @@ func (s *Server) NotifyAUv3Probe(id, name string, params, writable int) {
 // list_aum_sessions. Like notifyInbound, clients receive it only after setting
 // a logging level.
 func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings int) {
-	p := &mcp.LoggingMessageParams{
-		Level:  "info",
-		Logger: "aum-session",
-		Data: map[string]any{
-			"id":       id,
-			"title":    title,
-			"version":  version,
-			"channels": channels,
-			"mappings": mappings,
-			"hint":     "inspect with get_aum_session, compare with diff_aum_session, propose bindings with import_aum_session",
-		},
-	}
-	ctx := context.Background()
-	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, p)
-	}
+	s.broadcast("aum-session", map[string]any{
+		"id":       id,
+		"title":    title,
+		"version":  version,
+		"channels": channels,
+		"mappings": mappings,
+		"hint":     "inspect with get_aum_session, compare with diff_aum_session, propose bindings with import_aum_session",
+	})
 }
 
 // NotifyAudioTap broadcasts to every connected session that a ProbeAudioTap
@@ -206,25 +204,9 @@ func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings 
 // intentionally NOT broadcast (they arrive ~10 Hz) — poll get_audio_tap for
 // live levels instead.
 func (s *Server) NotifyAudioTap(connected bool, remote string) {
-	state := "connected"
-	hint := "read live levels + waveform with get_audio_tap"
-	if !connected {
-		state = "disconnected"
-		hint = "no audio tap is streaming"
-	}
-	p := &mcp.LoggingMessageParams{
-		Level:  "info",
-		Logger: "audio-tap",
-		Data: map[string]any{
-			"state":  state,
-			"remote": remote,
-			"hint":   hint,
-		},
-	}
-	ctx := context.Background()
-	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, p)
-	}
+	s.broadcastConnState("audio-tap", connected, remote,
+		"read live levels + waveform with get_audio_tap",
+		"no audio tap is streaming")
 }
 
 // NotifyHostDiagnostics broadcasts to every connected session that an
@@ -234,25 +216,9 @@ func (s *Server) NotifyAudioTap(connected bool, remote string) {
 // after setting a logging level. Per-tick snapshots are intentionally NOT
 // broadcast (they arrive ~1 Hz) — poll get_host_diagnostics for the latest.
 func (s *Server) NotifyHostDiagnostics(connected bool, remote string) {
-	state := "connected"
-	hint := "read the host surface with get_host_diagnostics"
-	if !connected {
-		state = "disconnected"
-		hint = "no auv3-probe extension is reporting diagnostics"
-	}
-	p := &mcp.LoggingMessageParams{
-		Level:  "info",
-		Logger: "host-diagnostics",
-		Data: map[string]any{
-			"state":  state,
-			"remote": remote,
-			"hint":   hint,
-		},
-	}
-	ctx := context.Background()
-	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, p)
-	}
+	s.broadcastConnState("host-diagnostics", connected, remote,
+		"read the host surface with get_host_diagnostics",
+		"no auv3-probe extension is reporting diagnostics")
 }
 
 // NotifyMidiControl broadcasts to every connected session that the
@@ -261,25 +227,9 @@ func (s *Server) NotifyHostDiagnostics(connected bool, remote string) {
 // counterpart of NotifyAudioTap. Like notifyInbound, clients receive it only
 // after setting a logging level.
 func (s *Server) NotifyMidiControl(connected bool, remote string) {
-	state := "connected"
-	hint := "drive the rig with play_notes / send_midi / set_transport"
-	if !connected {
-		state = "disconnected"
-		hint = "no brain channel; play_notes/send_midi need a hardware endpoint"
-	}
-	p := &mcp.LoggingMessageParams{
-		Level:  "info",
-		Logger: "midi-control",
-		Data: map[string]any{
-			"state":  state,
-			"remote": remote,
-			"hint":   hint,
-		},
-	}
-	ctx := context.Background()
-	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, p)
-	}
+	s.broadcastConnState("midi-control", connected, remote,
+		"drive the rig with play_notes / send_midi / set_transport",
+		"no brain channel; play_notes/send_midi need a hardware endpoint")
 }
 
 // Handler returns the HTTP handler to mount on a loopback listener. It muxes

@@ -206,7 +206,7 @@ func (s *Server) exciteAndCapture(ctx context.Context, notes []int, velocity, du
 	start := s.audio.MarkEpoch()
 	for _, n := range notes {
 		if err := s.sendBrain(ctx, midicontrol.Command{Type: "noteOn", Channel: ch, Note: n, Velocity: velocity}); err != nil {
-			return audiotap.Snapshot{}, "", fmt.Errorf("probe_sound (note-on) failed: %s", err)
+			return audiotap.Snapshot{}, "", fmt.Errorf("probe_sound (note-on) failed: %w", err)
 		}
 	}
 	if duration > 0 {
@@ -221,7 +221,7 @@ func (s *Server) exciteAndCapture(ctx context.Context, notes []int, velocity, du
 	// release tail (which arrives after note-off) falls outside [start,end).
 	for _, n := range notes {
 		if err := s.sendBrain(ctx, midicontrol.Command{Type: "noteOff", Channel: ch, Note: n}); err != nil {
-			return audiotap.Snapshot{}, "", fmt.Errorf("probe_sound (note-off) failed: %s", err)
+			return audiotap.Snapshot{}, "", fmt.Errorf("probe_sound (note-off) failed: %w", err)
 		}
 	}
 
@@ -279,11 +279,7 @@ func (s *Server) writeProbeWAV(clip audiotap.Clip, notes []int) string {
 // notesTag renders the played notes into a short filename fragment, e.g. "n69"
 // or "n60_64_67"; empty notes become "n".
 func notesTag(notes []int) string {
-	parts := make([]string, len(notes))
-	for i, n := range notes {
-		parts[i] = fmt.Sprintf("%d", n)
-	}
-	return "n" + strings.Join(parts, "_")
+	return "n" + joinInts(notes, "_")
 }
 
 // settingError maps an engine SetControl/VerifyControl failure to a tool error
@@ -302,13 +298,9 @@ func settingError(i int, err error) *mcp.CallToolResult {
 // rendering so the analysis reads identically to get_audio_tap.
 func probeResult(applied []map[string]any, notes []int, velocity, duration, ch int, snap audiotap.Snapshot, prev *audiotap.Snapshot, wavPath string) *mcp.CallToolResult {
 	var b strings.Builder
-	noteList := make([]string, len(notes))
-	for i, n := range notes {
-		noteList[i] = fmt.Sprintf("%d", n)
-	}
 	if len(notes) > 0 {
 		fmt.Fprintf(&b, "probe_sound: applied %d setting(s), played [%s] vel=%d for %dms on ch%d",
-			len(applied), strings.Join(noteList, ","), velocity, duration, ch)
+			len(applied), joinInts(notes, ","), velocity, duration, ch)
 	} else {
 		fmt.Fprintf(&b, "probe_sound: applied %d setting(s), read analysis (no notes played)", len(applied))
 	}

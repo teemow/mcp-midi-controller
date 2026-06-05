@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -278,13 +279,9 @@ func (s *Server) handlePlayNotes(ctx context.Context, req *mcp.CallToolRequest) 
 	if hardware {
 		path = fmt.Sprintf("%s/%s", orDefault(args.Transport, "blemidi"), args.Endpoint)
 	}
-	noteList := make([]string, len(notes))
-	for i, n := range notes {
-		noteList[i] = fmt.Sprintf("%d", n)
-	}
 	return structResult(
 		fmt.Sprintf("played %d note(s) [%s] vel=%d for %dms on ch%d via %s",
-			len(notes), strings.Join(noteList, ","), velocity, duration, ch, path),
+			len(notes), joinInts(notes, ","), velocity, duration, ch, path),
 		map[string]any{
 			"notes":       notes,
 			"velocity":    velocity,
@@ -409,4 +406,15 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// joinInts renders a slice of ints to a sep-joined string, e.g. "60,64,67".
+// Shared by the note-list summaries (play_notes / probe_sound) and the WAV
+// filename tag so the rendering lives in one place.
+func joinInts(nums []int, sep string) string {
+	parts := make([]string, len(nums))
+	for i, n := range nums {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, sep)
 }
