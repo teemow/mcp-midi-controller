@@ -42,7 +42,9 @@ connections["Node:Chan<brainC>:Slot<brainS>:MIDI OUT"] = ["Node:Chan<synthC>:Slo
 ```
 
 Add `"BuiltIn:MIDI Control"` to that array to also drive AUM's MIDI Control /
-transport from the brain.
+transport from the brain. This wire is what makes the brain a near-complete AUM
+remote — the measured surface and the "sessions + standard mapping" vision it
+serves are in `docs/aum-brain-control.md`.
 
 ### `sourcesInfo` / `destsInfo`
 

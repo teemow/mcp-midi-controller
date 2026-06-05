@@ -77,7 +77,7 @@ A passing preflight looks like:
 
 ```
 ==> 3/4 audio tap (the ears: ProbeAudioTap streaming)
-  ok tap connected (ProbeAudioTap @ 12000 Hz, 65536 samples in window)
+  ok tap connected (ProbeAudioTap @ 48000 Hz, 480000 samples in window)
 ==> 4/4 midi brain (the hands: ProbeMidiBrain on /midi-control)
   ok brain connected (per journal)
   ok preflight passed — the loop is live
@@ -94,8 +94,14 @@ across features so the loop stays cheap to run.
 | Play a **C-major triad**     | three lowest partials near **261 / 329 / 392 Hz** (C4/E4/G4) |
 | Higher **velocity** (or a "level" CC up) | higher window **dBFS** (louder) |
 | "tone/brightness" **CC up**  | higher **spectral centroid** (brighter) |
-| A note **attack**            | exactly **one onset** |
+| A note **attack**            | **at least one** onset (`onset_count >= 1`) |
 | **Silence / white noise**    | no spurious f0 (high flatness, no confident pitch) |
+
+The onset anchor is **`>= 1`**, not "exactly one": the per-probe segment is
+analysed over its whole span (so the note-on attack is always in view), and a
+real synth attack can register more than one flux peak (a click plus the body).
+The relaxed bound keeps the truth — *the attack was seen* — without over-fitting
+to a single transient.
 
 The A4 anchor is the harness's headline assertion (`assert-a4`). It is the cheapest
 unambiguous proof the whole chain works: hands -> synth -> ears -> analysis ->
@@ -104,9 +110,9 @@ agent-readable number.
 ## The A4 assertion, and how it tightens over time
 
 `assert-a4` reads the baseline level, plays A4 for `PROBE_DURATION_MS`, then reads
-the snapshot back. The window is a rolling ~6 s, so the played note is in the
+the snapshot back. The live window is a rolling ~10 s, so the played note is in the
 window when the snapshot is taken (analysis is window-based — timing/flush lag is a
-non-issue).
+non-issue). `probe_sound` instead analyses a freshly captured, isolated segment.
 
 It then asserts in two modes, by design:
 
@@ -145,7 +151,7 @@ Each Phase 1 feature is not "done" until its row passes through this loop:
 |---------|----------------------|
 | **analysis-core** | Play A4 -> analysis reports note **A4** within a few cents with confidence; play a chord -> the expected three partials; play silence/noise -> no spurious f0. |
 | **analysis-surface** | After a played note, `get_audio_tap` **text** (not just `structuredContent`) shows f0/note/cents and top partials — i.e. the agent no longer needs to parse base64 PCM. |
-| **probe-sound-tool** | One `probe_sound` call sets a brightness CC, plays, and returns analysis reflecting the change; confirm it is a **single** round trip replacing the old three. |
+| **probe-sound-tool** | One `probe_sound` call sets a brightness CC, plays, and returns analysis reflecting the change; confirm it is a **single** round trip replacing the old three. The call is serialized and analyses an **isolated segment** (no manual window-clear gap), and returns a `wav_path` to the captured stereo segment that exists on disk (`sound-loop.sh probe-sound` asserts this). |
 | **ab-compare** | Capture A, change a CC, capture B; `compare_audio` reports deltas with the correct sign (louder -> +dBFS, brighter -> +centroid, detuned -> +cents). |
 
 ## Definition of done

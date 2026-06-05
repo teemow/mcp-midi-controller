@@ -277,6 +277,15 @@ Global tools:
 
 ### AUv3 plugins & AUM — the convention model
 
+> **Vision (the bigger prize).** The same convention model, applied to AUM
+> *itself*, turns the in-host `ProbeMidiBrain` into a near-complete remote for
+> AUM — transport, tempo, mixer, **any node parameter**, and **session load** are
+> all reachable (measured), but **only** for what a session maps. So the brain's
+> control power reduces to deep **session understanding** + a **standard mapping
+> authored into every session** so the brain can change scenes. The full vision,
+> the measured proof, and the open gaps are in
+> [aum-brain-control.md](aum-brain-control.md).
+
 Hardware pedals have **fixed, manufacturer-assigned CC#s**. AUv3 plugins do
 **not**: a parameter only responds to a CC if *you* map it inside AUM (AUM's MIDI
 control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
@@ -424,15 +433,18 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
    blocked until one enabled sample is captured; CC/Note work now.
 10. **Audio tap (`internal/audiotap`)** — the agent's "ears". The auv3-probe
     **ProbeAudioTap** AUv3 (`aufx`) is inserted on an AUM audio channel and
-    streams decimated mono PCM plus RMS/peak features over a WebSocket to the
-    daemon (`GET /audio-stream`, mounted on the same shared LAN listener as the
-    probe + session receivers — `auv3_receiver_addr`, default `:7800` — not the
-    loopback MCP endpoint). The receiver terminates the
+    streams **full-rate, interleaved stereo** PCM plus RMS/peak features over a
+    WebSocket to the daemon (`GET /audio-stream`, mounted on the same shared LAN
+    listener as the probe + session receivers — `auv3_receiver_addr`, default
+    `:7800` — not the loopback MCP endpoint). The receiver terminates the
     [contract](https://github.com/teemow/auv3-probe/blob/main/docs/auv3-extension.md)
-    (one TEXT `format` message, BINARY little-endian `Float32` mono PCM, ~10 Hz
-    TEXT `features`) into an **in-memory** store: the latest levels plus a short
-    rolling PCM window (~6 s, capped). Nothing is written to disk — audio is a
-    private, volatile rig signal. The store backs the read-only `get_audio_tap`
+    (one TEXT `format` message giving the real channel count + host rate, BINARY
+    little-endian `Float32` interleaved PCM, ~10 Hz TEXT `features`) into an
+    **in-memory** store: the latest levels plus a rolling PCM window (~10 s,
+    capped). The live window lives only in RAM (a private, volatile rig signal);
+    the only thing written to disk is the per-probe segment WAV below, under the
+    volatile state dir (`audio-clips/`, gitignored + retention-capped), never
+    committed. The store backs the read-only `get_audio_tap`
     MCP tool (connection state, last + window-derived RMS/peak, a short
     peak-envelope waveform, and age metadata as `structuredContent`); a tap
     connecting or dropping is broadcast as an `audio-tap` log notification.
@@ -446,11 +458,13 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
     + harmonic-to-noise ratio, loudness/crest dBFS, and spectral-flux onsets),
     surfaced in both `get_audio_tap`'s `structuredContent` and its human text.
     The **sound-engineer iteration tools** build on this: `get_audio_clip`
-    (decimated mono PCM as base64 `f32le` + sample rate for an agent that wants
-    the raw signal), `probe_sound` (one call: optionally set device controls /
-    raw CCs, play notes for a duration, then return the analysis captured **during
-    the sustain** — collapsing the old control→play→read three-call loop, and
-    auto-reporting a delta vs the previous probe), and the A/B pair
+    (full-rate interleaved PCM as base64 `f32le` + sample rate + channel count
+    for an agent that wants the raw signal), `probe_sound` (one call: optionally
+    set device controls / raw CCs, then **serialize** an isolated capture —
+    settle → mark epoch → note-on → hold → mark epoch → note-off → extract +
+    analyse exactly that segment — so back-to-back probes never contaminate each
+    other; it returns the analysis, a delta vs the previous probe, and a
+    `wav_path` to the captured stereo segment on disk), and the A/B pair
     `capture_audio_snapshot {label}` / `compare_audio {a,b}` (an in-memory,
     label-keyed snapshot store returning signed `b-a` deltas — loudness dBFS,
     pitch cents, spectral centroid/flatness, HNR, partial/onset counts — so a

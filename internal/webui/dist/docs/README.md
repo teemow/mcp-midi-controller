@@ -165,7 +165,10 @@ listener carries three surfaces, none of which touch hardware:
 If the daemon host runs a default-deny firewall, allow that port from your LAN.
 See [`docs/research/auv3-feedback.md`](docs/research/auv3-feedback.md) and, for
 the full author → load → play → hear → tweak loop,
-[`docs/research/agent-loop.md`](docs/research/agent-loop.md).
+[`docs/research/agent-loop.md`](docs/research/agent-loop.md). For where this is
+heading — the in-host brain as a near-complete AUM remote, gated by how well we
+model sessions and a standard mapping for scene changes — see
+[`docs/aum-brain-control.md`](docs/aum-brain-control.md).
 
 ## Web UI (signalwave)
 

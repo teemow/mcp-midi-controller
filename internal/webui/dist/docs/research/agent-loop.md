@@ -4,6 +4,11 @@ How an AI agent drives a synth on the iPad end to end, over the LAN, with no
 hardware MIDI in the path. The loop spans this daemon and the `auv3-probe` app's
 two AUv3 extensions (`ProbeMidiBrain` = hands, `ProbeAudioTap` = ears).
 
+> This sound-design loop is one instance of a broader capability: the brain can
+> drive **all** of AUM (mixer, transport, tempo, node params, scene/session
+> changes), not just play notes — provided the session maps it. The generalization
+> to laptop-free scene control is `docs/aum-brain-control.md`.
+
 ```mermaid
 flowchart LR
   agent["AI agent (MCP client)"] --> daemon["mcp-midi-controller"]
