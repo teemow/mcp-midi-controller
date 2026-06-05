@@ -43,8 +43,9 @@ func (s *Session) SetMapping(collection, target string, typ, data1, channel int)
 
 // Assign sets this leaf's MIDI trigger (type/data1/channel) and marks it
 // enabled, writing whichever on-disk encoding the leaf already uses. The
-// channel argument follows the leaf's encoding convention (packed: 0-based wire
-// channel; specState: AUM's 0 == OMNI, 1..16).
+// channel argument is the raw 0-based on-disk channel for BOTH encodings
+// (0 → MIDI/send channel 1, 15 → channel 16); the brain drives the mapping on
+// (channel + 1). See Spec.Channel.
 func (m *Mapping) Assign(typ, data1, channel int) error {
 	if m.leaf == nil || m.s == nil {
 		return fmt.Errorf("aum: mapping is not bound to a session")

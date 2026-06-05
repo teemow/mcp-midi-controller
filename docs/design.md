@@ -277,6 +277,15 @@ Global tools:
 
 ### AUv3 plugins & AUM — the convention model
 
+> **Vision (the bigger prize).** The same convention model, applied to AUM
+> *itself*, turns the in-host `ProbeMidiBrain` into a near-complete remote for
+> AUM — transport, tempo, mixer, **any node parameter**, and **session load** are
+> all reachable (measured), but **only** for what a session maps. So the brain's
+> control power reduces to deep **session understanding** + a **standard mapping
+> authored into every session** so the brain can change scenes. The full vision,
+> the measured proof, and the open gaps are in
+> [aum-brain-control.md](aum-brain-control.md).
+
 Hardware pedals have **fixed, manufacturer-assigned CC#s**. AUv3 plugins do
 **not**: a parameter only responds to a CC if *you* map it inside AUM (AUM's MIDI
 control matrix or the plugin's MIDI-learn). So for plugins the CC numbers are an
@@ -422,6 +431,50 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
    Pressure** `type` codes are still unknown (the corpus is unmapped (v13) or
    CC/Note only (v10)), so `export_aum_midimap` for those message types is
    blocked until one enabled sample is captured; CC/Note work now.
+10. **Audio tap (`internal/audiotap`)** — the agent's "ears". The auv3-probe
+    **ProbeAudioTap** AUv3 (`aufx`) is inserted on an AUM audio channel and
+    streams **full-rate, interleaved stereo** PCM plus RMS/peak features over a
+    WebSocket to the daemon (`GET /audio-stream`, mounted on the same shared LAN
+    listener as the probe + session receivers — `auv3_receiver_addr`, default
+    `:7800` — not the loopback MCP endpoint). The receiver terminates the
+    [contract](https://github.com/teemow/auv3-probe/blob/main/docs/auv3-extension.md)
+    (one TEXT `format` message giving the real channel count + host rate, BINARY
+    little-endian `Float32` interleaved PCM, ~10 Hz TEXT `features`) into an
+    **in-memory** store: the latest levels plus a rolling PCM window (~10 s,
+    capped). The live window lives only in RAM (a private, volatile rig signal);
+    the only thing written to disk is the per-probe segment WAV below, under the
+    volatile state dir (`audio-clips/`, gitignored + retention-capped), never
+    committed. The store backs the read-only `get_audio_tap`
+    MCP tool (connection state, last + window-derived RMS/peak, a short
+    peak-envelope waveform, and age metadata as `structuredContent`); a tap
+    connecting or dropping is broadcast as an `audio-tap` log notification.
+    Long-lived sockets clear the shared listener's read/write deadlines
+    (`http.ResponseController`) before upgrading so they are not dropped at the
+    60 s timeout. The window also carries **trusted Go-computed analysis** so the
+    agent never has to DSP base64 PCM: frequency-domain **spectral** features
+    (`internal/audiotap/spectral.go` — centroid, flatness, log bands) and a
+    **musical analysis** block (`internal/audiotap/analysis.go` — detected pitch
+    `f0`/note/cents/confidence via McLeod NSDF autocorrelation, harmonic partials
+    + harmonic-to-noise ratio, loudness/crest dBFS, and spectral-flux onsets),
+    surfaced in both `get_audio_tap`'s `structuredContent` and its human text.
+    The **sound-engineer iteration tools** build on this: `get_audio_clip`
+    (full-rate interleaved PCM as base64 `f32le` + sample rate + channel count
+    for an agent that wants the raw signal), `probe_sound` (one call: optionally
+    set device controls / raw CCs, then **serialize** an isolated capture —
+    settle → mark epoch → note-on → hold → mark epoch → note-off → extract +
+    analyse exactly that segment — so back-to-back probes never contaminate each
+    other; it returns the analysis, a delta vs the previous probe, and a
+    `wav_path` to the captured stereo segment on disk), and the A/B pair
+    `capture_audio_snapshot {label}` / `compare_audio {a,b}` (an in-memory,
+    label-keyed snapshot store returning signed `b-a` deltas — loudness dBFS,
+    pitch cents, spectral centroid/flatness, HNR, partial/onset counts — so a
+    tweak's effect "louder / brighter / more harmonic / detuned" is deterministic;
+    `internal/mcpserver/{audio,probe,compare}_tools.go`). These analysis/iterate/
+    compare features have a **mandatory live test loop** as their acceptance gate
+    (`scripts/sound-loop.sh` + `docs/research/sound-engineer-test-loop.md`): the
+    synthetic Go tests in `internal/audiotap` are the fast inner correctness loop,
+    but a feature is "done" only when the live loop passes against the real
+    iPad/AUM/synth rig over the LAN.
 
 All listed devices are v1; beyond the two transports (BLE-MIDI + OSC) most of the
 remaining work is **YAML definitions + MIDI-learn**, not core code.

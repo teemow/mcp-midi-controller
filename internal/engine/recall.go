@@ -58,10 +58,26 @@ func (e *Engine) SaveScene(name, description string, devices []string) (*scene.S
 	return sc, nil
 }
 
-// RecallScene replays a stored scene live: for each referenced device it renders
-// the scene's controls to wire events, sends the program changes first, waits
-// the device's settle_ms, then sends the remaining events — the live equivalent
-// of the footswitch compile ordering. Desired-state is updated as it goes.
+// RecallOptions configures how RecallSceneVia applies a scene.
+type RecallOptions struct {
+	// Mode selects additive (layer) vs exact (reset+replace) recall.
+	Mode scene.RecallMode
+
+	// Sink, when non-nil, receives every rendered wire event (program changes
+	// first, then the settle delay, then the rest) instead of each device's
+	// hardware transport — used to drive recall through the ProbeMidiBrain LAN
+	// channel, where the brain re-emits the MIDI inside AUM. The per-device
+	// binding is still required (it supplies the MIDI channel), but no hardware
+	// connection is opened. USB patch blobs are skipped (the brain has no USB
+	// surface) and reported as warnings. Desired-state is still updated.
+	Sink func(ctx context.Context, ev transport.Event) error
+}
+
+// RecallScene replays a stored scene live over each device's hardware transport:
+// for each referenced device it renders the scene's controls to wire events,
+// sends the program changes first, waits the device's settle_ms, then sends the
+// remaining events — the live equivalent of the footswitch compile ordering.
+// Desired-state is updated as it goes.
 //
 // In Additive mode the scene layers over the current desired-state; in Exact
 // mode each referenced device is first reset so its desired-state ends up
@@ -69,12 +85,21 @@ func (e *Engine) SaveScene(name, description string, devices []string) (*scene.S
 // error (its channel/endpoint is only known from the binding), mirroring
 // CompileFootswitchScene. Returns any non-fatal warnings.
 func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.RecallMode) ([]string, error) {
+	return e.RecallSceneVia(ctx, sc, RecallOptions{Mode: mode})
+}
+
+// RecallSceneVia is RecallScene with explicit options. With opts.Sink set the
+// rendered wire events are routed to the sink (the brain channel) rather than to
+// hardware transports; otherwise it behaves exactly like RecallScene.
+func (e *Engine) RecallSceneVia(ctx context.Context, sc *scene.Scene, opts RecallOptions) ([]string, error) {
 	if sc == nil {
 		return nil, fmt.Errorf("nil scene")
 	}
+	mode := opts.Mode
 	if mode == "" {
 		mode = scene.Additive
 	}
+	viaBrain := opts.Sink != nil
 
 	// Snapshot bindings so we do not hold the lock across sends/sleeps.
 	e.mu.RLock()
@@ -105,12 +130,24 @@ func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.Re
 			continue
 		}
 
-		tr, ok := e.transports[def.Transport]
-		if !ok {
-			return warnings, fmt.Errorf("no transport %q for device %q", def.Transport, def.ID)
+		// send routes one event either to the brain sink or to the device's
+		// hardware transport. The hardware transport is only resolved/connected
+		// when not going through the brain.
+		var tr transport.Transport
+		if !viaBrain {
+			tr, ok = e.transports[def.Transport]
+			if !ok {
+				return warnings, fmt.Errorf("no transport %q for device %q", def.Transport, def.ID)
+			}
+			if err := e.ensureConnected(ctx, tr, b.Endpoint); err != nil {
+				return warnings, fmt.Errorf("connect %q: %w", b.Endpoint, err)
+			}
 		}
-		if err := e.ensureConnected(ctx, tr, b.Endpoint); err != nil {
-			return warnings, fmt.Errorf("connect %q: %w", b.Endpoint, err)
+		send := func(ev transport.Event) error {
+			if viaBrain {
+				return opts.Sink(ctx, ev)
+			}
+			return tr.Send(ctx, b.Endpoint, ev)
 		}
 
 		// In exact mode the device is reset to exactly the scene's values.
@@ -149,7 +186,7 @@ func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.Re
 		}
 
 		for _, ev := range pcs {
-			if err := tr.Send(ctx, b.Endpoint, ev); err != nil {
+			if err := send(ev); err != nil {
 				return warnings, fmt.Errorf("send program change to %s: %w", logical, err)
 			}
 		}
@@ -160,7 +197,7 @@ func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.Re
 			}
 		}
 		for _, ev := range rest {
-			if err := tr.Send(ctx, b.Endpoint, ev); err != nil {
+			if err := send(ev); err != nil {
 				return warnings, fmt.Errorf("send to %s: %w", logical, err)
 			}
 		}
@@ -175,11 +212,18 @@ func (e *Engine) RecallScene(ctx context.Context, sc *scene.Scene, mode scene.Re
 	// control surface cannot reach, e.g. an SL-2 slicer pattern). These are
 	// gated; with writes disabled the rest of the scene still recalls and the
 	// skipped blob is reported as a warning rather than aborting the recall.
+	// The brain channel has no USB surface, so over-the-brain recall skips them.
 	usbLogicals := make([]string, 0, len(sc.USB))
 	for l := range sc.USB {
 		usbLogicals = append(usbLogicals, l)
 	}
 	sort.Strings(usbLogicals)
+	if viaBrain && len(usbLogicals) > 0 {
+		for _, logical := range usbLogicals {
+			warnings = append(warnings, fmt.Sprintf("skipped usb patch for %q: recall via brain has no usb surface (use hardware recall for usb blobs)", logical))
+		}
+		usbLogicals = nil
+	}
 	for _, logical := range usbLogicals {
 		b, ok := bindings[logical]
 		if !ok {

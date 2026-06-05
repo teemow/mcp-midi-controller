@@ -80,7 +80,7 @@ func (s *Server) registerAUMTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "author_aum_session",
-		Description: "Author a new AUM session (.aumproj) from scratch and stage it for download to the iPad. Define ordered mixer channels (audio/midi), each optionally hosting AUv3 nodes sourced from staged probes (probe_id), and optionally pre-wire the server CC convention. Returns the build report and the download path. The last audio channel is treated as the master.",
+		Description: "Author a new AUM session (.aumproj) from scratch and stage it for download to the iPad. Define ordered mixer channels (audio/midi), each optionally hosting AUv3 nodes sourced from staged probes (probe_id). By default the standard brain-control CC convention is baked in (mixer + transport + node-param CCs on channel 1) so the session is brain-controllable with no hand-wiring; pass a convention object to customize it, or bare:true for an untouched placeholder session. Returns the build report and the download path. The last audio channel is treated as the master.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -107,20 +107,35 @@ func (s *Server) registerAUMTools() {
 									"properties": {
 										"probe_id": {"type": "string", "description": "Staged auv3 probe id to host (its identity + params seed the node)."},
 										"probe_file": {"type": "string", "description": "Explicit probe dump path (overrides probe_id)."},
-										"component_name": {"type": "string", "description": "Override the node's human name."}
+										"component_name": {"type": "string", "description": "Override the node's human name."},
+										"preset": {"type": "integer", "description": "Optional factory preset index (AuPresetCtrl)."},
+										"state": {"type": "object", "description": "Optional saved AU state (AuStateDoc) as fullState key -> string value, stored as UTF-8 bytes. For our plugins e.g. {\"probeMidiBrainConfig\":\"{\\\"host\\\":\\\"box:7800\\\",\\\"controlEnabled\\\":true}\"} or {\"probeAudioTapConfig\":\"...\"}.", "additionalProperties": {"type": "string"}}
 									}
 								}
 							}
 						}
 					}
 				},
+				"bare": {"type": "boolean", "description": "Skip the default convention and author an untouched placeholder session (AUM's default, what an unmapped real session looks like). Ignored when a convention object is supplied."},
 				"convention": {
 					"type": "object",
-					"description": "When set, pre-assign the server CC convention to the generated placeholders.",
+					"description": "Override the standard brain-control convention pre-assigned to the generated placeholders. Omit to bake the standard map (channel 1); set bare:true to skip it entirely.",
 					"properties": {
-						"channel": {"type": "integer", "description": "MIDI channel for assigned CCs (specState 1..16; 0 = OMNI). Default 1."},
+						"channel": {"type": "integer", "description": "1-based MIDI/send channel the brain drives for the assigned CCs (1..16); stored on disk 0-based as channel-1. Default 1 (→ send channel 1)."},
 						"start_cc": {"type": "integer", "description": "First CC for node params (default 30)."},
 						"max_cc": {"type": "integer", "description": "Cap for node-param CCs (default 127)."}
+					}
+				},
+				"routes": {
+					"type": "array",
+					"description": "Inter-node MIDI routes authored into midiMatrixState. Each connects one node's MIDI OUT (from) to one or more destinations (to: a node {channel,slot} or a builtin like \"MIDI Control\"/\"Keyboard\"). channel/slot are 0-based indices into channels[].",
+					"items": {
+						"type": "object",
+						"properties": {
+							"from": {"type": "object", "properties": {"channel": {"type": "integer"}, "slot": {"type": "integer"}}, "required": ["channel", "slot"]},
+							"to": {"type": "array", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "slot": {"type": "integer"}, "builtin": {"type": "string"}}}}
+						},
+						"required": ["from", "to"]
 					}
 				}
 			},
@@ -129,8 +144,33 @@ func (s *Server) registerAUMTools() {
 	}, s.handleAuthorAUMSession)
 
 	s.mcp.AddTool(&mcp.Tool{
+		Name: "author_loop_session",
+		Description: "Author a ready-to-run agent-loop .aumproj in one call: a MIDI strip hosting ProbeMidiBrain (the hands), an audio strip hosting the synth with ProbeAudioTap inserted right after it (the ears), and a master strip. " +
+			"Wires the brain's MIDI OUT to the synth and to AUM's MIDI Control, and authors the brain/tap AuStateDoc with the daemon host so both auto-connect on load. " +
+			"After loading via the iPad's one-tap link, drive it with play_notes/send_midi/set_transport and read it back with get_audio_tap/get_audio_clip.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"synth_probe": {"type": "string", "description": "Staged probe id of the synth/instrument AUv3 to host on the audio strip."},
+				"synth_file": {"type": "string", "description": "Explicit synth probe dump path (overrides synth_probe)."},
+				"brain_probe": {"type": "string", "description": "Staged probe id of ProbeMidiBrain (run the auv3 probe for it once)."},
+				"brain_file": {"type": "string", "description": "Explicit ProbeMidiBrain probe dump path (overrides brain_probe)."},
+				"tap_probe": {"type": "string", "description": "Staged probe id of ProbeAudioTap."},
+				"tap_file": {"type": "string", "description": "Explicit ProbeAudioTap probe dump path (overrides tap_probe)."},
+				"host": {"type": "string", "description": "Daemon LAN host[:port] (e.g. \"box:7800\") embedded into the brain + tap config so they dial back automatically. Installation-specific; never committed."},
+				"synth_preset": {"type": "integer", "description": "Optional factory preset index for the synth (AuPresetCtrl)."},
+				"title": {"type": "string", "description": "Session title (default \"Agent Loop\")."},
+				"out_id": {"type": "string", "description": "Staging id / filename stem (default from title)."},
+				"tempo": {"type": "number", "description": "Session tempo BPM (default 120)."},
+				"decimation": {"type": "integer", "description": "Tap PCM decimation factor (default 4)."}
+			},
+			"required": ["synth_probe", "brain_probe", "tap_probe", "host"]
+		}`),
+	}, s.handleAuthorLoopSession)
+
+	s.mcp.AddTool(&mcp.Tool{
 		Name:        "edit_aum_session",
-		Description: "Edit a staged session in place and re-stage it: assign MIDI-control mappings (collection/target/type/data1/channel), and set channel fader/mute/solo. Writes the result back as out_id (defaults to overwriting the source) for download to the iPad. Use get_aum_session to discover collection/target paths.",
+		Description: "Edit a staged session in place and re-stage it: assign MIDI-control mappings (collection/target/type/data1/channel, plus optional range min/max, cycle and invert), and set channel fader/mute/solo. Writes the result back as out_id (defaults to overwriting the source) for download to the iPad. Use get_aum_session to discover collection/target paths.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -139,7 +179,7 @@ func (s *Server) registerAUMTools() {
 				"out_id": {"type": "string", "description": "Staging id to write (defaults to session_id, overwriting it)."},
 				"mappings": {
 					"type": "array",
-					"description": "Mapping assignments. type defaults to 0 (CC); 5 = Note. channel is specState 1..16 (0 = OMNI).",
+					"description": "Mapping assignments for a version-13 (specState) session. type codes (confirmed): 0=CC, 1=Note, 2=Program Change, 3=PBEND/CHPRS (data1 0=PBEND, 1=CHPRS); defaults to 0 (CC). channel is the raw 0-based on-disk channel (0 = MIDI/send ch1 … 15 = ch16), matching what get_aum_session reports; the brain drives it on channel+1. Optional per-mapping range (min/max, normalised 0..1), cycle (autoToggle) and invert (swap min/max) match AUM's mapping panel.",
 					"items": {
 						"type": "object",
 						"properties": {
@@ -147,14 +187,21 @@ func (s *Server) registerAUMTools() {
 							"target": {"type": "string"},
 							"type": {"type": "integer"},
 							"data1": {"type": "integer"},
-							"channel": {"type": "integer"}
+							"channel": {"type": "integer"},
+							"min": {"type": "number", "description": "Input range minimum, normalised 0..1 (AUM's 0%). Default 0."},
+							"max": {"type": "number", "description": "Input range maximum, normalised 0..1 (AUM's 100%). Default 1. For a Tempo (CHPRS) mapping, 35%..100% is min=0.3529, max=1."},
+							"cycle": {"type": "boolean", "description": "AUM's \"Cycle\" flag (autoToggle): step through values on each non-zero message instead of latching >64."},
+							"invert": {"type": "boolean", "description": "Invert the mapping (swap min/max). Applied after min/max, so invert:true with no range swaps the default 0..1 to 1..0."}
 						},
 						"required": ["collection", "target", "data1"]
 					}
 				},
 				"faders": {"type": "array", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "level": {"type": "number"}}, "required": ["channel", "level"]}},
 				"mutes": {"type": "array", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "muted": {"type": "boolean"}}, "required": ["channel", "muted"]}},
-				"solos": {"type": "array", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "soloed": {"type": "boolean"}}, "required": ["channel", "soloed"]}}
+				"solos": {"type": "array", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "soloed": {"type": "boolean"}}, "required": ["channel", "soloed"]}},
+				"presets": {"type": "array", "description": "Set a node's factory preset (AuPresetCtrl).", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "slot": {"type": "integer"}, "preset": {"type": "integer"}}, "required": ["channel", "slot", "preset"]}},
+				"configs": {"type": "array", "description": "Set a node's saved AU state (AuStateDoc) as fullState key -> string value (stored as UTF-8 bytes). E.g. for ProbeMidiBrain {\"probeMidiBrainConfig\":\"{...}\"}.", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "slot": {"type": "integer"}, "state": {"type": "object", "additionalProperties": {"type": "string"}}}, "required": ["channel", "slot", "state"]}},
+				"routes": {"type": "array", "description": "Replace midiMatrixState with these inter-node MIDI routes (see author_aum_session).", "items": {"type": "object", "properties": {"from": {"type": "object", "properties": {"channel": {"type": "integer"}, "slot": {"type": "integer"}}, "required": ["channel", "slot"]}, "to": {"type": "array", "items": {"type": "object", "properties": {"channel": {"type": "integer"}, "slot": {"type": "integer"}, "builtin": {"type": "string"}}}}}, "required": ["from", "to"]}}
 			}
 		}`),
 	}, s.handleEditAUMSession)
@@ -311,7 +358,14 @@ func (s *Server) handleGetAUMSession(_ context.Context, req *mcp.CallToolRequest
 	if len(sm.Mappings) > 0 {
 		b.WriteString("  mappings:\n")
 		for _, m := range sm.Mappings {
-			fmt.Fprintf(&b, "      %s/%s -> type=%d data1=%d ch=%d\n", m.Collection, m.Target, m.Type, m.Data1, m.Channel)
+			extra := ""
+			if m.Min != 0 || m.Max != 1 {
+				extra += fmt.Sprintf(" range=%.4g..%.4g", m.Min, m.Max)
+			}
+			if m.AutoToggle {
+				extra += " cycle"
+			}
+			fmt.Fprintf(&b, "      %s/%s -> %s (type=%d) data1=%d ch=%d (send ch%d)%s\n", m.Collection, m.Target, m.TypeName, m.Type, m.Data1, m.Channel, m.Channel+1, extra)
 		}
 	}
 	return structResult(b.String(), sm), nil
@@ -336,7 +390,7 @@ func (s *Server) handleDiffAUMSession(_ context.Context, req *mcp.CallToolReques
 		return textResult("open session: "+err.Error(), true), nil
 	}
 
-	rep := sess.CheckMixerConvention()
+	rep := sess.CheckConvention()
 	boundChannels := s.boundMIDIChannels()
 
 	verdict := "not wired to the convention yet"
@@ -350,7 +404,7 @@ func (s *Server) handleDiffAUMSession(_ context.Context, req *mcp.CallToolReques
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "convention diff for %q: %s (%d/%d channel-control targets wired)\n", sess.Title(), verdict, rep.Wired, rep.Expected)
+	fmt.Fprintf(&b, "convention diff for %q: %s (%d/%d mixer+transport targets wired)\n", sess.Title(), verdict, rep.Wired, rep.Expected)
 	if len(boundChannels) > 0 {
 		hc := make([]string, len(boundChannels))
 		for i, ch := range boundChannels {
@@ -433,14 +487,16 @@ func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequ
 	sm := sess.Map()
 	dumps := loadStagedProbeDumps()
 
-	// channelOf returns a suggested wire MIDI channel for a node: the channel of
-	// any assigned mapping under the node's chan collection, converted from the
-	// specState convention (1..16; 0 = OMNI) to the 0-based wire form.
+	// channelOf returns a suggested 1-based MIDI/send channel to bind a node on:
+	// the channel of any assigned mapping under the node's chan collection,
+	// converted from the raw 0-based on-disk channel (0 = send ch1) to the
+	// 1-based send channel the brain/binding rides (channel + 1). See
+	// aum.Spec.Channel.
 	channelOf := func(chanIndex int) (int, bool) {
 		prefix := fmt.Sprintf("Channels/chan%d/", chanIndex)
 		for _, m := range sm.Mappings {
-			if strings.HasPrefix(m.Collection, prefix) && m.Channel >= 1 {
-				return m.Channel - 1, true
+			if strings.HasPrefix(m.Collection, prefix) && m.Channel >= 0 {
+				return m.Channel + 1, true
 			}
 		}
 		return 0, false
@@ -520,6 +576,48 @@ func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequ
 
 // --- author ---------------------------------------------------------------
 
+// routeArg is the JSON shape of one MIDI route in author/edit tool input.
+type routeArg struct {
+	From struct {
+		Channel int `json:"channel"`
+		Slot    int `json:"slot"`
+	} `json:"from"`
+	To []struct {
+		Channel int    `json:"channel"`
+		Slot    int    `json:"slot"`
+		Builtin string `json:"builtin"`
+	} `json:"to"`
+}
+
+// buildRoutes converts the tool-input routes into aum.MIDIRoute values.
+func buildRoutes(in []routeArg) ([]aum.MIDIRoute, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]aum.MIDIRoute, 0, len(in))
+	for i, r := range in {
+		if len(r.To) == 0 {
+			return nil, fmt.Errorf("/routes/%d/to: at least one destination is required", i)
+		}
+		route := aum.MIDIRoute{From: aum.MIDIEndpoint{Channel: r.From.Channel, Slot: r.From.Slot}}
+		for _, d := range r.To {
+			route.To = append(route.To, aum.MIDIEndpoint{Channel: d.Channel, Slot: d.Slot, Builtin: d.Builtin})
+		}
+		out = append(out, route)
+	}
+	return out, nil
+}
+
+// stateDocBytes converts a string->string AuStateDoc map into the
+// key -> raw-bytes form aum.SetAuStateDoc expects (values stored as UTF-8).
+func stateDocBytes(in map[string]string) map[string][]byte {
+	out := make(map[string][]byte, len(in))
+	for k, v := range in {
+		out[k] = []byte(v)
+	}
+	return out
+}
+
 func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Title      string  `json:"title"`
@@ -533,16 +631,20 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 			Muted  bool     `json:"muted"`
 			Soloed bool     `json:"soloed"`
 			Nodes  []struct {
-				ProbeID       string `json:"probe_id"`
-				ProbeFile     string `json:"probe_file"`
-				ComponentName string `json:"component_name"`
+				ProbeID       string            `json:"probe_id"`
+				ProbeFile     string            `json:"probe_file"`
+				ComponentName string            `json:"component_name"`
+				Preset        *int              `json:"preset"`
+				State         map[string]string `json:"state"`
 			} `json:"nodes"`
 		} `json:"channels"`
+		Bare       bool `json:"bare"`
 		Convention *struct {
 			Channel int `json:"channel"`
 			StartCC int `json:"start_cc"`
 			MaxCC   int `json:"max_cc"`
 		} `json:"convention"`
+		Routes []routeArg `json:"routes"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -588,17 +690,33 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 			if n.ComponentName != "" {
 				ns.ComponentName = n.ComponentName
 			}
+			if n.Preset != nil {
+				ns.Preset = n.Preset
+			}
+			if len(n.State) > 0 {
+				ns.StateDoc = stateDocBytes(n.State)
+			}
 			cs.Nodes = append(cs.Nodes, ns)
 		}
 		spec.Channels = append(spec.Channels, cs)
 	}
-	if args.Convention != nil {
+	switch {
+	case args.Convention != nil:
 		spec.Convention = &aum.Convention{
 			Channel:     args.Convention.Channel,
 			NodeStartCC: args.Convention.StartCC,
 			NodeMaxCC:   args.Convention.MaxCC,
 		}
+	case !args.Bare:
+		// Default: bake the standard brain-control convention (channel 1) so the
+		// authored session is brain-controllable with no hand-wiring.
+		spec.Convention = &aum.Convention{Channel: 1}
 	}
+	routes, rerr := buildRoutes(args.Routes)
+	if rerr != nil {
+		return textResult(rerr.Error(), true), nil
+	}
+	spec.Routes = routes
 
 	sess, report, err := aum.BuildSession(spec)
 	if err != nil {
@@ -626,10 +744,146 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 	if spec.Convention != nil {
 		fmt.Fprintf(&b, ", %d CC(s) assigned", report.AssignedCCs)
 	}
+	if report.Routes > 0 {
+		fmt.Fprintf(&b, ", %d MIDI route(s)", report.Routes)
+	}
 	b.WriteByte('\n')
 	if len(report.Overflow) > 0 {
 		fmt.Fprintf(&b, "  %d node-param target(s) overflowed the CC cap and stayed unassigned\n", len(report.Overflow))
 	}
+	fmt.Fprintf(&b, "download from the iPad: GET /aum-session/%s\n", file)
+
+	structured := map[string]any{
+		"id":       id,
+		"file":     file,
+		"path":     path,
+		"download": "/aum-session/" + file,
+		"report":   report,
+	}
+	return structResult(b.String(), structured), nil
+}
+
+// --- author_loop_session --------------------------------------------------
+
+// loopNodeSpec resolves a probe (id or explicit file) into a NodeSpec, returning
+// a user-facing error string on failure.
+func loopNodeSpec(field, probeID, probeFile string) (aum.NodeSpec, string) {
+	if probeID == "" && probeFile == "" {
+		return aum.NodeSpec{}, fmt.Sprintf("%s: provide a probe id or file", field)
+	}
+	ppath, perr := resolveProbePath(probeFile, probeID)
+	if perr != nil {
+		return aum.NodeSpec{}, fmt.Sprintf("%s: %v", field, perr)
+	}
+	dump, derr := readProbeDump(ppath)
+	if derr != nil {
+		return aum.NodeSpec{}, fmt.Sprintf("%s: read probe: %v", field, derr)
+	}
+	return aum.NodeSpecFromDump(dump), ""
+}
+
+func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		SynthProbe  string  `json:"synth_probe"`
+		SynthFile   string  `json:"synth_file"`
+		BrainProbe  string  `json:"brain_probe"`
+		BrainFile   string  `json:"brain_file"`
+		TapProbe    string  `json:"tap_probe"`
+		TapFile     string  `json:"tap_file"`
+		Host        string  `json:"host"`
+		SynthPreset *int    `json:"synth_preset"`
+		Title       string  `json:"title"`
+		OutID       string  `json:"out_id"`
+		Tempo       float64 `json:"tempo"`
+		Decimation  int     `json:"decimation"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	if strings.TrimSpace(args.Host) == "" {
+		return textResult("host: a daemon host[:port] is required so the brain and tap can dial back", true), nil
+	}
+
+	brain, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile)
+	if e != "" {
+		return textResult(e, true), nil
+	}
+	synth, e := loopNodeSpec("synth_probe", args.SynthProbe, args.SynthFile)
+	if e != "" {
+		return textResult(e, true), nil
+	}
+	tap, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile)
+	if e != "" {
+		return textResult(e, true), nil
+	}
+
+	// Author the two plugins' AuStateDoc so they auto-connect to the daemon on
+	// load: brain control + tap streaming both enabled, pointed at host.
+	brainCfg, _ := json.Marshal(map[string]any{"host": args.Host, "controlEnabled": true})
+	brain.StateDoc = map[string][]byte{"probeMidiBrainConfig": brainCfg}
+	decim := args.Decimation
+	if decim <= 0 {
+		decim = 4
+	}
+	tapCfg, _ := json.Marshal(map[string]any{"host": args.Host, "streaming": true, "decimation": decim})
+	tap.StateDoc = map[string][]byte{"probeAudioTapConfig": tapCfg}
+	if args.SynthPreset != nil {
+		synth.Preset = args.SynthPreset
+	}
+
+	title := firstNonEmptyStr(args.Title, "Agent Loop")
+	tempo := args.Tempo
+	if tempo <= 0 {
+		tempo = 120
+	}
+
+	// Channel layout (0-based): 0 = MIDI brain, 1 = synth+tap insert, 2 = master.
+	spec := aum.BuildSpec{
+		Title: title,
+		Tempo: tempo,
+		// Auto-bake the standard brain-control convention so the loop session is
+		// brain-controllable (mixer + transport + node-param CCs) with zero
+		// hand-wiring; the brain and agent both speak this map.
+		Convention: &aum.Convention{Channel: 1},
+		Channels: []aum.ChannelSpec{
+			{Kind: aum.KindMIDI, Title: "Brain", Nodes: []aum.NodeSpec{brain}},
+			{Kind: aum.KindAudio, Title: "Synth", Nodes: []aum.NodeSpec{synth, tap}},
+			{Kind: aum.KindAudio, Title: "Master"},
+		},
+		// Brain MIDI OUT -> synth (slot 0 of the audio strip) + AUM MIDI Control
+		// (so transport / global MIDI control also see the brain's output).
+		Routes: []aum.MIDIRoute{{
+			From: aum.MIDIEndpoint{Channel: 0, Slot: 0},
+			To: []aum.MIDIEndpoint{
+				{Channel: 1, Slot: 0},
+				{Builtin: "MIDI Control"},
+			},
+		}},
+	}
+
+	sess, report, err := aum.BuildSession(spec)
+	if err != nil {
+		return textResult("build session: "+err.Error(), true), nil
+	}
+	data, err := sess.Archive().Encode()
+	if err != nil {
+		return textResult("encode session: "+err.Error(), true), nil
+	}
+	if _, err := aum.Open(data); err != nil {
+		return textResult("authored session failed re-decode: "+err.Error(), true), nil
+	}
+
+	id := firstNonEmptyStr(sanitize.ID(args.OutID), sanitize.ID(title), "agent-loop")
+	path, file, err := stageAUMFile(id, ".aumproj", data)
+	if err != nil {
+		return textResult("stage session: "+err.Error(), true), nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "authored loop session -> %s\n", path)
+	fmt.Fprintf(&b, "  brain[ch0/slot0] -> synth[ch1/slot0] + AUM MIDI Control; tap[ch1/slot1] inserted after synth\n")
+	fmt.Fprintf(&b, "  %d channel(s), %d node(s), %d MIDI route(s), %d convention CC(s) on ch1; brain+tap configured for host %q\n", report.Channels, report.Nodes, report.Routes, report.AssignedCCs, args.Host)
+	fmt.Fprintf(&b, "next: load via the iPad (push & open), then play_notes / get_audio_tap\n")
 	fmt.Fprintf(&b, "download from the iPad: GET /aum-session/%s\n", file)
 
 	structured := map[string]any{
@@ -650,11 +904,15 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 		File      string `json:"file"`
 		OutID     string `json:"out_id"`
 		Mappings  []struct {
-			Collection string `json:"collection"`
-			Target     string `json:"target"`
-			Type       int    `json:"type"`
-			Data1      int    `json:"data1"`
-			Channel    int    `json:"channel"`
+			Collection string   `json:"collection"`
+			Target     string   `json:"target"`
+			Type       int      `json:"type"`
+			Data1      int      `json:"data1"`
+			Channel    int      `json:"channel"`
+			Min        *float64 `json:"min"`
+			Max        *float64 `json:"max"`
+			Cycle      *bool    `json:"cycle"`
+			Invert     *bool    `json:"invert"`
 		} `json:"mappings"`
 		Faders []struct {
 			Channel int     `json:"channel"`
@@ -668,12 +926,23 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 			Channel int  `json:"channel"`
 			Soloed  bool `json:"soloed"`
 		} `json:"solos"`
+		Presets []struct {
+			Channel int `json:"channel"`
+			Slot    int `json:"slot"`
+			Preset  int `json:"preset"`
+		} `json:"presets"`
+		Configs []struct {
+			Channel int               `json:"channel"`
+			Slot    int               `json:"slot"`
+			State   map[string]string `json:"state"`
+		} `json:"configs"`
+		Routes []routeArg `json:"routes"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
-	if len(args.Mappings)+len(args.Faders)+len(args.Mutes)+len(args.Solos) == 0 {
-		return textResult("no edits given (provide mappings/faders/mutes/solos)", true), nil
+	if len(args.Mappings)+len(args.Faders)+len(args.Mutes)+len(args.Solos)+len(args.Presets)+len(args.Configs)+len(args.Routes) == 0 {
+		return textResult("no edits given (provide mappings/faders/mutes/solos/presets/configs/routes)", true), nil
 	}
 	path, err := resolveAUMSessionPath(args.File, args.SessionID)
 	if err != nil {
@@ -689,10 +958,38 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 		if m.Collection == "" || m.Target == "" {
 			return textResult(fmt.Sprintf("/mappings/%d: collection and target are required", i), true), nil
 		}
-		if err := sess.SetMapping(m.Collection, m.Target, m.Type, m.Data1, m.Channel); err != nil {
+		mp, ok := sess.FindMapping(m.Collection, m.Target)
+		if !ok {
+			return textResult(fmt.Sprintf("/mappings/%d: no mapping target %q in collection %q", i, m.Target, m.Collection), true), nil
+		}
+		if err := mp.Assign(m.Type, m.Data1, m.Channel); err != nil {
 			return textResult(fmt.Sprintf("/mappings/%d: %v", i, err), true), nil
 		}
-		applied = append(applied, fmt.Sprintf("map %s/%s -> type=%d data1=%d ch=%d", m.Collection, m.Target, m.Type, m.Data1, m.Channel))
+		note := fmt.Sprintf("map %s/%s -> type=%d data1=%d ch=%d", m.Collection, m.Target, m.Type, m.Data1, m.Channel)
+		// Range / invert: apply min/max if any of min, max or invert is given.
+		if m.Min != nil || m.Max != nil || m.Invert != nil {
+			lo, hi := 0.0, 1.0
+			if m.Min != nil {
+				lo = *m.Min
+			}
+			if m.Max != nil {
+				hi = *m.Max
+			}
+			if m.Invert != nil && *m.Invert {
+				lo, hi = hi, lo
+			}
+			if err := mp.SetRange(lo, hi); err != nil {
+				return textResult(fmt.Sprintf("/mappings/%d: %v", i, err), true), nil
+			}
+			note += fmt.Sprintf(" range=%.4g..%.4g", lo, hi)
+		}
+		if m.Cycle != nil {
+			if err := mp.SetAutoToggle(*m.Cycle); err != nil {
+				return textResult(fmt.Sprintf("/mappings/%d: %v", i, err), true), nil
+			}
+			note += fmt.Sprintf(" cycle=%t", *m.Cycle)
+		}
+		applied = append(applied, note)
 	}
 	for i, f := range args.Faders {
 		if err := sess.SetFader(f.Channel, f.Level); err != nil {
@@ -711,6 +1008,31 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 			return textResult(fmt.Sprintf("/solos/%d: %v", i, err), true), nil
 		}
 		applied = append(applied, fmt.Sprintf("solo ch%d = %t", so.Channel, so.Soloed))
+	}
+	for i, p := range args.Presets {
+		if err := sess.SetPreset(p.Channel, p.Slot, p.Preset); err != nil {
+			return textResult(fmt.Sprintf("/presets/%d: %v", i, err), true), nil
+		}
+		applied = append(applied, fmt.Sprintf("preset ch%d slot%d = %d", p.Channel, p.Slot, p.Preset))
+	}
+	for i, c := range args.Configs {
+		if len(c.State) == 0 {
+			return textResult(fmt.Sprintf("/configs/%d/state: at least one entry is required", i), true), nil
+		}
+		if err := sess.SetAuStateDoc(c.Channel, c.Slot, stateDocBytes(c.State)); err != nil {
+			return textResult(fmt.Sprintf("/configs/%d: %v", i, err), true), nil
+		}
+		applied = append(applied, fmt.Sprintf("config ch%d slot%d (%d key(s))", c.Channel, c.Slot, len(c.State)))
+	}
+	if len(args.Routes) > 0 {
+		routes, rerr := buildRoutes(args.Routes)
+		if rerr != nil {
+			return textResult(rerr.Error(), true), nil
+		}
+		if err := sess.SetMIDIRoutes(routes); err != nil {
+			return textResult("routes: "+err.Error(), true), nil
+		}
+		applied = append(applied, fmt.Sprintf("midi matrix: %d route(s)", len(routes)))
 	}
 
 	data, err := sess.Archive().Encode()

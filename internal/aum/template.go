@@ -69,18 +69,18 @@ func Template() *Archive {
 	channelControls := newNSDict(b,
 		[]any{b.Intern("Volume"), b.Intern("Mute"), b.Intern("Solo"), b.Intern("Rec enable")},
 		[]any{
-			b.Intern(placeholderLeaf(b, TypeValueDefault)),
-			b.Intern(placeholderLeaf(b, TypeTriggerDefault)),
-			b.Intern(placeholderLeaf(b, TypeTriggerDefault)),
-			b.Intern(placeholderLeaf(b, TypeTriggerDefault)),
+			b.Intern(placeholderLeaf(b)),
+			b.Intern(placeholderLeaf(b)),
+			b.Intern(placeholderLeaf(b)),
+			b.Intern(placeholderLeaf(b)),
 		},
 	)
 	slot0 := newNSDict(b,
 		[]any{b.Intern("cutoff"), b.Intern("Pan"), b.Intern("_AUMNode:Bypass")},
 		[]any{
-			b.Intern(placeholderLeaf(b, TypeValueDefault)),
-			b.Intern(placeholderLeaf(b, TypeValueDefault)),
-			b.Intern(placeholderLeaf(b, TypeTriggerDefault)),
+			b.Intern(placeholderLeaf(b)),
+			b.Intern(placeholderLeaf(b)),
+			b.Intern(placeholderLeaf(b)),
 		},
 	)
 	chan0 := newNSDict(b,
@@ -90,7 +90,7 @@ func Template() *Archive {
 	channelsColl := newNSDict(b, []any{b.Intern("chan0")}, []any{b.Intern(chan0)})
 	transport := newNSDict(b,
 		[]any{b.Intern("Toggle Play"), b.Intern("Receive MMC")},
-		[]any{b.Intern(placeholderLeaf(b, TypeTriggerDefault)), b.Intern(false)},
+		[]any{b.Intern(placeholderLeaf(b)), b.Intern(false)},
 	)
 	midiCtrlState := newNSDict(b,
 		[]any{b.Intern("Transport"), b.Intern("Channels")},
@@ -114,13 +114,16 @@ func Template() *Archive {
 	return a
 }
 
-// placeholderLeaf builds an unassigned specState mapping leaf (enabled:false)
-// with the given default type — the disabled placeholder AUM enumerates for
-// every mappable target.
-func placeholderLeaf(b *Builder, typ int) map[string]any {
+// placeholderLeaf builds an unassigned specState mapping leaf — the disabled
+// placeholder AUM enumerates for every mappable target. Confirmed from the
+// probe capture: a placeholder is `{enabled:false, type:0, data1:0}` regardless
+// of whether the target is a value or a trigger (the `enabled` flag is what
+// marks it unassigned, not a type-default trick — that is the packed encoding's
+// scheme). Assign() flips it to the real type on mapping.
+func placeholderLeaf(b *Builder) map[string]any {
 	specState := newNSDict(b,
 		[]any{b.Intern("enabled"), b.Intern("type"), b.Intern("data1")},
-		[]any{b.Intern(false), b.Intern(int64(typ)), b.Intern(int64(0))},
+		[]any{b.Intern(false), b.Intern(int64(0)), b.Intern(int64(0))},
 	)
 	return newNSDict(b,
 		[]any{b.Intern("specState"), b.Intern("channel"), b.Intern("min"), b.Intern("max"), b.Intern("autoToggle")},

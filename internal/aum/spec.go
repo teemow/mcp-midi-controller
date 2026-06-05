@@ -13,36 +13,101 @@ package aum
 // type-default leaf with data1 == 0 (the placeholder rule). This codec is the
 // regression oracle the read model and the round-trip editor share.
 
-// Message-type codes — the high bits of a packed spec, and the value of
-// specState.type. Only CC and Note are confirmed from the corpus; the
-// value/trigger defaults are the unassigned-placeholder encodings; Program
-// Change is the leading (unconfirmed) candidate per the research doc.
+import "fmt"
+
+// The two on-disk encodings use DIFFERENT message-type enumerations, so the
+// codes below are split per encoding. Conflating them is a bug: e.g. a Note is
+// packed-type 5 but specState-type 1.
+//
+// Packed-spec message-type codes (session version 8 / 10) are the high bits of
+// a packed `spec` int (typ = spec >> 11). Confirmed from the v10 corpus: CC = 0,
+// Note = 5, and the two unassigned placeholders 4 (value) / 6 (trigger).
 const (
-	// TypeCC is Control Change (confirmed: Volume = CC 7 across the corpus).
+	// TypeCC is Control Change. It is 0 in BOTH encodings (see
+	// SpecStateTypeCC), so callers may use it for either.
 	TypeCC = 0
-	// TypeProgramChange is the leading candidate for Program Change (the
-	// disabled Session Load default was type 2). UNCONFIRMED — no enabled PC
-	// mapping exists in the corpus to verify. See the research doc open items.
-	TypeProgramChange = 2
-	// TypeValueDefault is the unassigned placeholder for a continuous/value
-	// target (`0x2000|ch`, i.e. type 4 / data1 0).
+	// TypeValueDefault is the packed unassigned placeholder for a value target
+	// (`0x2000|ch`, i.e. type 4 / data1 0).
 	TypeValueDefault = 4
-	// TypeNote is a note message (strongly supported: mute/solo/rec carry
-	// notes 60/62/64 across the version-10 sessions).
+	// TypeNote is a packed note message (mute/solo/rec carry notes 60/62/64
+	// across the version-10 sessions).
 	TypeNote = 5
-	// TypeTriggerDefault is the unassigned placeholder for a trigger/show
-	// action (`0x3000|ch`, i.e. type 6 / data1 0).
+	// TypeTriggerDefault is the packed unassigned placeholder for a
+	// trigger/show action (`0x3000|ch`, i.e. type 6 / data1 0).
 	TypeTriggerDefault = 6
 )
+
+// specState message-type codes (session version 13 and the standalone
+// .aum_midimap). Confirmed 2026-06-05 from a hand-mapped probe capture
+// (docs/aum-control-surface.md → "Decoded .aumproj MIDI-Control format"). The
+// specState `type` is a small int stored directly (not bit-packed) and its enum
+// differs from the packed one. Unassigned placeholders are type 0 with
+// enabled=false (the `enabled` flag — not a type-default trick — marks them).
+const (
+	// SpecStateTypeCC is Control Change (== TypeCC).
+	SpecStateTypeCC = 0
+	// SpecStateTypeNote is a note message.
+	SpecStateTypeNote = 1
+	// SpecStateTypePC is a Program Change (the handle behind preset/session
+	// load by program number).
+	SpecStateTypePC = 2
+	// SpecStateTypeBendPressure is the slot SHARED by Pitch Bend (PBEND) and
+	// Channel Pressure (CHPRS); the two are disambiguated by data1, which for
+	// this type is a subtype selector rather than a CC/note number.
+	SpecStateTypeBendPressure = 3
+	// SpecStateBendData1 / SpecStatePressureData1 are the data1 discriminators
+	// inside the shared type-3 slot.
+	SpecStateBendData1     = 0
+	SpecStatePressureData1 = 1
+)
+
+// TypeName renders this spec's message type as a short human label, correct for
+// its on-disk encoding. A specState type-3 leaf is disambiguated to PBEND/CHPRS
+// via data1. Unknown codes fall back to "type<N>".
+func (sp Spec) TypeName() string {
+	if sp.Encoding == EncodingSpecState {
+		switch sp.Type {
+		case SpecStateTypeCC:
+			return "CC"
+		case SpecStateTypeNote:
+			return "Note"
+		case SpecStateTypePC:
+			return "PC"
+		case SpecStateTypeBendPressure:
+			if sp.Data1 == SpecStatePressureData1 {
+				return "CHPRS"
+			}
+			return "PBEND"
+		default:
+			return fmt.Sprintf("type%d", sp.Type)
+		}
+	}
+	switch sp.Type {
+	case TypeCC:
+		return "CC"
+	case TypeNote:
+		return "Note"
+	case TypeValueDefault:
+		return "value-placeholder"
+	case TypeTriggerDefault:
+		return "trigger-placeholder"
+	default:
+		return fmt.Sprintf("type%d", sp.Type)
+	}
+}
 
 // Spec is the decoded MIDI trigger of a mapping leaf, normalized across both
 // on-disk encodings.
 //
-// Channel is the raw on-disk channel value and its meaning differs by encoding:
-// in the packed form it is the 0-based wire channel (0 → MIDI ch 1); in the
-// decomposed form it is AUM's channel field where 0 == OMNI and 1..16 are the
-// MIDI channels. Encoding records which applies. Enabled is the placeholder
-// filter: a leaf is a real mapping only when Enabled is true.
+// Channel is the raw on-disk channel value. In BOTH encodings it is 0-based:
+// stored 0 → MIDI/send channel 1, stored 15 → channel 16. This was verified
+// live (2026-06-05): a Volume/Master-Vol leaf stored channel=0 responded to
+// brain send-channel 1 and did NOT respond to send-channel 16, ruling out the
+// "0 == OMNI, 1..16" reading the AUM channel-picker UI suggests. The OMNI
+// sentinel (if any) is not yet corpus-confirmed — see docs/research/aum.md. To
+// drive a mapping the brain emits on (Channel + 1); to author for send-channel
+// N store (N - 1). Enabled is the placeholder filter: a leaf is a real mapping
+// only when Enabled is true.
 type Spec struct {
 	Type     int
 	Data1    int

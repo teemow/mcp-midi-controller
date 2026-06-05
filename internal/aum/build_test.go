@@ -169,23 +169,25 @@ func TestBuildSessionConvention(t *testing.T) {
 		t.Fatalf("BuildSession: %v", err)
 	}
 
-	// chan0 mixer block (audio ordinal 1) + two node params = 6 assigned CCs.
-	if report.AssignedCCs != 6 {
-		t.Fatalf("AssignedCCs = %d, want 6", report.AssignedCCs)
+	// chan0 mixer block (audio ordinal 1) + two node params + the 6-target
+	// global transport block = 12 assigned CCs.
+	if report.AssignedCCs != 12 {
+		t.Fatalf("AssignedCCs = %d, want 12", report.AssignedCCs)
 	}
 	if len(report.Overflow) != 0 {
 		t.Fatalf("unexpected overflow: %v", report.Overflow)
 	}
 
-	// Mixer convention on chan0: Mute=21 Volume=22 Solo=45 Rec=53, channel 3.
+	// Mixer convention on chan0: Mute=21 Volume=22 Solo=45 Rec=53. The
+	// convention's send channel 3 is stored 0-based as 2 (send ch = stored+1).
 	mixer := map[string]int{"Mute": 21, "Volume": 22, "Solo": 45, "Rec enable": 53}
 	for target, wantCC := range mixer {
 		m, ok := s.FindMapping("Channels/chan0/Channel controls", target)
 		if !ok {
 			t.Fatalf("missing chan0 %s", target)
 		}
-		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 3 {
-			t.Fatalf("chan0 %s spec = %+v, want CC %d ch 3", target, m.Spec, wantCC)
+		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 2 {
+			t.Fatalf("chan0 %s spec = %+v, want CC %d stored ch 2 (send ch3)", target, m.Spec, wantCC)
 		}
 	}
 
@@ -207,9 +209,25 @@ func TestBuildSessionConvention(t *testing.T) {
 		t.Fatalf("MIDI strip Mute should remain a placeholder: %+v (ok=%v)", m.Spec, ok)
 	}
 
+	// The transport block is wired on the Transport collection (CC 20 + 102-105
+	// + 108), on the convention channel (send ch3 → stored 2).
+	transport := map[string]int{
+		"Toggle Play": 20, "Start Play": 102, "Stop/Rewind": 103,
+		"Rewind": 104, "Toggle Record": 105, "Tap Tempo": 108,
+	}
+	for target, wantCC := range transport {
+		m, ok := s.FindMapping("Transport", target)
+		if !ok {
+			t.Fatalf("missing transport %s", target)
+		}
+		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 2 {
+			t.Fatalf("transport %s spec = %+v, want CC %d stored ch 2 (send ch3)", target, m.Spec, wantCC)
+		}
+	}
+
 	// The flat SessionMap now reports exactly the assigned mappings.
-	if got := len(s.Map().Mappings); got != 6 {
-		t.Fatalf("SessionMap mappings = %d, want 6", got)
+	if got := len(s.Map().Mappings); got != 12 {
+		t.Fatalf("SessionMap mappings = %d, want 12", got)
 	}
 
 	// And it still round-trips graph-equal.
@@ -221,8 +239,78 @@ func TestBuildSessionConvention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-open: %v", err)
 	}
-	if got := len(reopened.Map().Mappings); got != 6 {
-		t.Fatalf("re-opened SessionMap mappings = %d, want 6", got)
+	if got := len(reopened.Map().Mappings); got != 12 {
+		t.Fatalf("re-opened SessionMap mappings = %d, want 12", got)
+	}
+}
+
+// TestBuildSessionCatalogueFindings asserts the authored placeholder catalogue
+// reflects the confirmed AUM key strings and specState encoding: the corrected
+// node show/front keys, the extended transport surface, the global System
+// actions, the per-channel ScrollToChannel target, and that placeholders are
+// the confirmed specState shape (type 0, enabled false).
+func TestBuildSessionCatalogueFindings(t *testing.T) {
+	s, _, err := BuildSession(buildTestSpec())
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	all := s.Mappings(true)
+
+	present := []struct{ coll, target string }{
+		{"Channels/chan0/slot0", "_AUMNode:FrontPlugin"},
+		{"Channels/chan0/slot0", "_AUMNode:TogglePlugin"},
+		{"Transport", "Previous bar"},
+		{"Transport", "Next bar"},
+		{"Transport", "Tempo"},
+		{"Transport", "Metronome on/off"},
+		{"System", "_AUM:ShowSelf"},
+		{"System", "_AUM:HideAllPlugins"},
+		{"System", "_AUM:UnSoloAll"},
+		{"Channels/chan0/Channel controls", "ScrollToChannel"},
+		{"Channels/chan2/Channel controls", "ScrollToChannel"},
+	}
+	for _, p := range present {
+		if _, ok := findMapping(all, p.coll, p.target); !ok {
+			t.Fatalf("catalogue missing %s / %s", p.coll, p.target)
+		}
+	}
+
+	// The bogus pre-capture key must be gone.
+	if _, ok := findMapping(all, "Channels/chan0/slot0", "_AUMNode:ShowPlugin"); ok {
+		t.Fatalf("catalogue still has the non-existent _AUMNode:ShowPlugin key")
+	}
+
+	// A placeholder leaf is the confirmed specState shape: type 0, enabled false.
+	ph, ok := findMapping(all, "Transport", "Previous bar")
+	if !ok {
+		t.Fatalf("missing placeholder under Transport")
+	}
+	if ph.Spec.Enabled || ph.Spec.Type != SpecStateTypeCC || ph.Spec.Encoding != EncodingSpecState {
+		t.Fatalf("placeholder spec = %+v, want {type 0, enabled false, specState}", ph.Spec)
+	}
+}
+
+// TestBuildSessionProgramChange authors a Program Change mapping onto a node's
+// preset-load handle and verifies the confirmed specState PC code round-trips
+// with the right label — the capability unblocked by confirming PC = 2.
+func TestBuildSessionProgramChange(t *testing.T) {
+	s, _, err := BuildSession(buildTestSpec())
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	// Bypass is a reserved trigger target on the node slot; assign a PC to it.
+	if err := s.SetMapping("Channels/chan0/slot0", "_AUMNode:Bypass", SpecStateTypePC, 5, 1); err != nil {
+		t.Fatalf("SetMapping PC: %v", err)
+	}
+	m, ok := s.FindMapping("Channels/chan0/slot0", "_AUMNode:Bypass")
+	if !ok {
+		t.Fatalf("mapping not found after assign")
+	}
+	if !m.Spec.Enabled || m.Spec.Type != SpecStateTypePC || m.Spec.Data1 != 5 {
+		t.Fatalf("PC mapping = %+v, want enabled PC data1 5", m.Spec)
+	}
+	if m.Spec.TypeName() != "PC" {
+		t.Fatalf("TypeName = %q, want PC", m.Spec.TypeName())
 	}
 }
 

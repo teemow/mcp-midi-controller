@@ -34,8 +34,8 @@ func (s *Server) registerSceneTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "recall_scene",
-		Description: "Replay a saved scene live: program changes first, per-device settle delay, then the remaining CC/OSC events. mode=additive (default) layers over current state; mode=exact resets each referenced device to exactly the scene's values.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"mode":{"type":"string","enum":["additive","exact"]}},"required":["name"]}`),
+		Description: "Replay a saved scene live: program changes first, per-device settle delay, then the remaining CC/OSC events. mode=additive (default) layers over current state; mode=exact resets each referenced device to exactly the scene's values. via=auto (default) sends through the ProbeMidiBrain LAN channel when a brain is connected (the brain re-emits inside AUM, laptop-free) and falls back to the hardware transports otherwise; via=brain forces the brain (errors if none); via=hardware forces the device transports (BLE/OSC). USB patch blobs only recall over hardware.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"mode":{"type":"string","enum":["additive","exact"]},"via":{"type":"string","enum":["auto","brain","hardware"]}},"required":["name"]}`),
 	}, s.handleRecallScene)
 
 	s.mcp.AddTool(&mcp.Tool{
@@ -111,6 +111,7 @@ func (s *Server) handleRecallScene(ctx context.Context, req *mcp.CallToolRequest
 	var args struct {
 		Name string `json:"name"`
 		Mode string `json:"mode"`
+		Via  string `json:"via"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -127,14 +128,52 @@ func (s *Server) handleRecallScene(ctx context.Context, req *mcp.CallToolRequest
 	default:
 		return textResult("/mode: must be additive or exact", true), nil
 	}
+	via := strings.ToLower(strings.TrimSpace(args.Via))
+	switch via {
+	case "", "auto", "brain", "hardware":
+	default:
+		return textResult("/via: must be auto, brain or hardware", true), nil
+	}
 
 	sc, err := s.scenes.Load(args.Name)
 	if err != nil {
 		return textResult(fmt.Sprintf("cannot load scene %q: %v", args.Name, err), true), nil
 	}
-	warnings, err := s.eng.RecallScene(ctx, sc, mode)
-	if err != nil {
-		return textResult("recall_scene failed: "+err.Error(), true), nil
+
+	// Decide the path. "auto" prefers the brain when one is connected, else
+	// hardware; "brain"/"hardware" force it. The brain path renders the scene to
+	// wire events and pushes them through the LAN control channel (the brain
+	// re-emits inside AUM); the hardware path drives each device's transport.
+	useBrain := via == "brain"
+	if via == "" || via == "auto" {
+		useBrain = s.brainConnected()
+	}
+
+	var (
+		warnings []string
+		path     string
+	)
+	if useBrain {
+		warnings, err = s.eng.RecallSceneVia(ctx, sc, engine.RecallOptions{Mode: mode, Sink: s.brainEventSink()})
+		path = "brain channel"
+		// On an explicit via=brain with no brain, surface a clear error.
+		if err != nil && via == "brain" {
+			return textResult("recall_scene (brain) failed: "+err.Error(), true), nil
+		}
+		// On auto, a brain send error (e.g. it dropped mid-recall) falls back to
+		// hardware so the recall still completes.
+		if err != nil {
+			warnings = append(warnings, "brain recall failed ("+err.Error()+"); fell back to hardware")
+			useBrain = false
+		}
+	}
+	if !useBrain {
+		warnings2, herr := s.eng.RecallScene(ctx, sc, mode)
+		warnings = append(warnings, warnings2...)
+		if herr != nil {
+			return textResult("recall_scene failed: "+herr.Error(), true), nil
+		}
+		path = "hardware transports"
 	}
 
 	warn := ""
@@ -145,7 +184,7 @@ func (s *Server) handleRecallScene(ctx context.Context, req *mcp.CallToolRequest
 	if len(sc.USB) > 0 {
 		usbNote = fmt.Sprintf(" + %d usb patch(es)", len(sc.USB))
 	}
-	return textResult(fmt.Sprintf("recalled scene %q (%s) onto %d device(s)%s%s", sc.Name, mode, len(sc.Devices), usbNote, warn), false), nil
+	return textResult(fmt.Sprintf("recalled scene %q (%s) onto %d device(s) via %s%s%s", sc.Name, mode, len(sc.Devices), path, usbNote, warn), false), nil
 }
 
 func (s *Server) handleCaptureUSBPatch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

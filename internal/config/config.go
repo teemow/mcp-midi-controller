@@ -76,6 +76,13 @@ func DesiredStatePath() string { return filepath.Join(StateDir(), "desired-state
 // authoring input, not committed config.
 func AUv3ProbesDir() string { return filepath.Join(StateDir(), "auv3-probes") }
 
+// AudioClipsDir is where per-probe audio segments (stereo float32 WAVs written
+// by probe_sound) land for an agent to fetch by path. Like AUv3ProbesDir it is
+// volatile (under the state dir), NOT rig-as-code: captured audio is a private
+// rig signal and is never committed (see the public-vs-private rule). It is
+// retention-capped (oldest pruned) so it never grows without bound.
+func AudioClipsDir() string { return filepath.Join(StateDir(), "audio-clips") }
+
 // AUMSessionsDir is the staging dir for AUM session (.aumproj) and standalone
 // MIDI-map (.aum_midimap) files: the ones uploaded from the iPad via the aum
 // receiver and the ones authored/edited by the aum MCP tools (then downloaded

@@ -8,7 +8,7 @@
 WEB_DIR := web
 EMBED_DIR := internal/webui/dist
 
-.PHONY: all build web web-install go-build test lint check-web-clean clean
+.PHONY: all build web web-install go-build go-install deploy restart status logs test lint check-web-clean clean
 
 all: build
 
@@ -26,6 +26,27 @@ web-install:
 ## go-build: build the daemon (consumes the committed embed dir)
 go-build:
 	go build ./...
+
+## go-install: install the daemon into ~/.go/bin (where the systemd unit looks)
+go-install:
+	GOBIN=$(HOME)/.go/bin go install ./cmd/mcp-midi-controller
+
+## deploy: build + install + (re)start the systemd user service (idempotent;
+## first install or rolling out a new build). See scripts/deploy.sh.
+deploy:
+	./scripts/deploy.sh
+
+## restart: restart the running systemd user service
+restart:
+	systemctl --user restart mcp-midi-controller.service
+
+## status: show the systemd user service status
+status:
+	systemctl --user --no-pager status mcp-midi-controller.service
+
+## logs: follow the daemon journal
+logs:
+	journalctl --user -u mcp-midi-controller.service -f
 
 ## test: run the Go test suite
 test:

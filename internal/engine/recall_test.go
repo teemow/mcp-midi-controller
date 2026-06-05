@@ -9,6 +9,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/mcp-midi-controller/internal/transport"
 )
 
 // newRecallTestEngine builds an engine with the settle pedal definition bound on
@@ -80,6 +81,47 @@ func TestRecallSceneProgramChangeFirstAndSettle(t *testing.T) {
 	st := eng.State().Device("pedal")
 	if st["preset"] == nil || st["level"] == nil || st["mode"] == nil {
 		t.Fatalf("desired-state not recorded: %+v", st)
+	}
+}
+
+func TestRecallSceneViaBrainSink(t *testing.T) {
+	eng, ft := newRecallTestEngine(t)
+	sc := &scene.Scene{
+		Name:    "Verse",
+		Devices: map[string]map[string]any{"pedal": {"preset": 5, "level": 100, "mode": "on"}},
+	}
+
+	var sunk [][]byte
+	sink := func(_ context.Context, ev transport.Event) error {
+		sunk = append(sunk, append([]byte(nil), ev.Data...))
+		return nil
+	}
+	if _, err := eng.RecallSceneVia(context.Background(), sc, RecallOptions{Mode: scene.Additive, Sink: sink}); err != nil {
+		t.Fatalf("recall via sink: %v", err)
+	}
+
+	// The brain sink, not the hardware transport, received the events.
+	ft.mu.Lock()
+	nHW := len(ft.sent)
+	ft.mu.Unlock()
+	if nHW != 0 {
+		t.Fatalf("recall via brain should not touch hardware, got %d hardware events", nHW)
+	}
+	if len(sunk) != 3 {
+		t.Fatalf("want 3 sunk events, got %d: % X", len(sunk), sunk)
+	}
+	// Same ordering invariant as the hardware path: program change first.
+	if sunk[0][0] != 0xC1 || sunk[0][1] != 5 {
+		t.Fatalf("sunk[0] = % X, want program change C1 05", sunk[0])
+	}
+	if sunk[1][0] != 0xB1 || sunk[1][1] != 17 || sunk[1][2] != 100 {
+		t.Fatalf("sunk[1] = % X, want CC 17 = 100", sunk[1])
+	}
+
+	// Desired-state is still recorded on the brain path.
+	st := eng.State().Device("pedal")
+	if st["preset"] == nil || st["level"] == nil || st["mode"] == nil {
+		t.Fatalf("desired-state not recorded on brain path: %+v", st)
 	}
 }
 

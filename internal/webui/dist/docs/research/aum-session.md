@@ -9,6 +9,13 @@ and (3) **diff** AUM's actual CC→parameter wiring against the server's
 convention (`docs/research/aum.md`) — the build-time verification that stands in
 for the absent MIDI echo (`docs/research/auv3-feedback.md`).
 
+> **Why this depth matters.** How well we model the session *is* how much the
+> in-host brain can control: it can only reach what the session maps. This format
+> work is therefore pillar one of the "sessions + standard mapping → brain scene
+> control" vision (`docs/aum-brain-control.md`), which also names this note's open
+> gaps (the PC/PBEND/CHPRS `type` codes; AUM's globally-stored Session-Load
+> actions that never appear in the file).
+
 > **Status: schema verified by parsing 75 real sessions + a standalone map + two
 > public samples** off-device on Linux with Python `plistlib` (the Go importer
 > will use `howett.net/plist`; no `plutil` on Linux). Confirmed across **three
@@ -238,10 +245,11 @@ Notes:
   controls (`Mute`, `Solo`, `Rec enable`, `Volume`); each node's collection is
   keyed `"slot<N>"` (its slot position) and contains that node's mappable
   parameters by **parameter name/identifier** (e.g. an AUv3's `keyPath`), plus
-  reserved keys `"_AUMNode:Bypass"` and `"_AUMNode:ShowPlugin"` and, on a pan
-  node, `"Pan"`.
+  reserved keys `"_AUMNode:Bypass"`, `"_AUMNode:FrontPlugin"` (Show & Front)
+  and `"_AUMNode:TogglePlugin"` (Show/Hide) and, on a pan node, `"Pan"`.
 - Reserved/internal targets use an underscore prefix: `"_AUMNode:Bypass"`,
-  `"_AUMNode:ShowPlugin"`, `"_AUM:ShowSelf"` (System → Switch to AUM), etc.
+  `"_AUMNode:FrontPlugin"`, `"_AUMNode:TogglePlugin"`, `"_AUM:ShowSelf"`
+  (System → Switch to AUM), etc. (key strings confirmed from the probe capture).
 - `"Receive MMC"` under Transport is a plain bool, not a mapping leaf.
 - Dynamic collections (Session Load, Preset Load, Tempo Presets) are
   user-populated. A standalone Session Load `.aum_midimap` (below) shows their
@@ -280,7 +288,7 @@ A leaf is a dict. There are **two encodings**, and which one a session uses is
 | `specState.enabled` | bool | **whether a MIDI trigger is assigned** (`false` = the placeholder; the target exists but is unmapped) |
 | `specState.data1` | int | the data byte — CC#, note#, or PC# (0–127) |
 | `specState.type` | int | message-**type enum** (see below) |
-| `channel` | int | MIDI channel, AUM's `0 = OMNI`, else 1–16 |
+| `channel` | int | **0-based** MIDI channel: `0` = send/MIDI ch 1 … `15` = ch 16 (verified live 2026-06-05; the brain drives a leaf on `channel+1`). An OMNI sentinel, if any, is not yet corpus-confirmed — the AUM picker's "0 = OMNI" label does **not** match the stored value |
 | `min` / `max` / `autoToggle` | — | as in (a) |
 
 This is empirical: every `version` 13 session in the corpus uses `specState`;
@@ -310,7 +318,16 @@ type    = spec >> 11           // message-type code (see table)
 | **0** | **Control Change** | **confirmed** — `Channel controls/Volume` = `0x0070+ch` = CC **7** on every channel (matches the BeatStep README *and* the rig's version-10 sessions) | CC# |
 | **5** | **Note** | strongly supported — `Mute`/`Solo`/`Rec enable` carry notes **60/62/64**, transport `Rewind`/`Toggle Record`/`Tap Tempo` notes **82/81/90**, consistently across the version-10 sessions (a saved controller template) | note# |
 | 4 | value-target default | the dominant leaf: `0x2000 \| channel`, i.e. `type 4, data1 0` — the **unassigned placeholder** for a continuous/value target (occasionally `data1>0` for a real assignment, so 4 is a real code whose *unset* form is `data1 0`) | 0 = unset |
-| 6 | trigger-target default | `0x3000 \| channel` (`type 6, data1 0`) — the unassigned placeholder for **trigger/show** actions (`_AUM:ShowSelf`, `_AUMNode:ShowPlugin`) | 0 = unset |
+| 6 | trigger-target default | `0x3000 \| channel` (`type 6, data1 0`) — the unassigned placeholder for **trigger/show** actions (`_AUM:ShowSelf`, `_AUMNode:FrontPlugin`) | 0 = unset |
+
+> **The version-13 `specState` encoding uses a *different* `type` enum** — do
+> not reapply the packed codes above to it. Confirmed 2026-06-05 from a
+> hand-mapped probe capture (see `docs/aum-control-surface.md`): **0 = CC**,
+> **1 = Note**, **2 = Program Change**, **3 = Pitch Bend / Channel Pressure**
+> (the two share type 3 and are split by `data1`: `0` = PBEND, `1` = CHPRS).
+> Unassigned placeholders are `{enabled:false, type:0, data1:0}` — the explicit
+> `enabled` flag marks them, not a type-default trick. These are the codes the
+> `aum` library writes/reads for v13 sessions and the standalone `.aum_midimap`.
 
 For a **CC** mapping this reduces to **`spec = (cc << 4) | (channel-1)`** — all
 `diff_aum_session` needs to compare AUM's real wiring to the convention CCs in

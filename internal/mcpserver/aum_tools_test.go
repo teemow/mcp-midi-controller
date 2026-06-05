@@ -98,9 +98,10 @@ func TestAUMDiffUnwiredSession(t *testing.T) {
 	s := newAUMServer(t)
 	stageProbe(t)
 
-	// Author WITHOUT a convention: every leaf stays a placeholder.
+	// Author WITHOUT a convention (bare): every leaf stays a placeholder.
 	res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"out_id": "blank",
+		"bare":   true,
 		"channels": []any{
 			map[string]any{"kind": "audio", "title": "Ch1"},
 			map[string]any{"kind": "audio", "title": "Master"},
@@ -184,11 +185,11 @@ func TestAUMImportProposesBindings(t *testing.T) {
 	text := resultText(res)
 	// The hosted node matched the staged probe and proposed a binding whose
 	// device id derives from the probe; the channel was inferred from the
-	// convention (specState ch 3 -> wire ch 2).
+	// convention (authored send ch 3 → stored 0-based 2 → suggested send ch 3).
 	if !strings.Contains(text, "probe=gtr1") {
 		t.Fatalf("import did not match the probe:\n%s", text)
 	}
-	if !strings.Contains(text, "channel=2") {
+	if !strings.Contains(text, "channel=3") {
 		t.Fatalf("import did not infer the channel:\n%s", text)
 	}
 }
