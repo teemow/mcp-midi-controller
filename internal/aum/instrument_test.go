@@ -130,14 +130,14 @@ func TestInstrumentPriorityOrder(t *testing.T) {
 		}
 	}
 	// Reserved trigger before node params; instrument params before effect.
-	if !(bypass.Spec.Data1 < cutoff.Spec.Data1) {
+	if bypass.Spec.Data1 >= cutoff.Spec.Data1 {
 		t.Fatalf("reserved bypass CC %d should precede instrument cutoff CC %d", bypass.Spec.Data1, cutoff.Spec.Data1)
 	}
-	if !(cutoff.Spec.Data1 < reso.Spec.Data1 && reso.Spec.Data1 < drive.Spec.Data1) {
+	if cutoff.Spec.Data1 >= reso.Spec.Data1 || reso.Spec.Data1 >= drive.Spec.Data1 {
 		t.Fatalf("instrument params (%d,%d) should precede effect params (%d,%d)",
 			cutoff.Spec.Data1, reso.Spec.Data1, drive.Spec.Data1, mix.Spec.Data1)
 	}
-	if !(drive.Spec.Data1 < mix.Spec.Data1) {
+	if drive.Spec.Data1 >= mix.Spec.Data1 {
 		t.Fatalf("effect drive CC %d should precede mix CC %d", drive.Spec.Data1, mix.Spec.Data1)
 	}
 }
