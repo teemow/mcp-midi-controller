@@ -121,7 +121,7 @@ func (s *Server) registerAUMTools() {
 					"type": "object",
 					"description": "Override the standard brain-control convention pre-assigned to the generated placeholders. Omit to bake the standard map (channel 1); set bare:true to skip it entirely.",
 					"properties": {
-						"channel": {"type": "integer", "description": "MIDI channel for assigned CCs (specState 1..16; 0 = OMNI). Default 1."},
+						"channel": {"type": "integer", "description": "1-based MIDI/send channel the brain drives for the assigned CCs (1..16); stored on disk 0-based as channel-1. Default 1 (→ send channel 1)."},
 						"start_cc": {"type": "integer", "description": "First CC for node params (default 30)."},
 						"max_cc": {"type": "integer", "description": "Cap for node-param CCs (default 127)."}
 					}
@@ -170,7 +170,7 @@ func (s *Server) registerAUMTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "edit_aum_session",
-		Description: "Edit a staged session in place and re-stage it: assign MIDI-control mappings (collection/target/type/data1/channel), and set channel fader/mute/solo. Writes the result back as out_id (defaults to overwriting the source) for download to the iPad. Use get_aum_session to discover collection/target paths.",
+		Description: "Edit a staged session in place and re-stage it: assign MIDI-control mappings (collection/target/type/data1/channel, plus optional range min/max, cycle and invert), and set channel fader/mute/solo. Writes the result back as out_id (defaults to overwriting the source) for download to the iPad. Use get_aum_session to discover collection/target paths.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -179,7 +179,7 @@ func (s *Server) registerAUMTools() {
 				"out_id": {"type": "string", "description": "Staging id to write (defaults to session_id, overwriting it)."},
 				"mappings": {
 					"type": "array",
-					"description": "Mapping assignments for a version-13 (specState) session. type codes (confirmed): 0=CC, 1=Note, 2=Program Change, 3=PBEND/CHPRS (data1 0=PBEND, 1=CHPRS); defaults to 0 (CC). channel is specState 1..16 (0 = OMNI).",
+					"description": "Mapping assignments for a version-13 (specState) session. type codes (confirmed): 0=CC, 1=Note, 2=Program Change, 3=PBEND/CHPRS (data1 0=PBEND, 1=CHPRS); defaults to 0 (CC). channel is the raw 0-based on-disk channel (0 = MIDI/send ch1 … 15 = ch16), matching what get_aum_session reports; the brain drives it on channel+1. Optional per-mapping range (min/max, normalised 0..1), cycle (autoToggle) and invert (swap min/max) match AUM's mapping panel.",
 					"items": {
 						"type": "object",
 						"properties": {
@@ -187,7 +187,11 @@ func (s *Server) registerAUMTools() {
 							"target": {"type": "string"},
 							"type": {"type": "integer"},
 							"data1": {"type": "integer"},
-							"channel": {"type": "integer"}
+							"channel": {"type": "integer"},
+							"min": {"type": "number", "description": "Input range minimum, normalised 0..1 (AUM's 0%). Default 0."},
+							"max": {"type": "number", "description": "Input range maximum, normalised 0..1 (AUM's 100%). Default 1. For a Tempo (CHPRS) mapping, 35%..100% is min=0.3529, max=1."},
+							"cycle": {"type": "boolean", "description": "AUM's \"Cycle\" flag (autoToggle): step through values on each non-zero message instead of latching >64."},
+							"invert": {"type": "boolean", "description": "Invert the mapping (swap min/max). Applied after min/max, so invert:true with no range swaps the default 0..1 to 1..0."}
 						},
 						"required": ["collection", "target", "data1"]
 					}
@@ -354,7 +358,14 @@ func (s *Server) handleGetAUMSession(_ context.Context, req *mcp.CallToolRequest
 	if len(sm.Mappings) > 0 {
 		b.WriteString("  mappings:\n")
 		for _, m := range sm.Mappings {
-			fmt.Fprintf(&b, "      %s/%s -> %s (type=%d) data1=%d ch=%d\n", m.Collection, m.Target, m.TypeName, m.Type, m.Data1, m.Channel)
+			extra := ""
+			if m.Min != 0 || m.Max != 1 {
+				extra += fmt.Sprintf(" range=%.4g..%.4g", m.Min, m.Max)
+			}
+			if m.AutoToggle {
+				extra += " cycle"
+			}
+			fmt.Fprintf(&b, "      %s/%s -> %s (type=%d) data1=%d ch=%d (send ch%d)%s\n", m.Collection, m.Target, m.TypeName, m.Type, m.Data1, m.Channel, m.Channel+1, extra)
 		}
 	}
 	return structResult(b.String(), sm), nil
@@ -476,14 +487,16 @@ func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequ
 	sm := sess.Map()
 	dumps := loadStagedProbeDumps()
 
-	// channelOf returns a suggested wire MIDI channel for a node: the channel of
-	// any assigned mapping under the node's chan collection, converted from the
-	// specState convention (1..16; 0 = OMNI) to the 0-based wire form.
+	// channelOf returns a suggested 1-based MIDI/send channel to bind a node on:
+	// the channel of any assigned mapping under the node's chan collection,
+	// converted from the raw 0-based on-disk channel (0 = send ch1) to the
+	// 1-based send channel the brain/binding rides (channel + 1). See
+	// aum.Spec.Channel.
 	channelOf := func(chanIndex int) (int, bool) {
 		prefix := fmt.Sprintf("Channels/chan%d/", chanIndex)
 		for _, m := range sm.Mappings {
-			if strings.HasPrefix(m.Collection, prefix) && m.Channel >= 1 {
-				return m.Channel - 1, true
+			if strings.HasPrefix(m.Collection, prefix) && m.Channel >= 0 {
+				return m.Channel + 1, true
 			}
 		}
 		return 0, false
@@ -891,11 +904,15 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 		File      string `json:"file"`
 		OutID     string `json:"out_id"`
 		Mappings  []struct {
-			Collection string `json:"collection"`
-			Target     string `json:"target"`
-			Type       int    `json:"type"`
-			Data1      int    `json:"data1"`
-			Channel    int    `json:"channel"`
+			Collection string   `json:"collection"`
+			Target     string   `json:"target"`
+			Type       int      `json:"type"`
+			Data1      int      `json:"data1"`
+			Channel    int      `json:"channel"`
+			Min        *float64 `json:"min"`
+			Max        *float64 `json:"max"`
+			Cycle      *bool    `json:"cycle"`
+			Invert     *bool    `json:"invert"`
 		} `json:"mappings"`
 		Faders []struct {
 			Channel int     `json:"channel"`
@@ -941,10 +958,38 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 		if m.Collection == "" || m.Target == "" {
 			return textResult(fmt.Sprintf("/mappings/%d: collection and target are required", i), true), nil
 		}
-		if err := sess.SetMapping(m.Collection, m.Target, m.Type, m.Data1, m.Channel); err != nil {
+		mp, ok := sess.FindMapping(m.Collection, m.Target)
+		if !ok {
+			return textResult(fmt.Sprintf("/mappings/%d: no mapping target %q in collection %q", i, m.Target, m.Collection), true), nil
+		}
+		if err := mp.Assign(m.Type, m.Data1, m.Channel); err != nil {
 			return textResult(fmt.Sprintf("/mappings/%d: %v", i, err), true), nil
 		}
-		applied = append(applied, fmt.Sprintf("map %s/%s -> type=%d data1=%d ch=%d", m.Collection, m.Target, m.Type, m.Data1, m.Channel))
+		note := fmt.Sprintf("map %s/%s -> type=%d data1=%d ch=%d", m.Collection, m.Target, m.Type, m.Data1, m.Channel)
+		// Range / invert: apply min/max if any of min, max or invert is given.
+		if m.Min != nil || m.Max != nil || m.Invert != nil {
+			lo, hi := 0.0, 1.0
+			if m.Min != nil {
+				lo = *m.Min
+			}
+			if m.Max != nil {
+				hi = *m.Max
+			}
+			if m.Invert != nil && *m.Invert {
+				lo, hi = hi, lo
+			}
+			if err := mp.SetRange(lo, hi); err != nil {
+				return textResult(fmt.Sprintf("/mappings/%d: %v", i, err), true), nil
+			}
+			note += fmt.Sprintf(" range=%.4g..%.4g", lo, hi)
+		}
+		if m.Cycle != nil {
+			if err := mp.SetAutoToggle(*m.Cycle); err != nil {
+				return textResult(fmt.Sprintf("/mappings/%d: %v", i, err), true), nil
+			}
+			note += fmt.Sprintf(" cycle=%t", *m.Cycle)
+		}
+		applied = append(applied, note)
 	}
 	for i, f := range args.Faders {
 		if err := sess.SetFader(f.Channel, f.Level); err != nil {

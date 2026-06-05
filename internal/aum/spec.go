@@ -99,11 +99,15 @@ func (sp Spec) TypeName() string {
 // Spec is the decoded MIDI trigger of a mapping leaf, normalized across both
 // on-disk encodings.
 //
-// Channel is the raw on-disk channel value and its meaning differs by encoding:
-// in the packed form it is the 0-based wire channel (0 → MIDI ch 1); in the
-// decomposed form it is AUM's channel field where 0 == OMNI and 1..16 are the
-// MIDI channels. Encoding records which applies. Enabled is the placeholder
-// filter: a leaf is a real mapping only when Enabled is true.
+// Channel is the raw on-disk channel value. In BOTH encodings it is 0-based:
+// stored 0 → MIDI/send channel 1, stored 15 → channel 16. This was verified
+// live (2026-06-05): a Volume/Master-Vol leaf stored channel=0 responded to
+// brain send-channel 1 and did NOT respond to send-channel 16, ruling out the
+// "0 == OMNI, 1..16" reading the AUM channel-picker UI suggests. The OMNI
+// sentinel (if any) is not yet corpus-confirmed — see docs/research/aum.md. To
+// drive a mapping the brain emits on (Channel + 1); to author for send-channel
+// N store (N - 1). Enabled is the placeholder filter: a leaf is a real mapping
+// only when Enabled is true.
 type Spec struct {
 	Type     int
 	Data1    int

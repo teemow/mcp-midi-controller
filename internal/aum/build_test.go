@@ -178,15 +178,16 @@ func TestBuildSessionConvention(t *testing.T) {
 		t.Fatalf("unexpected overflow: %v", report.Overflow)
 	}
 
-	// Mixer convention on chan0: Mute=21 Volume=22 Solo=45 Rec=53, channel 3.
+	// Mixer convention on chan0: Mute=21 Volume=22 Solo=45 Rec=53. The
+	// convention's send channel 3 is stored 0-based as 2 (send ch = stored+1).
 	mixer := map[string]int{"Mute": 21, "Volume": 22, "Solo": 45, "Rec enable": 53}
 	for target, wantCC := range mixer {
 		m, ok := s.FindMapping("Channels/chan0/Channel controls", target)
 		if !ok {
 			t.Fatalf("missing chan0 %s", target)
 		}
-		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 3 {
-			t.Fatalf("chan0 %s spec = %+v, want CC %d ch 3", target, m.Spec, wantCC)
+		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 2 {
+			t.Fatalf("chan0 %s spec = %+v, want CC %d stored ch 2 (send ch3)", target, m.Spec, wantCC)
 		}
 	}
 
@@ -209,7 +210,7 @@ func TestBuildSessionConvention(t *testing.T) {
 	}
 
 	// The transport block is wired on the Transport collection (CC 20 + 102-105
-	// + 108), on the convention channel.
+	// + 108), on the convention channel (send ch3 → stored 2).
 	transport := map[string]int{
 		"Toggle Play": 20, "Start Play": 102, "Stop/Rewind": 103,
 		"Rewind": 104, "Toggle Record": 105, "Tap Tempo": 108,
@@ -219,8 +220,8 @@ func TestBuildSessionConvention(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing transport %s", target)
 		}
-		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 3 {
-			t.Fatalf("transport %s spec = %+v, want CC %d ch 3", target, m.Spec, wantCC)
+		if !m.Spec.Enabled || m.Spec.Type != TypeCC || m.Spec.Data1 != wantCC || m.Spec.Channel != 2 {
+			t.Fatalf("transport %s spec = %+v, want CC %d stored ch 2 (send ch3)", target, m.Spec, wantCC)
 		}
 	}
 

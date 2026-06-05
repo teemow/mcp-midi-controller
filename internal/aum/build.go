@@ -104,10 +104,13 @@ func NodeSpecFromDump(dump device.ProbeDump) NodeSpec {
 // channels 1..8), and the AUv3 per-plugin convention for node parameters (one
 // CC each, from NodeStartCC, in parameter order).
 type Convention struct {
-	// Channel is the MIDI channel every assigned CC rides, in AUM's specState
-	// convention (1..16; 0 = OMNI). Out-of-range values fall back to 1. The
-	// whole session shares one channel here — splitting plugins onto their own
-	// MIDI channels is a binding concern handled above this library.
+	// Channel is the 1-based MIDI/send channel every assigned CC rides — the
+	// channel the brain emits on and bindings ride (1..16). It is stored on
+	// disk as Channel-1 (specState/packed channels are 0-based; see
+	// Spec.Channel). Out-of-range values fall back to 1 (→ stored 0 → send
+	// channel 1). The whole session shares one channel here — splitting plugins
+	// onto their own MIDI channels is a binding concern handled above this
+	// library.
 	Channel int
 	// NodeStartCC is the first CC assigned to a node's parameters (default 30,
 	// matching device.ProbeOptions). Numbering restarts per node, so two nodes'
@@ -417,9 +420,12 @@ func buildSystem(b *Builder, report *BuildReport) map[string]any {
 func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildReport) error {
 	conv := spec.Convention
 	channel := conv.Channel
-	if channel < 0 || channel > 16 {
+	if channel < 1 || channel > 16 {
 		channel = 1
 	}
+	// On-disk channels are 0-based (stored 0 → send channel 1); the convention
+	// is expressed as a 1-based send channel, so bake the -1 here once.
+	stored := channel - 1
 	startCC := conv.NodeStartCC
 	if startCC == 0 {
 		startCC = 30
@@ -440,7 +446,7 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 				if !ok {
 					continue
 				}
-				if err := s.SetMapping(coll+"/Channel controls", ctl.name, TypeCC, cc, channel); err != nil {
+				if err := s.SetMapping(coll+"/Channel controls", ctl.name, TypeCC, cc, stored); err != nil {
 					return err
 				}
 				report.AssignedCCs++
@@ -460,7 +466,7 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 					report.Overflow = append(report.Overflow, slotColl+"/"+target)
 					continue
 				}
-				if err := s.SetMapping(slotColl, target, TypeCC, cc, channel); err != nil {
+				if err := s.SetMapping(slotColl, target, TypeCC, cc, stored); err != nil {
 					return err
 				}
 				report.AssignedCCs++
@@ -477,7 +483,7 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 		if !ok {
 			continue
 		}
-		if err := s.SetMapping("Transport", t, TypeCC, cc, channel); err != nil {
+		if err := s.SetMapping("Transport", t, TypeCC, cc, stored); err != nil {
 			return err
 		}
 		report.AssignedCCs++
@@ -511,11 +517,11 @@ func conventionMixerCC(n int, target string) (int, bool) {
 // Transport-collection target. ok is false for targets the convention does not
 // cover. The CC numbers and target mapping mirror docs/research/aum.md
 // ("Transport / system") — the undefined-CC block (102-110) plus the single
-// CC 20 "Toggle play". Only the targets buildTransport actually enumerates (and
-// whose on-disk key strings are corpus-verified) are wired; Previous/Next bar,
-// Tempo value and Metronome are part of the documented convention but their AUM
-// key strings are not yet corpus-confirmed, so they are left for a capture (see
-// the plan's Pillar 1 transport-catalogue row) and intentionally omitted here.
+// CC 20 "Toggle play". Previous/Next bar, Tempo and Metronome on/off are now
+// corpus-confirmed key strings (probe capture 2026-06-05) and ARE catalogued as
+// placeholders by buildTransport, but they are intentionally left unwired here:
+// the wired convention covers the six transport actions a scene change drives,
+// and bar-step/tempo-value/metronome are left for the caller to assign.
 func conventionTransportCC(target string) (int, bool) {
 	switch target {
 	case "Toggle Play":

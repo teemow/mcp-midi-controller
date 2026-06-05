@@ -57,9 +57,12 @@ Source: <https://kymatica.com/aum/help> ("MIDI Control").
   - `CHPRS` — Channel Pressure 0-127.
 - **MIDI channel.** Each mapping responds on a chosen channel **1-16 or OMNI**
   (any), or **OFF** to disable. A collection can be **batch-set** to one channel
-  ("Set MIDI Channels", 1-16 or 0=OMNI). In this project the channel is **not**
-  stored in the definition — it is supplied by the binding, so set the AUM
-  collection's channel to match the binding.
+  ("Set MIDI Channels", 1-16 or 0=OMNI). Note this is the *UI* label: on disk
+  the channel is stored **0-based** (UI ch 1 → stored `0`, ch 16 → `15`;
+  verified live 2026-06-05). In this project the channel is **not** stored in
+  the definition — it is supplied by the binding, so set the AUM collection's
+  channel to match the binding (the brain drives a leaf stored `N` on send
+  channel `N+1`).
 - **LEARN.** The LEARN button auto-configures a parameter to the next incoming
   MIDI message — handy, but for AUM we drive the convention the other way: we
   assign the numbers from `aum.yaml`.

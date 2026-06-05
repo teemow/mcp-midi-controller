@@ -288,7 +288,7 @@ A leaf is a dict. There are **two encodings**, and which one a session uses is
 | `specState.enabled` | bool | **whether a MIDI trigger is assigned** (`false` = the placeholder; the target exists but is unmapped) |
 | `specState.data1` | int | the data byte — CC#, note#, or PC# (0–127) |
 | `specState.type` | int | message-**type enum** (see below) |
-| `channel` | int | MIDI channel, AUM's `0 = OMNI`, else 1–16 |
+| `channel` | int | **0-based** MIDI channel: `0` = send/MIDI ch 1 … `15` = ch 16 (verified live 2026-06-05; the brain drives a leaf on `channel+1`). An OMNI sentinel, if any, is not yet corpus-confirmed — the AUM picker's "0 = OMNI" label does **not** match the stored value |
 | `min` / `max` / `autoToggle` | — | as in (a) |
 
 This is empirical: every `version` 13 session in the corpus uses `specState`;

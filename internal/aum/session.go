@@ -413,8 +413,8 @@ type NodeInfo struct {
 }
 
 // MappingInfo is one flattened mapping leaf in a SessionMap. Channel carries the
-// raw on-disk channel value (see Spec.Channel for its encoding-dependent
-// meaning).
+// raw 0-based on-disk channel value (0 = MIDI/send ch1; the brain drives it on
+// Channel+1). See Spec.Channel.
 type MappingInfo struct {
 	Collection string  `json:"collection"`
 	Target     string  `json:"target"`
