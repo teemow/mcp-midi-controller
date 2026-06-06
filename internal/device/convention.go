@@ -51,6 +51,41 @@ func ConventionTransportCC(target string) (int, bool) {
 	}
 }
 
+// TapControlChannel is the reserved 1-based MIDI channel the convention uses
+// for ProbeAudioTap bypass toggles. Tap toggles ride this channel on their own
+// — not the shared mixer/node/transport channel a binding supplies — so a tap
+// CC can never collide with the mixer (CC 20..76) or node-parameter (CC 30+)
+// blocks regardless of the binding channel. The mixer/node convention channel
+// must therefore stay in 1..15 (channel 16 is reserved here). Stored 0-based on
+// disk as TapControlChannel-1 (= 15), like every other AUM channel field.
+const TapControlChannel = 16
+
+const (
+	// tapStartCC / tapMaxCC bound the contiguous CC block tap-bypass toggles
+	// occupy on TapControlChannel: 77..95, a band clear of the mixer (≤76),
+	// transport/system (≥102) and the MIDI-reserved 96..101 / 120..127 ranges,
+	// so the tap block stays distinct even when read on a shared channel. 19
+	// slots cover the largest planned session (S5, ≤18 audio channels).
+	tapStartCC = 77
+	tapMaxCC   = 95
+)
+
+// ConventionTapCC returns the convention CC for the n-th post-fader ProbeAudioTap
+// (1-based, in channel order). Each tap's _AUMNode:Bypass is mapped to this CC on
+// TapControlChannel with AutoToggle ("Cycle") on, so a single brain CC flips that
+// tap's stream on/off. ok is false for n < 1 or once the tap block is exhausted
+// (n past the 77..95 range) — an overflowed tap stays an unassigned placeholder.
+func ConventionTapCC(n int) (int, bool) {
+	if n < 1 {
+		return 0, false
+	}
+	cc := tapStartCC + (n - 1)
+	if cc > tapMaxCC {
+		return 0, false
+	}
+	return cc, true
+}
+
 // conventionMixerTargets / conventionTransportTargets are the targets the
 // convention wires, used to derive the reserved-CC set from the same formulae
 // (instead of re-listing the numbers, which would drift).

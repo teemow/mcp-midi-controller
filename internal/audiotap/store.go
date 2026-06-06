@@ -49,12 +49,20 @@ const waveformBuckets = 48
 // app suspended) and any segment spanning the boundary is non-contiguous.
 const maxInterArrivalGap = 200 * time.Millisecond
 
-// Store holds the latest audio-tap state. A single tap streams at a time (one
-// AUM insert); a second connection simply overwrites the connection metadata.
+// Store holds the latest state of ONE audio tap (one ProbeAudioTap AUM insert):
+// its rolling PCM window, levels and connection metadata. Several taps stream
+// concurrently, each in its own Store; the Registry owns the named set and the
+// receiver routes each connection's frames here. Within a Store a re-connection
+// (same name) simply starts a fresh session (the window is cleared).
+//
 // All access is mutex-guarded — the WebSocket reader writes, MCP tool calls
 // read, on different goroutines.
 type Store struct {
 	mu sync.Mutex
+
+	// name is the tap's stable registry identity (the key it is addressed by),
+	// distinct from the format's Source (a human label the producer may send).
+	name string
 
 	connected     bool
 	remote        string
@@ -90,6 +98,37 @@ type Store struct {
 // NewStore returns an empty store with a preallocated rolling window.
 func NewStore() *Store {
 	return &Store{window: make([]float32, windowCapacity), channels: 1}
+}
+
+// setName records the tap's registry identity. Called once when the Registry
+// creates or adopts the Store, before it is shared with concurrent readers.
+func (s *Store) setName(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.name = name
+}
+
+// Name returns the tap's registry identity ("" for a bare standalone store).
+func (s *Store) Name() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
+}
+
+// Connected reports whether the tap is currently streaming. Cheap accessor for
+// the registry's default-tap selection (no analysis, unlike Snapshot).
+func (s *Store) Connected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connected
+}
+
+// Source returns the latest format "source" label (the producer's human name
+// for the tap), or "" before a format message arrives. Cheap accessor.
+func (s *Store) Source() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.format.Source
 }
 
 // Connect marks a tap as connected from remote and clears the previous window so
@@ -214,6 +253,9 @@ func (s *Store) pruneGapsLocked() {
 type Snapshot struct {
 	Connected bool `json:"connected"`
 
+	// Name is the tap's registry identity (how MCP tools address it); Source is
+	// the producer-supplied human label from the format message.
+	Name       string  `json:"name,omitempty"`
 	Source     string  `json:"source,omitempty"`
 	Remote     string  `json:"remote,omitempty"`
 	Encoding   string  `json:"encoding,omitempty"`
@@ -263,6 +305,7 @@ func (s *Store) Snapshot() Snapshot {
 	frames := s.framesLocked()
 	snap := Snapshot{
 		Connected:       s.connected,
+		Name:            s.name,
 		Source:          s.format.Source,
 		Remote:          s.remote,
 		Encoding:        s.format.Encoding,

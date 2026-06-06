@@ -28,7 +28,8 @@ func (s *Server) registerCompareTools() {
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"label": {"type": "string", "description": "Name to store the current snapshot under (overwrites an existing label)."}
+				"label": {"type": "string", "description": "Name to store the current snapshot under (overwrites an existing label)."},
+				"name": {"type": "string", "description": "Which audio tap to capture (its name or format source label). Omit to use the most-recently-active tap. See get_audio_tap's 'taps'."}
 			},
 			"required": ["label"]
 		}`),
@@ -52,6 +53,7 @@ func (s *Server) registerCompareTools() {
 func (s *Server) handleCaptureAudioSnapshot(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Label string `json:"label"`
+		Name  string `json:"name"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -60,7 +62,15 @@ func (s *Server) handleCaptureAudioSnapshot(_ context.Context, req *mcp.CallTool
 		return textResult("provide a non-empty label to store the snapshot under", true), nil
 	}
 
-	snap := s.audio.Snapshot()
+	st, ok := s.resolveTap(args.Name)
+	if !ok {
+		msg := "no audio tap is connected; insert ProbeAudioTap on an AUM channel and enable streaming"
+		if args.Name != "" {
+			msg = fmt.Sprintf("no audio tap named %q; known taps: %s", args.Name, tapNamesText(s.audio.Names()))
+		}
+		return textResult(msg, true), nil
+	}
+	snap := st.Snapshot()
 	s.audioSnapsMu.Lock()
 	s.audioSnaps[args.Label] = snap
 	stored := len(s.audioSnaps)

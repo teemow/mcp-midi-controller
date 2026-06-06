@@ -117,6 +117,17 @@ type ProbeDump struct {
 	// can persist user presets. We deliberately do NOT dump userPresets contents
 	// (names are user/installation state; see public-vs-private rule).
 	SupportsUserPresets bool `json:"supportsUserPresets,omitempty"`
+
+	// ComponentIcon is the plugin's icon as the bytes of
+	// NSKeyedArchiver.archivedData(withRootObject: uiImage) — exactly the
+	// archived UIImage AUM stores in a node's componentIcon. The iPad app
+	// captures it on-device (where the AU's icon is reachable) and ships it
+	// base64-encoded (json: componentIcon, decoded via []byte's default JSON
+	// handling). Optional: old dumps predate this field and decode to nil, in
+	// which case the author omits componentIcon on the node. Plugin icons are
+	// vendor artifacts (not user data) but the dump posture is unchanged —
+	// staged only under the gitignored state dir, never committed.
+	ComponentIcon []byte `json:"componentIcon,omitempty"`
 }
 
 // ProbeID derives the sanitized device-type/file id for a dump (from the

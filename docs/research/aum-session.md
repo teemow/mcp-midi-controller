@@ -29,6 +29,139 @@ for the absent MIDI echo (`docs/research/auv3-feedback.md`).
 > exact `type` code for **Program Change / Pitch Bend / Channel Pressure** — no
 > *enabled* mapping of those exists anywhere in the corpus to read.
 
+## Verified v13 field model (5 reference sessions, 2026-06-06)
+
+A field-by-field diff of the five `House by the lake` reference sessions
+(`System collapse` 11ch, `Kings Cross Station` 13ch, `My Bird` 12ch,
+`Neon Ghosts` 18ch, `Fast forward` 18ch — all `version 13`, `sampleRate 44100`)
+decoded off-device through `internal/aum`. This pins the exact authorable v13
+shape and **corrects** several earlier assumptions (see the corrections below).
+
+> **Note on provenance.** This was meant to be cross-checked against the AUM
+> binary, but the only obtainable IPA (`com.kymatica.AUM_v1.4.8.ipa`, via DLiPA /
+> ipatool) is the **FairPlay-encrypted** App Store copy — `__TEXT` is unreadable
+> (CryptID 1) and no supported device is available to dump a decrypted image. So
+> the model below is **corpus-derived**, not read from AUM's `decodeWithCoder:`.
+> On-device load behaviour (instantiate-from-identity, missing-icon tolerance)
+> remains the only thing the corpus cannot answer.
+
+**Root `AUMSession` key set — exactly 15 keys (+ `$class`):** `version`,
+`title`, `folder`, `notes`, `sampleRate`, `minimumLatency`, `channels`,
+`nodeArchives`, `mixBusses`, `hwBusses`, `midiCtrlState`, `midiMatrixState`,
+`transportClockState`, `keyboardState`, `metroOutDesc`. (No `syncOffset` in any
+v13 session — drop it from the v13 model.) `notes` is `$null` when unused;
+`minimumLatency` `0.0`; `folder` the containing folder name.
+
+**`keyboardState` is OPTIONAL** — a full 8-key dict (`channel`, `hold`,
+`scroll_pos`, `scrollable`, `send_aftertouch`, `velocity`, `velocity_range`,
+`version`) in four sessions, but **`$null` in `My Bird`**. AUM tolerates its
+absence, so an author may emit `$null`.
+
+**`transportClockState` = exactly these 12 keys** (NSDictionary), observed
+values across the five:
+
+| key | type | values seen |
+|-----|------|-------------|
+| `clockTempo` | f64 | 140 / 128 / 116 (Link drift gives e.g. `140.00014`; a clean int is fine) |
+| `clockBeatsPerBar` | int | **4**, but **6** in My Bird |
+| `clockSyncQuant` | int | **4** (1 in My Bird) |
+| `clockPreRoll` | int | **1** (0 in My Bird) |
+| `clockMidiLatency` | int | **0** in all five |
+| `clockMidiOffset` | f64 | 0 |
+| `clockLinkOffset` | f64 | 0 |
+| `clockMetronome` | bool | false (true in Neon Ghosts) |
+| `clockMetronomeLevel` | f32 | 0.6 (1.0 in Neon Ghosts) |
+| `clockPreRollMetronome` | bool | false (true in Neon Ghosts) |
+| `clockSendMidi` | bool | true, but **false** in Fast forward |
+| `clockSendSPP` | bool | true, but **false** in Fast forward |
+
+No `clockMidiClockOutEndpoint` in any v13 session — it is not part of the v13
+clock block.
+
+**Strip key sets differ by class** (both always carry `bookmarked` +
+`navCollapsed`):
+
+- `AUMAudioStrip`: `index`, `title`, `nodeCount`, `faderIndex`, `faderLevel`
+  (f32), `muted`, `soloed`, `bookmarked`, `navCollapsed`.
+- `AUMMIDIStrip`: `index`, `title`, `nodeCount`, `bookmarked`, `navCollapsed`
+  — **no `muted`/`soloed`/`faderIndex`/`faderLevel`** (a MIDI strip has no
+  fader/mute/solo). The last `AUMAudioStrip` is the master.
+
+**Node-level field sets (v13) are lean — and carry NO `parentChannel`,
+`parentSlot`, `fallbackTitle` or `isFilter`** (those were in an earlier draft;
+they do not appear on v13 nodes). A node's position is implied purely by its
+`nodeArchives[channel][slot]` location:
+
+```
+AUXNodeDescription : archiveDescClass, archiveNodeState, audioComponentDescription(20B), componentIcon, componentName
+BusDest/BusSource/BusSend : archiveDescClass, archiveNodeState, busIndex
+HWInput/HWOutput   : archiveDescClass, archiveNodeState, hwBusIndex, monoSelect
+FilePlayerNode     : archiveDescClass, archiveNodeState                 (source lives in state)
+$null (empty slot) : archiveDescClass=$null, archiveNodeState={}        (empty dict, still present)
+```
+
+**`componentFlags` is NOT always `0x0e`.** Histogram: mostly `0x0e`
+(SandboxSafe|IsV3|RequiresAsync), but **one node at `0x0c`** (IsV3|RequiresAsync,
+no SandboxSafe) in Kings Cross, Neon Ghosts and Fast forward each. Take the
+flags from the plugin's real `AudioComponentDescription` (probe dump); do not
+hardcode.
+
+**`componentIcon` IS present on every AUv3 node** (correcting "ignore"): a fully
+archived `UIImage` with `UIImageData` (PNG, ~11–21 KB), `UIImageSizeInPixels`
+(`"{120, 120}"`), `UIScale` (f32 1), `UIRenderingMode`/`UIImageOrientation`
+(int 0), `UIImageConfiguration`→`UITraitCollection`, a shared
+`UIImageTraitCollection` (`UITraitCollectionBuiltinTrait-_UITraitNameDisplayScale`),
+and **`UIImageVariableValue = +Inf`**. ⚠️ That `+Inf` is a real non-finite the
+`Archive.Encode` `SanitizeNonFinite` clamp would rewrite to `MaxFloat64` — so a
+**grafted** real icon is mutated on re-encode; exempt the icon subtree if byte
+fidelity matters.
+
+**`AuStateDoc` schema-stable keys = `{type, subtype, manufacturer, version}`**
+(FourCCs stored as uint32) plus an opaque `data` blob (~200–380 B for typical
+plugins) and an optional `name`. Plugin-defined: some (e.g. My Bird's sequencer)
+omit `data`/`name` and splatter dozens of own keys incl. a `store` of ~114 KB.
+Only the identity tuple + `version` are reliable; the rest is opaque.
+
+**`mixBusses` — naming is the NORM, not Fast-Forward-only.** All four X32
+sessions name the *same* 10 of 16 buses (`" Mix"`, `Gesang`, `2. Gesang`,
+`Drums Mix`, `GItarre`, `Ipad`, `Bass`, `Basedrum + Snare`, `Drums`, `Main`) at
+non-contiguous indices (0,1,2,3,7,8,10,12,14,15); the other 6 are
+`{customName:$null, customColor:$null}`. A named bus is
+`NSDictionary{customName:string, customColor:<UIColor dict>}`. Always 16 entries.
+
+**`hwBusses`** confirms the two layouts: 4 sessions = pure-X32 (32×
+`{chanL,chanR,portName:"X-USB",portType:"USBAudio",portNumChannels:32}`, stereo
+pairs enumerated in+out); `Fast forward` = hybrid (built-in mic + speaker +
+Audient iD4 + X-USB×23 + ZOOM L-12×5 = 32). `metroOutDesc` is a direct
+`HWOutputDescription` whose `{hwBusIndex,monoSelect}` varies (`0/0` or `1/1`).
+
+**`BusSendDescription`** (Neon Ghosts ×4): node field `busIndex`; state adds
+`BusSendAmount` (so `{AUMNode.bypassed, AUMNode.stats.save_time, BusSendAmount}`).
+**`FilePlayerNodeDescription`** (Neon Ghosts ×1): node carries only
+`archiveDescClass`+`archiveNodeState`; the 11 state keys are `AUMNode.bypassed`,
+`AUMNode.stats.save_time`, `FilePlayerEnabled`, `FilePlayerLoop`,
+`FilePlayerSync`, `FilePlayerTempo`, `FilePlayerBeatOffset`,
+`FilePlayerNormalize`, `FilePlayerUserRate`, `FilePlayerPath`,
+`FilePlayerURLBookmark`.
+
+**`midiCtrlState` full catalogue** (top keys `Channels`/`System`/`Transport`,
+each collection carries a `_collection_map_name` meta key):
+
+- `System` = `_AUM:HideAllPlugins`, `_AUM:ShowSelf`, `_AUM:UnSoloAll`.
+- `Transport` = `Metronome on/off`, `Next bar`, `Previous bar`, `Receive MMC`,
+  `Rewind`, `Rewind when stopped`, `Start Play`, `Stop/Rewind`, `Tap Tempo`,
+  `Tempo`, `Tempo Presets`, `Toggle Play`, `Toggle Record`.
+- audio-channel `Channel controls` = `Mute`, `Rec enable`, `ScrollToChannel`,
+  `Solo`, `Volume`; **MIDI-strip `Channel controls` = `ScrollToChannel` only**.
+- **Not every slot gets a `slotN` collection** — only nodes exposing mappable
+  controls do. An HW-input source slot and `$null` slots get none; the
+  BusDest/fader slot gets one (with `_AUMNode:Bypass`). So slot collections are
+  node-kind-dependent, not one-per-slot.
+
+`midiMatrixState` keys: `connections`, `customNames`, `destsInfo`, `filters`,
+`sourcesInfo`. `connections` is keyed by source (`Node:Chan<C>:Slot<S>:<port>`,
+`BuiltIn:Keyboard`, `AUM_MIDI_Clock_Src`, `CoreMIDISrc:<name>`).
+
 ## Samples
 
 No private rig session is committed (real session/node/preset names are
@@ -103,7 +236,7 @@ are `$null`/absent when unused):
 | `title` | string | session name — **private** |
 | `folder` / `notes` | string | session folder / free notes — private |
 | `sampleRate` | double | engine sample rate (e.g. 48000) |
-| `minimumLatency` / `syncOffset` | double/int | session min-latency / sync offset |
+| `minimumLatency` | double | session min-latency (`0.0`). (`syncOffset` is **not** present in v13 — it appeared only in older versions.) |
 | `channels` | array | ordered `AUMAudioStrip` / `AUMMIDIStrip` (the mixer) |
 | `nodeArchives` | array | **parallel** to `channels`: one inner array of `AUMNodeArchive` per channel |
 | `mixBusses` | array | AUM's internal mix-bus list (routing targets) |
@@ -111,7 +244,7 @@ are `$null`/absent when unused):
 | `midiCtrlState` | dict | **the MIDI Control mappings** — the core for `diff_aum_session` |
 | `midiMatrixState` | dict | the MIDI routing matrix (sources/dests/connections/filters/customNames) |
 | `transportClockState` | dict | tempo/metronome/clock settings (see below) |
-| `keyboardState` | dict/`$null` | on-screen keyboard state |
+| `keyboardState` | dict/`$null` | on-screen keyboard state — **optional**, legitimately `$null` (e.g. My Bird) |
 | `metroOutDesc` | `HWOutputDescription` | metronome output routing |
 
 ### Channels (`channels`)
@@ -125,8 +258,14 @@ An ordered array. Audio tracks are `AUMAudioStrip`; MIDI tracks are
 | `title` | string/`$null` | user channel name — **private** |
 | `nodeCount` | int | nodes in this strip's slot chain |
 | `faderIndex` | int | which slot is the fader |
-| `faderLevel` | double | current fader (audio strips only; `$null` on MIDI strips) |
-| `muted` / `soloed` / `bookmarked` | bool | strip state |
+| `faderLevel` | double | current fader (audio strips only) |
+| `muted` / `soloed` | bool | audio-strip state — **absent on MIDI strips** (verified v13) |
+| `bookmarked` / `navCollapsed` | bool | strip UI state — on **both** audio and MIDI strips |
+
+> **v13 MIDI strips (`AUMMIDIStrip`) omit `muted`, `soloed`, `faderIndex` and
+> `faderLevel`** entirely (a MIDI strip has no fader/mute/solo) — only `index`,
+> `title`, `nodeCount`, `bookmarked`, `navCollapsed`. See the verified-v13
+> field model.
 
 The strip object does **not** embed its nodes; the per-channel node list lives
 in `nodeArchives` at the same array position.
@@ -141,13 +280,16 @@ in `nodeArchives` at the same array position.
 | `archiveDescClass` | string | node **kind** (see the full list below); `$null` for an empty slot |
 | `audioComponentDescription` | data(20) | **only for AUv3 nodes** — the `AudioComponentDescription` struct (decode below); the match key to a probe dump |
 | `componentName` | string | human `"Manufacturer: Plugin"` (e.g. `"Arturia: iSEM"`) |
-| `fallbackTitle` | string | name shown if the plugin is missing — **private** |
-| `componentIcon` | `UIImage` | ignore |
+| `componentIcon` | `UIImage` | the plugin's icon (archived `UIImage`); **present on every AUv3 node** in the v13 corpus (not ignorable). Carries a `+Inf` the encode-time clamp would rewrite — see the verified-v13 section |
 | `archiveNodeState` | dict | per-node state (plugin `fullState` and/or built-in params, bypass, main param — see below) |
-| `busIndex` | int | for bus nodes: which AUM bus |
+| `busIndex` | int | for bus nodes (`BusDest`/`BusSource`/`BusSend`): which AUM bus |
 | `monoSelect` / `hwBusIndex` | int | for HW I/O nodes: channel select / hardware bus |
-| `parentChannel` / `parentSlot` | int | the node's owning channel index + slot position |
-| `isFilter` | bool | node is an inline filter |
+
+> **v13 nodes carry no `fallbackTitle`, `parentChannel`, `parentSlot` or
+> `isFilter`** (an earlier draft listed these; they are absent on every v13 node
+> in the corpus). A node's position is implied purely by its
+> `nodeArchives[channel][slot]` location. The exact per-kind field sets are in
+> the verified-v13 field model above.
 
 **`archiveDescClass` values seen** (the node taxonomy): `AUXNodeDescription`
 (a hosted AUv3 — the only one with `audioComponentDescription`), `AUXIONodeDescription`,
@@ -373,13 +515,12 @@ mute/solo/rec). Consequences for Phase C:
 
 ## `transportClockState` + `midiMatrixState`
 
-**`transportClockState`** — tempo / metronome / MIDI-clock settings. Keys seen:
-`clockTempo` (BPM, double), `clockBeatsPerBar`, `clockSendMidi` (send MIDI
-clock), `clockSendSPP` (song-position pointer), `clockMidiOffset` /
-`clockMidiLatency` / `clockLinkOffset`, `clockMidiClockOutEndpoint`,
-`clockMetronome` / `clockMetronomeLevel`, `clockPreRoll` /
-`clockPreRollMetronome`, `clockSyncQuant`. `clockTempo` is the session BPM (a
-useful generic readout for scenes that set tempo on the gear).
+**`transportClockState`** — tempo / metronome / MIDI-clock settings. The v13
+block is **exactly 12 keys** (`clockMidiClockOutEndpoint` is NOT among them in
+v13); the full key list + observed defaults are in the verified-v13 table above.
+`clockTempo` (double) is the session BPM (a useful generic readout for scenes
+that set tempo on the gear); note Link drift can store it as a near-integer
+(`140.00014`), so authoring a clean integer is fine.
 
 **`midiMatrixState`** — AUM's MIDI routing matrix (the "MIDI" tab), not the
 control surface. Keys: `connections` (the source→destination edges),

@@ -215,15 +215,27 @@ func fourCCLE(b []byte) string {
 	return string([]byte{b[3], b[2], b[1], b[0]})
 }
 
+// componentFlagsSandboxV3Async is the componentFlags byte AUM writes for every
+// hosted AUv3 node: 0x0e = SandboxSafe | IsV3AudioUnit |
+// RequiresAsyncInstantiation. It is the low byte of the componentFlags UInt32
+// (little-endian, so byte index 12 of the 20-byte blob); the remaining flag
+// bytes and the componentFlagsMask UInt32 stay zero. Authoring a node with this
+// flag clear (the prior 0 value) is fatal on load — AUM will not instantiate
+// the AU — which is why every real node in the corpus carries 0x0e (a few
+// showed 0x0c with the SandboxSafe bit clear; 0x0e is the correct default).
+const componentFlagsSandboxV3Async = 0x0e
+
 // EncodeComponentDesc builds the 20-byte audioComponentDescription blob for a
-// component tuple (the inverse of decodeComponent). componentFlags and
-// componentFlagsMask are left zero. It is used by the authoring path to stamp a
-// node's identity from a probe tuple.
+// component tuple (the inverse of decodeComponent). componentFlags is stamped
+// 0x0e (SandboxSafe|IsV3|RequiresAsyncInstantiation, the value AUM writes for
+// hosted AUv3 nodes); componentFlagsMask is left zero. It is used by the
+// authoring path to stamp a node's identity from a probe tuple.
 func EncodeComponentDesc(c device.ProbeComponent) []byte {
 	out := make([]byte, 20)
 	copy(out[0:4], reverse4(c.Type))
 	copy(out[4:8], reverse4(c.Subtype))
 	copy(out[8:12], reverse4(c.Manufacturer))
+	out[12] = componentFlagsSandboxV3Async
 	return out
 }
 
