@@ -151,9 +151,9 @@ func TestReceiverConcurrentNamedTaps(t *testing.T) {
 	}
 
 	cA := dial("synth", 48000, 0.5)
-	defer cA.Close(websocket.StatusNormalClosure, "done")
+	defer func() { _ = cA.Close(websocket.StatusNormalClosure, "done") }()
 	cB := dial("drums", 44100, 0.25)
-	defer cB.Close(websocket.StatusNormalClosure, "done")
+	defer func() { _ = cB.Close(websocket.StatusNormalClosure, "done") }()
 
 	// Both taps appear, each with its own format + audio.
 	deadline := time.Now().Add(2 * time.Second)
