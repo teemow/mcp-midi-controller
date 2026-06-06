@@ -286,6 +286,48 @@ func (b *Builder) Intern(obj any) UID {
 	return uid
 }
 
+// Graft deep-copies a value from a source archive into this builder's archive,
+// returning the equivalent value in destination space. UID references are
+// followed and rebuilt recursively; memo (keyed by source UID) dedupes shared
+// sub-objects across the whole graft and bounds recursion. Scalars/strings/data
+// dedupe via Intern. It assumes the grafted subgraph is acyclic (true for AUM
+// node archives). This is how a real, host-saved object (e.g. an AUMNodeArchive
+// captured by AUM, with correct component flags, full archiveNodeState and
+// AuStateDoc) is transplanted into a session we are authoring, instead of
+// synthesizing it field-by-field.
+func (b *Builder) Graft(src *Archive, v any, memo map[UID]UID) any {
+	if uid, ok := v.(UID); ok {
+		if nu, ok := memo[uid]; ok {
+			return nu
+		}
+		rebuilt := b.graftConcrete(src, src.Resolve(uid), memo)
+		nu := b.Intern(rebuilt)
+		memo[uid] = nu
+		return nu
+	}
+	return b.graftConcrete(src, v, memo)
+}
+
+// graftConcrete rebuilds a resolved (non-UID) value in destination space.
+func (b *Builder) graftConcrete(src *Archive, obj any, memo map[UID]UID) any {
+	switch x := obj.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = b.Graft(src, vv, memo)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = b.Graft(src, x[i], memo)
+		}
+		return out
+	default:
+		return x
+	}
+}
+
 // internKey is a comparable identity for an internable object.
 type internKey struct {
 	tag byte

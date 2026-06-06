@@ -49,17 +49,155 @@ type BuildSpec struct {
 	// node and AUM's MIDI Control. Endpoints reference channels/slots in this
 	// spec. See SetMIDIRoutes.
 	Routes []MIDIRoute
+
+	// Hardware selects the hardware-I/O layout authored into hwBusses. The
+	// zero value (HardwareBuiltIn) is the device-independent iPad mic+speaker
+	// placeholder; HardwareX32 enumerates a Behringer X32's 32-channel USB
+	// buses so HWInput/HWOutput nodes can pre-reference its channels. AUM
+	// repopulates hwBusses from the connected interface on load regardless.
+	Hardware HardwareProfile
+
+	// MixBusses, when non-empty, names and/or colors specific mix buses (the
+	// Fast Forward "Drums Mix" / "Bass" / "Guitar" sub-buses). Each entry
+	// targets one of the 16 buses by index; unlisted buses stay the default
+	// unnamed/uncolored {NSNull, NSNull}. See MixBusSpec.
+	MixBusses []MixBusSpec
 }
 
 // ChannelSpec is one mixer strip to author. Fader applies only to audio strips
 // (MIDI strips have no fader); a nil Fader on an audio strip defaults to unity.
+//
+// A strip is a slot chain split at the fader/output node (faderIndex): the
+// pre-fader slots are the optional built-in Source node followed by the hosted
+// AUv3 Nodes; the fader/output node is the Output routing node; the post-fader
+// slots are PostNodes followed by the optional Tap. So the standard instrument
+// strip [instrument, BusDest, tap] is Nodes=[instrument] + Output=Bus(0) + Tap,
+// and a master strip [BusSource(0), HWOutput, tap] is Source=Bus(0) +
+// Output=Hardware(0) + Tap. When Source/Output/Tap/PostNodes are all unset the
+// chain is just Nodes, in order (the original behaviour).
+//
+// Source/Output/Tap/PostNodes apply to audio strips only; on a MIDI strip the
+// chain is always just Nodes (a MIDI-processor strip such as the brain has no
+// fader, source or audio routing).
 type ChannelSpec struct {
 	Kind   ChannelKind // KindAudio or KindMIDI
 	Title  string      // channel name (private)
 	Fader  *float64    // initial fader level (audio only); nil → 1.0
 	Muted  bool
 	Soloed bool
-	Nodes  []NodeSpec // the slot chain (hosted AUv3 plugins), in order
+	Nodes  []NodeSpec // pre-fader hosted AUv3 slots (source instrument + pre-fader effects), in order
+
+	// Source, when non-nil, authors a built-in source node as the channel's
+	// slot0 (a HW input or a mix-bus read). When nil — or when its Kind is
+	// SourceInstrument/SourceNone — the channel has no built-in source node and
+	// its first hosted Node is the head of the chain (an instrument strip).
+	Source *ChannelSource
+
+	// Output, when non-nil, authors the channel's fader/output routing node at
+	// faderIndex: a BusDest sending the post-fader signal into a mix bus, or a
+	// HWOutput sending it to a hardware output (the master/monitor case).
+	Output *ChannelOutput
+
+	// PostNodes are hosted AUv3 slots placed after the fader/output node
+	// (post-fader inserts, e.g. master FX), in order, before the Tap.
+	PostNodes []NodeSpec
+
+	// AuxSends, when non-empty, authors post-fader BusSendDescription nodes —
+	// the aux sends a channel taps into additional mix buses while still
+	// flowing to its own Output (Neon Ghosts' input channels carry several).
+	// They are placed in the post-fader region (after PostNodes, before the
+	// Tap, so the Tap remains the channel's last slot). Audio strips only.
+	AuxSends []AuxSend
+
+	// Tap, when true, appends a post-fader ProbeAudioTap as the channel's last
+	// slot. TapNode overrides the default ProbeTapNode() identity/state.
+	Tap     bool
+	TapNode *NodeSpec
+}
+
+// AuxSend describes one post-fader aux send: the channel's post-fader signal is
+// also sent into mix bus BusIndex at Amount (0..1, the BusSendAmount stored in
+// the node's archiveNodeState). A channel may carry several. Authored as a
+// BusSendDescription slot, the same routing primitive buildBusSend builds.
+type AuxSend struct {
+	BusIndex int     // which mix bus to send into
+	Amount   float64 // send level 0..1
+}
+
+// MixBusSpec names and/or colors one of the session's 16 mix buses (the Fast
+// Forward sub-buses). Index selects the bus (0..15); Name sets its customName;
+// Color, when non-nil, sets its customColor (otherwise the bus stays
+// uncolored). An empty Name leaves customName at NSNull.
+type MixBusSpec struct {
+	Index int
+	Name  string
+	Color *RGBAColor
+}
+
+// RGBAColor is a straight-alpha RGBA color (components 0..1) authored into a
+// mix bus's customColor as a UIColor. See buildMixBusColor.
+type RGBAColor struct {
+	R, G, B, A float64
+}
+
+// SourceKind selects a channel's slot0 audio source node.
+type SourceKind string
+
+const (
+	// SourceNone authors no built-in source node; the channel's hosted Nodes
+	// (if any) are the head of the chain. The zero value.
+	SourceNone SourceKind = ""
+	// SourceInstrument marks the channel's source as its first hosted AUv3
+	// Node. Chain-shape-identical to SourceNone (no extra node is authored); it
+	// exists so a caller can state intent explicitly.
+	SourceInstrument SourceKind = "instrument"
+	// SourceHWInput authors a HWInputDescription reading a hardware input bus.
+	SourceHWInput SourceKind = "hwinput"
+	// SourceBus authors a BusSourceDescription reading a mix bus (the master /
+	// submix read; bus 0 is the master sum).
+	SourceBus SourceKind = "bus"
+	// SourceFilePlayer authors a FilePlayerNodeDescription source — AUM's
+	// built-in audio-file player as a channel's slot0 (the Neon Ghosts
+	// file-player source channel). The authored player carries no file (its
+	// URLBookmark/Path are a private, on-device-only reference); it is an empty
+	// player ready for a clip, which is the only from-scratch-authorable shape.
+	SourceFilePlayer SourceKind = "fileplayer"
+)
+
+// ChannelSource describes a channel's built-in slot0 source node. Kind selects
+// the node; the other fields parameterize it (HWBusIndex/MonoSelect for a HW
+// input, BusIndex for a bus read).
+type ChannelSource struct {
+	Kind       SourceKind
+	HWBusIndex int // SourceHWInput: which hardware input bus
+	MonoSelect int // SourceHWInput: 0 stereo, 1 left, 2 right
+	BusIndex   int // SourceBus: which mix bus to read (0 = master sum)
+}
+
+// OutputKind selects a channel's fader/output routing node.
+type OutputKind string
+
+const (
+	// OutputNone authors no fader/output node (the chain ends at its last
+	// hosted node). The zero value.
+	OutputNone OutputKind = ""
+	// OutputBus authors a BusDestDescription sending the post-fader signal into
+	// a mix bus (a normal channel sends to bus 0 to reach the master).
+	OutputBus OutputKind = "bus"
+	// OutputHardware authors a HWOutputDescription sending the post-fader
+	// signal to a hardware output bus (the master/monitor case; bus 0 is the
+	// speaker / X32 main out).
+	OutputHardware OutputKind = "hardware"
+)
+
+// ChannelOutput describes a channel's fader/output routing node. Kind selects
+// the node; the other fields parameterize it (BusIndex for a bus send,
+// HWBusIndex/MonoSelect for a hardware output).
+type ChannelOutput struct {
+	Kind       OutputKind
+	BusIndex   int // OutputBus: which mix bus (0 = master sum)
+	HWBusIndex int // OutputHardware: which hardware output bus (0 = speaker / X32 main)
+	MonoSelect int // OutputHardware: 0 stereo, 1 left, 2 right
 }
 
 // NodeSpec is one hosted AUv3 node to author. Its on-disk identity
@@ -80,6 +218,15 @@ type NodeSpec struct {
 	StateDoc map[string][]byte
 	// Preset, when non-nil, sets the node's AuPresetCtrl (factory preset index).
 	Preset *int
+
+	// ComponentIcon, when non-empty, is the bytes of an
+	// NSKeyedArchiver-archived UIImage (the plugin's icon, captured on-device
+	// by the auv3-probe app) — exactly what a real AUXNodeDescription stores in
+	// its componentIcon field. buildAUXNode Decodes it as a standalone archive
+	// and grafts the UIImage subgraph into the session. Empty for synthetic
+	// placeholder nodes (which have no probe), in which case the node carries no
+	// componentIcon.
+	ComponentIcon []byte
 }
 
 // NodeSpecFromDump builds a NodeSpec from an AUv3 probe dump: the component
@@ -95,6 +242,7 @@ func NodeSpecFromDump(dump device.ProbeDump) NodeSpec {
 		Component:     dump.Component,
 		ComponentName: name,
 		Params:        dump.Parameters,
+		ComponentIcon: dump.ComponentIcon,
 	}
 }
 
@@ -183,6 +331,117 @@ var systemTargets = []string{
 	"_AUM:ShowSelf", "_AUM:HideAllPlugins", "_AUM:UnSoloAll",
 }
 
+// builtinSlot describes a built-in routing node occupying a chain slot: its
+// AUM class plus the routing fields that class reads, and a human label used as
+// the slot collection's _collection_map_name.
+type builtinSlot struct {
+	class      string // classHWInput / classHWOutput / classBusDest / classBusSource / classBusSend / classFilePlayer
+	name       string // human label (e.g. "HW Input")
+	busIndex   int
+	hwBusIndex int
+	monoSelect int
+	sendAmount float64 // classBusSend: the send level (BusSendAmount)
+}
+
+// slotDesc is one resolved chain slot: either a hosted AUv3 node (auv3 true,
+// node set) or a built-in routing node (auv3 false, builtin set). index is the
+// slot's 0-based position in the channel's chain.
+type slotDesc struct {
+	index   int
+	auv3    bool
+	isTap   bool // the channel's post-fader ProbeAudioTap (auv3 too)
+	node    NodeSpec
+	builtin builtinSlot
+}
+
+// channelSlots resolves a ChannelSpec into its ordered chain of slot
+// descriptors and the faderIndex (the chain position of the fader/output node,
+// i.e. the count of pre-fader slots). The order is: built-in Source, pre-fader
+// Nodes, the fader/output node, post-fader PostNodes, then the Tap. Source /
+// Output / PostNodes / Tap apply to audio strips only; a MIDI strip's chain is
+// just its Nodes. It builds no objects (no Builder needed) so both the node/
+// catalogue authoring and the convention assigner can share one slot map.
+func channelSlots(ch ChannelSpec) ([]slotDesc, int) {
+	var slots []slotDesc
+	add := func(sd slotDesc) {
+		sd.index = len(slots)
+		slots = append(slots, sd)
+	}
+
+	audio := ch.Kind != KindMIDI
+
+	if audio && ch.Source != nil {
+		switch ch.Source.Kind {
+		case SourceHWInput:
+			add(slotDesc{builtin: builtinSlot{class: classHWInput, name: "HW Input", hwBusIndex: ch.Source.HWBusIndex, monoSelect: ch.Source.MonoSelect}})
+		case SourceBus:
+			add(slotDesc{builtin: builtinSlot{class: classBusSource, name: "Bus Source", busIndex: ch.Source.BusIndex}})
+		case SourceFilePlayer:
+			add(slotDesc{builtin: builtinSlot{class: classFilePlayer, name: "File Player"}})
+		}
+		// SourceInstrument / SourceNone author no built-in node; the hosted
+		// Nodes below head the chain.
+	}
+
+	for _, n := range ch.Nodes {
+		add(slotDesc{auv3: true, node: n})
+	}
+
+	faderIndex := len(slots)
+
+	if audio && ch.Output != nil {
+		switch ch.Output.Kind {
+		case OutputBus:
+			add(slotDesc{builtin: builtinSlot{class: classBusDest, name: "Bus Destination", busIndex: ch.Output.BusIndex}})
+		case OutputHardware:
+			add(slotDesc{builtin: builtinSlot{class: classHWOutput, name: "HW Output", hwBusIndex: ch.Output.HWBusIndex, monoSelect: ch.Output.MonoSelect}})
+		}
+	}
+
+	if audio {
+		for _, n := range ch.PostNodes {
+			add(slotDesc{auv3: true, node: n})
+		}
+		for _, snd := range ch.AuxSends {
+			add(slotDesc{builtin: builtinSlot{class: classBusSend, name: "Bus Send", busIndex: snd.BusIndex, sendAmount: snd.Amount}})
+		}
+		if ch.Tap {
+			add(slotDesc{auv3: true, isTap: true, node: defaultTapNode(ch.TapNode)})
+		}
+	}
+
+	return slots, faderIndex
+}
+
+// defaultTapNode returns the post-fader tap NodeSpec: the caller's override or
+// the canonical ProbeTapNode() identity.
+func defaultTapNode(override *NodeSpec) NodeSpec {
+	if override != nil {
+		return *override
+	}
+	return ProbeTapNode()
+}
+
+// buildBuiltinNode authors the AUMNodeArchive for a built-in routing slot.
+func buildBuiltinNode(b *Builder, s builtinSlot) map[string]any {
+	switch s.class {
+	case classHWInput:
+		return buildHWInput(b, s.hwBusIndex, s.monoSelect)
+	case classHWOutput:
+		return buildHWOutput(b, s.hwBusIndex, s.monoSelect)
+	case classBusDest:
+		return buildBusDest(b, s.busIndex)
+	case classBusSource:
+		return buildBusSource(b, s.busIndex)
+	case classBusSend:
+		return buildBusSend(b, s.busIndex, s.sendAmount)
+	case classFilePlayer:
+		return buildFilePlayer(b)
+	default:
+		return buildEmptySlot(b)
+	}
+}
+
 // BuildSession authors a complete session from spec, returning the typed
 // Session (ready to .Map(), .Archive().Encode(), or further edit) plus a
 // report. It builds the channel strips, the parallel node chains (AUv3 nodes
@@ -208,14 +467,40 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 	// convention numbers only the non-master audio strips.
 	masterPos := lastAudioIndex(spec.Channels)
 
+	// Resolve every channel's slot chain once: both the node/catalogue
+	// authoring below and applyConvention key off the same slot positions
+	// (built-in source/output nodes shift the hosted AUv3 nodes off slot 0).
+	layouts := make([][]slotDesc, len(spec.Channels))
+	faderIdxs := make([]int, len(spec.Channels))
+	for i, ch := range spec.Channels {
+		layouts[i], faderIdxs[i] = channelSlots(ch)
+	}
+
 	// --- Mixer strips + parallel node chains ---
 	stripUIDs := make([]any, 0, len(spec.Channels))
 	nodeArchUIDs := make([]any, 0, len(spec.Channels))
 	for i, ch := range spec.Channels {
+		slots := layouts[i]
+
+		nodeUIDs := make([]any, 0, len(slots))
+		for _, sd := range slots {
+			if sd.auv3 {
+				nodeUIDs = append(nodeUIDs, b.Intern(buildNode(b, sd.node, i, sd.index)))
+				report.Nodes++
+			} else {
+				nodeUIDs = append(nodeUIDs, b.Intern(buildBuiltinNode(b, sd.builtin)))
+			}
+		}
+		nodeArchUIDs = append(nodeArchUIDs, b.Intern(newNSArray(b, nodeUIDs)))
+
 		fields := map[string]any{
-			"index":  int64(i),
-			"muted":  ch.Muted,
-			"soloed": ch.Soloed,
+			"index": int64(i),
+			// AUM reads exactly nodeCount nodes from the chain; it must equal
+			// the chain length or AUM mis-parses (or crashes on) the strip.
+			"nodeCount": int64(len(slots)),
+			// Real strips (audio and MIDI alike) carry these UI-state bools.
+			"bookmarked":   false,
+			"navCollapsed": false,
 		}
 		if ch.Title != "" {
 			fields["title"] = b.Intern(ch.Title)
@@ -223,22 +508,22 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		class := "AUMAudioStrip"
 		if ch.Kind == KindMIDI {
 			class = "AUMMIDIStrip"
+			// A MIDI strip has no fader, mute or solo; real sessions omit
+			// muted/soloed on AUMMIDIStrip, so we do too.
 		} else {
+			fields["muted"] = ch.Muted
+			fields["soloed"] = ch.Soloed
 			fader := 1.0
 			if ch.Fader != nil {
 				fader = *ch.Fader
 			}
 			fields["faderLevel"] = fader
+			// faderIndex marks the fader/output slot: pre-fader slots precede
+			// it, post-fader inserts (the tap) follow it.
+			fields["faderIndex"] = int64(faderIdxs[i])
 		}
 		strip := keyedObj(b, class, "AUMStrip", fields)
 		stripUIDs = append(stripUIDs, b.Intern(strip))
-
-		nodeUIDs := make([]any, 0, len(ch.Nodes))
-		for slot, n := range ch.Nodes {
-			nodeUIDs = append(nodeUIDs, b.Intern(buildNode(b, n, i, slot)))
-			report.Nodes++
-		}
-		nodeArchUIDs = append(nodeArchUIDs, b.Intern(newNSArray(b, nodeUIDs)))
 		report.Channels++
 	}
 	channels := newNSArray(b, stripUIDs)
@@ -251,9 +536,13 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		collKeys := []any{b.Intern("Channel controls")}
 		collObjs := []any{b.Intern(buildChannelControls(b, ch, &report))}
 
-		for slot, n := range ch.Nodes {
-			collKeys = append(collKeys, b.Intern(fmt.Sprintf("slot%d", slot)))
-			collObjs = append(collObjs, b.Intern(buildSlotCatalogue(b, n, &report)))
+		for _, sd := range layouts[i] {
+			collKeys = append(collKeys, b.Intern(fmt.Sprintf("slot%d", sd.index)))
+			if sd.auv3 {
+				collObjs = append(collObjs, b.Intern(buildSlotCatalogue(b, sd.node, &report)))
+			} else {
+				collObjs = append(collObjs, b.Intern(buildBuiltinSlotCatalogue(b, sd.builtin.name, &report)))
+			}
 		}
 		chanCollKeys = append(chanCollKeys, b.Intern(fmt.Sprintf("chan%d", i)))
 		chanCollObjs = append(chanCollObjs, b.Intern(newNSDict(b, collKeys, collObjs)))
@@ -267,7 +556,7 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		[]any{b.Intern(transport), b.Intern(system), b.Intern(channelsColl)},
 	)
 
-	clock := newNSDict(b, []any{b.Intern("clockTempo")}, []any{b.Intern(tempo)})
+	clock := buildTransportClock(b, tempo)
 
 	rootFields := map[string]any{
 		"version":             int64(13),
@@ -276,6 +565,21 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		"nodeArchives":        b.Intern(nodeArchives),
 		"midiCtrlState":       b.Intern(midiCtrlState),
 		"transportClockState": b.Intern(clock),
+		// Session-level defaults a loadable AUM session carries: the fixed
+		// 16-bus mix layout the routing nodes index into, the hardware-I/O
+		// snapshot (per the selected profile; AUM repopulates it on load), the
+		// metronome output routing and the on-screen keyboard defaults.
+		"mixBusses":     b.Intern(buildMixBusses(b, spec.MixBusses)),
+		"hwBusses":      b.Intern(buildHwBusses(b, spec.Hardware)),
+		"metroOutDesc":  b.Intern(buildMetroOutDesc(b)),
+		"keyboardState": b.Intern(buildKeyboardState(b)),
+		// Session-level scalars a real AUM v13 session always carries: an empty
+		// folder string, an NSNull notes placeholder and a zero minimum-latency
+		// double. Omitting them lets AUM fall back to (possibly different)
+		// defaults; authoring them matches the real-session shape.
+		"folder":         b.Intern(""),
+		"notes":          b.Intern(newNSNull(b)),
+		"minimumLatency": float64(0),
 	}
 	if spec.Title != "" {
 		rootFields["title"] = b.Intern(spec.Title)
@@ -291,16 +595,14 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		}
 	}
 
-	// Author per-node saved state (AuStateDoc) and preset selection.
-	for ci, ch := range spec.Channels {
-		for slot, n := range ch.Nodes {
-			if len(n.StateDoc) > 0 {
-				if err := s.SetAuStateDoc(ci, slot, n.StateDoc); err != nil {
-					return nil, report, err
-				}
-			}
-			if n.Preset != nil {
-				if err := s.SetPreset(ci, slot, *n.Preset); err != nil {
+	// Author per-node preset selection. Saved AU state (AuStateDoc) is authored
+	// up-front by buildAUXNode (it carries the component identity tuple plus any
+	// n.StateDoc fullState blob), so it is not re-applied here — calling
+	// SetAuStateDoc would overwrite the identity keys with the blob alone.
+	for ci := range spec.Channels {
+		for _, sd := range layouts[ci] {
+			if sd.auv3 && sd.node.Preset != nil {
+				if err := s.SetPreset(ci, sd.index, *sd.node.Preset); err != nil {
 					return nil, report, err
 				}
 			}
@@ -318,52 +620,47 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 	return s, report, nil
 }
 
-// buildNode builds one AUMNodeArchive for a hosted AUv3 node: its component
-// identity, human name, and an archiveNodeState carrying bypass state (and the
-// headline param keyPath when supplied).
+// buildNode builds one AUMNodeArchive for a hosted AUv3 node. It delegates to
+// buildAUXNode (nodes.go), the corpus-faithful primitive that authors the full
+// 13-key archiveNodeState, componentFlags 0x0e and the AuStateDoc identity (+
+// any n.StateDoc fullState blob) — the shape AUM must see to instantiate the
+// node on load.
 func buildNode(b *Builder, n NodeSpec, channel, slot int) map[string]any {
-	stateKeys := []any{b.Intern("AUMNode.bypassed")}
-	stateObjs := []any{b.Intern(false)}
-	if n.AuMainParam != "" {
-		stateKeys = append(stateKeys, b.Intern("AuMainParam"))
-		stateObjs = append(stateObjs, b.Intern(n.AuMainParam))
-	}
-	nodeState := newNSDict(b, stateKeys, stateObjs)
-
-	fields := map[string]any{
-		"archiveDescClass":          b.Intern("AUXNodeDescription"),
-		"audioComponentDescription": b.Intern(EncodeComponentDesc(n.Component)),
-		"archiveNodeState":          b.Intern(nodeState),
-		"parentChannel":             int64(channel),
-		"parentSlot":                int64(slot),
-	}
-	if n.ComponentName != "" {
-		fields["componentName"] = b.Intern(n.ComponentName)
-	}
-	return keyedObj(b, "AUMNodeArchive", "", fields)
+	return buildAUXNode(b, n, channel, slot)
 }
+
+// collectionMapNameKey is the meta key every midiCtrlState collection carries
+// naming the collection (used when AUM saves/loads that collection as a
+// standalone .aum_midimap; see ExportMidiMap). Its value is cosmetic — the
+// reader filters it (metaKeys) and AUM regenerates it on load — so the authored
+// value is a stable descriptive label, not a leaf.
+const collectionMapNameKey = "_collection_map_name"
 
 // buildChannelControls builds the "Channel controls" collection for a strip:
 // one placeholder leaf per strip-level target (Volume value, Mute/Solo/Rec
-// triggers for audio; Mute/Solo for MIDI).
+// triggers for audio; Mute/Solo for MIDI), plus the _collection_map_name meta
+// key.
 func buildChannelControls(b *Builder, ch ChannelSpec, report *BuildReport) map[string]any {
 	controls := audioChannelControls
 	if ch.Kind == KindMIDI {
 		controls = midiChannelControls
 	}
-	keys := make([]any, 0, len(controls))
-	objs := make([]any, 0, len(controls))
+	keys := make([]any, 0, len(controls)+1)
+	objs := make([]any, 0, len(controls)+1)
 	for _, ctl := range controls {
 		keys = append(keys, b.Intern(ctl.name))
 		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
+	keys = append(keys, b.Intern(collectionMapNameKey))
+	objs = append(objs, b.Intern("Channel controls"))
 	return newNSDict(b, keys, objs)
 }
 
-// buildSlotCatalogue builds a node slot's collection: a value placeholder per
-// writable parameter (AUM only maps writable params) keyed by the param's
-// target name, plus the reserved bypass/show triggers.
+// buildSlotCatalogue builds a hosted AUv3 node slot's collection: a value
+// placeholder per writable parameter (AUM only maps writable params) keyed by
+// the param's target name, the reserved bypass/show triggers, and the
+// _collection_map_name meta key (the node's name).
 func buildSlotCatalogue(b *Builder, n NodeSpec, report *BuildReport) map[string]any {
 	keys := []any{}
 	objs := []any{}
@@ -381,6 +678,25 @@ func buildSlotCatalogue(b *Builder, n NodeSpec, report *BuildReport) map[string]
 		objs = append(objs, b.Intern(placeholderLeaf(b)))
 		report.Targets++
 	}
+	name := n.ComponentName
+	if name == "" {
+		name = "slot"
+	}
+	keys = append(keys, b.Intern(collectionMapNameKey))
+	objs = append(objs, b.Intern(name))
+	return newNSDict(b, keys, objs)
+}
+
+// buildBuiltinSlotCatalogue builds a built-in routing node slot's collection.
+// A built-in node has no mappable parameters; AUM still enumerates its single
+// reserved _AUMNode:Bypass trigger, plus the _collection_map_name meta key.
+func buildBuiltinSlotCatalogue(b *Builder, name string, report *BuildReport) map[string]any {
+	if name == "" {
+		name = "slot"
+	}
+	keys := []any{b.Intern("_AUMNode:Bypass"), b.Intern(collectionMapNameKey)}
+	objs := []any{b.Intern(placeholderLeaf(b)), b.Intern(name)}
+	report.Targets++
 	return newNSDict(b, keys, objs)
 }
 
@@ -435,6 +751,12 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 		maxCC = 127
 	}
 
+	// Tap-bypass toggles ride a reserved channel of their own (see
+	// device.TapControlChannel), stored 0-based like every other channel field,
+	// numbered sequentially in channel order across the whole session.
+	tapStored := device.TapControlChannel - 1
+	tapOrdinal := 0
+
 	audioOrdinal := 0
 	for i, ch := range spec.Channels {
 		coll := fmt.Sprintf("Channels/chan%d", i)
@@ -453,11 +775,36 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 			}
 		}
 
-		for slot, n := range ch.Nodes {
-			slotColl := fmt.Sprintf("%s/slot%d", coll, slot)
+		// Assign node-param CCs at each hosted AUv3 node's true chain slot (a
+		// built-in source/output node shifts the AUv3 nodes off slot 0), so the
+		// path matches the catalogue. CC numbering restarts per node.
+		slots, _ := channelSlots(ch)
+		for _, sd := range slots {
+			if !sd.auv3 {
+				continue
+			}
+			slotColl := fmt.Sprintf("%s/slot%d", coll, sd.index)
+
+			// Post-fader tap: map its _AUMNode:Bypass to a unique CC on the
+			// reserved tap-control channel, AutoToggle on, so a single brain CC
+			// flips the tap's stream. The tap node carries no writable params,
+			// so this is the only target it contributes; the param loop below
+			// is a no-op for it.
+			if sd.isTap {
+				tapOrdinal++
+				if cc, ok := device.ConventionTapCC(tapOrdinal); ok {
+					if err := assignTapToggle(s, slotColl, cc, tapStored); err != nil {
+						return err
+					}
+					report.AssignedCCs++
+				} else {
+					report.Overflow = append(report.Overflow, slotColl+"/_AUMNode:Bypass")
+				}
+			}
+
 			used := map[string]bool{}
 			cc := startCC
-			for _, p := range n.Params {
+			for _, p := range sd.node.Params {
 				if !p.Writable {
 					continue
 				}
@@ -489,6 +836,21 @@ func applyConvention(s *Session, spec BuildSpec, masterPos int, report *BuildRep
 		report.AssignedCCs++
 	}
 	return nil
+}
+
+// assignTapToggle wires one post-fader tap's bypass to a CC on the reserved
+// tap-control channel with AutoToggle on (Cycle): a single non-zero brain CC
+// flips the tap's stream rather than latching it. The _AUMNode:Bypass target is
+// always present in a tap slot's catalogue (it is a reserved node trigger).
+func assignTapToggle(s *Session, slotColl string, cc, channel int) error {
+	m, ok := s.FindMapping(slotColl, "_AUMNode:Bypass")
+	if !ok {
+		return fmt.Errorf("aum: tap slot %q has no _AUMNode:Bypass target", slotColl)
+	}
+	if err := m.Assign(TypeCC, cc, channel); err != nil {
+		return err
+	}
+	return m.SetAutoToggle(true)
 }
 
 // lastAudioIndex returns the index of the last KindAudio channel (the master),

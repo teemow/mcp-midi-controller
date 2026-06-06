@@ -73,7 +73,8 @@ func (s *Server) registerProbeSound() {
 				"note": {"type": "integer", "minimum": 0, "maximum": 127, "description": "Single note shortcut (alternative to notes)."},
 				"velocity": {"type": "integer", "minimum": 1, "maximum": 127, "description": "Note-on velocity (default 100)."},
 				"duration_ms": {"type": "integer", "minimum": 0, "description": "How long to hold the notes before snapshotting + note-off (default 800, max 10000)."},
-				"channel": {"type": "integer", "minimum": 1, "maximum": 16, "description": "MIDI channel 1-16 for the notes (default 1)."}
+				"channel": {"type": "integer", "minimum": 1, "maximum": 16, "description": "MIDI channel 1-16 for the notes (default 1)."},
+				"tap": {"type": "string", "description": "Which audio tap to listen on (its name or format source label). Omit to use the most-recently-active tap. See get_audio_tap's 'taps'."}
 			}
 		}`),
 	}, s.handleProbeSound)
@@ -104,9 +105,21 @@ func (s *Server) handleProbeSound(ctx context.Context, req *mcp.CallToolRequest)
 		Velocity   *int           `json:"velocity"`
 		DurationMS *int           `json:"duration_ms"`
 		Channel    int            `json:"channel"`
+		Tap        string         `json:"tap"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+
+	// Resolve the tap to listen on up front so the whole excite→capture cycle
+	// reads one consistent tap (named, or the most-recently-active).
+	tap, ok := s.resolveTap(args.Tap)
+	if !ok {
+		msg := "no audio tap is connected; insert ProbeAudioTap on an AUM channel and enable streaming"
+		if args.Tap != "" {
+			msg = fmt.Sprintf("no audio tap named %q; known taps: %s", args.Tap, tapNamesText(s.audio.Names()))
+		}
+		return textResult(msg, true), nil
 	}
 
 	// 1) Apply settings (device controls and/or raw CCs) before exciting.
@@ -173,7 +186,7 @@ func (s *Server) handleProbeSound(ctx context.Context, req *mcp.CallToolRequest)
 	// does not bleed in, mark the start epoch, note-on, hold through the sustain,
 	// mark the end epoch, note-off, then extract + analyse exactly that segment
 	// (not the shared rolling window) and write it to disk as a stereo WAV.
-	snap, wavPath, capErr := s.exciteAndCapture(ctx, notes, velocity, duration, ch)
+	snap, wavPath, capErr := s.exciteAndCapture(ctx, tap, notes, velocity, duration, ch)
 	if capErr != nil {
 		return textResult(capErr.Error(), true), nil
 	}
@@ -194,16 +207,16 @@ func (s *Server) handleProbeSound(ctx context.Context, req *mcp.CallToolRequest)
 // plus the path of the WAV written for the captured segment (empty when no notes
 // were played or the write failed). With no notes it degrades to a plain read of
 // the live tap (a pure analysis probe).
-func (s *Server) exciteAndCapture(ctx context.Context, notes []int, velocity, duration, ch int) (audiotap.Snapshot, string, error) {
+func (s *Server) exciteAndCapture(ctx context.Context, tap *audiotap.Store, notes []int, velocity, duration, ch int) (audiotap.Snapshot, string, error) {
 	if len(notes) == 0 {
-		return s.audio.Snapshot(), "", nil
+		return tap.Snapshot(), "", nil
 	}
 
 	// Wait for any prior reverb/sustain tail to fall below the floor so it does
 	// not contaminate the segment (bounded by settleTimeout).
-	s.settleAudio(ctx)
+	s.settleAudio(ctx, tap)
 
-	start := s.audio.MarkEpoch()
+	start := tap.MarkEpoch()
 	for _, n := range notes {
 		if err := s.sendBrain(ctx, midicontrol.Command{Type: "noteOn", Channel: ch, Note: n, Velocity: velocity}); err != nil {
 			return audiotap.Snapshot{}, "", fmt.Errorf("probe_sound (note-on) failed: %w", err)
@@ -215,7 +228,7 @@ func (s *Server) exciteAndCapture(ctx context.Context, notes []int, velocity, du
 		case <-time.After(time.Duration(duration) * time.Millisecond):
 		}
 	}
-	end := s.audio.MarkEpoch()
+	end := tap.MarkEpoch()
 
 	// Note-off promptly: the segment range was already marked at `end`, so the
 	// release tail (which arrives after note-off) falls outside [start,end).
@@ -225,11 +238,11 @@ func (s *Server) exciteAndCapture(ctx context.Context, notes []int, velocity, du
 		}
 	}
 
-	snap, clip, ok := s.audio.SegmentSnapshot(start, end)
+	snap, clip, ok := tap.SegmentSnapshot(start, end)
 	if !ok {
 		// The segment scrolled out of the window (e.g. a very long hold) — fall
 		// back to a live snapshot so the probe still returns analysis.
-		return s.audio.Snapshot(), "", nil
+		return tap.Snapshot(), "", nil
 	}
 	return snap, s.writeProbeWAV(clip, notes), nil
 }
@@ -239,10 +252,10 @@ func (s *Server) exciteAndCapture(ctx context.Context, notes []int, velocity, du
 // capture. It uses the ~10 Hz reported RMS (recent level) rather than the
 // whole-window RMS, which lingers because the multi-second window still holds
 // the previous loud samples.
-func (s *Server) settleAudio(ctx context.Context) {
+func (s *Server) settleAudio(ctx context.Context, tap *audiotap.Store) {
 	deadline := time.Now().Add(settleTimeout)
 	for {
-		if s.audio.Level() < settleFloorRMS {
+		if tap.Level() < settleFloorRMS {
 			return
 		}
 		if !time.Now().Before(deadline) {

@@ -495,14 +495,21 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
 10. **Audio tap (`internal/audiotap`)** — the agent's "ears". The auv3-probe
     **ProbeAudioTap** AUv3 (`aufx`) is inserted on an AUM audio channel and
     streams **full-rate, interleaved stereo** PCM plus RMS/peak features over a
-    WebSocket to the daemon (`GET /audio-stream`, mounted on the same shared LAN
-    listener as the probe + session receivers — `auv3_receiver_addr`, default
-    `:7800` — not the loopback MCP endpoint). The receiver terminates the
+    WebSocket to the daemon (`GET /audio-stream[?name=<tap>]`, mounted on the
+    same shared LAN listener as the probe + session receivers —
+    `auv3_receiver_addr`, default `:7800` — not the loopback MCP endpoint). The
+    receiver terminates the
     [contract](https://github.com/teemow/auv3-probe/blob/main/docs/auv3-extension.md)
     (one TEXT `format` message giving the real channel count + host rate, BINARY
     little-endian `Float32` interleaved PCM, ~10 Hz TEXT `features`) into an
     **in-memory** store: the latest levels plus a rolling PCM window (~10 s,
-    capped). The live window lives only in RAM (a private, volatile rig signal);
+    capped). **Multiple named taps stream concurrently** — one per AUM channel
+    you tap — kept apart by a `Registry` of per-tap stores keyed by the
+    `?name=` query parameter (the author tools embed this name in the tap's
+    config; un-named producers fall back to their remote address so they still
+    don't clobber each other). The audio MCP tools (`get_audio_tap`,
+    `get_audio_clip`, `probe_sound`, `capture_audio_snapshot`) take an optional
+    tap `name` and default to the most-recently-active tap. The live window lives only in RAM (a private, volatile rig signal);
     the only thing written to disk is the per-probe segment WAV below, under the
     volatile state dir (`audio-clips/`, gitignored + retention-capped), never
     committed. The store backs the read-only `get_audio_tap`

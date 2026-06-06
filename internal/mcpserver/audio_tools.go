@@ -35,8 +35,14 @@ func (s *Server) registerAudioTools() {
 		Name: "get_audio_tap",
 		Description: "Read the live audio tap (the agent's \"ears\"): whether a ProbeAudioTap insert is streaming, the latest RMS/peak levels, window-derived peak/RMS over the last few seconds, a short peak-envelope waveform, and connection/age metadata. " +
 			"Also returns trusted Go-computed musical analysis over the rolling window so you do NOT need to fetch and DSP base64 PCM: detected pitch (f0 Hz, nearest note, cents offset, confidence), harmonic partials (frequency, dBFS, harmonic number) with a harmonic-to-noise ratio, loudness/dynamics (RMS/peak dBFS, crest factor), and onset activity (count + ms since last attack). " +
+			"Multiple named taps can stream at once (one per AUM channel you tapped); pass name to pick one, otherwise the most-recently-active tap is read. The known tap names are returned as 'taps'. " +
 			"Audio is captured from an AUM channel by the auv3-probe ProbeAudioTap AUv3 and streamed over the LAN; nothing is stored on disk. Emits structuredContent with the full snapshot including the analysis block.",
-		InputSchema: json.RawMessage(`{"type":"object"}`),
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Which tap to read (its name, or its format source label). Omit to read the most-recently-active tap. See 'taps' in the output for the known names."}
+			}
+		}`),
 	}, s.handleGetAudioTap)
 
 	s.mcp.AddTool(&mcp.Tool{
@@ -46,7 +52,8 @@ func (s *Server) registerAudioTools() {
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"duration_ms": {"type": "integer", "minimum": 1, "description": "How many milliseconds of the most recent audio to return (default/cap ~0.7s at 48 kHz)."}
+				"duration_ms": {"type": "integer", "minimum": 1, "description": "How many milliseconds of the most recent audio to return (default/cap ~0.7s at 48 kHz)."},
+				"name": {"type": "string", "description": "Which tap to read (its name, or its format source label). Omit to read the most-recently-active tap. See get_audio_tap's 'taps' for the known names."}
 			}
 		}`),
 	}, s.handleGetAudioClip)
@@ -55,9 +62,42 @@ func (s *Server) registerAudioTools() {
 	s.registerCompareTools()
 }
 
-func (s *Server) handleGetAudioTap(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	snap := s.audio.Snapshot()
-	return structResult(describeAudioSnapshot(snap), snap), nil
+func (s *Server) handleGetAudioTap(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Name string `json:"name"`
+	}
+	if len(req.Params.Arguments) > 0 {
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return textResult("invalid arguments: "+err.Error(), true), nil
+		}
+	}
+
+	taps := s.audio.Names()
+	st, ok := s.resolveTap(args.Name)
+	if !ok {
+		// Keep the snapshot at the structuredContent root (the sound-loop /
+		// test-loop contract); report the empty/unknown case in the text.
+		msg := "no audio tap has connected yet; insert ProbeAudioTap on an AUM channel and enable streaming to the daemon"
+		if args.Name != "" {
+			msg = fmt.Sprintf("no audio tap named %q; known taps: %s", args.Name, tapNamesText(taps))
+		}
+		return structResult(msg, audiotap.Snapshot{}), nil
+	}
+	snap := st.Snapshot()
+	text := describeAudioSnapshot(snap)
+	if len(taps) > 1 {
+		text += fmt.Sprintf("\n  taps: %s (pass name to pick one)", tapNamesText(taps))
+	}
+	return structResult(text, snap), nil
+}
+
+// tapNamesText renders the known tap names for a message, or a hint when none
+// are connected.
+func tapNamesText(names []string) string {
+	if len(names) == 0 {
+		return "(none connected)"
+	}
+	return strings.Join(names, ", ")
 }
 
 // describeAudioSnapshot renders the human-readable text for an audio-tap
@@ -117,7 +157,8 @@ func describeAudioSnapshot(snap audiotap.Snapshot) string {
 
 func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
-		DurationMS int `json:"duration_ms"`
+		DurationMS int    `json:"duration_ms"`
+		Name       string `json:"name"`
 	}
 	if len(req.Params.Arguments) > 0 {
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -125,9 +166,18 @@ func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest)
 		}
 	}
 
+	st, ok := s.resolveTap(args.Name)
+	if !ok {
+		msg := "no audio captured yet; insert ProbeAudioTap and enable streaming"
+		if args.Name != "" {
+			msg = fmt.Sprintf("no audio tap named %q; known taps: %s", args.Name, tapNamesText(s.audio.Names()))
+		}
+		return structResult(msg, map[string]any{"connected": false, "samples": 0}), nil
+	}
+
 	// Peek at the current sample rate to translate duration_ms into frames
 	// (cheap accessor, no analysis).
-	sampleRate := s.audio.SampleRate()
+	sampleRate := st.SampleRate()
 	maxFrames := maxClipFrames
 	if args.DurationMS > 0 && sampleRate > 0 {
 		want := int(math.Ceil(float64(args.DurationMS) / 1000.0 * sampleRate))
@@ -136,7 +186,7 @@ func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest)
 		}
 	}
 
-	clip := s.audio.Clip(maxFrames)
+	clip := st.Clip(maxFrames)
 	if len(clip.Samples) == 0 {
 		return structResult("no audio captured yet; insert ProbeAudioTap and enable streaming", map[string]any{
 			"connected": clip.Connected,
@@ -163,7 +213,9 @@ func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest)
 	}
 	msg := fmt.Sprintf("audio clip: %d frames (%.0f ms) %dch %s @ %.0f Hz",
 		frames, durMS, ch, clip.Encoding, clip.SampleRate)
-	return structResult(msg, map[string]any{
+	// No-embed: pcm_base64 is large binary the model cannot use in its text
+	// context; keep it in structuredContent for UI/programmatic clients only.
+	return structResultNoEmbed(msg, map[string]any{
 		"connected":   clip.Connected,
 		"encoding":    clip.Encoding,
 		"sample_rate": clip.SampleRate,

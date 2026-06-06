@@ -44,7 +44,9 @@ func probeTestServer(t *testing.T, toneHz float64) (*Server, *audiotap.Store) {
 	}
 	store.AppendAudio(samples)
 
-	s := New(eng, WithAudioTap(store))
+	audioReg := audiotap.NewRegistry()
+	audioReg.Adopt("test-tap", store)
+	s := New(eng, WithAudioTap(audioReg))
 
 	d, _ := eng.DeviceFor("synth")
 	d.Name = "synth"

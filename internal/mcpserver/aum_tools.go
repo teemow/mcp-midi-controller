@@ -94,8 +94,10 @@ func (s *Server) registerAUMTools() {
 	}, s.handleImportAUMSession)
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "author_aum_session",
-		Description: "Author a new AUM session (.aumproj) from scratch and stage it for download to the iPad. Define ordered mixer channels (audio/midi), each optionally hosting AUv3 nodes sourced from staged probes (probe_id). By default the standard brain-control CC convention is baked in (mixer + transport + node-param CCs on channel 1) so the session is brain-controllable with no hand-wiring; pass a convention object to customize it, or bare:true for an untouched placeholder session. Returns the build report and the download path. The last audio channel is treated as the master.",
+		Name: "author_aum_session",
+		Description: "Author a new AUM session (.aumproj) from scratch and stage it for download to the iPad. Define ordered mixer channels (audio/midi), each optionally hosting AUv3 nodes sourced from staged probes (probe_id). " +
+			"Each audio channel can also declare its audio routing: a built-in source (HW input / mix-bus read / file player), a fader/output node (send to a mix bus, or to a hardware output for the master/monitor), post-fader insert nodes, aux sends into extra mix buses, and a post-fader ProbeAudioTap (tap). Name/color sub-buses with mix_busses. This is the general routed/tapped authoring path the graded sessions also use. " +
+			"By default the standard brain-control CC convention is baked in (mixer + transport + node-param CCs on channel 1, each tap's bypass on its own AutoToggle CC) so the session is brain-controllable with no hand-wiring; pass a convention object to customize it, or bare:true for an untouched placeholder session. Returns the build report and the download path. The last audio channel is treated as the master.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -103,6 +105,7 @@ func (s *Server) registerAUMTools() {
 				"out_id": {"type": "string", "description": "Staging id (filename without .aumproj); defaults to a sanitized title."},
 				"tempo": {"type": "number", "description": "BPM (default 120)."},
 				"sample_rate": {"type": "number", "description": "Engine sample rate (default 48000)."},
+				"hardware": {"type": "string", "enum": ["builtin", "x32"], "description": "Hardware-I/O profile authored into hwBusses. \"builtin\" (default) = iPad mic+speaker only (device-independent; AUM repopulates on load). \"x32\" = the Behringer X32's 32-channel USB layout the real X32-rig sessions store (16 stereo pairs 0/1..30/31, no built-in), so HWInput/HWOutput channels pre-reference the desk and the master routes to the X32 main out (hw-bus index 0/1). AUM rebuilds hwBusses from the attached interface on load either way."},
 				"channels": {
 					"type": "array",
 					"description": "Ordered mixer strips.",
@@ -116,7 +119,7 @@ func (s *Server) registerAUMTools() {
 							"soloed": {"type": "boolean"},
 							"nodes": {
 								"type": "array",
-								"description": "Hosted AUv3 nodes (slot chain).",
+								"description": "Pre-fader hosted AUv3 nodes (slot chain head): the source instrument followed by any pre-fader inserts.",
 								"items": {
 									"type": "object",
 									"properties": {
@@ -127,8 +130,79 @@ func (s *Server) registerAUMTools() {
 										"state": {"type": "object", "description": "Optional saved AU state (AuStateDoc) as fullState key -> string value, stored as UTF-8 bytes. For our plugins e.g. {\"probeMidiBrainConfig\":\"{\\\"host\\\":\\\"box:7800\\\",\\\"controlEnabled\\\":true}\"} or {\"probeAudioTapConfig\":\"...\"}.", "additionalProperties": {"type": "string"}}
 									}
 								}
+							},
+							"source": {
+								"type": "object",
+								"description": "Audio strips only. A built-in slot0 audio source. Omit (or kind=instrument/none) to let the first hosted node head the chain.",
+								"properties": {
+									"kind": {"type": "string", "enum": ["instrument", "hwinput", "bus", "fileplayer", "none"], "description": "instrument/none = the first hosted node is the source (no built-in node); hwinput = read a hardware input bus; bus = read a mix bus (0 = master sum, for a master/submix strip); fileplayer = an empty AUM file player."},
+									"hw_bus_index": {"type": "integer", "description": "hwinput: which hardware input bus."},
+									"mono_select": {"type": "integer", "description": "hwinput: 0 stereo, 1 left, 2 right."},
+									"bus_index": {"type": "integer", "description": "bus: which mix bus to read (0 = master sum)."}
+								}
+							},
+							"output": {
+								"type": "object",
+								"description": "Audio strips only. The channel's fader/output routing node (placed at faderIndex). A normal channel sends to a mix bus; the master/monitor sends to a hardware output.",
+								"properties": {
+									"kind": {"type": "string", "enum": ["bus", "hardware", "none"], "description": "bus = BusDest into a mix bus (send to bus 0 to reach the master); hardware = HWOutput to a hardware output (the master/monitor; bus 0 = speaker / X32 main out)."},
+									"bus_index": {"type": "integer", "description": "bus: which mix bus (0 = master sum)."},
+									"hw_bus_index": {"type": "integer", "description": "hardware: which hardware output bus (0 = speaker / X32 main)."},
+									"mono_select": {"type": "integer", "description": "hardware: 0 stereo, 1 left, 2 right."}
+								}
+							},
+							"post_nodes": {
+								"type": "array",
+								"description": "Post-fader hosted AUv3 insert nodes (e.g. master FX), placed after the fader/output node, before any aux sends and the tap. Same item shape as nodes.",
+								"items": {
+									"type": "object",
+									"properties": {
+										"probe_id": {"type": "string", "description": "Staged auv3 probe id to host."},
+										"probe_file": {"type": "string", "description": "Explicit probe dump path (overrides probe_id)."},
+										"component_name": {"type": "string", "description": "Override the node's human name."},
+										"preset": {"type": "integer", "description": "Optional factory preset index (AuPresetCtrl)."},
+										"state": {"type": "object", "description": "Optional saved AU state (AuStateDoc) as fullState key -> string value.", "additionalProperties": {"type": "string"}}
+									}
+								}
+							},
+							"aux_sends": {
+								"type": "array",
+								"description": "Audio strips only. Post-fader aux sends: the channel's post-fader signal is also sent into extra mix buses while still flowing to its own output.",
+								"items": {
+									"type": "object",
+									"properties": {
+										"bus_index": {"type": "integer", "description": "Which mix bus to send into."},
+										"amount": {"type": "number", "description": "Send level 0..1."}
+									},
+									"required": ["bus_index"]
+								}
+							},
+							"tap": {"type": "boolean", "description": "Audio strips only. Append a post-fader ProbeAudioTap as the channel's last slot. With the default convention its bypass is mapped to its own AutoToggle CC so the brain can flip it."},
+							"tap_node": {
+								"type": "object",
+								"description": "Audio strips only. Override the default ProbeAudioTap identity/state with a node from a staged probe (implies tap=true). Same item shape as nodes.",
+								"properties": {
+									"probe_id": {"type": "string", "description": "Staged ProbeAudioTap probe id."},
+									"probe_file": {"type": "string", "description": "Explicit probe dump path (overrides probe_id)."},
+									"component_name": {"type": "string", "description": "Override the tap's human name."},
+									"preset": {"type": "integer", "description": "Optional factory preset index (AuPresetCtrl)."},
+									"state": {"type": "object", "description": "Optional saved AU state (AuStateDoc), e.g. {\"probeAudioTapConfig\":\"...\"}.", "additionalProperties": {"type": "string"}}
+								}
 							}
 						}
+					}
+				},
+				"mix_busses": {
+					"type": "array",
+					"description": "Name and/or color specific mix buses (the Fast-Forward-style named sub-buses such as Drums Mix / Bass / Guitar). Unlisted buses stay the default unnamed/uncolored shape.",
+					"items": {
+						"type": "object",
+						"properties": {
+							"index": {"type": "integer", "description": "Which of the 16 mix buses (0..15)."},
+							"name": {"type": "string", "description": "The bus customName (omit to leave it unnamed)."},
+							"color": {"type": "object", "description": "Optional bus customColor as straight-alpha RGBA (each component 0..1).", "properties": {"r": {"type": "number"}, "g": {"type": "number"}, "b": {"type": "number"}, "a": {"type": "number"}}}
+						},
+						"required": ["index"]
 					}
 				},
 				"bare": {"type": "boolean", "description": "Skip the default convention and author an untouched placeholder session (AUM's default, what an unmapped real session looks like). Ignored when a convention object is supplied."},
@@ -178,7 +252,8 @@ func (s *Server) registerAUMTools() {
 				"title": {"type": "string", "description": "Session title (default \"Agent Loop\")."},
 				"out_id": {"type": "string", "description": "Staging id / filename stem (default from title)."},
 				"tempo": {"type": "number", "description": "Session tempo BPM (default 120)."},
-				"decimation": {"type": "integer", "description": "Tap PCM decimation factor (default 4)."}
+				"decimation": {"type": "integer", "description": "Tap PCM decimation factor (default 4)."},
+				"tap_name": {"type": "string", "description": "Name the embedded ProbeAudioTap streams under, so several taps can be told apart by get_audio_tap/probe_sound (name arg). Defaults to the session title. Multiple concurrently-streaming taps must use distinct names."}
 			},
 			"required": ["synth_probe", "brain_probe", "tap_probe", "host"]
 		}`),
@@ -188,7 +263,8 @@ func (s *Server) registerAUMTools() {
 		Name: "instrument_aum_session",
 		Description: "Give a session FULL control: bank every mappable target (mixer strips, transport, system, node reserved triggers, and every hosted plugin parameter) onto collision-free MIDI triggers, then re-stage it for download to the iPad. " +
 			"The global channel (default 1) keeps the mixer/transport CC convention so a session-derived AUM mixer device still resolves; everything else banks from start_channel (default 2) upward, CC 0..127 then Note 0..127, advancing channels until 16. " +
-			"This is also the \"update an existing session\" tool: with preserve_existing (default true) every already-enabled mapping is left untouched and routed around, so it is safe to re-run and to layer full control on top of a hand-mapped session. Overflowing targets (dense FX past channel 16) are reported, not fatal. dry_run returns the plan without writing.",
+			"This is also the \"update an existing session\" tool: with preserve_existing (default true) every already-enabled mapping is left untouched and routed around, so it is safe to re-run and to layer full control on top of a hand-mapped session. Overflowing targets (dense FX past channel 16) are reported, not fatal. dry_run returns the plan without writing. " +
+			"Set add_probes:true (with host) to also EMBED the probe rig — a ProbeMidiBrain strip wired to AUM MIDI Control plus a ProbeAudioTap on tap_channel — so the golden session is self-contained: the agent drives it via the brain and hears it via the tap with nothing to add on the iPad.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -200,6 +276,15 @@ func (s *Server) registerAUMTools() {
 				"use_notes": {"type": "boolean", "description": "Allow the pool to spill into the Note space once a channel's 128 CCs are full, before advancing channels. Default true. A control Note also reaches instruments on that channel, so use play_channels to exclude played channels."},
 				"play_channels": {"type": "array", "items": {"type": "integer"}, "description": "1-based channels to exclude from Note allocation (their CC space is still used), so control Notes never sound on a channel an instrument plays."},
 				"preserve_existing": {"type": "boolean", "description": "Leave already-enabled mappings untouched and route new ones around them. Default true (safe re-run / update)."},
+				"add_probes": {"type": "boolean", "description": "Embed the probe rig so the golden session is self-contained and agent-controllable: append a ProbeMidiBrain MIDI strip (routed to AUM MIDI Control, merged into any existing matrix) and insert a ProbeAudioTap into tap_channel's chain. Requires host. The brain emits the banked CCs/Notes; the tap streams audio back."},
+				"host": {"type": "string", "description": "Daemon host[:port] the embedded brain and tap dial back to (required when add_probes). E.g. \"demiurg.local:7800\"."},
+				"tap_channel": {"type": "integer", "description": "0-based channel index to insert the ProbeAudioTap into (its audio is what get_audio_tap streams). Default 0. Pick the channel of the instrument you want to hear."},
+				"tap_name": {"type": "string", "description": "Name the embedded ProbeAudioTap streams under, so several taps can be told apart by get_audio_tap/probe_sound (name arg). Defaults to the session title. Multiple concurrently-streaming taps must use distinct names."},
+				"brain_probe": {"type": "string", "description": "Optional staged ProbeMidiBrain probe id (defaults to the known brain component if omitted)."},
+				"brain_file": {"type": "string", "description": "Explicit ProbeMidiBrain probe dump path (overrides brain_probe)."},
+				"tap_probe": {"type": "string", "description": "Optional staged ProbeAudioTap probe id (defaults to the known tap component if omitted)."},
+				"tap_file": {"type": "string", "description": "Explicit ProbeAudioTap probe dump path (overrides tap_probe)."},
+				"decimation": {"type": "integer", "description": "Tap feature decimation factor baked into the tap config (default 4)."},
 				"dry_run": {"type": "boolean", "description": "Return the allocation report without writing a file."}
 			}
 		}`),
@@ -222,11 +307,35 @@ func (s *Server) registerAUMTools() {
 				"out_id": {"type": "string", "description": "Staging id / filename stem (default from title)."},
 				"tempo": {"type": "number", "description": "Session tempo BPM (default 120)."},
 				"decimation": {"type": "integer", "description": "Tap PCM decimation factor (default 4)."},
+				"tap_name": {"type": "string", "description": "Name the embedded ProbeAudioTap streams under, so several taps can be told apart by get_audio_tap/probe_sound (name arg). Defaults to the session title. Multiple concurrently-streaming taps must use distinct names."},
 				"full_control": {"type": "boolean", "description": "Bank every mappable target collision-free instead of the single-channel convention."}
 			},
 			"required": ["brain_probe", "tap_probe", "host"]
 		}`),
 	}, s.handleAuthorProbeSession)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "author_graded_session",
+		Description: "Author one (or all) of the graded reference sessions S1..S5 from scratch and stage it for download to the iPad. The ladder replicates the reference-project structures, each carrying a ProbeMidiBrain MIDI strip plus a post-fader ProbeAudioTap in EVERY audio channel, the brain wired to every instrument + AUM MIDI Control, and (by default) each tap's bypass on its own AutoToggle CC so the brain can flip any channel's tap. " +
+			"Rungs: s1 one-synth (smallest path), s2 trio (3-instrument sum), s3 inputs (System collapse skeleton), s4 sub-mix (Kings Cross / Neon Ghosts sub-bus shape), s5 fast-forward (the full Fast-Forward-class replica: HW-input drums, named sub-buses, two MIDI strips, a monitor send, master FX). " +
+			"By default synthetic placeholder instruments are hosted; pass synth_probe to host a real staged AUv3. Pass host to embed the brain/tap daemon config so they auto-connect on load.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"rung": {"type": "string", "enum": ["s1", "s2", "s3", "s4", "s5", "all"], "description": "Which rung to author: s1..s5, or \"all\" to stage every rung."},
+				"host": {"type": "string", "description": "Daemon LAN host[:port] (e.g. \"box:7800\") embedded into the ProbeMidiBrain + ProbeAudioTap config so they dial back automatically. Installation-specific; never committed."},
+				"synth_probe": {"type": "string", "description": "Staged auv3 probe id to host as the instrument on every instrument channel (its identity + params seed the node). Defaults to a synthetic placeholder synth."},
+				"synth_file": {"type": "string", "description": "Explicit instrument probe dump path (overrides synth_probe)."},
+				"hardware": {"type": "string", "enum": ["builtin", "x32"], "description": "Override the hardware-I/O profile for the rung (default: each rung's natural profile — built-in for the pure-instrument rungs, x32 for the HW-I/O rungs S3/S5)."},
+				"tempo": {"type": "number", "description": "Override the rung's tempo (BPM)."},
+				"out_id": {"type": "string", "description": "Staging id / filename stem (default: the rung id, e.g. graded-s1-one-synth). Ignored for rung=all."},
+				"bare": {"type": "boolean", "description": "Author bare placeholder sessions (no convention, no tap toggles assigned)."},
+				"tap_name": {"type": "string", "description": "Name the ProbeAudioTap streams under (default: the session title). Only meaningful with host."},
+				"decimation": {"type": "integer", "description": "Tap PCM decimation factor baked into the tap config (default 4). Only meaningful with host."}
+			},
+			"required": ["rung"]
+		}`),
+	}, s.handleAuthorGradedSession)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "edit_aum_session",
@@ -803,6 +912,20 @@ func buildRoutes(in []routeArg) ([]aum.MIDIRoute, error) {
 	return out, nil
 }
 
+// parseHardwareProfile maps the tool's "hardware" arg to an aum.HardwareProfile.
+// "" / "builtin" is the device-independent default; "x32" enumerates the
+// Behringer X32 USB buses. Any other value is a user-facing error.
+func parseHardwareProfile(s string) (aum.HardwareProfile, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "builtin":
+		return aum.HardwareBuiltIn, nil
+	case "x32":
+		return aum.HardwareX32, nil
+	default:
+		return aum.HardwareBuiltIn, fmt.Errorf("/hardware: %q is not builtin|x32", s)
+	}
+}
+
 // stateDocBytes converts a string->string AuStateDoc map into the
 // key -> raw-bytes form aum.SetAuStateDoc expects (values stored as UTF-8).
 func stateDocBytes(in map[string]string) map[string][]byte {
@@ -813,28 +936,139 @@ func stateDocBytes(in map[string]string) map[string][]byte {
 	return out
 }
 
+// nodeArg is the JSON shape of one hosted AUv3 node in author tool input,
+// shared by a channel's pre-fader nodes, post-fader nodes, and tap override.
+type nodeArg struct {
+	ProbeID       string            `json:"probe_id"`
+	ProbeFile     string            `json:"probe_file"`
+	ComponentName string            `json:"component_name"`
+	Preset        *int              `json:"preset"`
+	State         map[string]string `json:"state"`
+}
+
+// resolve turns a nodeArg into an aum.NodeSpec: it resolves the probe (id or
+// explicit file) for the node's identity + mappable params, then applies the
+// optional component-name / preset / state overrides. The caller prefixes the
+// returned error with the JSON field path.
+func (a nodeArg) resolve() (aum.NodeSpec, error) {
+	if a.ProbeID == "" && a.ProbeFile == "" {
+		return aum.NodeSpec{}, fmt.Errorf("provide probe_id or probe_file (a hosted node needs a probe for its identity + params)")
+	}
+	ppath, perr := resolveProbePath(a.ProbeFile, a.ProbeID)
+	if perr != nil {
+		return aum.NodeSpec{}, perr
+	}
+	dump, derr := readProbeDump(ppath)
+	if derr != nil {
+		return aum.NodeSpec{}, fmt.Errorf("read probe: %w", derr)
+	}
+	ns := aum.NodeSpecFromDump(dump)
+	if a.ComponentName != "" {
+		ns.ComponentName = a.ComponentName
+	}
+	if a.Preset != nil {
+		ns.Preset = a.Preset
+	}
+	if len(a.State) > 0 {
+		ns.StateDoc = stateDocBytes(a.State)
+	}
+	return ns, nil
+}
+
+// sourceArg is the JSON shape of a channel's built-in slot0 audio source.
+type sourceArg struct {
+	Kind       string `json:"kind"`
+	HWBusIndex int    `json:"hw_bus_index"`
+	MonoSelect int    `json:"mono_select"`
+	BusIndex   int    `json:"bus_index"`
+}
+
+// outputArg is the JSON shape of a channel's fader/output routing node.
+type outputArg struct {
+	Kind       string `json:"kind"`
+	BusIndex   int    `json:"bus_index"`
+	HWBusIndex int    `json:"hw_bus_index"`
+	MonoSelect int    `json:"mono_select"`
+}
+
+// auxSendArg is the JSON shape of one post-fader aux send.
+type auxSendArg struct {
+	BusIndex int     `json:"bus_index"`
+	Amount   float64 `json:"amount"`
+}
+
+// mixBusArg is the JSON shape of one named/colored mix bus.
+type mixBusArg struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+	Color *struct {
+		R float64 `json:"r"`
+		G float64 `json:"g"`
+		B float64 `json:"b"`
+		A float64 `json:"a"`
+	} `json:"color"`
+}
+
+// parseSourceKind maps the tool's channel source "kind" to an aum.SourceKind.
+// "" / "none" is SourceNone (no built-in source node); any other value is a
+// user-facing error.
+func parseSourceKind(s string) (aum.SourceKind, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "none":
+		return aum.SourceNone, nil
+	case "instrument":
+		return aum.SourceInstrument, nil
+	case "hwinput":
+		return aum.SourceHWInput, nil
+	case "bus":
+		return aum.SourceBus, nil
+	case "fileplayer":
+		return aum.SourceFilePlayer, nil
+	default:
+		return aum.SourceNone, fmt.Errorf("%q is not instrument|hwinput|bus|fileplayer", s)
+	}
+}
+
+// parseOutputKind maps the tool's channel output "kind" to an aum.OutputKind.
+// "" / "none" is OutputNone (no fader/output node); any other value is a
+// user-facing error.
+func parseOutputKind(s string) (aum.OutputKind, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "none":
+		return aum.OutputNone, nil
+	case "bus":
+		return aum.OutputBus, nil
+	case "hardware":
+		return aum.OutputHardware, nil
+	default:
+		return aum.OutputNone, fmt.Errorf("%q is not bus|hardware", s)
+	}
+}
+
 func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Title      string  `json:"title"`
 		OutID      string  `json:"out_id"`
 		Tempo      float64 `json:"tempo"`
 		SampleRate float64 `json:"sample_rate"`
+		Hardware   string  `json:"hardware"`
 		Channels   []struct {
-			Kind   string   `json:"kind"`
-			Title  string   `json:"title"`
-			Fader  *float64 `json:"fader"`
-			Muted  bool     `json:"muted"`
-			Soloed bool     `json:"soloed"`
-			Nodes  []struct {
-				ProbeID       string            `json:"probe_id"`
-				ProbeFile     string            `json:"probe_file"`
-				ComponentName string            `json:"component_name"`
-				Preset        *int              `json:"preset"`
-				State         map[string]string `json:"state"`
-			} `json:"nodes"`
+			Kind      string       `json:"kind"`
+			Title     string       `json:"title"`
+			Fader     *float64     `json:"fader"`
+			Muted     bool         `json:"muted"`
+			Soloed    bool         `json:"soloed"`
+			Nodes     []nodeArg    `json:"nodes"`
+			Source    *sourceArg   `json:"source"`
+			Output    *outputArg   `json:"output"`
+			PostNodes []nodeArg    `json:"post_nodes"`
+			AuxSends  []auxSendArg `json:"aux_sends"`
+			Tap       bool         `json:"tap"`
+			TapNode   *nodeArg     `json:"tap_node"`
 		} `json:"channels"`
-		Bare        bool `json:"bare"`
-		FullControl bool `json:"full_control"`
+		MixBusses   []mixBusArg `json:"mix_busses"`
+		Bare        bool        `json:"bare"`
+		FullControl bool        `json:"full_control"`
 		Convention  *struct {
 			Channel int `json:"channel"`
 			StartCC int `json:"start_cc"`
@@ -849,10 +1083,15 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 		return textResult("/channels: at least one channel is required", true), nil
 	}
 
+	hardware, herr := parseHardwareProfile(args.Hardware)
+	if herr != nil {
+		return textResult(herr.Error(), true), nil
+	}
 	spec := aum.BuildSpec{
 		Title:      args.Title,
 		Tempo:      args.Tempo,
 		SampleRate: args.SampleRate,
+		Hardware:   hardware,
 	}
 	for i, ch := range args.Channels {
 		cs := aum.ChannelSpec{
@@ -861,6 +1100,7 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 			Fader:  ch.Fader,
 			Muted:  ch.Muted,
 			Soloed: ch.Soloed,
+			Tap:    ch.Tap,
 		}
 		switch ch.Kind {
 		case "", "audio":
@@ -871,30 +1111,71 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 			return textResult(fmt.Sprintf("/channels/%d/kind: %q is not audio|midi", i, ch.Kind), true), nil
 		}
 		for j, n := range ch.Nodes {
-			if n.ProbeID == "" && n.ProbeFile == "" {
-				return textResult(fmt.Sprintf("/channels/%d/nodes/%d: provide probe_id or probe_file (a hosted node needs a probe for its identity + params)", i, j), true), nil
-			}
-			ppath, perr := resolveProbePath(n.ProbeFile, n.ProbeID)
-			if perr != nil {
-				return textResult(fmt.Sprintf("/channels/%d/nodes/%d: %v", i, j, perr), true), nil
-			}
-			dump, derr := readProbeDump(ppath)
-			if derr != nil {
-				return textResult(fmt.Sprintf("/channels/%d/nodes/%d: read probe: %v", i, j, derr), true), nil
-			}
-			ns := aum.NodeSpecFromDump(dump)
-			if n.ComponentName != "" {
-				ns.ComponentName = n.ComponentName
-			}
-			if n.Preset != nil {
-				ns.Preset = n.Preset
-			}
-			if len(n.State) > 0 {
-				ns.StateDoc = stateDocBytes(n.State)
+			ns, nerr := n.resolve()
+			if nerr != nil {
+				return textResult(fmt.Sprintf("/channels/%d/nodes/%d: %v", i, j, nerr), true), nil
 			}
 			cs.Nodes = append(cs.Nodes, ns)
 		}
+		if ch.Source != nil {
+			kind, kerr := parseSourceKind(ch.Source.Kind)
+			if kerr != nil {
+				return textResult(fmt.Sprintf("/channels/%d/source/kind: %v", i, kerr), true), nil
+			}
+			if kind != aum.SourceNone {
+				cs.Source = &aum.ChannelSource{
+					Kind:       kind,
+					HWBusIndex: ch.Source.HWBusIndex,
+					MonoSelect: ch.Source.MonoSelect,
+					BusIndex:   ch.Source.BusIndex,
+				}
+			}
+		}
+		if ch.Output != nil {
+			kind, kerr := parseOutputKind(ch.Output.Kind)
+			if kerr != nil {
+				return textResult(fmt.Sprintf("/channels/%d/output/kind: %v", i, kerr), true), nil
+			}
+			if kind != aum.OutputNone {
+				cs.Output = &aum.ChannelOutput{
+					Kind:       kind,
+					BusIndex:   ch.Output.BusIndex,
+					HWBusIndex: ch.Output.HWBusIndex,
+					MonoSelect: ch.Output.MonoSelect,
+				}
+			}
+		}
+		for j, n := range ch.PostNodes {
+			ns, nerr := n.resolve()
+			if nerr != nil {
+				return textResult(fmt.Sprintf("/channels/%d/post_nodes/%d: %v", i, j, nerr), true), nil
+			}
+			cs.PostNodes = append(cs.PostNodes, ns)
+		}
+		for _, snd := range ch.AuxSends {
+			cs.AuxSends = append(cs.AuxSends, aum.AuxSend{BusIndex: snd.BusIndex, Amount: snd.Amount})
+		}
+		// tap_node overrides the default tap identity and implies Tap so a
+		// caller can request a tap by supplying the node alone.
+		if ch.TapNode != nil {
+			ns, nerr := ch.TapNode.resolve()
+			if nerr != nil {
+				return textResult(fmt.Sprintf("/channels/%d/tap_node: %v", i, nerr), true), nil
+			}
+			cs.TapNode = &ns
+			cs.Tap = true
+		}
 		spec.Channels = append(spec.Channels, cs)
+	}
+	for i, mb := range args.MixBusses {
+		ms := aum.MixBusSpec{Index: mb.Index, Name: mb.Name}
+		if mb.Color != nil {
+			ms.Color = &aum.RGBAColor{R: mb.Color.R, G: mb.Color.G, B: mb.Color.B, A: mb.Color.A}
+		}
+		if mb.Index < 0 || mb.Index > 15 {
+			return textResult(fmt.Sprintf("/mix_busses/%d/index: %d out of range (0..15)", i, mb.Index), true), nil
+		}
+		spec.MixBusses = append(spec.MixBusses, ms)
 	}
 	switch {
 	case args.FullControl:
@@ -995,14 +1276,21 @@ func loopNodeSpec(field, probeID, probeFile string) (aum.NodeSpec, string) {
 // configureBrainTap authors the ProbeMidiBrain + ProbeAudioTap AuStateDoc so
 // both auto-connect to the daemon on load: brain control enabled and tap
 // streaming enabled, both pointed at host. A decimation <= 0 falls back to 4.
-func configureBrainTap(brain, tap *aum.NodeSpec, host string, decimation int) {
+// A non-empty tapName is embedded in the tap config so the daemon can keep
+// several taps apart (the tap dials /audio-stream with this name); empty leaves
+// the tap un-named (the daemon then keys it by its remote address).
+func configureBrainTap(brain, tap *aum.NodeSpec, host string, decimation int, tapName string) {
 	brainCfg, _ := json.Marshal(map[string]any{"host": host, "controlEnabled": true})
 	brain.StateDoc = map[string][]byte{"probeMidiBrainConfig": brainCfg}
 	if decimation <= 0 {
 		decimation = 4
 	}
-	tapCfg, _ := json.Marshal(map[string]any{"host": host, "streaming": true, "decimation": decimation})
-	tap.StateDoc = map[string][]byte{"probeAudioTapConfig": tapCfg}
+	tapCfg := map[string]any{"host": host, "streaming": true, "decimation": decimation}
+	if strings.TrimSpace(tapName) != "" {
+		tapCfg["name"] = tapName
+	}
+	tapJSON, _ := json.Marshal(tapCfg)
+	tap.StateDoc = map[string][]byte{"probeAudioTapConfig": tapJSON}
 }
 
 func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1019,6 +1307,7 @@ func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolReq
 		OutID       string  `json:"out_id"`
 		Tempo       float64 `json:"tempo"`
 		Decimation  int     `json:"decimation"`
+		TapName     string  `json:"tap_name"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -1041,8 +1330,10 @@ func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolReq
 	}
 
 	// Author the two plugins' AuStateDoc so they auto-connect to the daemon on
-	// load: brain control + tap streaming both enabled, pointed at host.
-	configureBrainTap(&brain, &tap, args.Host, args.Decimation)
+	// load: brain control + tap streaming both enabled, pointed at host. The
+	// tap is named (default: the session title) so it can coexist with others.
+	tapName := device.FirstNonEmpty(args.TapName, args.Title, "Agent Loop")
+	configureBrainTap(&brain, &tap, args.Host, args.Decimation, tapName)
 	if args.SynthPreset != nil {
 		synth.Preset = args.SynthPreset
 	}
@@ -1125,6 +1416,16 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 		PlayChannels     []int  `json:"play_channels"`
 		PreserveExisting *bool  `json:"preserve_existing"`
 		DryRun           bool   `json:"dry_run"`
+
+		AddProbes  bool   `json:"add_probes"`
+		BrainProbe string `json:"brain_probe"`
+		BrainFile  string `json:"brain_file"`
+		TapProbe   string `json:"tap_probe"`
+		TapFile    string `json:"tap_file"`
+		Host       string `json:"host"`
+		TapChannel *int   `json:"tap_channel"`
+		TapName    string `json:"tap_name"`
+		Decimation int    `json:"decimation"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -1136,6 +1437,45 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 	sess, err := aum.OpenFile(path)
 	if err != nil {
 		return textResult("open session: "+err.Error(), true), nil
+	}
+
+	// Embed the probe rig (brain + tap) so the instrumented session is
+	// self-contained and agent-controllable: the brain (routed to AUM MIDI
+	// Control) emits the banked CCs/Notes, the tap streams audio back. This
+	// runs before Instrument so the new strip/slot get banked too.
+	var rigRep *aum.ProbeRigReport
+	var tapName string
+	if args.AddProbes {
+		if strings.TrimSpace(args.Host) == "" {
+			return textResult("add_probes: host (daemon host[:port]) is required so the brain and tap can dial back", true), nil
+		}
+		brain := aum.ProbeBrainNode()
+		if args.BrainProbe != "" || args.BrainFile != "" {
+			b2, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile)
+			if e != "" {
+				return textResult(e, true), nil
+			}
+			brain = b2
+		}
+		tap := aum.ProbeTapNode()
+		if args.TapProbe != "" || args.TapFile != "" {
+			t2, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile)
+			if e != "" {
+				return textResult(e, true), nil
+			}
+			tap = t2
+		}
+		tapName = device.FirstNonEmpty(args.TapName, sess.Title())
+		configureBrainTap(&brain, &tap, args.Host, args.Decimation, tapName)
+		tapChan := 0
+		if args.TapChannel != nil {
+			tapChan = *args.TapChannel
+		}
+		rr, rerr := sess.AddProbeRig(aum.ProbeRigOptions{Brain: brain, Tap: tap, TapChannel: tapChan})
+		if rerr != nil {
+			return textResult("add probes: "+rerr.Error(), true), nil
+		}
+		rigRep = &rr
 	}
 
 	opts := aum.InstrumentOptions{
@@ -1171,6 +1511,10 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 	} else {
 		fmt.Fprintf(&b, "instrumented %q\n", sess.Title())
 	}
+	if rigRep != nil {
+		fmt.Fprintf(&b, "  embedded probe rig: brain at channel index %d (-> AUM MIDI Control), tap %q at channel index %d slot %d; host %q\n",
+			rigRep.BrainChannel, tapName, rigRep.TapChannel, rigRep.TapSlot, args.Host)
+	}
 	writeInstrumentReport(&b, report)
 
 	structured := map[string]any{
@@ -1178,6 +1522,10 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 		"title":     sess.Title(),
 		"dryRun":    args.DryRun,
 		"report":    report,
+	}
+	if rigRep != nil {
+		structured["probeRig"] = rigRep
+		structured["tapName"] = tapName
 	}
 	if args.DryRun {
 		return structResult(b.String(), structured), nil
@@ -1255,6 +1603,7 @@ func (s *Server) handleAuthorProbeSession(_ context.Context, req *mcp.CallToolRe
 		OutID       string  `json:"out_id"`
 		Tempo       float64 `json:"tempo"`
 		Decimation  int     `json:"decimation"`
+		TapName     string  `json:"tap_name"`
 		FullControl bool    `json:"full_control"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -1273,9 +1622,8 @@ func (s *Server) handleAuthorProbeSession(_ context.Context, req *mcp.CallToolRe
 		return textResult(e, true), nil
 	}
 
-	configureBrainTap(&brain, &tap, args.Host, args.Decimation)
-
 	title := device.FirstNonEmpty(args.Title, "Probe Rig")
+	configureBrainTap(&brain, &tap, args.Host, args.Decimation, device.FirstNonEmpty(args.TapName, title))
 	tempo := args.Tempo
 	if tempo <= 0 {
 		tempo = 120
@@ -1351,6 +1699,134 @@ func (s *Server) handleAuthorProbeSession(_ context.Context, req *mcp.CallToolRe
 	if args.FullControl {
 		structured["instrumentReport"] = instReport
 	}
+	return structResult(b.String(), structured), nil
+}
+
+// --- author_graded_session ------------------------------------------------
+
+// gradedRungs maps the tool's rung selector to the GradedSession id GradedSessions
+// emits, so a short "s1".."s5" picks the right rung.
+var gradedRungs = map[string]string{
+	"s1": "graded-s1-one-synth",
+	"s2": "graded-s2-trio",
+	"s3": "graded-s3-inputs",
+	"s4": "graded-s4-sub-mix",
+	"s5": "graded-s5-fast-forward",
+}
+
+func (s *Server) handleAuthorGradedSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Rung       string  `json:"rung"`
+		Host       string  `json:"host"`
+		SynthProbe string  `json:"synth_probe"`
+		SynthFile  string  `json:"synth_file"`
+		Hardware   string  `json:"hardware"`
+		Tempo      float64 `json:"tempo"`
+		OutID      string  `json:"out_id"`
+		Bare       bool    `json:"bare"`
+		TapName    string  `json:"tap_name"`
+		Decimation int     `json:"decimation"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	rung := strings.ToLower(strings.TrimSpace(args.Rung))
+	if rung != "all" {
+		if _, ok := gradedRungs[rung]; !ok {
+			return textResult(fmt.Sprintf("/rung: %q is not s1|s2|s3|s4|s5|all", args.Rung), true), nil
+		}
+	}
+
+	opts := aum.GradedOptions{NoConvention: args.Bare}
+	if args.Hardware != "" {
+		hw, herr := parseHardwareProfile(args.Hardware)
+		if herr != nil {
+			return textResult(herr.Error(), true), nil
+		}
+		opts.Hardware = hw
+	}
+	if args.SynthProbe != "" || args.SynthFile != "" {
+		inst, e := loopNodeSpec("synth_probe", args.SynthProbe, args.SynthFile)
+		if e != "" {
+			return textResult(e, true), nil
+		}
+		opts.Instrument = &inst
+	}
+	// Embed the daemon config so the brain + every tap auto-connect on load. A
+	// single shared tap name is fine because the brain toggles one tap at a
+	// time over its AutoToggle bypass CC (the documented probing flow).
+	if strings.TrimSpace(args.Host) != "" {
+		brain := aum.ProbeBrainNode()
+		tap := aum.ProbeTapNode()
+		configureBrainTap(&brain, &tap, args.Host, args.Decimation, device.FirstNonEmpty(args.TapName, "graded"))
+		opts.Brain = &brain
+		opts.Tap = &tap
+	}
+
+	sessions := aum.GradedSessions(opts)
+	byID := make(map[string]aum.GradedSession, len(sessions))
+	order := make([]string, 0, len(sessions))
+	for _, gs := range sessions {
+		byID[gs.ID] = gs
+		order = append(order, gs.ID)
+	}
+
+	var toStage []aum.GradedSession
+	if rung == "all" {
+		for _, id := range order {
+			toStage = append(toStage, byID[id])
+		}
+	} else {
+		toStage = append(toStage, byID[gradedRungs[rung]])
+	}
+
+	type staged struct {
+		ID          string `json:"id"`
+		File        string `json:"file"`
+		Path        string `json:"path"`
+		Download    string `json:"download"`
+		Channels    int    `json:"channels"`
+		Nodes       int    `json:"nodes"`
+		AssignedCCs int    `json:"assignedCCs"`
+		Routes      int    `json:"routes"`
+	}
+	var results []staged
+	var b strings.Builder
+	for _, gs := range toStage {
+		spec := gs.Spec
+		if args.Tempo > 0 {
+			spec.Tempo = args.Tempo
+		}
+		sess, report, err := aum.BuildSession(spec)
+		if err != nil {
+			return textResult(fmt.Sprintf("build %s: %v", gs.ID, err), true), nil
+		}
+		data, err := sess.Archive().Encode()
+		if err != nil {
+			return textResult(fmt.Sprintf("encode %s: %v", gs.ID, err), true), nil
+		}
+		if _, err := aum.Open(data); err != nil {
+			return textResult(fmt.Sprintf("%s failed re-decode: %v", gs.ID, err), true), nil
+		}
+		id := gs.ID
+		if rung != "all" && args.OutID != "" {
+			id = sanitize.ID(args.OutID)
+		}
+		path, file, err := stageAUMFile(id, ".aumproj", data)
+		if err != nil {
+			return textResult(fmt.Sprintf("stage %s: %v", gs.ID, err), true), nil
+		}
+		results = append(results, staged{
+			ID: id, File: file, Path: path, Download: "/aum-session/" + file,
+			Channels: report.Channels, Nodes: report.Nodes, AssignedCCs: report.AssignedCCs, Routes: report.Routes,
+		})
+		fmt.Fprintf(&b, "%s (%s): %d channel(s), %d node(s), %d CC(s), %d route(s) -> %s\n",
+			gs.Title, id, report.Channels, report.Nodes, report.AssignedCCs, report.Routes, path)
+		fmt.Fprintf(&b, "  %s\n", gs.Description)
+		fmt.Fprintf(&b, "  download from the iPad: GET /aum-session/%s\n", file)
+	}
+
+	structured := map[string]any{"rung": rung, "staged": results}
 	return structResult(b.String(), structured), nil
 }
 

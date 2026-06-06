@@ -121,6 +121,77 @@ func TestAUMToolsAuthorListGetDiff(t *testing.T) {
 	}
 }
 
+func TestAUMAuthorRoutedTappedSession(t *testing.T) {
+	s := newAUMServer(t)
+	stageProbe(t)
+
+	// Author a routed + tapped session through the general tool path: an
+	// instrument strip (probe -> BusDest(0)) with a post-fader tap, and a
+	// master strip (BusSource(0) -> HWOutput) with master FX and a tap, plus a
+	// named sub-bus. Exercises Source/Output/PostNodes/AuxSends/Tap/mix_busses.
+	res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"out_id":   "routed",
+		"hardware": "x32",
+		"channels": []any{
+			map[string]any{
+				"kind": "audio", "title": "Synth",
+				"nodes":     []any{map[string]any{"probe_id": "gtr1"}},
+				"output":    map[string]any{"kind": "bus", "bus_index": 0},
+				"aux_sends": []any{map[string]any{"bus_index": 4, "amount": 0.5}},
+				"tap":       true,
+			},
+			map[string]any{
+				"kind": "audio", "title": "Master",
+				"source": map[string]any{"kind": "bus", "bus_index": 0},
+				"output": map[string]any{"kind": "hardware", "hw_bus_index": 0},
+				"tap":    true,
+			},
+		},
+		"mix_busses": []any{map[string]any{"index": 4, "name": "Drums Mix"}},
+	})
+	if res.IsError {
+		t.Fatalf("author failed: %s", resultText(res))
+	}
+
+	if _, err := os.Stat(filepath.Join(config.AUMSessionsDir(), "routed.aumproj")); err != nil {
+		t.Fatalf("routed session not staged: %v", err)
+	}
+
+	// The session re-opens and both channels carry a post-fader ProbeAudioTap.
+	res = call(t, s.handleGetAUMSession, map[string]any{"session_id": "routed"})
+	if res.IsError {
+		t.Fatalf("get failed: %s", resultText(res))
+	}
+	text := resultText(res)
+	if strings.Count(text, "Tmow: ProbeAudioTap [aufx/pbAu/Tmow]") != 2 {
+		t.Fatalf("expected a tap in each of the 2 channels:\n%s", text)
+	}
+	if !strings.Contains(text, "BusDestDescription") || !strings.Contains(text, "HWOutputDescription") || !strings.Contains(text, "BusSourceDescription") {
+		t.Fatalf("get output missing routing nodes:\n%s", text)
+	}
+	// The aux send placed a BusSendDescription on the instrument channel.
+	if !strings.Contains(text, "BusSendDescription") {
+		t.Fatalf("get output missing the aux send node:\n%s", text)
+	}
+}
+
+func TestAUMAuthorRejectsBadSourceKind(t *testing.T) {
+	s := newAUMServer(t)
+
+	res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Ch", "source": map[string]any{"kind": "bogus"}},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+	})
+	if !res.IsError {
+		t.Fatal("expected an error for an unknown source kind")
+	}
+	if !strings.Contains(resultText(res), "source/kind") {
+		t.Fatalf("error did not name the offending field:\n%s", resultText(res))
+	}
+}
+
 func TestAUMDiffUnwiredSession(t *testing.T) {
 	s := newAUMServer(t)
 	stageProbe(t)

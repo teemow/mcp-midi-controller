@@ -174,6 +174,33 @@ mappable host surface; `aum.yaml` materializes it for **channels 1-8**.
 | hide_plugins            | 112 | enum `{trigger:127}`        | System action → "Hide/Unhide Plugins" |
 | switch_to_aum           | 113 | enum `{trigger:127}`        | System action → "Switch to AUM" |
 
+### Post-fader tap toggles — reserved channel (the brain's "ears" switch)
+
+Authored sessions place a post-fader `ProbeAudioTap` (an `aufx` node) in tapped
+audio channels so the agent can listen to each channel's signal. Each tap's
+**bypass** is the on/off switch for that tap's audio stream, and the brain flips
+it over MIDI so it can choose which channel to listen to at runtime.
+
+The convention maps each tap's node **`_AUMNode:Bypass`** target to a unique CC,
+all on a **reserved MIDI channel of their own** — **channel 16** (stored `15`),
+separate from the mixer/node/transport channel a binding supplies. Riding their
+own channel is what keeps tap CCs from ever colliding with the mixer (CC 20–76)
+or node-parameter (CC 30+) blocks, whatever channel those use. Because channel
+16 is reserved for taps, the mixer/node convention channel must stay in **1–15**.
+
+- Tap `N` (1-based, in channel order) → CC `76 + N` → **77, 78, … 95** —
+  ProbeAudioTap node **Bypass** toggle, on channel 16.
+- **AutoToggle (Cycle) ON**, so a single non-zero CC value *flips* the tap on/off
+  (a momentary brain pulse toggles the stream) rather than latching like the
+  mute/solo toggles. The brain emits the tap's CC to start/stop that tap.
+- The block is **77–95** (19 slots), clear of the mixer (≤76), transport/system
+  (≥102) and the MIDI-reserved 96–101 / 120–127 ranges, so it stays distinct
+  even if ever read on a shared channel. A session with more than 19 taps
+  overflows the block; the extra taps stay unassigned placeholders.
+
+Single source of truth: `device.TapControlChannel` + `device.ConventionTapCC`;
+`internal/aum` (`applyConvention`) wires it into every authored session.
+
 ### Session / Preset load — Program Change
 
 | Control      | Type           | Value spec     | AUM mapping target |
@@ -202,7 +229,9 @@ all-call).
 
 Extend with the same strides for more channels/sends as a rig needs. The block
 layout keeps the mixer (20-76), transport/system (102-113), and NRPN/RPN-reserved
-CCs (98-101) clear of each other.
+CCs (98-101) clear of each other. Post-fader tap toggles sit in their own block
+(77-95) on the reserved tap channel (16), so they never collide with any of the
+above (see "Post-fader tap toggles").
 
 ## Generating an "AUM mapping cheat-sheet"
 

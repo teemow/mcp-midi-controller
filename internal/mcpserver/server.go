@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,9 +33,10 @@ type Server struct {
 	mcp    *mcp.Server
 	scenes *scene.Store
 
-	// audio is the in-memory ProbeAudioTap state behind the get_audio_tap tool.
-	// nil when no audio receiver is wired (the tool is then not registered).
-	audio *audiotap.Store
+	// audio is the in-memory ProbeAudioTap registry behind the get_audio_tap
+	// tool: one named per-tap store per concurrently-connected insert. nil when
+	// no audio receiver is wired (the tool is then not registered).
+	audio *audiotap.Registry
 
 	// diag is the in-memory host-diagnostics state behind the
 	// get_host_diagnostics tool (the live view of "what can the appex see about
@@ -86,10 +88,22 @@ func WithUSBAllowWrites(allow bool) Option {
 	return func(s *Server) { s.usbAllowWrites = allow }
 }
 
-// WithAudioTap attaches the ProbeAudioTap state store so the read-only
+// WithAudioTap attaches the ProbeAudioTap registry so the read-only
 // get_audio_tap tool is registered. Without it the tool is omitted.
-func WithAudioTap(store *audiotap.Store) Option {
-	return func(s *Server) { s.audio = store }
+func WithAudioTap(reg *audiotap.Registry) Option {
+	return func(s *Server) { s.audio = reg }
+}
+
+// resolveTap picks the per-tap store an audio tool should read: the tap named
+// by the caller (matched by registry identity or format Source label) when name
+// is non-empty, otherwise the most-recently-active tap. ok is false when no tap
+// matches (or none has ever connected). It is safe to call only when s.audio is
+// non-nil (the tools are gated on that).
+func (s *Server) resolveTap(name string) (*audiotap.Store, bool) {
+	if strings.TrimSpace(name) != "" {
+		return s.audio.Get(name)
+	}
+	return s.audio.Active()
 }
 
 // WithDiagnostics attaches the host-diagnostics state store so the read-only
@@ -203,10 +217,17 @@ func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings 
 // clients receive it only after setting a logging level. Per-frame levels are
 // intentionally NOT broadcast (they arrive ~10 Hz) — poll get_audio_tap for
 // live levels instead.
-func (s *Server) NotifyAudioTap(connected bool, remote string) {
-	s.broadcastConnState("audio-tap", connected, remote,
-		"read live levels + waveform with get_audio_tap",
-		"no audio tap is streaming")
+func (s *Server) NotifyAudioTap(connected bool, name, remote string) {
+	state, hint := "connected", "read live levels + waveform with get_audio_tap (pass name to pick a tap)"
+	if !connected {
+		state, hint = "disconnected", "no audio tap is streaming"
+	}
+	s.broadcast("audio-tap", map[string]any{
+		"state":  state,
+		"name":   name,
+		"remote": remote,
+		"hint":   hint,
+	})
 }
 
 // NotifyHostDiagnostics broadcasts to every connected session that an
@@ -350,11 +371,47 @@ func textResult(msg string, isErr bool) *mcp.CallToolResult {
 	}
 }
 
+// structuredJSONLabel prefixes the serialized-JSON text block that structResult
+// inlines for text-only clients, so the model can tell the machine-readable
+// payload apart from the human summary above it.
+const structuredJSONLabel = "\n\nstructured (JSON):\n"
+
 // structResult returns a successful result carrying both a human-readable text
 // rendering and a machine-readable structuredContent payload (which must
-// marshal to a JSON object, per the MCP spec). The rig-reasoning read tools use
+// marshal to a JSON value, per the MCP spec). The rig-reasoning read tools use
 // this so a web client / agent can consume JSON without re-parsing the text.
+//
+// It ALSO inlines a compact serialization of structured as a second text
+// content block. This is the MCP spec's backwards-compatibility guidance ("a
+// tool that returns structured content SHOULD also return the serialized JSON
+// in a TextContent block") and, more importantly, a mitigation for clients —
+// notably Cursor, and also Claude Code / Windsurf — that only surface the text
+// content to the model and ignore structuredContent entirely. Without the
+// inlined JSON those agents would see only the short human summary and lose the
+// structured rig data they need to reason (see SEP-1624 and the Cursor bug
+// report "Cursor ignores structuredContent from MCP result"). Clients that do
+// read structuredContent simply prefer it and the duplicate text is harmless.
+//
+// Use structResultNoEmbed when the structured payload is large or binary (e.g.
+// base64 PCM) and the human text already names the salient fields.
 func structResult(msg string, structured any) *mcp.CallToolResult {
+	res := structResultNoEmbed(msg, structured)
+	if structured == nil {
+		return res
+	}
+	raw, err := json.Marshal(structured)
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return res
+	}
+	res.Content = append(res.Content, &mcp.TextContent{Text: structuredJSONLabel + string(raw)})
+	return res
+}
+
+// structResultNoEmbed is like structResult but does NOT inline the serialized
+// structuredContent into the text. Use it when the structured payload is large
+// or binary (e.g. base64 PCM) and the human text already summarizes the salient
+// fields, so the model's context is not bloated with data it cannot use anyway.
+func structResultNoEmbed(msg string, structured any) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: msg}},
 		StructuredContent: structured,

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -19,23 +20,40 @@ import (
 const maxMessageBytes = 1 << 20
 
 // Register mounts the audio-stream WebSocket endpoint on mux. onConnect /
-// onDisconnect (either may be nil) are invoked so the daemon can notify
-// connected MCP clients that a tap came or went; they must not block.
+// onDisconnect (either may be nil) are invoked with the tap's name and remote
+// address so the daemon can notify connected MCP clients that a (named) tap
+// came or went; they must not block.
 //
 // Route:
 //
-//	GET /audio-stream   ProbeAudioTap WebSocket (format + PCM + features)
-func Register(mux *http.ServeMux, store *Store, onConnect func(remote string), onDisconnect func(remote string)) {
-	mux.HandleFunc("/audio-stream", handleStream(store, onConnect, onDisconnect))
+//	GET /audio-stream[?name=<tap>]   ProbeAudioTap WebSocket (format + PCM + features)
+func Register(mux *http.ServeMux, reg *Registry, onConnect func(name, remote string), onDisconnect func(name, remote string)) {
+	mux.HandleFunc("/audio-stream", handleStream(reg, onConnect, onDisconnect))
+}
+
+// tapName derives a tap's registry identity from the request: the "name" (or
+// "tap") query parameter when the producer supplies one, otherwise the remote
+// address — so multiple un-named taps still land in distinct slots instead of
+// clobbering each other.
+func tapName(r *http.Request) string {
+	q := r.URL.Query()
+	for _, k := range []string{"name", "tap"} {
+		if v := strings.TrimSpace(q.Get(k)); v != "" {
+			return v
+		}
+	}
+	return r.RemoteAddr
 }
 
 // handleStream upgrades to a WebSocket and drains the ProbeAudioTap contract:
 // one TEXT "format" message, BINARY little-endian Float32 PCM (interleaved
 // across channels at the host rate), and ~10 Hz TEXT "features" messages. The
-// channel count comes from the format message; the binary frames are stored
-// as-is and indexed by stride. Anything malformed is logged and skipped; a read
-// error (client gone / shutdown) ends the session.
-func handleStream(store *Store, onConnect, onDisconnect func(string)) http.HandlerFunc {
+// connection is routed to its named Store in the registry (by the "name" query
+// param, else the remote address) so concurrent taps stay separate. The channel
+// count comes from the format message; the binary frames are stored as-is and
+// indexed by stride. Anything malformed is logged and skipped; a read error
+// (client gone / shutdown) ends the session.
+func handleStream(reg *Registry, onConnect, onDisconnect func(name, remote string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// The shared lanhttp.Serve sets a 60s Read/WriteTimeout on the server
 		// (good against slow POSTers on the other receiver routes). Those become
@@ -60,16 +78,17 @@ func handleStream(store *Store, onConnect, onDisconnect func(string)) http.Handl
 		c.SetReadLimit(maxMessageBytes)
 
 		remote := r.RemoteAddr
-		store.Connect(remote)
-		log.Printf("audio-tap connected from %s", remote)
+		name := tapName(r)
+		store := reg.Connect(name, remote)
+		log.Printf("audio-tap %q connected from %s", name, remote)
 		if onConnect != nil {
-			onConnect(remote)
+			onConnect(name, remote)
 		}
 		defer func() {
-			store.Disconnect()
-			log.Printf("audio-tap disconnected from %s", remote)
+			reg.Disconnect(name)
+			log.Printf("audio-tap %q disconnected from %s", name, remote)
 			if onDisconnect != nil {
-				onDisconnect(remote)
+				onDisconnect(name, remote)
 			}
 			_ = c.CloseNow()
 		}()
