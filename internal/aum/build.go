@@ -164,6 +164,18 @@ const (
 	SourceFilePlayer SourceKind = "fileplayer"
 )
 
+// authorsSourceNode reports whether the kind emits a built-in slot0 source node
+// (HW input / bus source / file player). SourceNone and SourceInstrument author
+// no node and instead rely on the channel's first hosted node as the chain head.
+func (k SourceKind) authorsSourceNode() bool {
+	switch k {
+	case SourceHWInput, SourceBus, SourceFilePlayer:
+		return true
+	default:
+		return false
+	}
+}
+
 // ChannelSource describes a channel's built-in slot0 source node. Kind selects
 // the node; the other fields parameterize it (HWBusIndex/MonoSelect for a HW
 // input, BusIndex for a bus read).
@@ -442,6 +454,47 @@ func buildBuiltinNode(b *Builder, s builtinSlot) map[string]any {
 	}
 }
 
+// componentProducesAudio reports whether a hosted node generates its own audio
+// (an instrument "aumu" or a generator "augn") rather than pulling an upstream
+// input. Any other type at a chain head (an effect "aufx" / music effect
+// "aumf" / converter) reads an audio input it cannot supply itself.
+func componentProducesAudio(typ string) bool {
+	return typ == "aumu" || typ == "augn"
+}
+
+// validateRenderGraph rejects specs that would deserialize but crash AUM's
+// audio render thread (AURemoteIO::IOThread →
+// AUInputElement::PullInputWithBufferList null-deref). An audio channel whose
+// chain head pulls audio input must be fed by something: either a built-in
+// audio source node (HW input / bus source / file player) or a generating head
+// node (instrument / generator). An effect-headed channel with no source has a
+// dangling input element that AUM dereferences during render.
+func validateRenderGraph(spec BuildSpec) error {
+	for i, ch := range spec.Channels {
+		if ch.Kind != KindAudio {
+			continue
+		}
+		if ch.Source != nil && ch.Source.Kind.authorsSourceNode() {
+			continue // an upstream node supplies the channel's input
+		}
+		if len(ch.Nodes) == 0 {
+			continue // no hosted node pulls input
+		}
+		head := ch.Nodes[0]
+		if componentProducesAudio(head.Component.Type) {
+			continue // instrument / generator head needs no input
+		}
+		name := ch.Title
+		if name == "" {
+			name = fmt.Sprintf("#%d", i)
+		}
+		return fmt.Errorf(
+			"audio channel %s has no audio source: head node %q (type %q) pulls audio input but nothing feeds it; add a Source (hwinput/bus/fileplayer) or lead the chain with an instrument/generator",
+			name, head.ComponentName, head.Component.Type)
+	}
+	return nil
+}
+
 // BuildSession authors a complete session from spec, returning the typed
 // Session (ready to .Map(), .Archive().Encode(), or further edit) plus a
 // report. It builds the channel strips, the parallel node chains (AUv3 nodes
@@ -450,6 +503,10 @@ func buildBuiltinNode(b *Builder, s builtinSlot) map[string]any {
 // convention CCs in place via the same editor the round-trip path uses.
 func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 	var report BuildReport
+
+	if err := validateRenderGraph(spec); err != nil {
+		return nil, report, err
+	}
 
 	tempo := spec.Tempo
 	if tempo == 0 {
@@ -574,11 +631,14 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		"metroOutDesc":  b.Intern(buildMetroOutDesc(b)),
 		"keyboardState": b.Intern(buildKeyboardState(b)),
 		// Session-level scalars a real AUM v13 session always carries: an empty
-		// folder string, an NSNull notes placeholder and a zero minimum-latency
-		// double. Omitting them lets AUM fall back to (possibly different)
-		// defaults; authoring them matches the real-session shape.
+		// folder string and a zero minimum-latency double. notes is an UNSET
+		// reference: AUM encodes it with -encodeObject:nil (a "$null" reference,
+		// UID 0), NOT an NSNull instance. Authoring an NSNull *instance* here
+		// (as newNSNull does, which is correct for a mix bus's customName where
+		// AUM explicitly stores [NSNull null]) makes AUM crash decoding notes
+		// where it expects nil-or-NSString. Use the $null reference (UID 0).
 		"folder":         b.Intern(""),
-		"notes":          b.Intern(newNSNull(b)),
+		"notes":          UID(0),
 		"minimumLatency": float64(0),
 	}
 	if spec.Title != "" {
@@ -609,13 +669,16 @@ func BuildSession(spec BuildSpec) (*Session, BuildReport, error) {
 		}
 	}
 
-	// Author the inter-node MIDI routing matrix.
-	if len(spec.Routes) > 0 {
-		if err := s.SetMIDIRoutes(spec.Routes); err != nil {
-			return nil, report, err
-		}
-		report.Routes = len(spec.Routes)
+	// Author the inter-node MIDI routing matrix. Always author it (even with no
+	// routes): every real session carries root["midiMatrixState"], and AUM
+	// dereferences it on load — a missing matrix crashes the load. With no
+	// routes SetMIDIRoutes builds the empty 5-key matrix (connections /
+	// destsInfo / filters / customNames / sourcesInfo all empty), the shape a
+	// real route-less session stores.
+	if err := s.SetMIDIRoutes(spec.Routes); err != nil {
+		return nil, report, err
 	}
+	report.Routes = len(spec.Routes)
 
 	return s, report, nil
 }

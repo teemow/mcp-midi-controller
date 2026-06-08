@@ -150,6 +150,20 @@ plugin's `fullState` exceeds it; surface that in diagnostics).
 
 ## Validation
 
+> **Status 2026-06-08 — the `validate` gate is MET without icons, which likely
+> makes this whole feature moot (see the "May be unnecessary" risk below).** A
+> from-scratch authored session with **no `componentIcon` and no captured
+> `defaultState`** was confirmed on a real iPad (iOS 26.5, AUM 1.4.8) to **load,
+> instantiate its hosted AUv3 node, and produce audio to master**. Reaching this
+> required fixing three *load* crashes (inline `audioComponentDescription`,
+> always-present `midiMatrixState`, `notes` as the `$null` ref) and one *render*
+> crash (an audio channel head must have an audio source — instrument/generator
+> or a HW-input/bus/file-player source; now guarded in `BuildSession`). All four
+> were diagnosed from on-device crash logs (`idevicecrashreport`); see
+> `docs/research/aum-session.md` → "Authoring from scratch: what crashes AUM".
+> The icon was never needed for the load/render gate; only proceed with the
+> capture work below if a *visual* requirement (not loadability) justifies it.
+
 1. **Bytes match the host (off-device):** for a plugin present in a real AUM
    session, capture its icon via the app, author a node with it, and confirm the
    authored `componentIcon` graph matches (or is accepted in place of) the real

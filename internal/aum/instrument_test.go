@@ -31,6 +31,11 @@ func instrumentSpec() BuildSpec {
 			{
 				Kind:  KindAudio,
 				Title: "FX",
+				// A hardware-input source feeds the effect head so the channel
+				// is renderable (an effect with no input source crashes AUM's
+				// render thread). The source node occupies slot0, shifting the
+				// hosted effect to slot1.
+				Source: &ChannelSource{Kind: SourceHWInput},
 				Nodes: []NodeSpec{{
 					Component:     device.ProbeComponent{Type: "aufx", Subtype: "dist", Manufacturer: "ACME"},
 					ComponentName: "ACME: Crusher",
@@ -119,8 +124,9 @@ func TestInstrumentPriorityOrder(t *testing.T) {
 
 	cutoff, _ := s.FindMapping("Channels/chan0/slot0", "cutoff")
 	reso, _ := s.FindMapping("Channels/chan0/slot0", "resonance")
-	drive, _ := s.FindMapping("Channels/chan1/slot0", "drive")
-	mix, _ := s.FindMapping("Channels/chan1/slot0", "mix")
+	// FX channel has a HW-input source at slot0, so its effect is slot1.
+	drive, _ := s.FindMapping("Channels/chan1/slot1", "drive")
+	mix, _ := s.FindMapping("Channels/chan1/slot1", "mix")
 	bypass, _ := s.FindMapping("Channels/chan0/slot0", "_AUMNode:Bypass")
 
 	// All land on the start channel (stored 1 = send ch2) in the CC space.

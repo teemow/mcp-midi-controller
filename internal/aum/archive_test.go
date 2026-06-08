@@ -274,3 +274,44 @@ func TestGraphEqualDetectsDifferences(t *testing.T) {
 		t.Fatalf("a changed $version should break graph equality")
 	}
 }
+
+// TestCompactPrunesOrphans verifies Compact() drops objects unreachable from
+// $top, keeps $null at index 0, remaps the surviving references densely, and
+// leaves the reachable graph GraphEqual to the input.
+func TestCompactPrunesOrphans(t *testing.T) {
+	a := syntheticSession()
+	want := syntheticSession() // pristine reference for the graph compare
+
+	// Append two orphans: a string nothing references, and a map referencing
+	// that string (so a naive single-pass mark would still leave both unreached).
+	orphanStr := UID(len(a.Objects))
+	a.Objects = append(a.Objects, "orphan")
+	a.Objects = append(a.Objects, map[string]any{"ref": orphanStr})
+	before := len(a.Objects)
+
+	a.Compact()
+
+	if len(a.Objects) != before-2 {
+		t.Fatalf("Objects len = %d, want %d (two orphans pruned)", len(a.Objects), before-2)
+	}
+	if a.Objects[0] != "$null" {
+		t.Fatalf("object 0 = %v, want the $null sentinel", a.Objects[0])
+	}
+	for i, obj := range a.Objects {
+		if s, ok := obj.(string); ok && s == "orphan" {
+			t.Fatalf("orphan string survived compaction at index %d", i)
+		}
+	}
+	if !GraphEqual(a, want) {
+		t.Fatalf("Compact changed the reachable graph")
+	}
+
+	// The compacted archive still re-encodes and decodes.
+	data, err := a.Encode()
+	if err != nil {
+		t.Fatalf("encode compacted: %v", err)
+	}
+	if _, err := Decode(data); err != nil {
+		t.Fatalf("decode compacted: %v", err)
+	}
+}

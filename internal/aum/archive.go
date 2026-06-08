@@ -176,6 +176,87 @@ func clampFinite32(f float32) (float32, bool) {
 	}
 }
 
+// Compact garbage-collects the Objects table: it keeps only objects reachable
+// from $top (following every UID reference through maps/arrays), remaps their
+// UIDs to a dense table, and rewrites all references. NSKeyedArchiver only ever
+// writes reachable objects, so an archive carrying orphans — e.g. after an
+// edit replaces a whole subtree (the old subgraph is left unreferenced in the
+// table) — is structurally unusual and may trip a strict unarchiver. Object 0
+// is kept as the "$null" sentinel. Compaction is graph-preserving: the result
+// GraphEqual-matches the input.
+func (a *Archive) Compact() {
+	reachable := map[UID]bool{}
+	var mark func(v any)
+	markObj := func(uid UID) {
+		if uid == 0 || reachable[uid] {
+			return
+		}
+		reachable[uid] = true
+		mark(a.Resolve(uid))
+	}
+	mark = func(v any) {
+		switch x := v.(type) {
+		case UID:
+			markObj(x)
+		case []any:
+			for _, e := range x {
+				mark(e)
+			}
+		case map[string]any:
+			for _, vv := range x {
+				mark(vv)
+			}
+		}
+	}
+	// Object 0 is always retained as $null.
+	reachable[0] = true
+	for _, v := range a.Top {
+		mark(v)
+	}
+
+	// Dense remap, preserving original order (and index 0).
+	remap := make(map[UID]UID, len(reachable))
+	newObjs := make([]any, 0, len(reachable))
+	for i := range a.Objects {
+		uid := UID(i)
+		if !reachable[uid] {
+			continue
+		}
+		remap[uid] = UID(len(newObjs))
+		newObjs = append(newObjs, a.Objects[i])
+	}
+
+	var rewrite func(v any) any
+	rewrite = func(v any) any {
+		switch x := v.(type) {
+		case UID:
+			if nu, ok := remap[x]; ok {
+				return nu
+			}
+			return x
+		case []any:
+			for i := range x {
+				x[i] = rewrite(x[i])
+			}
+			return x
+		case map[string]any:
+			for k := range x {
+				x[k] = rewrite(x[k])
+			}
+			return x
+		default:
+			return v
+		}
+	}
+	for i := range newObjs {
+		newObjs[i] = rewrite(newObjs[i])
+	}
+	for k := range a.Top {
+		a.Top[k] = rewrite(a.Top[k])
+	}
+	a.Objects = newObjs
+}
+
 // Resolve returns the object at uid in the Objects table, or nil if out of
 // range.
 func (a *Archive) Resolve(uid UID) any {
@@ -300,12 +381,52 @@ func (b *Builder) Graft(src *Archive, v any, memo map[UID]UID) any {
 		if nu, ok := memo[uid]; ok {
 			return nu
 		}
-		rebuilt := b.graftConcrete(src, src.Resolve(uid), memo)
+		resolved := src.Resolve(uid)
+		// Class-definition objects ({$classname,$classes}) must collapse to a
+		// single canonical def per class in the destination — NSKeyedArchiver
+		// writes exactly one, and a deep copy here would leave the destination
+		// with duplicate class defs (e.g. two "AUMNodeArchive"/"NSValue"), which
+		// AUM's unarchiver rejects on load. Route them through ClassDef, whose
+		// cache (seeded from the destination's existing defs in NewBuilder)
+		// reuses or creates exactly one.
+		if m, ok := resolved.(map[string]any); ok {
+			if name, ok := m["$classname"].(string); ok {
+				nu := b.ClassDef(name, classDefParents(m["$classes"], name)...)
+				memo[uid] = nu
+				return nu
+			}
+		}
+		rebuilt := b.graftConcrete(src, resolved, memo)
 		nu := b.Intern(rebuilt)
 		memo[uid] = nu
 		return nu
 	}
 	return b.graftConcrete(src, v, memo)
+}
+
+// classDefParents extracts the intermediate parent class names from a class
+// def's $classes chain ([name, ...parents, "NSObject"]), dropping the leading
+// class name and the trailing NSObject that ClassDef re-adds. It reconstructs
+// the parent list ClassDef expects so a grafted class def reproduces the same
+// $classes chain the source carried.
+func classDefParents(v any, name string) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			names = append(names, s)
+		}
+	}
+	if len(names) > 0 && names[0] == name {
+		names = names[1:]
+	}
+	if len(names) > 0 && names[len(names)-1] == "NSObject" {
+		names = names[:len(names)-1]
+	}
+	return names
 }
 
 // graftConcrete rebuilds a resolved (non-UID) value in destination space.
