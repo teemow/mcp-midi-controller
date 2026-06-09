@@ -465,7 +465,11 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
    an on-device "AUM still opens it" acceptance test — never byte equality.
    Mapping a parameter edits AUM's existing disabled placeholder leaf in place
    (`specState` v13 / `spec` v8/10) rather than adding objects; authoring a
-   session from scratch clones an embedded minimal template and mutates it. The
+   session from scratch clones an embedded minimal template and mutates it, and
+   `BuildSession` rejects specs that would deserialize but crash AUM's audio
+   render thread (an audio channel head with no audio source) — the
+   load-vs-render crash classes and their fixes are documented in
+   `docs/research/aum-session.md`. The
    library layers as: `archive.go` (the generic graph codec), `session.go` +
    `spec.go` + `midimap.go` (the typed read model + the packed `spec`/`specState`
    codec + the flat `SessionMap` JSON), `edit.go` + `export.go` (round-trip edits

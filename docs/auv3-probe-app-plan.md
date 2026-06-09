@@ -150,6 +150,20 @@ plugin's `fullState` exceeds it; surface that in diagnostics).
 
 ## Validation
 
+> **Status 2026-06-08 — the `validate` gate is MET without icons, which likely
+> makes this whole feature moot (see the "May be unnecessary" risk below).** A
+> from-scratch authored session with **no `componentIcon` and no captured
+> `defaultState`** was confirmed on a real iPad (iOS 26.5, AUM 1.4.8) to **load,
+> instantiate its hosted AUv3 node, and produce audio to master**. Reaching this
+> required fixing three *load* crashes (inline `audioComponentDescription`,
+> always-present `midiMatrixState`, `notes` as the `$null` ref) and one *render*
+> crash (an audio channel head must have an audio source — instrument/generator
+> or a HW-input/bus/file-player source; now guarded in `BuildSession`). All four
+> were diagnosed from on-device crash logs (`idevicecrashreport`); see
+> `docs/research/aum-session.md` → "Authoring from scratch: what crashes AUM".
+> The icon was never needed for the load/render gate; only proceed with the
+> capture work below if a *visual* requirement (not loadability) justifies it.
+
 1. **Bytes match the host (off-device):** for a plugin present in a real AUM
    session, capture its icon via the app, author a node with it, and confirm the
    authored `componentIcon` graph matches (or is accepted in place of) the real
@@ -163,23 +177,71 @@ plugin's `fullState` exceeds it; surface that in diagnostics).
 
 ## Work items
 
-- [ ] **app/spike:** determine the iOS icon source for an `AVAudioUnitComponent`; validate against a real session's stored `componentIcon`.
-- [ ] **contract:** add optional `componentIcon` (+ `defaultState`) to `device.ProbeDump`; carry through `NodeSpecFromDump`. (this repo)
-- [ ] **app:** capture + NSKeyedArchiver-archive the `UIImage`, base64, attach to the dump; skip when no icon.
-- [ ] **app:** (secondary, opt-in) capture default `fullState` as `defaultState`.
-- [ ] **author:** `aum.NodeSpec.ComponentIcon`; `buildAUXNode` Decode+Graft the icon; stamp `defaultState` into `AuStateDoc`. (this repo)
-- [ ] **validate:** off-device byte/accept check + on-device S1 load with captured artifacts; icon-less regression.
+Status as of 2026-06-08 (verified against code in both repos + the running
+daemon's staged probes/sessions):
+
+- [x] **app/spike:** icon source determined — `AudioComponentCopyIcon(comp)`
+  (iOS 14+, non-deprecated; `AVAudioUnitComponent.icon`/`.iconURL` are macOS-only).
+  In `auv3-probe` `Sources/AUv3ProbeApp/ComponentIcon.swift`.
+- [x] **contract:** `componentIcon` added to `device.ProbeDump`
+  (`ComponentIcon []byte`, json `componentIcon`) and carried through
+  `NodeSpecFromDump`. `defaultState` was **not** added (see remaining item).
+- [x] **app:** captures the icon at discovery and NSKeyedArchiver-archives it,
+  attaching it to the dump (`AudioUnitScanner.swift` → `AudioUnitDetails.componentIcon`),
+  skipped when no icon.
+- [ ] **app:** (secondary, opt-in) capture default `fullState` as `defaultState`
+  — **not implemented** (the only remaining item; optional, see status below).
+- [x] **author:** `aum.NodeSpec.ComponentIcon` + `buildAUXNode` Decode+Graft via
+  `graftComponentIcon` (`internal/aum/nodes.go`), with tests
+  (`TestBuildAUXNodeComponentIcon`, `TestGraftComponentIconFallback`). The
+  `defaultState`→`AuStateDoc` stamp is **not** wired (the `StateDoc` loop in
+  `buildAuStateDoc` is the hook; only our own plugins use it today).
+- [x] **validate:** load/render gate **MET without icons** on real hardware (see
+  status block above). Icon graft round-trips; icon-less regression holds.
+
+> **Outcome:** the load/render blocker is fixed and the icon path is fully wired
+> end-to-end (even though it proved unnecessary for loading). The single
+> outstanding item — capturing the default `fullState` — is an optional fidelity
+> nice-to-have, not a blocker. Identity-only nodes instantiate and play.
+
+## Parameters: verified complete — no icon-style capture needed (2026-06-08)
+
+A separate question came up: do we have everything about a plugin's **parameters**
+via the probe, or is there an icon-style off-device gap? Verified against the
+running daemon's staged probes + the five real rig sessions:
+
+- The probe walks the full `AUParameterTree` and emits, per param, `address`,
+  `keyPath`, `identifier`, `displayName`, range/unit/`valueStrings`, `flags`
+  (logarithmic/high-res/meta/rampable), `dependentParameters`, plus presets,
+  channel caps, latency. Nothing about a param's definition lives only on-device.
+- **The mapping-leaf key AUM stores is present and exact.** AUM keys a node
+  param at `midiCtrlState/Channels/chan<N>/slot<S>/<KEY>`. Ground truth from the
+  corpus: `fast_forward` has two *assigned* leaves `…/slot0/VCF Freq → CC74` on
+  Arturia iSEM nodes, and `captureprobe` mapped `…/slot0/Master Vol`. Both keys
+  match the iSEM probe's captured name string **byte-for-byte** — no truncation,
+  no `displayName(withLength:)` abbreviation, nothing missing.
+- **Narrow residual (not a missing-data problem).** For iSEM
+  `keyPath == identifier == displayName` for every param, and every assigned
+  node-param mapping in the whole corpus happens to be on iSEM — so the corpus
+  cannot prove **which** field AUM keys by when the three diverge. The author's
+  `paramTarget` (`internal/aum/build.go`) prefers `identifier → displayName →
+  keyPath`; correct for iSEM and any plugin where they agree. Settling the
+  divergent case needs one real assigned param mapping on a plugin whose three
+  names differ (e.g. a FabFilter node) — **zero probe changes required**, since
+  the probe already carries all three candidates.
 
 ## Risks / open items
 
-- **iOS icon API uncertainty:** the icon source is not a single guaranteed public
-  API on iOS; the spike must establish it before the rest of the app work. AUM
-  clearly obtains one, so a source exists — find and match it.
+- **iOS icon API uncertainty:** ~~the icon source is not a single guaranteed
+  public API on iOS~~ — **RESOLVED:** `AudioComponentCopyIcon(comp)` (iOS 14+).
 - **Archive encoding parity:** the app's `NSKeyedArchiver` output must match what
-  AUM's decoder expects (secure-coding flag, class names). Verify against a real
-  stored icon, not assumed.
-- **May be unnecessary:** if S1 loads with no icon (or a placeholder), the whole
-  app feature is moot — run the cheapest-first gate before building it.
+  AUM's decoder expects (secure-coding flag, class names). The graft path decodes
+  it as a standalone archive and degrades gracefully on a bad blob, but a stored
+  icon was never round-tripped through AUM on-device (the load gate passed without
+  one), so byte-parity is still unverified against a real AUM-stored icon.
+- **May be unnecessary — CONFIRMED:** S1 loads, instantiates and plays with **no**
+  icon, so the whole icon feature is moot for loadability. Only proceed past the
+  built (but unproven-in-AUM) icon graft if a *visual* requirement justifies it.
 - **`fullState` size/privacy:** can be large and vendor-internal; keep it opt-in,
   honor the public-vs-private rule (stays in the gitignored state dir, never
   committed), and watch the receiver body cap.

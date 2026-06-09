@@ -138,8 +138,10 @@ func TestBuildSessionFaithfulFields(t *testing.T) {
 	if _, ok := s.root["folder"]; !ok || s.str(s.root["folder"]) != "" {
 		t.Fatalf("root folder = %v (ok=%v), want empty string", s.root["folder"], ok)
 	}
-	if _, ok := s.root["notes"]; !ok || s.a.ClassName(s.a.Deref(s.root["notes"])) != "NSNull" {
-		t.Fatalf("root notes should be NSNull, got %v", s.a.Deref(s.root["notes"]))
+	// notes is an unset reference: AUM encodes it as a "$null" reference (UID 0),
+	// not an NSNull instance. (An NSNull instance there crashes AUM on load.)
+	if u, ok := s.root["notes"].(UID); !ok || u != 0 {
+		t.Fatalf("root notes should be the $null reference (UID 0), got %#v -> %v", s.root["notes"], s.a.Deref(s.root["notes"]))
 	}
 	if _, ok := s.root["minimumLatency"]; !ok || s.scalarFloat(s.root["minimumLatency"]) != 0 {
 		t.Fatalf("root minimumLatency = %v (ok=%v), want 0", s.root["minimumLatency"], ok)
@@ -855,5 +857,40 @@ func TestNodeSpecFromDump(t *testing.T) {
 	}
 	if len(n.Params) != 1 || n.Params[0].Identifier != "drive" {
 		t.Fatalf("params not carried over: %+v", n.Params)
+	}
+}
+
+// TestValidateRenderGraph pins the render-graph guard: an audio channel whose
+// chain head pulls audio input must be fed (a built-in source node or a
+// generating head node), or BuildSession rejects it before it can crash AUM's
+// render thread. MIDI channels and empty/source-fed audio channels are allowed.
+func TestValidateRenderGraph(t *testing.T) {
+	effect := NodeSpec{
+		Component:     device.ProbeComponent{Type: "aufx", Subtype: "dist", Manufacturer: "ACME"},
+		ComponentName: "ACME: Crusher",
+	}
+	instrument := NodeSpec{
+		Component:     device.ProbeComponent{Type: "aumu", Subtype: "synt", Manufacturer: "ACME"},
+		ComponentName: "ACME: Synth",
+	}
+
+	tests := []struct {
+		name    string
+		channel ChannelSpec
+		wantErr bool
+	}{
+		{"effect head, no source", ChannelSpec{Kind: KindAudio, Nodes: []NodeSpec{effect}}, true},
+		{"instrument head, no source", ChannelSpec{Kind: KindAudio, Nodes: []NodeSpec{instrument}}, false},
+		{"effect head, hw-input source", ChannelSpec{Kind: KindAudio, Source: &ChannelSource{Kind: SourceHWInput}, Nodes: []NodeSpec{effect}}, false},
+		{"empty audio channel", ChannelSpec{Kind: KindAudio}, false},
+		{"midi channel ignored", ChannelSpec{Kind: KindMIDI, Nodes: []NodeSpec{effect}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateRenderGraph(BuildSpec{Channels: []ChannelSpec{tc.channel}})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateRenderGraph err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
 	}
 }

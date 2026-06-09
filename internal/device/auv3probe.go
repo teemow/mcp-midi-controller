@@ -24,11 +24,11 @@ import (
 // reads from AVAudioUnitComponent (they are optional so older dumps without them
 // still decode).
 type ProbeComponent struct {
-	Type             string `json:"type"`
-	Subtype          string `json:"subtype"`
-	Manufacturer     string `json:"manufacturer"`
-	ManufacturerName string `json:"manufacturerName,omitempty"`
-	Version          string `json:"version,omitempty"`
+	Type             string `json:"type" yaml:"type"`
+	Subtype          string `json:"subtype" yaml:"subtype"`
+	Manufacturer     string `json:"manufacturer" yaml:"manufacturer"`
+	ManufacturerName string `json:"manufacturerName,omitempty" yaml:"manufacturerName,omitempty"`
+	Version          string `json:"version,omitempty" yaml:"version,omitempty"`
 }
 
 // ProbeParam is one AUParameter as read from auAudioUnit.parameterTree. The

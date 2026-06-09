@@ -583,6 +583,67 @@ standalone map uses the same **decomposed `specState`** leaf as a `version` 13
 inline session, so the export format is identical to what current sessions hold.
 The only remaining export unknown is the PC/PBEND/CHPRS `type` codes (open item).
 
+## Authoring from scratch: what crashes AUM (verified via device crash logs)
+
+Synthesizing a session with `internal/aum` (`BuildSession`) and loading it on a
+real iPad surfaced two **distinct** crash classes. They were told apart by
+pulling AUM's actual crash reports off the device (`idevicecrashreport` over USB,
+libimobiledevice; `.ips` files), which is the decisive tool — the on-screen
+symptom ("AUM quits") is identical for both.
+
+### Class 1 — load crash (`SIGABRT`, NSKeyedUnarchiver throws)
+
+Stack signature: `__cxa_rethrow → _objc_terminate → abort` on the main thread,
+during deserialization. The session never finishes loading. Three root causes,
+all fixed in the authoring code:
+
+1. **`audioComponentDescription` must be stored INLINE, not as a `CF$UID`.** AUM
+   writes/reads it with `-encodeBytes:length:forKey:` / `-decodeBytesForKey:`,
+   which keep the 20 raw bytes **inline in the `AUMNodeArchive` dict**, NOT as a
+   UID-referenced `NSData`. Interning it as a UID makes `decodeBytesForKey:`
+   crash on node instantiation. (Fix: `nodes.go` `buildAUXNode` stores the raw
+   `[]byte` inline.) It is the **only** inline-data field on a node — verified by
+   scanning the whole corpus for `-encodeBytes:`-style fields.
+2. **`midiMatrixState` must always be present.** Every real session carries this
+   root dict even with no routes; omitting it crashes the load. (Fix:
+   `BuildSession` always authors an empty matrix.)
+3. **`notes` must be the `$null` reference (UID 0) when unset, not an `NSNull`
+   instance.** AUM encodes an unset `notes` as `-encodeObject:nil` (the `$null`
+   ref). Authoring an actual `NSNull` *object* there crashes the load.
+   (Subtlety: a real UNNAMED mix bus legitimately stores a shared `[NSNull null]`
+   *instance* in `customName`/`customColor`; only genuinely-nil root fields like
+   `notes` use the `$null` ref.) (Fix: `build.go` sets `root["notes"]` to UID 0.)
+
+After these three fixes the `SIGABRT` load crashes stopped — the session
+deserializes.
+
+### Class 2 — render crash (`SIGSEGV` / `KERN_INVALID_ADDRESS @ 0x0`)
+
+Stack signature: triggered thread `AURemoteIO::IOThread`, then
+`AUInputElement::PullInputWithBufferList → AUConverterBase::RenderBus →
+AURemoteIO::RenderBus → AUBase::DoRender → AURemoteIO::PerformIO`. The session
+**loads fine**; AUM runs for a few seconds and then null-derefs while pulling
+audio through the render graph.
+
+Cause: an **audio channel whose chain head pulls audio input but has nothing
+feeding it**. A real renderable audio channel always begins with a node that
+*produces* audio — an **instrument** (`aumu`) or **generator** (`augn`) — or has
+a built-in audio **source** node (`HWInputDescription`, `BusSourceDescription`,
+or `FilePlayerNodeDescription`). An **effect** head (`aufx` / music-effect
+`aumf`) with no upstream source has an unconnected input element that AUM
+dereferences during render. (This is also why AUM never crashes on the real
+sessions: their effect strips are always fed by a HW input or a bus source.)
+Note this happens even with no explicit output — AUM renders every mixer strip.
+
+**Guard (in `BuildSession`, `validateRenderGraph`):** authoring now hard-errors
+when a `KindAudio` channel's head node is not an instrument/generator AND the
+channel has no `SourceHWInput` / `SourceBus` / `SourceFilePlayer` source — so an
+unrenderable spec is rejected at author time instead of crashing the device.
+
+A minimal from-scratch session (instrument → hardware out) and a fuller one
+(instrument → bus → master → hardware out) were confirmed on-device to **load and
+render**, closing the loop end to end.
+
 ## Open items / TODO
 
 1. **PC / Pitch-Bend / Channel-Pressure `type` codes.** The remaining gap.
@@ -603,7 +664,10 @@ The only remaining export unknown is the PC/PBEND/CHPRS `type` codes (open item)
 Resolved since the first draft: session-key set, node taxonomy, built-in-node
 state, **both** leaf encodings + their version split, the packed `spec` layout,
 the CC/Note `type` codes + the placeholder rule, and `transportClockState` /
-`midiMatrixState` key sets — all now verified above against 75 sessions.
+`midiMatrixState` key sets — all now verified above against 75 sessions. The
+from-scratch authoring crashes (load-time inline-`audioComponentDescription` /
+`midiMatrixState` / `notes`-`$null`, and the render-time audio-source
+requirement) are diagnosed via device crash logs and fixed/guarded.
 
 ## Sources
 

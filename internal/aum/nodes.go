@@ -101,8 +101,16 @@ func buildAUXNode(b *Builder, n NodeSpec, channel, slot int) map[string]any {
 	)
 
 	fields := map[string]any{
-		"archiveDescClass":          b.Intern(classAUXNode),
-		"audioComponentDescription": b.Intern(EncodeComponentDesc(n.Component)),
+		"archiveDescClass": b.Intern(classAUXNode),
+		// audioComponentDescription is the 20-byte AudioComponentDescription C
+		// struct. AUM writes (and reads) it with -encodeBytes:length:forKey: /
+		// -decodeBytesForKey:, which store the bytes INLINE as a bplist data
+		// value directly in the AUMNodeArchive dict — NOT as a CF$UID reference
+		// to an NSData object. Interning it (a UID ref) is what AUM's
+		// decodeBytesForKey: cannot read, and is the construction difference that
+		// made authored nodes crash on load while value-identical real nodes
+		// loaded. Store it inline.
+		"audioComponentDescription": EncodeComponentDesc(n.Component),
 		"archiveNodeState":          b.Intern(state),
 	}
 	if n.ComponentName != "" {

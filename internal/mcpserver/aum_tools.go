@@ -949,8 +949,9 @@ type nodeArg struct {
 // resolve turns a nodeArg into an aum.NodeSpec: it resolves the probe (id or
 // explicit file) for the node's identity + mappable params, then applies the
 // optional component-name / preset / state overrides. The caller prefixes the
-// returned error with the JSON field path.
-func (a nodeArg) resolve() (aum.NodeSpec, error) {
+// returned error with the JSON field path and supplies the loaded audio-unit
+// default states (loaded once per author call, not per node).
+func (a nodeArg) resolve(defs []device.AUv3DefaultState) (aum.NodeSpec, error) {
 	if a.ProbeID == "" && a.ProbeFile == "" {
 		return aum.NodeSpec{}, fmt.Errorf("provide probe_id or probe_file (a hosted node needs a probe for its identity + params)")
 	}
@@ -971,6 +972,11 @@ func (a nodeArg) resolve() (aum.NodeSpec, error) {
 	}
 	if len(a.State) > 0 {
 		ns.StateDoc = stateDocBytes(a.State)
+	}
+	// Fill any fullState keys the per-call `state` arg did not set from this
+	// audio unit's user-defined default state (capture_auv3_default_state).
+	if derr := applyDefaultState(&ns, defs); derr != nil {
+		return aum.NodeSpec{}, derr
 	}
 	return ns, nil
 }
@@ -1093,6 +1099,7 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 		SampleRate: args.SampleRate,
 		Hardware:   hardware,
 	}
+	defaults := loadAUv3DefaultStates()
 	for i, ch := range args.Channels {
 		cs := aum.ChannelSpec{
 			Kind:   aum.KindAudio,
@@ -1111,7 +1118,7 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 			return textResult(fmt.Sprintf("/channels/%d/kind: %q is not audio|midi", i, ch.Kind), true), nil
 		}
 		for j, n := range ch.Nodes {
-			ns, nerr := n.resolve()
+			ns, nerr := n.resolve(defaults)
 			if nerr != nil {
 				return textResult(fmt.Sprintf("/channels/%d/nodes/%d: %v", i, j, nerr), true), nil
 			}
@@ -1146,7 +1153,7 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 			}
 		}
 		for j, n := range ch.PostNodes {
-			ns, nerr := n.resolve()
+			ns, nerr := n.resolve(defaults)
 			if nerr != nil {
 				return textResult(fmt.Sprintf("/channels/%d/post_nodes/%d: %v", i, j, nerr), true), nil
 			}
@@ -1158,7 +1165,7 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 		// tap_node overrides the default tap identity and implies Tap so a
 		// caller can request a tap by supplying the node alone.
 		if ch.TapNode != nil {
-			ns, nerr := ch.TapNode.resolve()
+			ns, nerr := ch.TapNode.resolve(defaults)
 			if nerr != nil {
 				return textResult(fmt.Sprintf("/channels/%d/tap_node: %v", i, nerr), true), nil
 			}
@@ -1257,8 +1264,9 @@ func (s *Server) handleAuthorAUMSession(_ context.Context, req *mcp.CallToolRequ
 // --- author_loop_session --------------------------------------------------
 
 // loopNodeSpec resolves a probe (id or explicit file) into a NodeSpec, returning
-// a user-facing error string on failure.
-func loopNodeSpec(field, probeID, probeFile string) (aum.NodeSpec, string) {
+// a user-facing error string on failure. defs are the audio-unit default states
+// loaded once by the caller (not re-read per node).
+func loopNodeSpec(field, probeID, probeFile string, defs []device.AUv3DefaultState) (aum.NodeSpec, string) {
 	if probeID == "" && probeFile == "" {
 		return aum.NodeSpec{}, fmt.Sprintf("%s: provide a probe id or file", field)
 	}
@@ -1270,7 +1278,11 @@ func loopNodeSpec(field, probeID, probeFile string) (aum.NodeSpec, string) {
 	if derr != nil {
 		return aum.NodeSpec{}, fmt.Sprintf("%s: read probe: %v", field, derr)
 	}
-	return aum.NodeSpecFromDump(dump), ""
+	ns := aum.NodeSpecFromDump(dump)
+	if aerr := applyDefaultState(&ns, defs); aerr != nil {
+		return aum.NodeSpec{}, fmt.Sprintf("%s: %v", field, aerr)
+	}
+	return ns, ""
 }
 
 // configureBrainTap authors the ProbeMidiBrain + ProbeAudioTap AuStateDoc so
@@ -1316,15 +1328,16 @@ func (s *Server) handleAuthorLoopSession(_ context.Context, req *mcp.CallToolReq
 		return textResult("host: a daemon host[:port] is required so the brain and tap can dial back", true), nil
 	}
 
-	brain, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile)
+	defaults := loadAUv3DefaultStates()
+	brain, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile, defaults)
 	if e != "" {
 		return textResult(e, true), nil
 	}
-	synth, e := loopNodeSpec("synth_probe", args.SynthProbe, args.SynthFile)
+	synth, e := loopNodeSpec("synth_probe", args.SynthProbe, args.SynthFile, defaults)
 	if e != "" {
 		return textResult(e, true), nil
 	}
-	tap, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile)
+	tap, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile, defaults)
 	if e != "" {
 		return textResult(e, true), nil
 	}
@@ -1449,9 +1462,10 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 		if strings.TrimSpace(args.Host) == "" {
 			return textResult("add_probes: host (daemon host[:port]) is required so the brain and tap can dial back", true), nil
 		}
+		defaults := loadAUv3DefaultStates()
 		brain := aum.ProbeBrainNode()
 		if args.BrainProbe != "" || args.BrainFile != "" {
-			b2, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile)
+			b2, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile, defaults)
 			if e != "" {
 				return textResult(e, true), nil
 			}
@@ -1459,7 +1473,7 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 		}
 		tap := aum.ProbeTapNode()
 		if args.TapProbe != "" || args.TapFile != "" {
-			t2, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile)
+			t2, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile, defaults)
 			if e != "" {
 				return textResult(e, true), nil
 			}
@@ -1613,11 +1627,12 @@ func (s *Server) handleAuthorProbeSession(_ context.Context, req *mcp.CallToolRe
 		return textResult("host: a daemon host[:port] is required so the brain and tap can dial back", true), nil
 	}
 
-	brain, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile)
+	defaults := loadAUv3DefaultStates()
+	brain, e := loopNodeSpec("brain_probe", args.BrainProbe, args.BrainFile, defaults)
 	if e != "" {
 		return textResult(e, true), nil
 	}
-	tap, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile)
+	tap, e := loopNodeSpec("tap_probe", args.TapProbe, args.TapFile, defaults)
 	if e != "" {
 		return textResult(e, true), nil
 	}
@@ -1746,7 +1761,7 @@ func (s *Server) handleAuthorGradedSession(_ context.Context, req *mcp.CallToolR
 		opts.Hardware = hw
 	}
 	if args.SynthProbe != "" || args.SynthFile != "" {
-		inst, e := loopNodeSpec("synth_probe", args.SynthProbe, args.SynthFile)
+		inst, e := loopNodeSpec("synth_probe", args.SynthProbe, args.SynthFile, loadAUv3DefaultStates())
 		if e != "" {
 			return textResult(e, true), nil
 		}

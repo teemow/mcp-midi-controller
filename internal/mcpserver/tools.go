@@ -110,6 +110,9 @@ func (s *Server) registerGlobalTools() {
 	// AUM session tools (list/get/diff/import/author/edit + export_aum_midimap)
 	// over the internal/aum library are wired in registerAUMTools.
 	s.registerAUMTools()
+	// User-defined per-audio-unit default states (capture/list/get) over the
+	// config-dir YAML store are wired in registerAUv3DefaultStateTools.
+	s.registerAUv3DefaultStateTools()
 	// get_audio_tap (the agent's "ears" — live levels + waveform from the
 	// ProbeAudioTap stream) is wired in registerAudioTools when WithAudioTap
 	// attached a store.
