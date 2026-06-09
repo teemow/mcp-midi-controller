@@ -65,6 +65,15 @@ func DeviceTypesDir() string { return filepath.Join(ConfigDir(), "device-types")
 // ScenesDir is where saved scenes live.
 func ScenesDir() string { return filepath.Join(ConfigDir(), "scenes") }
 
+// AUv3DefaultStatesDir is where per-audio-unit user-defined default states live:
+// one YAML file per audio unit, applied automatically by the AUM author to any
+// node of that unit. Unlike AUv3ProbesDir / AUMSessionsDir (volatile staging
+// under the state dir) this is rig-as-code under the config dir — it survives
+// probe re-syncs and is git-trackable. Captured third-party plugin state may be
+// vendor/installation-specific, so a user should gitignore any default-state
+// file they consider private (see the public-vs-private rule).
+func AUv3DefaultStatesDir() string { return filepath.Join(ConfigDir(), "auv3-default-states") }
+
 // DevicesPath is the persisted rig file: the set of controllable Device
 // instances (devices.yaml).
 func DevicesPath() string { return filepath.Join(ConfigDir(), "devices.yaml") }

@@ -29,3 +29,12 @@
 # The public/private + reverse-engineering policy rule. Kept out of the public
 # repo "just in case" so the RE strategy notes stay private.
 /.cursor/rules/public-vs-private.mdc
+
+# graphify knowledge graph (regenerable, rebuilt by the post-commit hook)
+graphify-out/
+
+# Local-only AUM diagnostics: one-off investigation tools that read real,
+# machine-specific session files from the config dir. Not part of the build or
+# the committed test suite — kept local so they don't pollute the public tree.
+/cmd/_scratch_*/
+/internal/aum/diag_test.go

@@ -113,6 +113,50 @@ func TestBuildLoopSessionRoundTrips(t *testing.T) {
 	}
 }
 
+// TestNodeAuStateDoc builds the loop layout, round-trips it, and asserts the
+// public getter harvests a node's non-identity fullState (and drops the identity
+// keys), the read counterpart of SetAuStateDoc.
+func TestNodeAuStateDoc(t *testing.T) {
+	s, _, err := BuildSession(loopSpec())
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	data, err := s.Archive().Encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	re, err := Open(data)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+
+	doc, err := re.NodeAuStateDoc(0, 0) // brain
+	if err != nil {
+		t.Fatalf("NodeAuStateDoc: %v", err)
+	}
+	if string(doc["probeMidiBrainConfig"]) != `{"host":"box:7800","controlEnabled":true}` {
+		t.Fatalf("brain fullState = %q", string(doc["probeMidiBrainConfig"]))
+	}
+	for _, k := range []string{"type", "subtype", "manufacturer", "version"} {
+		if _, ok := doc[k]; ok {
+			t.Errorf("identity key %q should be dropped from NodeAuStateDoc", k)
+		}
+	}
+
+	// The plain synth node carries identity-only state: empty (non-nil) map.
+	syn, err := re.NodeAuStateDoc(1, 0)
+	if err != nil {
+		t.Fatalf("NodeAuStateDoc synth: %v", err)
+	}
+	if len(syn) != 0 {
+		t.Errorf("identity-only node should yield empty fullState, got %v", syn)
+	}
+
+	if _, err := re.NodeAuStateDoc(9, 9); err == nil {
+		t.Error("expected error for a missing node")
+	}
+}
+
 // nsLookup resolves an NSDictionary entry by key and dereferences it to a dict.
 func nsLookup(s *Session, dict map[string]any, key string) map[string]any {
 	return s.rawObj(nsLookupRaw(s, dict, key))

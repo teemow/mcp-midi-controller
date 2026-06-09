@@ -207,6 +207,37 @@ func (s *Session) SetAuStateDoc(channelIndex, slot int, entries map[string][]byt
 	return nil
 }
 
+// NodeAuStateDoc returns a hosted node's saved fullState as key -> bytes — the
+// non-identity entries of its archiveNodeState["AuStateDoc"] (the
+// {type,subtype,manufacturer,version} identity keys are dropped, since the
+// author re-derives them from the component). It is the read counterpart of
+// SetAuStateDoc, used by the capture tool to harvest a real plugin's state into
+// a user-defined default. An identity-only node returns an empty (non-nil) map.
+func (s *Session) NodeAuStateDoc(channelIndex, slot int) (map[string][]byte, error) {
+	state, ok := s.nodeStateObj(channelIndex, slot)
+	if !ok {
+		return nil, fmt.Errorf("aum: no node at channel %d slot %d", channelIndex, slot)
+	}
+	out := map[string][]byte{}
+	docRef, ok := s.rawField(state, "AuStateDoc")
+	if !ok {
+		return out, nil
+	}
+	doc := s.dict(docRef)
+	for k, v := range doc {
+		switch k {
+		case "type", "subtype", "manufacturer", "version":
+			continue
+		}
+		if b, ok := s.a.Deref(v).([]byte); ok {
+			cp := make([]byte, len(b))
+			copy(cp, b)
+			out[k] = cp
+		}
+	}
+	return out, nil
+}
+
 // nodeDisplayName returns a hosted node's human name (componentName), or a
 // generic fallback, plus whether the node exists.
 func (s *Session) nodeDisplayName(channelIndex, slot int) (string, bool) {
