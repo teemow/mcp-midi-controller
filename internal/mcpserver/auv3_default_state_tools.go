@@ -335,7 +335,7 @@ func (s *Server) handleGetAUv3DefaultState(_ context.Context, req *mcp.CallToolR
 		ki := keyInfo{Key: k, Size: len(raw)}
 		switch {
 		case e.Base64 != "":
-			enc = "base64"
+			// opaque binary: enc stays "base64"
 		case e.Prefix != "":
 			enc = "text+prefix"
 			ki.Text = e.Text
