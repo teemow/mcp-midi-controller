@@ -23,9 +23,26 @@ An `NSDictionary` with exactly five keys (AUM applies the whole matrix on load):
 
 `Chan` is the 0-based channel index, `Slot` the 0-based node slot in that channel.
 
-- Node MIDI **output** (a source): `Node:Chan<C>:Slot<S>:MIDI OUT`
-  (named ports use the port name instead of `MIDI OUT`, e.g.
-  `Node:Chan0:Slot1:photonAU Pad5`).
+- Node MIDI **output** (a source): `Node:Chan<C>:Slot<S>:<port name>`, where
+  `<port name>` is the AU's **declared MIDI-output port name** — e.g.
+  `Node:Chan0:Slot1:photonAU Pad5`, `Node:Chan6:Slot2:PatternBud Out`,
+  `Node:Chan6:Slot3:OutByter`. Only an AU that declares **no** named port falls
+  back to the literal `MIDI OUT` label.
+
+  > **Verified live (2026-06-09): the port name is load-bearing, and a mismatch
+  > fails silently.** A from-scratch session authored with
+  > `Node:Chan0:Slot0:MIDI OUT` for `ProbeMidiBrain` loaded fine in AUM but the
+  > matrix showed **no connection at all** — no error, the route is just
+  > dropped, so the brain reaches neither the synth nor MIDI Control (notes and
+  > CC mappings are both dead). The brain declares a named output port
+  > `ProbeMidiBrain` (visible in its host diagnostics under
+  > `render.midiOutputNames`); patching the connection/sourcesInfo key to
+  > `Node:Chan0:Slot0:ProbeMidiBrain` and reloading made AUM apply the route.
+  > `SetMIDIRoutes` (`internal/aum/route.go`) and `mergeMIDIControlRoute`
+  > (`internal/aum/probe_rig.go`) still hardcode `MIDI OUT` — they must use the
+  > source AU's real port name (for our plugins: `ProbeMidiBrain`; for
+  > third-party MIDI nodes, take it from the corpus/probe — see the examples
+  > above).
 - Node MIDI **input** (a destination): `Node:Chan<C>:Slot<S>` (no port suffix).
 - Built-ins: `BuiltIn:MIDI Control`, `BuiltIn:Keyboard`, `BuiltIn:IAA Port N`.
 - CoreMIDI: `CoreMIDIDest:<name>` / `CoreMIDISrc:<name>`.

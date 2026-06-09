@@ -48,6 +48,7 @@ func (s *Server) registerProbeSound() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "probe_sound",
 		Description: "Sound-engineer iteration loop in ONE call: optionally apply settings[] (a bound-device control via {device,control,value} — with verify:true to confirm the inbound echo — or a raw CC via {cc,value,channel} over the ProbeMidiBrain channel), then play notes/note for duration_ms through the brain, then return the trusted audio analysis captured DURING the sustain (just before note-off, so harmonics/loudness reflect the held tone, not the release tail). " +
+			"Alternatively pass sequence[] to excite with a timed phrase of note and CC steps (overlapping at_ms for legato/glide, CCs mid-phrase) — the analysis then covers the whole phrase as one captured segment. " +
 			"This replaces the old three-call loop (control_* -> play_notes -> get_audio_tap) so an agent can tweak a parameter and immediately read how the sound changed. " +
 			"The analysis block matches get_audio_tap: detected pitch (f0/note/cents/confidence), harmonic partials + HNR, loudness/crest (dBFS), and onset activity. Emits structuredContent {settings_applied, notes, velocity, duration_ms, channel, snapshot}.",
 		InputSchema: json.RawMessage(`{
@@ -71,9 +72,10 @@ func (s *Server) registerProbeSound() {
 				},
 				"notes": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 127}, "description": "MIDI note numbers 0-127 to play (e.g. a chord)."},
 				"note": {"type": "integer", "minimum": 0, "maximum": 127, "description": "Single note shortcut (alternative to notes)."},
-				"velocity": {"type": "integer", "minimum": 1, "maximum": 127, "description": "Note-on velocity (default 100)."},
+				"velocity": {"type": "integer", "minimum": 1, "maximum": 127, "description": "Note-on velocity (default 100; also the default for sequence note steps)."},
 				"duration_ms": {"type": "integer", "minimum": 0, "description": "How long to hold the notes before snapshotting + note-off (default 800, max 10000)."},
 				"channel": {"type": "integer", "minimum": 1, "maximum": 16, "description": "MIDI channel 1-16 for the notes (default 1)."},
+				"sequence": ` + sequenceSchema + `,
 				"tap": {"type": "string", "description": "Which audio tap to listen on (its name or format source label). Omit to use the most-recently-active tap. See get_audio_tap's 'taps'."}
 			}
 		}`),
@@ -105,6 +107,7 @@ func (s *Server) handleProbeSound(ctx context.Context, req *mcp.CallToolRequest)
 		Velocity   *int           `json:"velocity"`
 		DurationMS *int           `json:"duration_ms"`
 		Channel    int            `json:"channel"`
+		Sequence   []seqStep      `json:"sequence"`
 		Tap        string         `json:"tap"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -161,6 +164,30 @@ func (s *Server) handleProbeSound(ctx context.Context, req *mcp.CallToolRequest)
 	if args.Note != nil {
 		notes = append(notes, *args.Note)
 	}
+
+	// Sequence path: excite with the timed phrase and analyse the whole phrase
+	// as one captured segment.
+	if len(args.Sequence) > 0 {
+		if len(notes) > 0 {
+			return textResult("provide either sequence or notes/note, not both", true), nil
+		}
+		defVel, seqCh := resolveSeqDefaults(args.Velocity, args.Channel)
+		events, span, err := compileSequence(args.Sequence, defVel, seqCh)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		snap, wavPath, capErr := s.exciteAndCaptureSequence(ctx, tap, events)
+		if capErr != nil {
+			return textResult(capErr.Error(), true), nil
+		}
+		s.audioSnapsMu.Lock()
+		prev := s.lastProbe
+		cur := snap
+		s.lastProbe = &cur
+		s.audioSnapsMu.Unlock()
+		return probeSeqResult(applied, len(args.Sequence), events, span, seqCh, snap, prev, wavPath), nil
+	}
+
 	for i, n := range notes {
 		if n < 0 || n > 127 {
 			return textResult(fmt.Sprintf("/notes/%d: note must be in [0, 127]", i), true), nil
@@ -247,6 +274,30 @@ func (s *Server) exciteAndCapture(ctx context.Context, tap *audiotap.Store, note
 	return snap, s.writeProbeWAV(clip, notes), nil
 }
 
+// exciteAndCaptureSequence is exciteAndCapture's sequence sibling: settle, mark
+// the epoch, run the whole timed phrase (note-offs included, scheduled inside
+// the sequence), mark the end, then extract + analyse exactly that segment. The
+// captured segment therefore covers the full phrase — attacks, overlaps, CC
+// moves and all — rather than a single pre-note-off sustain window.
+func (s *Server) exciteAndCaptureSequence(ctx context.Context, tap *audiotap.Store, events []seqEvent) (audiotap.Snapshot, string, error) {
+	s.settleAudio(ctx, tap)
+
+	start := tap.MarkEpoch()
+	err := runSequence(ctx, func(ctx context.Context, ev seqEvent) error { return s.sendBrain(ctx, ev.cmd) }, events)
+	end := tap.MarkEpoch()
+	if err != nil {
+		return audiotap.Snapshot{}, "", fmt.Errorf("probe_sound (sequence) failed: %w", err)
+	}
+
+	snap, clip, ok := tap.SegmentSnapshot(start, end)
+	if !ok {
+		// The segment scrolled out of the window — fall back to a live snapshot
+		// so the probe still returns analysis.
+		return tap.Snapshot(), "", nil
+	}
+	return snap, s.writeProbeWAV(clip, seqNotes(events)), nil
+}
+
 // settleAudio blocks until the tap's reported level drops below settleFloorRMS
 // or settleTimeout elapses, so a prior probe's tail does not leak into the next
 // capture. It uses the ~10 Hz reported RMS (recent level) rather than the
@@ -310,27 +361,54 @@ func settingError(i int, err error) *mcp.CallToolResult {
 // one-line summary of what was applied/played, then the shared audio-snapshot
 // rendering so the analysis reads identically to get_audio_tap.
 func probeResult(applied []map[string]any, notes []int, velocity, duration, ch int, snap audiotap.Snapshot, prev *audiotap.Snapshot, wavPath string) *mcp.CallToolResult {
-	var b strings.Builder
+	var summary string
 	if len(notes) > 0 {
-		fmt.Fprintf(&b, "probe_sound: applied %d setting(s), played [%s] vel=%d for %dms on ch%d",
+		summary = fmt.Sprintf("probe_sound: applied %d setting(s), played [%s] vel=%d for %dms on ch%d",
 			len(applied), joinInts(notes, ","), velocity, duration, ch)
 	} else {
-		fmt.Fprintf(&b, "probe_sound: applied %d setting(s), read analysis (no notes played)", len(applied))
+		summary = fmt.Sprintf("probe_sound: applied %d setting(s), read analysis (no notes played)", len(applied))
 	}
-	b.WriteString("\n")
-	b.WriteString(describeAudioSnapshot(snap))
-	if wavPath != "" {
-		fmt.Fprintf(&b, "\n  segment wav: %s", wavPath)
-	}
-
 	structured := map[string]any{
 		"settings_applied": applied,
 		"notes":            notes,
 		"velocity":         velocity,
 		"duration_ms":      duration,
 		"channel":          ch,
-		"snapshot":         snap,
 	}
+	return assembleProbeResult(summary, structured, snap, prev, wavPath)
+}
+
+// probeSeqResult is probeResult's sequence sibling: it summarizes the executed
+// phrase (steps, note-ons, ccs, span) over the same snapshot/delta rendering.
+func probeSeqResult(applied []map[string]any, steps int, events []seqEvent, spanMS, ch int, snap audiotap.Snapshot, prev *audiotap.Snapshot, wavPath string) *mcp.CallToolResult {
+	notes := seqNotes(events)
+	noteOns, ccs := seqCounts(events)
+	summary := fmt.Sprintf("probe_sound: applied %d setting(s), played sequence: %d step(s) (%d note-on(s), %d cc(s)) over %dms, notes [%s], on ch%d",
+		len(applied), steps, noteOns, ccs, spanMS, joinInts(notes, ","), ch)
+	structured := map[string]any{
+		"settings_applied": applied,
+		"sequence_steps":   steps,
+		"note_ons":         noteOns,
+		"ccs":              ccs,
+		"span_ms":          spanMS,
+		"notes":            notes,
+		"channel":          ch,
+	}
+	return assembleProbeResult(summary, structured, snap, prev, wavPath)
+}
+
+// assembleProbeResult appends the shared snapshot/WAV/delta rendering to a
+// probe summary and finalizes the structured content (both probe paths emit the
+// identical analysis surface).
+func assembleProbeResult(summary string, structured map[string]any, snap audiotap.Snapshot, prev *audiotap.Snapshot, wavPath string) *mcp.CallToolResult {
+	var b strings.Builder
+	b.WriteString(summary)
+	b.WriteString("\n")
+	b.WriteString(describeAudioSnapshot(snap))
+	if wavPath != "" {
+		fmt.Fprintf(&b, "\n  segment wav: %s", wavPath)
+	}
+	structured["snapshot"] = snap
 	if wavPath != "" {
 		structured["wav_path"] = wavPath
 	}

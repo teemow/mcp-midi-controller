@@ -31,15 +31,17 @@ func (s *Server) registerMidiTools() {
 		Name: "play_notes",
 		Description: "Play one or more MIDI notes through the ProbeMidiBrain LAN channel (the agent's \"hands\"): the brain AUv3 emits note-on, holds for duration_ms, then note-off, so the notes flow through AUM's MIDI routing into the synth. " +
 			"Use this to excite a synth and then read the result with get_audio_tap / get_audio_clip. " +
-			"Pass an endpoint (and optional transport) to send over a hardware MIDI transport (BLE) instead of the brain channel. The call blocks for duration_ms (capped at 10s) so the audio tap can be read immediately after.",
+			"Alternatively pass sequence[] to play a timed phrase of note and CC steps in ONE call: steps run back-to-back by default, an explicit at_ms overlaps notes (legato/glide on a mono synth) or fires a CC mid-phrase. " +
+			"Pass an endpoint (and optional transport) to send over a hardware MIDI transport (BLE) instead of the brain channel. The call blocks for the held/sequence duration (capped at 10s) so the audio tap can be read immediately after.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"notes": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 127}, "description": "MIDI note numbers 0-127."},
 				"note": {"type": "integer", "minimum": 0, "maximum": 127, "description": "Single note shortcut (alternative to notes)."},
-				"velocity": {"type": "integer", "minimum": 1, "maximum": 127, "description": "Note-on velocity (default 100)."},
+				"velocity": {"type": "integer", "minimum": 1, "maximum": 127, "description": "Note-on velocity (default 100; also the default for sequence note steps)."},
 				"duration_ms": {"type": "integer", "minimum": 0, "description": "How long to hold the notes before note-off (default 500, max 10000)."},
 				"channel": {"type": "integer", "minimum": 1, "maximum": 16, "description": "MIDI channel 1-16 (default 1)."},
+				"sequence": ` + sequenceSchema + `,
 				"transport": {"type": "string", "description": "Hardware transport id (e.g. blemidi) when endpoint is set."},
 				"endpoint": {"type": "string", "description": "Hardware endpoint id; when set, bypasses the brain channel and sends over the transport."}
 			}
@@ -120,11 +122,12 @@ func clampChannel(ch int) int {
 
 func (s *Server) handlePlayNotes(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
-		Notes      []int `json:"notes"`
-		Note       *int  `json:"note"`
-		Velocity   *int  `json:"velocity"`
-		DurationMS *int  `json:"duration_ms"`
-		Channel    int   `json:"channel"`
+		Notes      []int     `json:"notes"`
+		Note       *int      `json:"note"`
+		Velocity   *int      `json:"velocity"`
+		DurationMS *int      `json:"duration_ms"`
+		Channel    int       `json:"channel"`
+		Sequence   []seqStep `json:"sequence"`
 		midiTarget
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -135,8 +138,14 @@ func (s *Server) handlePlayNotes(ctx context.Context, req *mcp.CallToolRequest) 
 	if args.Note != nil {
 		notes = append(notes, *args.Note)
 	}
+	if len(args.Sequence) > 0 {
+		if len(notes) > 0 {
+			return textResult("provide either sequence or notes/note, not both", true), nil
+		}
+		return s.playSequence(ctx, args.Sequence, args.Velocity, args.Channel, args.midiTarget)
+	}
 	if len(notes) == 0 {
-		return textResult("provide notes (array) or note (single)", true), nil
+		return textResult("provide notes (array), note (single) or sequence (timed phrase)", true), nil
 	}
 	for i, n := range notes {
 		if n < 0 || n > 127 {
@@ -214,6 +223,39 @@ func (s *Server) handlePlayNotes(ctx context.Context, req *mcp.CallToolRequest) 
 			"duration_ms": duration,
 			"channel":     ch,
 			"via":         path,
+		}), nil
+}
+
+// playSequence is play_notes' sequence branch: compile the steps, run them
+// against the wall clock (blocking through the span like a held note does), and
+// summarize what was played.
+func (s *Server) playSequence(ctx context.Context, steps []seqStep, velocity *int, channel int, target midiTarget) (*mcp.CallToolResult, error) {
+	defVel, ch := resolveSeqDefaults(velocity, channel)
+	events, span, err := compileSequence(steps, defVel, ch)
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	if err := runSequence(ctx, s.seqSender(target), events); err != nil {
+		return textResult("play_notes (sequence) failed: "+err.Error(), true), nil
+	}
+
+	path := "brain channel"
+	if target.usesHardware() {
+		path = fmt.Sprintf("%s/%s", orDefault(target.Transport, "blemidi"), target.Endpoint)
+	}
+	notes := seqNotes(events)
+	noteOns, ccs := seqCounts(events)
+	return structResult(
+		fmt.Sprintf("played sequence: %d step(s) (%d note-on(s), %d cc(s)) over %dms, notes [%s], via %s",
+			len(steps), noteOns, ccs, span, joinInts(notes, ","), path),
+		map[string]any{
+			"sequence_steps": len(steps),
+			"note_ons":       noteOns,
+			"ccs":            ccs,
+			"span_ms":        span,
+			"notes":          notes,
+			"channel":        ch,
+			"via":            path,
 		}), nil
 }
 
