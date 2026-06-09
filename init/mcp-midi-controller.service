@@ -1,9 +1,10 @@
 [Unit]
-Description=mcp-midi-controller — MCP MIDI/OSC rig controller daemon (loopback)
+Description=mcp-midi-controller — MCP MIDI/OSC rig controller daemon
 Documentation=https://github.com/teemow/mcp-midi-controller
-# BLE-MIDI talks to BlueZ over the system bus and OSC needs the network up.
+# The daemon binds a LAN port for the iPad receiver (auv3_receiver_addr, default
+# :7800) so the auv3-probe / AUM app can reach it, and OSC needs the network up.
 # Ordering a user unit against system targets is best-effort, so Restart= below
-# covers the case where BlueZ/network are not ready yet when this first starts.
+# covers the case where the network is not ready yet when this first starts.
 Wants=network-online.target
 After=network-online.target
 
@@ -15,9 +16,12 @@ Type=simple
 ExecStart=%h/.go/bin/mcp-midi-controller
 Restart=on-failure
 RestartSec=2
-# The daemon binds loopback only (config.yaml listen_addr, default
-# 127.0.0.1:7799) and reads its rig-as-code from the XDG dirs, so no extra
-# environment is needed; stdout/stderr go to the journal.
+# Two listeners (config.yaml): the MCP streamable-HTTP endpoint on loopback
+# (listen_addr, default 127.0.0.1:7799) and the LAN iPad receiver
+# (auv3_receiver_addr, default :7800) that ingests auv3-probe dumps, ferries AUM
+# session files, and accepts the audio-tap stream. Rig-as-code (devices.yaml,
+# device-types/, scenes/, auv3-default-states/) is read from the XDG config dir,
+# so no extra environment is needed; stdout/stderr go to the journal.
 
 [Install]
 WantedBy=default.target
