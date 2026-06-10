@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/teemow/mcp-midi-controller/internal/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
@@ -118,6 +119,110 @@ func TestAUMToolsAuthorListGetDiff(t *testing.T) {
 	}
 	if !strings.Contains(resultText(res), "fully wired to the convention") {
 		t.Fatalf("diff verdict not fully wired:\n%s", resultText(res))
+	}
+}
+
+func TestAUMToolsNestedSessionPaths(t *testing.T) {
+	s := newAUMServer(t)
+
+	// Stage a session in a subfolder, mirroring the iPad's AUM tree (as the
+	// receiver does for ?path= uploads).
+	data, err := aum.Template().Encode()
+	if err != nil {
+		t.Fatalf("encode template: %v", err)
+	}
+	sub := filepath.Join(config.AUMSessionsDir(), "Live sets")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "Demo.aumproj"), data, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// list walks subfolders and reports the path-style id.
+	res := call(t, s.handleListAUMSessions, map[string]any{})
+	if res.IsError || !strings.Contains(resultText(res), "Live sets/Demo") {
+		t.Fatalf("list missing nested session:\n%s", resultText(res))
+	}
+
+	// get resolves a session_id carrying subfolder segments.
+	res = call(t, s.handleGetAUMSession, map[string]any{"session_id": "Live sets/Demo"})
+	if res.IsError {
+		t.Fatalf("get nested failed: %s", resultText(res))
+	}
+
+	// edit without out_id stages back to the SAME nested path, so the iPad's
+	// write-back lands in the session's original AUM subfolder.
+	res = call(t, s.handleEditAUMSession, map[string]any{
+		"session_id": "Live sets/Demo",
+		"faders":     []any{map[string]any{"channel": 0, "level": 0.5}},
+	})
+	if res.IsError {
+		t.Fatalf("edit nested failed: %s", resultText(res))
+	}
+	edited := filepath.Join(config.AUMSessionsDir(), "Live sets", "Demo.aumproj")
+	if !strings.Contains(resultText(res), edited) {
+		t.Fatalf("edit did not stage back to the nested path %s:\n%s", edited, resultText(res))
+	}
+	if entries, err := os.ReadDir(config.AUMSessionsDir()); err != nil || len(entries) != 1 {
+		t.Fatalf("staging root polluted by edit (entries=%v, err=%v)", entries, err)
+	}
+
+	// The import outcome's session id matches the staging-relative id the
+	// download hook records, subfolders included.
+	if got := stagedRelID(edited); got != "Live sets/Demo" {
+		t.Fatalf("stagedRelID = %q, want Live sets/Demo", got)
+	}
+
+	// Traversal-style ids stay rejected.
+	for _, id := range []string{"../escape", "Live sets/../../escape", ".hidden/x"} {
+		res = call(t, s.handleGetAUMSession, map[string]any{"session_id": id})
+		if !res.IsError || !strings.Contains(resultText(res), "invalid session_id") {
+			t.Fatalf("session_id %q: want invalid-session_id error, got: %s", id, resultText(res))
+		}
+	}
+}
+
+func TestSessionCandidatesWalkNestedSessions(t *testing.T) {
+	s := newAUMServer(t)
+	stageProbe(t)
+
+	// Author a session hosting the probe node, then move it into a subfolder
+	// (as a ?path= upload would stage it).
+	res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"title": "Nested Disco",
+		"channels": []any{
+			map[string]any{
+				"kind": "audio", "title": "Gitarre",
+				"nodes": []any{map[string]any{"probe_id": "gtr1"}},
+			},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("author failed: %s", resultText(res))
+	}
+	dir := config.AUMSessionsDir()
+	sub := filepath.Join(dir, "Live sets")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Rename(filepath.Join(dir, "nested_disco.aumproj"), filepath.Join(sub, "nested_disco.aumproj")); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	cands, note := s.sessionCandidates(loadStagedProbeDumps())
+	if note != "" {
+		t.Fatalf("sessionCandidates note: %s", note)
+	}
+	found := false
+	for _, c := range cands {
+		if c.SessionID == "Live sets/nested_disco" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no candidate carries the nested session id, got: %+v", cands)
 	}
 }
 

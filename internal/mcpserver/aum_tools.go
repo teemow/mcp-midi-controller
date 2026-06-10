@@ -17,8 +17,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -61,7 +63,7 @@ func (s *Server) registerAUMTools() {
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"session_id": {"type": "string", "description": "Staged session id (its filename without .aumproj). See list_aum_sessions."},
+				"session_id": {"type": "string", "description": "Staged session id (its staging-relative path without .aumproj, e.g. 'set' or 'Live sets/Set'). See list_aum_sessions."},
 				"file": {"type": "string", "description": "Explicit path to a .aumproj (overrides session_id)."}
 			}
 		}`),
@@ -398,8 +400,11 @@ func (s *Server) registerAUMTools() {
 
 // aumSessionRow is the machine-readable per-file row for list_aum_sessions.
 type aumSessionRow struct {
-	ID       string `json:"id"`
-	File     string `json:"file"`
+	ID   string `json:"id"`
+	File string `json:"file"`
+	// Path is the file's staging-dir-relative path. Staging mirrors the iPad's
+	// AUM folder tree, so this is also where the session lives on the iPad.
+	Path     string `json:"path"`
 	Kind     string `json:"kind"`
 	Title    string `json:"title,omitempty"`
 	Version  int    `json:"version,omitempty"`
@@ -410,35 +415,28 @@ type aumSessionRow struct {
 
 func (s *Server) handleListAUMSessions(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	dir := config.AUMSessionsDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return structResult(fmt.Sprintf("no staged AUM sessions (%s does not exist yet); upload one from the iPad or author one with author_aum_session", dir), map[string]any{"sessions": []aumSessionRow{}}), nil
-		}
-		return textResult("read sessions dir: "+err.Error(), true), nil
-	}
 
 	var rows []aumSessionRow
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		kind := aum.FileKind(e.Name())
-		if kind == "" {
-			continue
-		}
+	walkErr := aum.WalkStaged(dir, func(rel, full, kind string, _ fs.FileInfo) {
 		row := aumSessionRow{
-			ID:   aum.StripExt(e.Name()),
-			File: e.Name(),
+			ID:   aum.StripExt(rel),
+			File: path.Base(rel),
+			Path: rel,
 			Kind: kind,
 		}
-		summarizeStaged(filepath.Join(dir, e.Name()), &row)
+		summarizeStaged(full, &row)
 		rows = append(rows, row)
+	})
+	if walkErr != nil {
+		if os.IsNotExist(walkErr) {
+			return structResult(fmt.Sprintf("no staged AUM sessions (%s does not exist yet); upload one from the iPad or author one with author_aum_session", dir), map[string]any{"sessions": []aumSessionRow{}}), nil
+		}
+		return textResult("read sessions dir: "+walkErr.Error(), true), nil
 	}
 	if len(rows) == 0 {
 		return structResult(fmt.Sprintf("no staged AUM sessions in %s", dir), map[string]any{"sessions": []aumSessionRow{}}), nil
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].File < rows[j].File })
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Path < rows[j].Path })
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "staged AUM files in %s (use get_aum_session for full layout):\n", dir)
@@ -595,7 +593,7 @@ func (s *Server) handleDiffAUMSession(_ context.Context, req *mcp.CallToolReques
 	}
 
 	structured := map[string]any{
-		"sessionID":     aum.StripExt(filepath.Base(path)),
+		"sessionID":     stagedRelID(path),
 		"title":         sess.Title(),
 		"version":       sess.Version(),
 		"verdict":       verdict,
@@ -700,7 +698,10 @@ func (s *Server) importSessionRig(path string, proposeOnly bool) (*aumImportOutc
 	}
 	sm := sess.Map()
 	dumps := loadStagedProbeDumps()
-	sessionID := aum.StripExt(filepath.Base(path))
+	// The staging-relative id ("Live sets/Set"), so the outcome's session id
+	// matches the current-session marker the download hook records. DeriveRig
+	// sanitizes it into the device-type id prefix.
+	sessionID := stagedRelID(path)
 
 	// The rig comes straight from the session's enabled mappings (the file is
 	// the single source of truth); staged probes only enrich node controls.
@@ -1616,7 +1617,7 @@ func (s *Server) handleInstrumentAUMSession(_ context.Context, req *mcp.CallTool
 		return textResult("instrument session: "+err.Error(), true), nil
 	}
 
-	srcID := aum.StripExt(filepath.Base(path))
+	srcID := stagedRelID(path)
 	id := sanitize.ID(args.OutID)
 	if id == "" {
 		id = sanitize.ID(srcID + "_golden")
@@ -2097,7 +2098,10 @@ func (s *Server) handleEditAUMSession(_ context.Context, req *mcp.CallToolReques
 
 	id := sanitize.ID(args.OutID)
 	if id == "" {
-		id = aum.StripExt(filepath.Base(path))
+		// No out_id: edit the staged copy in place (the staging-relative id,
+		// subfolders included), so the iPad's write-back lands in the same
+		// AUM subfolder the session came from.
+		id = stagedRelID(path)
 	}
 	outPath, file, err := stageAUMFile(id, ".aumproj", data)
 	if err != nil {
@@ -2172,7 +2176,7 @@ func (s *Server) handleExportAUMMidiMap(_ context.Context, req *mcp.CallToolRequ
 
 	id := sanitize.ID(args.OutID)
 	if id == "" {
-		id = sanitize.ID(aum.StripExt(filepath.Base(path)) + "_" + args.Collection)
+		id = sanitize.ID(stagedRelID(path) + "_" + args.Collection)
 	}
 	outPath, file, err := stageAUMFile(id, ".aum_midimap", data)
 	if err != nil {
@@ -2194,8 +2198,10 @@ func (s *Server) handleExportAUMMidiMap(_ context.Context, req *mcp.CallToolRequ
 
 // resolveAUMSessionPath turns the {file|session_id} args into a staged .aumproj
 // path: an explicit file wins, otherwise <session_id>.aumproj under the staging
-// dir. session_id is agent-supplied so it must be a bare id (no path), the same
-// traversal guard resolveProbePath uses.
+// dir. Staging mirrors the iPad's AUM folder tree, so a session_id may carry
+// subfolder segments (e.g. "Live sets/Set"); it is agent-supplied, so
+// aum.SafeRelPath traversal-guards it (no "..", no absolute paths, no hidden
+// segments) before it is joined under the staging dir.
 func resolveAUMSessionPath(file, sessionID string) (string, error) {
 	if file != "" {
 		return file, nil
@@ -2203,34 +2209,49 @@ func resolveAUMSessionPath(file, sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("provide /file or /session_id")
 	}
-	if sessionID != filepath.Base(sessionID) || strings.Contains(sessionID, "..") ||
-		strings.ContainsRune(sessionID, '/') || strings.ContainsRune(sessionID, os.PathSeparator) {
-		return "", fmt.Errorf("invalid session_id %q (must be a bare session id, no path)", sessionID)
-	}
 	name := sessionID
 	if !strings.HasSuffix(name, ".aumproj") {
 		name += ".aumproj"
 	}
-	return filepath.Join(config.AUMSessionsDir(), name), nil
+	rel, ok := aum.SafeRelPath(name)
+	if !ok {
+		return "", fmt.Errorf("invalid session_id %q (must be a staging-relative session id, no traversal)", sessionID)
+	}
+	return filepath.Join(config.AUMSessionsDir(), filepath.FromSlash(rel)), nil
 }
 
-// stageAUMFile writes data as <id><ext> under the AUM staging dir, returning the
-// full path and the bare filename (for the download URL). id is sanitized by the
-// caller; the staging dir is created if missing.
-func stageAUMFile(id, ext string, data []byte) (path, file string, err error) {
+// stagedRelID recovers the staging-relative session id for a staged file path
+// ("Live sets/Set" for <staging>/Live sets/Set.aumproj). Staging mirrors the
+// iPad's AUM folder tree, so this id round-trips through resolveAUMSessionPath
+// and matches what OnAUMSessionDownloaded records as the current session. A
+// path outside the staging dir (an explicit /file arg) falls back to its
+// basename.
+func stagedRelID(p string) string {
+	rel, err := filepath.Rel(config.AUMSessionsDir(), p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return aum.StripExt(filepath.Base(p))
+	}
+	return aum.StripExt(filepath.ToSlash(rel))
+}
+
+// stageAUMFile writes data as <id><ext> under the AUM staging dir, returning
+// the full path and the staging-relative file path (for the download URL). id
+// may carry subfolder segments ("Live sets/Set") because staging mirrors the
+// iPad's AUM folder tree; callers either sanitize it or derive it from an
+// already-staged path (stagedRelID), so it never escapes the staging dir.
+func stageAUMFile(id, ext string, data []byte) (fullPath, file string, err error) {
 	if id == "" {
 		id = "session"
 	}
-	dir := config.AUMSessionsDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	file = id + ext
+	fullPath = filepath.Join(config.AUMSessionsDir(), filepath.FromSlash(file))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return "", "", fmt.Errorf("create sessions dir: %w", err)
 	}
-	file = id + ext
-	path = filepath.Join(dir, file)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(fullPath, data, 0o644); err != nil {
 		return "", "", err
 	}
-	return path, file, nil
+	return fullPath, file, nil
 }
 
 // loadStagedProbeDumps reads every staged AUv3 probe dump, skipping unreadable

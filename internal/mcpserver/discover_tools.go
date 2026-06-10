@@ -20,8 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -168,23 +168,16 @@ func (s *Server) catalogCandidates(dumps []device.ProbeDump) []discoveredDevice 
 // (e.g. the sessions dir does not exist yet).
 func (s *Server) sessionCandidates(dumps []device.ProbeDump) ([]discoveredDevice, string) {
 	dir := config.AUMSessionsDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ""
-		}
-		return nil, "read sessions dir: " + err.Error()
-	}
 
 	var out []discoveredDevice
-	for _, e := range entries {
-		if e.IsDir() || aum.FileKind(e.Name()) != "session" {
-			continue
+	walkErr := aum.WalkStaged(dir, func(rel, full, kind string, _ fs.FileInfo) {
+		if kind != aum.KindSession {
+			return
 		}
-		sessionID := aum.StripExt(e.Name())
-		sess, oerr := aum.OpenFile(filepath.Join(dir, e.Name()))
+		sessionID := aum.StripExt(rel)
+		sess, oerr := aum.OpenFile(full)
 		if oerr != nil {
-			continue // a bad session should not block discovery of the rest
+			return // a bad session should not block discovery of the rest
 		}
 		sm := sess.Map()
 		for ci, ch := range sm.Channels {
@@ -215,6 +208,9 @@ func (s *Server) sessionCandidates(dumps []device.ProbeDump) ([]discoveredDevice
 				out = append(out, dd)
 			}
 		}
+	})
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		return nil, "read sessions dir: " + walkErr.Error()
 	}
 	return out, ""
 }

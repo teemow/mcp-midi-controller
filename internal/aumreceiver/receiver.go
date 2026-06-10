@@ -17,9 +17,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -43,6 +45,7 @@ const maxBodyBytes = 32 << 20 // 32 MiB
 // JSON so the app can confirm the round-trip).
 type Result struct {
 	ID       string `json:"id"`
+	Path     string `json:"path,omitempty"` // staging-dir-relative path (mirrors the iPad's AUM tree)
 	Title    string `json:"title,omitempty"`
 	Version  int    `json:"version"`
 	Channels int    `json:"channels"`
@@ -53,8 +56,14 @@ type Result struct {
 
 // ManifestEntry is one staged session/midimap in the GET /aum-session listing.
 type ManifestEntry struct {
-	ID       string `json:"id"`
-	File     string `json:"file"`
+	ID   string `json:"id"`
+	File string `json:"file"`
+	// Path is the file's slash-separated path relative to the staging dir.
+	// It mirrors the file's location in the iPad's AUM folder (e.g.
+	// "Live sets/Set.aumproj"), so the app can write a download back into the
+	// same subfolder instead of dropping it in AUM's root. Equals File for
+	// files staged at the top level.
+	Path     string `json:"path"`
 	Kind     string `json:"kind"` // "session" (.aumproj) | "midimap" (.aum_midimap)
 	Title    string `json:"title,omitempty"`
 	Version  int    `json:"version,omitempty"`
@@ -77,23 +86,26 @@ type Manifest struct {
 // shared LAN listener; Handler wraps it for standalone use / tests.
 //
 // onStaged (may be nil) is invoked after each upload is written. onDownloaded
-// (may be nil) is invoked with the bare staged filename after the iPad
-// downloads it — the surest signal that session is about to be loaded into
+// (may be nil) is invoked with the staging-dir-relative path after the iPad
+// downloads a file — the surest signal that session is about to be loaded into
 // AUM, which the daemon uses to track its "current session" and auto-import
 // the session rig. Both run synchronously after the response is served.
 //
 // Routes:
 //
-//	POST   /aum-session           stage one uploaded .aumproj (raw bplist bytes)
-//	GET    /aum-session           manifest of stageable sessions/midimaps (JSON)
-//	GET    /aum-session/{file}    download a staged .aumproj / .aum_midimap
-//	DELETE /aum-session/{file}    remove one staged file
-//	DELETE /aum-session           clear all staged files
+//	POST   /aum-session            stage one uploaded .aumproj (raw bplist bytes)
+//	GET    /aum-session            manifest of stageable sessions/midimaps (JSON)
+//	GET    /aum-session/{file...}  download a staged .aumproj / .aum_midimap
+//	DELETE /aum-session/{file...}  remove one staged file
+//	DELETE /aum-session            clear all staged files
+//
+// {file...} is a staging-dir-relative path, so files staged in subfolders
+// (mirroring the iPad's AUM tree) are addressable too.
 func Register(mux *http.ServeMux, outDir string, onStaged func(Result), onDownloaded func(file string)) {
 	mux.HandleFunc("POST /aum-session", handleUpload(outDir, onStaged))
 	mux.HandleFunc("GET /aum-session", handleManifest(outDir))
-	mux.HandleFunc("GET /aum-session/{file}", handleDownload(outDir, onDownloaded))
-	mux.HandleFunc("DELETE /aum-session/{file}", handleDelete(outDir))
+	mux.HandleFunc("GET /aum-session/{file...}", handleDownload(outDir, onDownloaded))
+	mux.HandleFunc("DELETE /aum-session/{file...}", handleDelete(outDir))
 	mux.HandleFunc("DELETE /aum-session", handleDeleteAll(outDir))
 }
 
@@ -108,10 +120,15 @@ func Handler(outDir string, onStaged func(Result), onDownloaded func(file string
 }
 
 // handleUpload reads raw .aumproj bytes, validates them by decoding the
-// NSKeyedArchiver session, derives an id (the ?name= filename, else the session
-// title, else a timestamp), and stages them as <id>.aumproj. Validation rejects
-// anything that is not a decodable session so the staging dir only ever holds
-// files the aum tools can read back.
+// NSKeyedArchiver session, and stages them. With ?path=<relative path> the file
+// is staged VERBATIM at that path under the staging dir — subfolders and the
+// original filename are preserved, so the staged tree mirrors the iPad's AUM
+// folder exactly (the whole point: a later write-back can land in the same
+// subfolder instead of AUM's root). Without ?path it falls back to the legacy
+// flat staging: an id derived from ?name= / the session title / a timestamp,
+// staged as <id>.aumproj at the top level. Validation rejects anything that is
+// not a decodable session so the staging dir only ever holds files the aum
+// tools can read back.
 func handleUpload(outDir string, onStaged func(Result)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
@@ -136,40 +153,54 @@ func handleUpload(outDir string, onStaged func(Result)) http.HandlerFunc {
 		}
 		sm := sess.Map()
 
-		id := deriveID(r.URL.Query().Get("name"), sess.Title())
-		if id == "" {
-			resp.Error(w, http.StatusBadRequest, "could not derive an id (provide ?name=<filename>)")
-			return
+		var rel string
+		if p := r.URL.Query().Get("path"); p != "" {
+			// The upload route only stages sessions (the body must decode as
+			// one), so the path must be a .aumproj too — not just any staged
+			// kind.
+			var ok bool
+			if rel, ok = aum.SafeRelPath(p); !ok || aum.FileKind(rel) != aum.KindSession {
+				resp.Error(w, http.StatusBadRequest, "invalid path %q (must be a relative .aumproj path, no traversal)", p)
+				return
+			}
+		} else {
+			id := deriveID(r.URL.Query().Get("name"), sess.Title())
+			if id == "" {
+				resp.Error(w, http.StatusBadRequest, "could not derive an id (provide ?name=<filename> or ?path=<relative path>)")
+				return
+			}
+			rel = id + ".aumproj"
 		}
 
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			resp.Error(w, http.StatusInternalServerError, "create out dir %s: %v", outDir, err)
+		dest := filepath.Join(outDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			resp.Error(w, http.StatusInternalServerError, "create out dir %s: %v", filepath.Dir(dest), err)
 			return
 		}
-		path := filepath.Join(outDir, id+".aumproj")
-		if err := lanhttp.WriteFileAtomic(path, data, 0o644); err != nil {
-			resp.Error(w, http.StatusInternalServerError, "write %s: %v", path, err)
+		if err := lanhttp.WriteFileAtomic(dest, data, 0o644); err != nil {
+			resp.Error(w, http.StatusInternalServerError, "write %s: %v", dest, err)
 			return
 		}
 		// Preserve the uploader's original modified time when supplied, so the
 		// manifest date matches what the device shows for the same file.
 		if mod := r.URL.Query().Get("modified"); mod != "" {
 			if t, perr := time.Parse(time.RFC3339, mod); perr == nil {
-				_ = os.Chtimes(path, t, t)
+				_ = os.Chtimes(dest, t, t)
 			}
 		}
 
 		res := Result{
-			ID:       id,
+			ID:       aum.StripExt(rel),
+			Path:     rel,
 			Title:    sess.Title(),
 			Version:  sm.Version,
 			Channels: len(sm.Channels),
 			Mappings: len(sm.Mappings),
 			Bytes:    len(data),
-			Staged:   path,
+			Staged:   dest,
 		}
 		log.Printf("staged AUM session %q -> %s: v%d, %d channels, %d mappings, %d bytes",
-			res.Title, path, res.Version, res.Channels, res.Mappings, res.Bytes)
+			res.Title, dest, res.Version, res.Channels, res.Mappings, res.Bytes)
 		if onStaged != nil {
 			onStaged(res)
 		}
@@ -179,47 +210,35 @@ func handleUpload(outDir string, onStaged func(Result)) http.HandlerFunc {
 	}
 }
 
-// handleManifest lists every staged .aumproj / .aum_midimap so the iPad can see
-// which sessions are available to download (the ones it uploaded and the ones
-// the aum tools authored/edited). Each entry's session summary is best-effort:
-// an unreadable file is still listed with its error so it is visible, not
-// silently dropped.
+// handleManifest lists every staged .aumproj / .aum_midimap — including files
+// in subfolders, since staging mirrors the iPad's AUM tree — so the iPad can
+// see which sessions are available to download (the ones it uploaded and the
+// ones the aum tools authored/edited). Each entry's session summary is
+// best-effort: an unreadable file is still listed with its error so it is
+// visible, not silently dropped.
 func handleManifest(outDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		man := Manifest{Dir: outDir, Sessions: []ManifestEntry{}}
-		entries, err := os.ReadDir(outDir)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				resp.Error(w, http.StatusInternalServerError, "read out dir %s: %v", outDir, err)
-				return
-			}
-			// No dir yet: an empty manifest is the correct, non-error answer.
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(man)
-			return
-		}
-
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			kind := aum.FileKind(e.Name())
-			if kind == "" {
-				continue
-			}
+		err := aum.WalkStaged(outDir, func(rel, full, kind string, info fs.FileInfo) {
 			entry := ManifestEntry{
-				ID:   aum.StripExt(e.Name()),
-				File: e.Name(),
+				ID:   aum.StripExt(rel),
+				File: path.Base(rel),
+				Path: rel,
 				Kind: kind,
 			}
-			if info, ierr := e.Info(); ierr == nil {
+			if info != nil {
 				entry.Bytes = info.Size()
 				entry.Modified = info.ModTime().UTC().Format(time.RFC3339)
 			}
-			summarize(filepath.Join(outDir, e.Name()), &entry)
+			summarize(full, &entry)
 			man.Sessions = append(man.Sessions, entry)
+		})
+		if err != nil && !os.IsNotExist(err) {
+			resp.Error(w, http.StatusInternalServerError, "read out dir %s: %v", outDir, err)
+			return
 		}
-		sort.Slice(man.Sessions, func(i, j int) bool { return man.Sessions[i].File < man.Sessions[j].File })
+		// A missing dir yields an empty manifest: the correct, non-error answer.
+		sort.Slice(man.Sessions, func(i, j int) bool { return man.Sessions[i].Path < man.Sessions[j].Path })
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(man)
@@ -241,58 +260,73 @@ func summarize(path string, entry *ManifestEntry) {
 	entry.Mappings = sum.Mappings
 }
 
-// handleDownload serves one staged file by name. The {file} segment is
-// client-supplied, so it is constrained to a bare .aumproj / .aum_midimap
-// filename: anything with a path separator or ".." could escape the staging dir
-// and read an arbitrary file. After the bytes are served, onDownloaded (when
-// non-nil) is told which file the iPad fetched.
+// handleDownload serves one staged file by its staging-dir-relative path. The
+// {file...} segment is client-supplied, so it is validated by aum.SafeRelPath:
+// anything absolute or containing ".." could escape the staging dir and read
+// an arbitrary file. After the bytes are served, onDownloaded (when non-nil)
+// is told which file the iPad fetched (the relative path, so the consumer
+// knows the exact staged location).
 func handleDownload(outDir string, onDownloaded func(file string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("file")
-		if !safeStagedName(name) {
-			resp.Error(w, http.StatusBadRequest, "invalid file name %q", name)
+		rel, ok := aum.SafeRelPath(r.PathValue("file"))
+		if !ok {
+			resp.Error(w, http.StatusBadRequest, "invalid file path %q", r.PathValue("file"))
 			return
 		}
-		path := filepath.Join(outDir, name)
-		data, err := os.ReadFile(path)
+		full := filepath.Join(outDir, filepath.FromSlash(rel))
+		data, err := os.ReadFile(full)
 		if err != nil {
 			if os.IsNotExist(err) {
-				resp.Error(w, http.StatusNotFound, "no staged file %q", name)
+				resp.Error(w, http.StatusNotFound, "no staged file %q", rel)
 				return
 			}
-			resp.Error(w, http.StatusInternalServerError, "read %s: %v", path, err)
+			resp.Error(w, http.StatusInternalServerError, "read %s: %v", full, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(rel)))
 		_, _ = w.Write(data)
 		if onDownloaded != nil {
-			onDownloaded(name)
+			onDownloaded(rel)
 		}
 	}
 }
 
-// handleDelete removes one staged file. The {file} segment is client-supplied,
-// so it is constrained to a bare .aumproj / .aum_midimap filename (no traversal),
-// exactly like handleDownload. Deleting a missing file is a 404, not a silent ok.
+// handleDelete removes one staged file by its staging-dir-relative path,
+// validated by aum.SafeRelPath exactly like handleDownload. Deleting a missing
+// file is a 404, not a silent ok. Subfolders left empty by the delete are
+// pruned so the staged tree keeps mirroring the iPad's.
 func handleDelete(outDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("file")
-		if !safeStagedName(name) {
-			resp.Error(w, http.StatusBadRequest, "invalid file name %q", name)
+		rel, ok := aum.SafeRelPath(r.PathValue("file"))
+		if !ok {
+			resp.Error(w, http.StatusBadRequest, "invalid file path %q", r.PathValue("file"))
 			return
 		}
-		path := filepath.Join(outDir, name)
-		if err := os.Remove(path); err != nil {
+		full := filepath.Join(outDir, filepath.FromSlash(rel))
+		if err := os.Remove(full); err != nil {
 			if os.IsNotExist(err) {
-				resp.Error(w, http.StatusNotFound, "no staged file %q", name)
+				resp.Error(w, http.StatusNotFound, "no staged file %q", rel)
 				return
 			}
-			resp.Error(w, http.StatusInternalServerError, "delete %s: %v", path, err)
+			resp.Error(w, http.StatusInternalServerError, "delete %s: %v", full, err)
 			return
 		}
-		log.Printf("deleted staged AUM session %s", path)
+		pruneEmptyDirs(outDir, filepath.Dir(full))
+		log.Printf("deleted staged AUM session %s", full)
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// pruneEmptyDirs removes dir and its now-empty parents up to (excluding) root.
+// os.Remove refuses to delete a non-empty directory, so the loop naturally
+// stops at the first parent that still holds files.
+func pruneEmptyDirs(root, dir string) {
+	root = filepath.Clean(root)
+	for dir = filepath.Clean(dir); dir != root && strings.HasPrefix(dir, root+string(os.PathSeparator)); dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			return
+		}
 	}
 }
 
@@ -301,31 +335,29 @@ type DeleteAllResult struct {
 	Deleted int `json:"deleted"`
 }
 
-// handleDeleteAll removes every staged .aumproj / .aum_midimap (leaving any
-// other files and subdirs untouched). A missing dir is not an error: there is
-// simply nothing to clear.
+// handleDeleteAll removes every staged .aumproj / .aum_midimap at any depth
+// (leaving any other files untouched), then prunes the subfolders the deletes
+// emptied. A missing dir is not an error: there is simply nothing to clear.
 func handleDeleteAll(outDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		entries, err := os.ReadDir(outDir)
-		if err != nil {
-			if os.IsNotExist(err) {
+		deleted := 0
+		var dirs []string
+		walkErr := aum.WalkStaged(outDir, func(rel, full, kind string, _ fs.FileInfo) {
+			if err := os.Remove(full); err == nil {
+				deleted++
+				dirs = append(dirs, filepath.Dir(full))
+			}
+		})
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
 				writeJSON(w, DeleteAllResult{Deleted: 0})
 				return
 			}
-			resp.Error(w, http.StatusInternalServerError, "read out dir %s: %v", outDir, err)
+			resp.Error(w, http.StatusInternalServerError, "read out dir %s: %v", outDir, walkErr)
 			return
 		}
-		deleted := 0
-		for _, e := range entries {
-			if e.IsDir() || aum.FileKind(e.Name()) == "" {
-				continue
-			}
-			path := filepath.Join(outDir, e.Name())
-			if err := os.Remove(path); err != nil {
-				resp.Error(w, http.StatusInternalServerError, "delete %s: %v", path, err)
-				return
-			}
-			deleted++
+		for _, d := range dirs {
+			pruneEmptyDirs(outDir, d)
 		}
 		log.Printf("cleared %d staged AUM session(s) from %s", deleted, outDir)
 		writeJSON(w, DeleteAllResult{Deleted: deleted})
@@ -349,14 +381,4 @@ func deriveID(name, title string) string {
 		return id
 	}
 	return "session_" + time.Now().UTC().Format("20060102T150405")
-}
-
-// safeStagedName reports whether name is a bare .aumproj / .aum_midimap file
-// (no path component, no traversal) safe to read from the staging dir.
-func safeStagedName(name string) bool {
-	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") ||
-		strings.ContainsRune(name, '/') || strings.ContainsRune(name, os.PathSeparator) {
-		return false
-	}
-	return aum.FileKind(name) != ""
 }
