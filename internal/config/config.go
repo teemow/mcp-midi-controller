@@ -32,11 +32,19 @@ type Config struct {
 	// LAN-reachable (the iPad cannot reach loopback). It never touches hardware.
 	// Default ":7800"; set to "" to disable the in-daemon receiver entirely.
 	AUv3ReceiverAddr string `yaml:"auv3_receiver_addr"`
+
+	// AUMAutoImport enables the automatic session-rig import: when the iPad
+	// downloads a staged .aumproj (the surest signal it is about to be loaded
+	// into AUM) and when the ProbeMidiBrain control channel connects, the
+	// daemon re-runs import_aum_session for that session and pushes the
+	// control-surface manifest to the brain. Default true; set false to keep
+	// imports strictly tool-driven.
+	AUMAutoImport bool `yaml:"aum_auto_import"`
 }
 
 // Default returns the default config.
 func Default() Config {
-	return Config{ListenAddr: "127.0.0.1:7799", AUv3ReceiverAddr: ":7800"}
+	return Config{ListenAddr: "127.0.0.1:7799", AUv3ReceiverAddr: ":7800", AUMAutoImport: true}
 }
 
 // ConfigDir returns $XDG_CONFIG_HOME/mcp-midi-controller (rig-as-code).
@@ -80,6 +88,12 @@ func DevicesPath() string { return filepath.Join(ConfigDir(), "devices.yaml") }
 
 // DesiredStatePath is the persisted desired-state cache (volatile).
 func DesiredStatePath() string { return filepath.Join(StateDir(), "desired-state.json") }
+
+// CurrentAUMSessionPath is the persisted "current session" marker: the staged
+// session id the iPad last downloaded (and so presumably has loaded in AUM).
+// The brain-connect auto-import re-runs against it, including across daemon
+// restarts. Volatile (state dir), never committed.
+func CurrentAUMSessionPath() string { return filepath.Join(StateDir(), "current-aum-session.json") }
 
 // AUv3ProbesDir is the staging dir for AUv3 parameter-tree dumps shipped by the
 // off-daemon cmd/auv3-probe receiver and ingested via import_auv3_probe. It is

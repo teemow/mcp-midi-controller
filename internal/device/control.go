@@ -74,5 +74,25 @@ type Control struct {
 	// preset control. Only meaningful for program_change controls.
 	Bank bool `yaml:"bank,omitempty"`
 
+	// Channel optionally pins this control to a fixed 1-based MIDI send
+	// channel (1..16), overriding the device instance's binding channel for
+	// this one control. It exists for device types whose controls do not all
+	// ride one channel — e.g. a session-derived AUM device whose banked
+	// mappings span several channels, or the tap toggles on the reserved tap
+	// channel. Only meaningful for MIDI channel-voice control types
+	// (cc / nrpn / program_change / note_on / note_off); sysex and osc carry
+	// no channel.
+	Channel *int `yaml:"channel,omitempty"`
+
 	Value ValueSpec `yaml:"value"`
+}
+
+// WireChannel resolves the 0-based wire channel a control's messages ride:
+// the control's own pinned channel when set (stored 1-based in the
+// definition), else the binding channel supplied by the device instance.
+func (c *Control) WireChannel(binding int) int {
+	if c.Channel != nil {
+		return (*c.Channel - 1) & 0x0F
+	}
+	return binding & 0x0F
 }

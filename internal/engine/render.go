@@ -11,15 +11,17 @@ import (
 
 // renderControl turns a validated control value into the transport event(s)
 // that realize it on the wire. The MIDI channel comes from the binding (not the
-// definition); for OSC it is ignored. Most controls render to a single event,
-// but NRPN expands to the standard four-CC sequence.
+// definition) unless the control pins its own (Control.Channel — e.g. a
+// session-derived AUM control whose mapping rides a banked channel); for OSC it
+// is ignored. Most controls render to a single event, but NRPN expands to the
+// standard four-CC sequence.
 //
 // Errors returned here are device-level configuration problems (a control whose
 // definition lacks the address its type needs, or a parametric control invoked
 // without a number) and are wrapped as *device.ValidationError so the MCP layer
 // surfaces them on the offending value path.
 func renderControl(def *device.DeviceType, c *device.Control, channel int, r device.Resolved) ([]transport.Event, error) {
-	ch := channel & 0x0F
+	ch := c.WireChannel(channel)
 	switch c.Type {
 	case device.ControlCC:
 		num, err := addressNumber(c, r, "cc", 127)

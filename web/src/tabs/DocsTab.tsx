@@ -9,7 +9,8 @@ interface DocEntry {
 }
 
 // Docs are bundled at build time into public/docs (see web/scripts/copy-docs.mjs)
-// and served under /app/docs. docs/private is never bundled.
+// and served under /app/docs. Private docs live in a separate, optional
+// manifest.private.json that only exists in local builds (gitignored in dist).
 const base = import.meta.env.BASE_URL;
 
 export function DocsTab() {
@@ -19,11 +20,19 @@ export function DocsTab() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${base}docs/manifest.json`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`manifest ${r.status}`))))
-      .then((m: { docs: DocEntry[] }) => {
-        setDocs(m.docs);
-        if (m.docs.length > 0) load(m.docs[0].path);
+    const publicDocs = fetch(`${base}docs/manifest.json`).then((r) =>
+      r.ok ? (r.json() as Promise<{ docs: DocEntry[] }>) : Promise.reject(new Error(`manifest ${r.status}`)),
+    );
+    // The private manifest is absent in public builds; a 404 is expected.
+    const privateDocs = fetch(`${base}docs/manifest.private.json`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ docs: DocEntry[] }>) : { docs: [] }))
+      .catch(() => ({ docs: [] }));
+
+    Promise.all([publicDocs, privateDocs])
+      .then(([pub, priv]) => {
+        const all = [...pub.docs, ...priv.docs];
+        setDocs(all);
+        if (all.length > 0) load(all[0].path);
       })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps

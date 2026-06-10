@@ -37,6 +37,35 @@ func TestRenderCC(t *testing.T) {
 	}
 }
 
+func TestRenderCCChannelOverride(t *testing.T) {
+	// A control pinned to channel 16 (1-based) must ride wire channel 15,
+	// ignoring the binding channel passed in.
+	c := &device.Control{Type: device.ControlCC, CC: iptr(17), Channel: iptr(16), Value: device.ValueSpec{Type: device.ValueRange}}
+	evs, err := renderControl(nil, c, 4, mustResolve(t, c, float64(64)))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	want := []byte{0xBF, 17, 64}
+	if !bytes.Equal(evs[0].Data, want) {
+		t.Fatalf("data = % X, want % X", evs[0].Data, want)
+	}
+	if evs[0].Channel != 15 {
+		t.Fatalf("channel = %d, want 15", evs[0].Channel)
+	}
+}
+
+func TestRenderProgramChangeChannelOverride(t *testing.T) {
+	c := &device.Control{Type: device.ControlProgramChange, Channel: iptr(3), Value: device.ValueSpec{Type: device.ValueRange, Max: f(127)}}
+	evs, err := renderControl(nil, c, 1, mustResolve(t, c, float64(5)))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	want := []byte{0xC2, 5} // pinned channel 3 (1-based) -> wire 2
+	if !bytes.Equal(evs[0].Data, want) {
+		t.Fatalf("data = % X, want % X", evs[0].Data, want)
+	}
+}
+
 func TestRenderProgramChange(t *testing.T) {
 	c := &device.Control{Type: device.ControlProgramChange, Value: device.ValueSpec{Type: device.ValueRange, Max: f(127)}}
 	evs, err := renderControl(nil, c, 1, mustResolve(t, c, float64(5)))

@@ -98,3 +98,81 @@ func TestHubPushesCommands(t *testing.T) {
 		t.Fatalf("Send after disconnect = %v, want ErrNoBrain", err)
 	}
 }
+
+// TestHubSendJSONControlSurface pushes a controlSurface manifest frame through
+// the hub and asserts the brain-side client receives it verbatim — the
+// daemon→brain manifest path used after every session-rig (auto-)import.
+func TestHubSendJSONControlSurface(t *testing.T) {
+	hub := NewHub()
+	mux := http.NewServeMux()
+	Register(mux, hub, nil, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/midi-control", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.CloseNow() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !hub.Connected() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !hub.Connected() {
+		t.Fatal("hub never registered the connection")
+	}
+
+	min, max := 0, 127
+	frame := ControlSurface{
+		Type:    ControlSurfaceType,
+		Session: "rig",
+		Title:   "Rig",
+		Devices: []SurfaceDevice{{
+			Name: "aum",
+			Controls: []SurfaceControl{
+				{Name: "gitarre_level", Widget: "fader", Msg: SurfaceMsg{Type: "cc", Channel: 3, Number: 7}, Min: &min, Max: &max},
+				{Name: "gitarre_mute", Widget: "toggle", Msg: SurfaceMsg{Type: "cc", Channel: 3, Number: 8},
+					Values: []SurfaceValue{{Label: "unmute", Value: 0}, {Label: "mute", Value: 127}}},
+				{Name: "preset_lead", Widget: "preset", Msg: SurfaceMsg{Type: "pc", Channel: 2, Number: 5}},
+			},
+		}},
+	}
+	if err := hub.SendJSON(ctx, frame); err != nil {
+		t.Fatalf("SendJSON: %v", err)
+	}
+
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var got ControlSurface
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != ControlSurfaceType || got.Session != "rig" || len(got.Devices) != 1 {
+		t.Fatalf("frame not delivered as sent: %+v", got)
+	}
+	ctrls := got.Devices[0].Controls
+	if len(ctrls) != 3 || ctrls[0].Widget != "fader" || ctrls[1].Widget != "toggle" || ctrls[2].Widget != "preset" {
+		t.Fatalf("controls not delivered as sent: %+v", ctrls)
+	}
+	if ctrls[0].Msg.Channel != 3 || ctrls[0].Min == nil || *ctrls[0].Max != 127 {
+		t.Fatalf("fader control mangled: %+v", ctrls[0])
+	}
+	if st := hub.Status(); st.Sent != 1 {
+		t.Fatalf("Status.Sent = %d, want 1", st.Sent)
+	}
+
+	// With no brain connected, SendJSON reports ErrNoBrain like Send.
+	_ = c.Close(websocket.StatusNormalClosure, "done")
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && hub.Connected() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := hub.SendJSON(ctx, frame); err != ErrNoBrain {
+		t.Fatalf("SendJSON after disconnect = %v, want ErrNoBrain", err)
+	}
+}

@@ -348,11 +348,30 @@ this server controls. Its mixer strips and the AUv3 plugins hosted on them are
   `param → (channel, CC)` mapping is a **convention the server defines**, and the
   AUM session is configured to match. Device types for plugins are generated
   directly from an `auv3-probe` parameter dump (see the probe tooling below).
-- **AUM session nodes are devices.** Importing a session creates one device per
-  hosted plugin node (and a session-derived AUM mixer device), each on the channel
-  the session's **MIDI control matrix** assigns it. That matrix is the addressing
-  that lets a scene set a node's parameters; it is read from the session, not
-  guessed.
+- **AUM session nodes are devices — derived from the file, not the convention.**
+  `import_aum_session` runs `DeriveRig` (`internal/aum/rig.go`): every *enabled*
+  mapping in the session's MIDI control matrix becomes one control carrying the
+  mapping's **exact message type (CC/Note/PC), number and per-control pinned
+  MIDI channel** — so a banked ("golden") session spanning channels 2–16 is fully
+  addressable through a single device binding. The rig is one **session device**
+  (strip level/mute/solo/rec, transport incl. tempo/metronome, system actions,
+  built-in routing knobs, tap toggles) plus one **device per hosted AUv3 node**;
+  staged probe dumps optionally enrich controls with display names, enum labels
+  and AU ranges. Devices are id-scoped per session, so a re-import replaces the
+  previous session's devices. Mappings the model cannot express (PBEND/CHPRS)
+  are reported, never silently dropped.
+- **The import runs automatically** (`aum_auto_import`, default on): when the
+  iPad downloads a staged `.aumproj` (the surest signal it is about to be
+  loaded) the daemon records it as its **current session** (persisted in the
+  state dir), imports the rig, broadcasts an `aum-rig` notification, and pushes
+  a **`controlSurface` manifest** to the in-host brain over the `/midi-control`
+  WebSocket — per device, per control: a widget kind (`fader | toggle | trigger
+  | enum | preset`) plus the exact wire message (`{type, channel, number}`).
+  A brain (re)connect re-runs the import and re-pushes the manifest. The brain
+  caches the manifest in its AU `fullState` and renders it as an on-device
+  control surface that emits into AUM locally — it keeps working with the
+  daemon offline. Older brains silently drop the unknown frame type, so the
+  push is backward-compatible.
 - The authoring tools emit an **AUM mapping cheat-sheet** (per device type:
   channel + CC list) so configuring a session by hand stays mechanical.
 - MIDI-learn (capture inbound CC) is the primary path for **hardware**; for

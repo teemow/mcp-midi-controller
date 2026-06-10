@@ -50,6 +50,18 @@ type Server struct {
 	// hardware transport only).
 	midi *midicontrol.Hub
 
+	// aumAutoImport enables the automatic session-rig import (config
+	// aum_auto_import): OnAUMSessionDownloaded / OnMidiControlConnected re-run
+	// import_aum_session for the current session and push the control-surface
+	// manifest to the brain. See aum_autoimport.go.
+	aumAutoImport bool
+
+	// aumImportMu serializes session-rig imports: the auto-import callbacks
+	// (session download, brain connect) can race a tool-driven
+	// import_aum_session, and the replace-then-create lifecycle must not
+	// interleave.
+	aumImportMu sync.Mutex
+
 	// usbAllowWrites is the daemon's master USB write gate (config
 	// usb_allow_writes). With it off, USB write tools (set_param, write_pattern,
 	// recall_pattern, select_preset) are never registered and a real usb_write

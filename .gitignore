@@ -26,6 +26,11 @@
 /docs/private/
 *.local.md
 
+# Private docs bundled into local webapp builds by web/scripts/copy-docs.mjs.
+# The committed dist must never contain them.
+/internal/webui/dist/docs/private/
+/internal/webui/dist/docs/manifest.private.json
+
 # The public/private + reverse-engineering policy rule. Kept out of the public
 # repo "just in case" so the RE strategy notes stay private.
 /.cursor/rules/public-vs-private.mdc

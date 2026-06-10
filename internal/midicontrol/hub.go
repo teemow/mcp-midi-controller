@@ -120,7 +120,15 @@ func (errNoBrain) Error() string {
 // hardware transport. Writes are serialized under the hub mutex; command rate
 // is agent-driven (low), so holding the lock across the write is acceptable.
 func (h *Hub) Send(ctx context.Context, cmd Command) error {
-	data, err := json.Marshal(cmd)
+	return h.SendJSON(ctx, cmd)
+}
+
+// SendJSON marshals an arbitrary frame (e.g. a ControlSurface manifest) and
+// writes it to the connected brain as a TEXT frame, with the same ErrNoBrain
+// and serialization semantics as Send. The brain drops unknown frame types, so
+// pushing newer frames to an older brain is safe.
+func (h *Hub) SendJSON(ctx context.Context, frame any) error {
+	data, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}

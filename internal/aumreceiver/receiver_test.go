@@ -31,7 +31,7 @@ func TestUploadStagesSessionAndNotifies(t *testing.T) {
 	ts := httptest.NewServer(Handler(dir, func(r Result) {
 		gotRes = r
 		called++
-	}))
+	}, nil))
 	defer ts.Close()
 
 	resp, err := http.Post(ts.URL+"/aum-session?name=New%20Fast%20Forward.aumproj",
@@ -75,7 +75,7 @@ func TestUploadStagesSessionAndNotifies(t *testing.T) {
 
 func TestUploadFallsBackToTitleForID(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil))
 	defer ts.Close()
 
 	// No ?name=, so the id derives from the session title ("Template").
@@ -98,7 +98,7 @@ func TestUploadFallsBackToTitleForID(t *testing.T) {
 
 func TestUploadRejectsBadInput(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil))
 	defer ts.Close()
 
 	t.Run("GET on upload route is the manifest, not 405", func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestUploadRejectsBadInput(t *testing.T) {
 
 func TestManifestAndDownloadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil))
 	defer ts.Close()
 
 	// Stage a session by writing it directly (as the aum tools do).
@@ -189,9 +189,43 @@ func TestManifestAndDownloadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDownloadInvokesOnDownloaded(t *testing.T) {
+	dir := t.TempDir()
+	var downloaded []string
+	ts := httptest.NewServer(Handler(dir, nil, func(file string) {
+		downloaded = append(downloaded, file)
+	}))
+	defer ts.Close()
+
+	if err := os.WriteFile(filepath.Join(dir, "demo.aumproj"), templateBytes(t), 0o644); err != nil {
+		t.Fatalf("seed staged file: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/aum-session/demo.aumproj")
+	if err != nil {
+		t.Fatalf("GET download: %v", err)
+	}
+	_ = readAll(t, resp)
+	_ = resp.Body.Close()
+
+	if len(downloaded) != 1 || downloaded[0] != "demo.aumproj" {
+		t.Fatalf("onDownloaded calls = %v, want [demo.aumproj]", downloaded)
+	}
+
+	// A failed download (missing file) must not fire the callback.
+	resp, err = http.Get(ts.URL + "/aum-session/nope.aumproj")
+	if err != nil {
+		t.Fatalf("GET missing: %v", err)
+	}
+	_ = resp.Body.Close()
+	if len(downloaded) != 1 {
+		t.Fatalf("onDownloaded fired on a 404 (calls = %v)", downloaded)
+	}
+}
+
 func TestDownloadRejectsTraversalAndMissing(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil))
 	defer ts.Close()
 
 	t.Run("missing file is 404", func(t *testing.T) {
