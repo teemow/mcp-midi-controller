@@ -59,10 +59,13 @@ What "deep enough" still requires:
   they do **not** appear in `get_aum_session`. The session model is blind to the
   exact lever that does cross-session scene changes — a gap to close (track the
   global action set, or own session-switch a different way).
-- **Message-type gaps.** The `type` codes for **Program Change / Pitch Bend /
-  Channel Pressure** are still unmapped in the corpus
-  (`docs/research/aum-session.md`), so authoring PC-driven actions (e.g. preset /
-  session recall by PC) is blocked until one enabled sample is captured.
+- **Message-type gaps — mostly closed.** The version-13 `specState` `type` enum
+  is now mapped (`docs/research/aum-session.md`): 0 = CC, 1 = Note, **2 =
+  Program Change**, **3 = Pitch Bend / Channel Pressure** (split by `data1`).
+  PC-driven actions (preset recall) are authorable and importable; PBEND/CHPRS
+  remain readable-but-inexpressible — the device model has no such control type,
+  so `DeriveRig` reports them in `Rig.Skipped` instead of dropping them. Only
+  the *packed*-`spec` codes for these types stay unconfirmed.
 - **No live graph read.** The host API gives the brain transport/tempo/beat but
   **no** read of the session graph or MIDI matrix; structured understanding comes
   only from parsing the file off-device. The deeper the off-device model, the more
@@ -70,11 +73,16 @@ What "deep enough" still requires:
 
 ## Pillar 2 — a standard mapping (so the brain can change scenes)
 
-`docs/research/aum.md` already drafts a **convention CC map** (an interleaved
+`docs/research/aum.md` drafts a **convention CC map** (an interleaved
 mixer block, a transport/system block, and Session/Preset Load on Program
-Change). The vision is to make that convention a **guarantee**: every session the
-daemon authors carries the **same baseline mapping**, so the brain has an
-identical, self-describing control surface no matter which session is loaded.
+Change), and the authoring tools now **bake it in by default** — every session
+the daemon authors carries the same baseline mapping, and
+`instrument_aum_session` goes further: it banks **every** mappable target
+(node params, triggers, preset PCs, tap toggles) collision-free across
+channels, so the brain has a complete, self-describing control surface no
+matter which session is loaded. Note the rig is no longer *guessed from* the
+convention: `DeriveRig` reads the mappings back out of the session file, so
+even a hand-wired session is fully addressable.
 
 With a standard mapping in place, "what can the brain do here?" stops being a
 per-session unknown and becomes a contract. The headline capability that unlocks
@@ -123,26 +131,47 @@ further out, the north-star scriptable on-device host.
 | Piece | Status |
 |---|---|
 | Brain can reach AUM's full surface (measured) | **confirmed** (tempo / mute / node param swept) |
-| Session read/edit/author (`internal/aum`) | **strong** — channels, nodes, params, CC/Note mappings |
-| Convention CC map (`aum.md`) | **drafted** — not yet auto-authored into every session as a guaranteed baseline |
+| Session read/edit/author (`internal/aum`) | **strong** — channels, nodes, params, CC/Note/PC mappings |
+| Convention CC map (`aum.md`) | **done** — authoring tools bake it in by default; `instrument_aum_session` (and `full_control:true`) banks **every** mappable target collision-free across channels |
+| Session-derived rig (`DeriveRig` → `import_aum_session`) | **done** — devices/controls are read back from the session's *enabled mappings* (type/number/channel pinned per control), probe dumps enrich names/enums; re-import replaces the previous session's devices |
+| Automatic import + manifest push | **done** — on session download to the iPad and on brain connect (`aum_auto_import`, default on); broadcasts `aum-rig`, pushes the `controlSurface` frame |
+| Brain control surface UI (on-device, offline-capable) | **done** — the brain caches the manifest in its AU `fullState` and renders faders/toggles/triggers/enums/presets that emit locally into AUM, no daemon round-trip |
 | Scene engine driving the brain via the standard map | **not yet** — scenes exist; wiring them to a session-baked brain mapping is open |
 | Cross-session **Session Load** by the brain | **open** — global actions are invisible to the file model |
-| PC / Pitch Bend / Channel Pressure authoring | **blocked** — `type` codes unmapped (need one enabled sample) |
+| PC authoring (preset recall) | **done** — `specState` type 2 mapped and importable |
+| Pitch Bend / Channel Pressure | **read-only** — parsed (`specState` type 3) but no control type in the device model or brain protocol; `DeriveRig` reports them as skipped |
 | Live brain-driven scene-change loop on-device | **not yet** — the next end-to-end goal |
+
+### How a session becomes a control surface (implemented)
+
+1. The agent authors/instruments a `.aumproj` and stages it; the iPad downloads
+   it (the aum receiver's download callback fires) and AUM loads it.
+2. The daemon tracks it as the **current session** (persisted in the state dir)
+   and — with `aum_auto_import` on — runs the import: `DeriveRig` turns every
+   enabled mapping into a control on one **session device** (strips, transport,
+   system, built-in knobs, tap toggles) plus one **device per hosted AUv3 node**,
+   each control pinning its stored message type / number / MIDI channel.
+3. The import broadcasts an `aum-rig` notification and pushes the
+   **`controlSurface` manifest** over the `/midi-control` WebSocket: per device,
+   per control, a widget kind (`fader | toggle | trigger | enum | preset`) and
+   the exact wire message. The brain caches it in its AU `fullState` (AUM
+   persists it) and renders the surface in its plugin UI — taps emit into AUM
+   locally, so the surface keeps working when the daemon is offline.
+4. A brain (re)connect re-runs the import for the current session and re-pushes
+   the manifest, so a brain that was offline during the download still gets it.
+
+The same `DeriveRig` output drives the MCP `control_*` tools and the web UI, so
+all three surfaces (agent, browser, iPad) emit identical MIDI.
 
 ### Next steps (rough order)
 
-1. **Author the standard mapping by default** — have `author_loop_session` /
-   `author_aum_session` bake the `aum.md` convention into every session (correct
-   0-indexed channels), so any authored session is brain-controllable out of the
-   box.
-2. **Wire the scene engine to the brain** — make `recall_scene` express scenes as
+1. **Wire the scene engine to the brain** — make `recall_scene` express scenes as
    the standard CCs the brain emits, so a scene is a brain action, not just a
    daemon action.
-3. **Close the session model gaps** — capture the PC/PBEND/CHPRS `type` codes;
-   model AUM's global Session-Load action set so cross-session changes are
-   first-class.
-4. **Prove the live loop** — brain (or footswitch) → standard mapping → scene /
+2. **Close the remaining session model gaps** — model AUM's global Session-Load
+   action set so cross-session changes are first-class; confirm the packed-`spec`
+   codes for PC/PBEND/CHPRS.
+3. **Prove the live loop** — brain (or footswitch) → standard mapping → scene /
    session change, verified on-device via the audio tap.
 
 ## References

@@ -261,16 +261,17 @@ func (e *Engine) reverseMap(in InboundEvent) []Observation {
 		if e.transportForDevice(d) != in.Transport || d.ControlEndpoint() != in.Endpoint {
 			continue
 		}
-		// Program change carries the channel; note/cc match channel too.
-		if d.ControlChannel() != in.Channel {
-			continue
-		}
 		def, ok := e.registry.Get(d.DeviceID)
 		if !ok {
 			continue
 		}
 		for i := range def.Controls {
 			c := &def.Controls[i]
+			// Program change carries the channel; note/cc match channel too.
+			// The control's pinned channel (if any) overrides the binding's.
+			if c.WireChannel(d.ControlChannel()) != in.Channel {
+				continue
+			}
 			if !controlMatches(c, in) {
 				continue
 			}

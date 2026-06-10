@@ -134,6 +134,14 @@ func (c *Control) validate() error {
 	default:
 		return fmt.Errorf("unknown control type %q", c.Type)
 	}
+	if c.Channel != nil {
+		if *c.Channel < 1 || *c.Channel > 16 {
+			return fmt.Errorf("control channel %d out of range (1..16, the 1-based send channel)", *c.Channel)
+		}
+		if c.Type == ControlSysEx || c.Type == ControlOSC {
+			return fmt.Errorf("%s control cannot pin a MIDI channel (the message carries none)", c.Type)
+		}
+	}
 	return c.Value.validate()
 }
 

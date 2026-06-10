@@ -82,6 +82,11 @@ controls:
   - name: preset
     type: program_change
     value: { type: range, min: 0, max: 127 }
+  - name: tap_bypass
+    type: cc
+    cc: 80
+    channel: 16
+    value: { type: enum, values: { off: 0, on: 127 } }
 `
 
 // newTestEngine builds an engine with the test definition loaded, the fake
@@ -157,6 +162,22 @@ func TestReverseMapCCAndEnumAndPC(t *testing.T) {
 	obs = eng.reverseMap(decodeInbound("fake", "EP1", transport.Event{Kind: transport.MIDIEvent, Data: []byte{0xC4, 7}}))
 	if len(obs) != 1 || obs[0].Control != "preset" || obs[0].Value != 7 {
 		t.Fatalf("preset obs = %+v", obs)
+	}
+}
+
+func TestReverseMapChannelOverride(t *testing.T) {
+	eng, _ := newTestEngine(t)
+
+	// tap_bypass is pinned to channel 16 (wire 15); a CC 80 there maps to it
+	// even though the binding rides channel 4.
+	obs := eng.reverseMap(decodeInbound("fake", "EP1", transport.Event{Kind: transport.MIDIEvent, Data: []byte{0xBF, 80, 127}}))
+	if len(obs) != 1 || obs[0].Device != "amp" || obs[0].Control != "tap_bypass" || obs[0].Value != "on" {
+		t.Fatalf("pinned-channel obs = %+v", obs)
+	}
+
+	// The same CC on the binding channel must NOT match the pinned control.
+	if obs := eng.reverseMap(decodeInbound("fake", "EP1", transport.Event{Kind: transport.MIDIEvent, Data: []byte{0xB4, 80, 127}})); len(obs) != 0 {
+		t.Fatalf("binding-channel obs = %+v, want none", obs)
 	}
 }
 

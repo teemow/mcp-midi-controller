@@ -6,11 +6,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/mcpserver"
+	"github.com/teemow/mcp-midi-controller/internal/mdns"
 	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
 	"github.com/teemow/mcp-midi-controller/internal/transport"
 	"github.com/teemow/mcp-midi-controller/internal/transport/auv3midi"
@@ -122,6 +125,7 @@ func main() {
 		mcpserver.WithAudioTap(audioRegistry),
 		mcpserver.WithDiagnostics(diagStore),
 		mcpserver.WithMidiControl(midiHub),
+		mcpserver.WithAUMAutoImport(cfg.AUMAutoImport),
 	)
 
 	// Run the iPad receiver as a SINGLE SEPARATE LAN listener (the loopback-only
@@ -136,6 +140,20 @@ func main() {
 		go func() {
 			if err := serveLANReceiver(ctx, cfg.AUv3ReceiverAddr, srv, audioRegistry, diagStore, midiHub); err != nil {
 				log.Printf("iPad receiver: %v", err)
+			}
+		}()
+		// Announce the receiver on the LAN (Bonjour _mcpmidi._tcp via Avahi) so
+		// the iPad app and its AUv3 extensions auto-discover the daemon. A
+		// failure must not gate startup: log it with the manual fallback.
+		go func() {
+			port, err := receiverPort(cfg.AUv3ReceiverAddr)
+			if err != nil {
+				log.Printf("mdns: %v (iPad discovery needs the manual-host override)", err)
+				return
+			}
+			txt := []string{"version=" + version, "capabilities=audio,midi,sessions,diagnostics"}
+			if err := mdns.Announce(ctx, "mcp-midi-controller", port, txt); err != nil {
+				log.Printf("%v (iPad discovery needs avahi-publish-service or the manual-host override)", err)
 			}
 		}()
 	}
@@ -201,9 +219,14 @@ func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server, a
 	auv3receiver.Register(mux, probesDir, func(dump device.ProbeDump, res auv3receiver.Result) {
 		srv.NotifyAUv3Probe(res.ID, dump.Name, res.Params, res.Writable)
 	})
-	aumreceiver.Register(mux, sessionsDir, func(res aumreceiver.Result) {
-		srv.NotifyAUMSession(res.ID, res.Title, res.Version, res.Channels, res.Mappings)
-	})
+	aumreceiver.Register(mux, sessionsDir,
+		func(res aumreceiver.Result) {
+			srv.NotifyAUMSession(res.ID, res.Title, res.Version, res.Channels, res.Mappings)
+		},
+		// A session download is the signal it is about to be loaded into AUM:
+		// track it as the current session and (config-gated) auto-import its rig.
+		srv.OnAUMSessionDownloaded,
+	)
 	audiotap.Register(mux, audioRegistry,
 		func(name, remote string) { srv.NotifyAudioTap(true, name, remote) },
 		func(name, remote string) { srv.NotifyAudioTap(false, name, remote) },
@@ -213,7 +236,12 @@ func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server, a
 		func(remote string) { srv.NotifyHostDiagnostics(false, remote) },
 	)
 	midicontrol.Register(mux, midiHub,
-		func(remote string) { srv.NotifyMidiControl(true, remote) },
+		func(remote string) {
+			srv.NotifyMidiControl(true, remote)
+			// Re-import the current session's rig and push the control-surface
+			// manifest to the freshly connected brain (config-gated, async).
+			srv.OnMidiControlConnected()
+		},
 		func(remote string) { srv.NotifyMidiControl(false, remote) },
 	)
 
@@ -226,6 +254,19 @@ func mustTransport(t transport.Transport, err error) transport.Transport {
 		log.Fatalf("init transport: %v", err)
 	}
 	return t
+}
+
+// receiverPort extracts the LAN receiver's TCP port for the mDNS announcement.
+func receiverPort(addr string) (uint16, error) {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, fmt.Errorf("receiver addr %q: %w", addr, err)
+	}
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("receiver addr %q: %w", addr, err)
+	}
+	return uint16(port), nil
 }
 
 func isLoopback(addr string) bool {

@@ -67,7 +67,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
 	auv3receiver.Register(mux, *probes, nil)
-	aumreceiver.Register(mux, *sessions, nil)
+	aumreceiver.Register(mux, *sessions, nil, nil)
 
 	log.Printf("auv3-probe receiver listening on %s (auv3 probes -> %s, aum sessions -> %s)", *listen, *probes, *sessions)
 	log.Printf("POST your AUParameterTree dump to http://<this-host>%s/auv3-probe", *listen)

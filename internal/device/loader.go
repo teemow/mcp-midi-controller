@@ -126,6 +126,15 @@ func (r *Registry) AddDefinition(d *DeviceType) error {
 	return nil
 }
 
+// Remove deletes a device type from the registry (a no-op for unknown ids) —
+// the hot-unload counterpart of AddDefinition, used when a session re-import
+// retires the previous session's generated types.
+func (r *Registry) Remove(id string) {
+	r.mu.Lock()
+	delete(r.defs, id)
+	r.mu.Unlock()
+}
+
 // Get returns the device type with the given ID.
 func (r *Registry) Get(id string) (*DeviceType, bool) {
 	r.mu.RLock()

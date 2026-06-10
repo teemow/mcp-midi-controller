@@ -101,6 +101,40 @@ func TestDefinitionValidateAddressing(t *testing.T) {
 			}},
 			wantErr: true,
 		},
+		{
+			name: "pinned channel in range",
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
+				{Name: "x", Type: ControlCC, CC: cc(1), Channel: cc(16), Value: ValueSpec{Type: ValueRange}},
+			}},
+		},
+		{
+			name: "pinned channel below range",
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
+				{Name: "x", Type: ControlCC, CC: cc(1), Channel: cc(0), Value: ValueSpec{Type: ValueRange}},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "pinned channel above range",
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
+				{Name: "x", Type: ControlCC, CC: cc(1), Channel: cc(17), Value: ValueSpec{Type: ValueRange}},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "sysex cannot pin a channel",
+			def: DeviceType{ID: "d", Transport: "blemidi", Controls: []Control{
+				{Name: "x", Type: ControlSysEx, SysEx: "F0 7D %v F7", Channel: cc(2), Value: ValueSpec{Type: ValueRange}},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "osc cannot pin a channel",
+			def: DeviceType{ID: "d", Transport: "osc", Controls: []Control{
+				{Name: "x", Type: ControlOSC, Address: "/a", Channel: cc(2), Value: ValueSpec{Type: ValueFloat}},
+			}},
+			wantErr: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +146,19 @@ func TestDefinitionValidateAddressing(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestControlWireChannel(t *testing.T) {
+	cc := 1
+	unpinned := Control{Type: ControlCC, CC: &cc}
+	if got := unpinned.WireChannel(4); got != 4 {
+		t.Fatalf("unpinned WireChannel(4) = %d, want the binding channel 4", got)
+	}
+	pin := 16 // 1-based in the definition -> 15 on the wire
+	pinned := Control{Type: ControlCC, CC: &cc, Channel: &pin}
+	if got := pinned.WireChannel(4); got != 15 {
+		t.Fatalf("pinned WireChannel(4) = %d, want 15", got)
 	}
 }
 

@@ -48,6 +48,13 @@ type Device struct {
 	// multi-transport devices; a single-transport device uses the flat
 	// Endpoint/Channel shorthand instead.
 	Connections map[string]Connection `yaml:"connections,omitempty"`
+
+	// Session tags a device auto-created by an AUM session import with the
+	// staged session id it derives from. A new import removes every
+	// session-tagged device before creating the new session's rig, so imports
+	// replace each other instead of piling up. Empty for hand-bound devices
+	// (which imports never touch).
+	Session string `yaml:"session,omitempty"`
 }
 
 // Connection is one transport address of a device: where the device is reachable

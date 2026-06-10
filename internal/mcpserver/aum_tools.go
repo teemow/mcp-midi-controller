@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,9 +81,10 @@ func (s *Server) registerAUMTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "import_aum_session",
-		Description: "Import a staged AUM session as a rig of device instances: the session is the iPad rig, its nodes are devices (transport auv3midi) and the session's MIDI control matrix is the addressing. " +
-			"By default it AUTO-CREATES devices: one session-derived AUM mixer device (its strips taken from the live session) plus one device per hosted AUv3 node, each on its matrix-derived MIDI channel; the device types are generated (from the session / the matched AUv3 probe) and staged automatically. " +
-			"A node is only auto-created when it matched a staged probe AND its channel could be inferred AND the auv3midi transport is available; otherwise it falls back to a proposal (review, then bind_device). Set propose_only:true to never create — just propose the {name, device type, channel} suggestions. Run the auv3 probe first so nodes can match.",
+		Description: "Import a staged AUM session as a rig of device instances derived from the session file's ACTUAL enabled MIDI mappings (the session is the single source of truth — no convention guessing). " +
+			"By default it AUTO-CREATES devices: one session device (strip level/mute/solo/rec, full transport incl. tempo/metronome, system actions, built-in-node knobs, tap toggles) plus one device per hosted AUv3 node, every control pinned to the exact message type, number and MIDI channel its session mapping stores (banked multi-channel sessions just work). " +
+			"Staged AUv3 probes are optional and only enrich node controls with human names/enum labels. Devices are tagged with the session id, so a re-import replaces the previous session's auto-created devices instead of piling up. " +
+			"Inexpressible mappings (PBEND/CHPRS) are reported, not dropped. Set propose_only:true to never create — just propose the {name, device type, channel} suggestions.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -648,9 +650,193 @@ type proposedBinding struct {
 type createdDevice struct {
 	Name     string `json:"name"`
 	Device   string `json:"device"`
-	Channel  int    `json:"channel"`  // 1-based send channel
+	Channel  int    `json:"channel"`  // 1-based send channel (cosmetic: controls pin their own)
 	Endpoint string `json:"endpoint"` // auv3midi brain endpoint
-	Kind     string `json:"kind"`     // "mixer" | "node"
+	Kind     string `json:"kind"`     // "session" | "node"
+	Controls int    `json:"controls"` // controls derived from the session's mappings
+}
+
+// aumImportOutcome is the machine-readable result of one session-rig import,
+// shared by the import_aum_session tool and the auto-import path (session
+// download / brain connect). surface carries the created devices' types +
+// binding channels — the input for the controlSurface manifest push. It never
+// leaves the package, hence the unexported fields.
+type aumImportOutcome struct {
+	sessionID  string
+	title      string
+	autoCreate bool
+	rig        *aum.Rig
+	sm         aum.SessionMap
+	dumps      int
+	matched    int
+	unmatched  []string
+	created    []createdDevice
+	proposed   []proposedBinding
+	replaced   []string
+	surface    []surfaceSource
+}
+
+// surfaceSource is one auto-created device feeding the controlSurface
+// manifest: its logical name, generated type, and the 1-based binding send
+// channel (the fallback for controls that do not pin their own).
+type surfaceSource struct {
+	logical string
+	dt      *device.DeviceType
+	send    int
+}
+
+// importSessionRig is the import_aum_session core: derive the rig from the
+// session file's enabled mappings, replace the previous session's auto-created
+// devices, and create (or propose) this session's. Imports are serialized
+// under aumImportMu because the auto-import callbacks (download / brain
+// connect) can race a tool-driven import.
+func (s *Server) importSessionRig(path string, proposeOnly bool) (*aumImportOutcome, error) {
+	s.aumImportMu.Lock()
+	defer s.aumImportMu.Unlock()
+
+	sess, err := aum.OpenFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("open session: %w", err)
+	}
+	sm := sess.Map()
+	dumps := loadStagedProbeDumps()
+	sessionID := aum.StripExt(filepath.Base(path))
+
+	// The rig comes straight from the session's enabled mappings (the file is
+	// the single source of truth); staged probes only enrich node controls.
+	rig, err := aum.DeriveRig(sess, sessionID, dumps)
+	if err != nil {
+		return nil, fmt.Errorf("derive rig: %w", err)
+	}
+
+	// Auto-create requires the auv3midi transport to be registered (the AUM rig
+	// rides the brain channel). When it is missing — or the caller forced
+	// propose_only — fall back to proposing every device.
+	o := &aumImportOutcome{
+		sessionID:  sessionID,
+		title:      sess.Title(),
+		autoCreate: !proposeOnly && s.eng.HasTransport(auv3midiTransport),
+		rig:        rig,
+		sm:         sm,
+		dumps:      len(dumps),
+	}
+
+	used := map[string]bool{}
+	var persistNeeded bool
+	for _, rn := range rig.Nodes {
+		if rn.MatchedProbe != "" {
+			o.matched++
+		} else {
+			o.unmatched = append(o.unmatched, fmt.Sprintf("%s [%s/%s/%s]", rn.ComponentName, rn.Component.Type, rn.Component.Subtype, rn.Component.Manufacturer))
+		}
+	}
+
+	// --- Session-rig lifecycle: a new import replaces the previous one -----
+	// Every device a prior import auto-created carries a session tag; remove
+	// them (tools, bindings AND their generated types) before creating this
+	// session's rig so imports never pile up. Hand-bound devices (no tag) are
+	// untouched. A session that derives no controls leaves the previous rig
+	// alone — wiping a working rig over an unmapped session (e.g. an
+	// accidental download) helps nobody.
+	if o.autoCreate && rig.Controls() > 0 {
+		retiredTypes := map[string]bool{}
+		for _, d := range s.eng.Devices() {
+			if d.Session == "" {
+				continue
+			}
+			s.removeToolsForDevice(d.Name)
+			s.eng.Unbind(d.Name)
+			retiredTypes[d.DeviceID] = true
+			o.replaced = append(o.replaced, d.Name)
+			persistNeeded = true
+		}
+		sort.Strings(o.replaced)
+		// Retire the replaced devices' generated types (registry + staged
+		// YAML), unless a remaining device still references one. Same-session
+		// ids get re-created right below; different-session ids would
+		// otherwise accumulate forever.
+		for _, d := range s.eng.Devices() {
+			delete(retiredTypes, d.DeviceID)
+		}
+		for id := range retiredTypes {
+			s.unregisterDeviceType(id)
+		}
+	}
+
+	// --- The session device (strips/transport/system/built-ins/taps) -------
+	if rig.Session != nil {
+		logical := uniqueLogical("aum", used)
+		send := clampSend(rig.SessionSendChannel)
+		if o.autoCreate {
+			if err := s.createAUMDevice(rig.Session, logical, send, sessionID); err != nil {
+				o.proposed = append(o.proposed, proposedBinding{
+					Name: logical, Device: rig.Session.ID, Channel: send,
+					Endpoint: auv3midiBrainEndpoint, ChannelIndex: -1,
+					Note: "session device (auto-create failed: " + err.Error() + ")",
+				})
+			} else {
+				persistNeeded = true
+				o.created = append(o.created, createdDevice{
+					Name: logical, Device: rig.Session.ID, Channel: send,
+					Endpoint: auv3midiBrainEndpoint, Kind: "session", Controls: len(rig.Session.Controls),
+				})
+				o.surface = append(o.surface, surfaceSource{logical: logical, dt: rig.Session, send: send})
+			}
+		} else {
+			o.proposed = append(o.proposed, proposedBinding{
+				Name: logical, Device: rig.Session.ID, Channel: send,
+				Endpoint: auv3midiBrainEndpoint, ChannelIndex: -1,
+				Note: fmt.Sprintf("session device (%d mapped control(s); propose-only)", len(rig.Session.Controls)),
+			})
+		}
+	}
+
+	// --- Hosted AUv3 nodes -> devices -------------------------------------
+	for _, rn := range rig.Nodes {
+		logical := uniqueLogical(rn.Base, used)
+		comp := rn.Component
+		pb := proposedBinding{
+			Name:         logical,
+			Endpoint:     auv3midiBrainEndpoint,
+			ChannelIndex: rn.ChannelIndex,
+			Slot:         rn.Slot,
+			Component:    &comp,
+			MatchedProbe: rn.MatchedProbe,
+			Channel:      rn.SendChannel,
+		}
+		if rn.Type == nil {
+			pb.Note = "no enabled MIDI mappings for this node — wire it (instrument_aum_session or map in AUM), then re-import"
+			o.proposed = append(o.proposed, pb)
+			continue
+		}
+		pb.Device = rn.Type.ID
+		if rn.MatchedProbe == "" {
+			pb.Note = "no staged probe matched (controls named from the session's target keys)"
+		}
+		if o.autoCreate {
+			if err := s.createAUMDevice(rn.Type, logical, rn.SendChannel, sessionID); err != nil {
+				pb.Note = strings.TrimSpace(pb.Note + " (auto-create failed: " + err.Error() + ")")
+				o.proposed = append(o.proposed, pb)
+				continue
+			}
+			persistNeeded = true
+			o.created = append(o.created, createdDevice{
+				Name: logical, Device: rn.Type.ID, Channel: rn.SendChannel,
+				Endpoint: auv3midiBrainEndpoint, Kind: "node", Controls: len(rn.Type.Controls),
+			})
+			o.surface = append(o.surface, surfaceSource{logical: logical, dt: rn.Type, send: rn.SendChannel})
+			continue
+		}
+		o.proposed = append(o.proposed, pb)
+	}
+
+	if persistNeeded {
+		if err := s.persistDevices(); err != nil {
+			// The devices are bound + tools generated; only persistence failed.
+			o.created = append(o.created, createdDevice{Name: "(warning)", Device: "could not persist devices.yaml: " + err.Error()})
+		}
+	}
+	return o, nil
 }
 
 func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -666,159 +852,41 @@ func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequ
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
-	sess, err := aum.OpenFile(path)
+	o, err := s.importSessionRig(path, args.ProposeOnly)
 	if err != nil {
-		return textResult("open session: "+err.Error(), true), nil
-	}
-	sm := sess.Map()
-	dumps := loadStagedProbeDumps()
-	sessionID := aum.StripExt(filepath.Base(path))
-
-	// Auto-create requires the auv3midi transport to be registered (the AUM rig
-	// rides the brain channel). When it is missing — or the caller forced
-	// propose_only — fall back to proposing every node, the legacy behavior.
-	autoCreate := !args.ProposeOnly && s.eng.HasTransport(auv3midiTransport)
-
-	// channelOf returns a suggested 1-based MIDI/send channel to bind a node on:
-	// the channel of any assigned mapping under the node's chan collection,
-	// converted from the raw 0-based on-disk channel (0 = send ch1) to the
-	// 1-based send channel the brain/binding rides (channel + 1). See
-	// aum.Spec.Channel.
-	channelOf := func(chanIndex int) (int, bool) {
-		prefix := fmt.Sprintf("Channels/chan%d/", chanIndex)
-		for _, m := range sm.Mappings {
-			if strings.HasPrefix(m.Collection, prefix) && m.Channel >= 0 {
-				return m.Channel + 1, true
-			}
-		}
-		return 0, false
+		return textResult(err.Error(), true), nil
 	}
 
-	used := map[string]bool{}
-	var created []createdDevice
-	var proposed []proposedBinding
-	var unmatched []string
-	var persistNeeded bool
-	matched := 0
-
-	// --- Session-derived AUM mixer device ---------------------------------
-	// Its strips come from the live session; its CCs from the convention. It is
-	// the rig's view of the iPad mixer, replacing the old fixed ch1..ch8 type.
-	mixerName := uniqueLogical("aum", used)
-	mixerID := sanitize.ID("aum-" + sessionID)
-	mixerType, mixerErr := aum.MixerDeviceType(sess, mixerID)
-	mixerSend, mixerChanOK := 0, false
-	if wire, ok := sess.ConventionChannel(); ok {
-		mixerSend, mixerChanOK = wire+1, true
-	}
-	switch {
-	case mixerErr != nil:
-		// Should not happen (the type always carries the transport block), but
-		// don't fail the whole import over the mixer.
-	case autoCreate:
-		if err := s.createAUMDevice(mixerType, mixerName, mixerSend); err != nil {
-			proposed = append(proposed, proposedBinding{
-				Name: mixerName, Device: mixerID, Channel: mixerSend,
-				Endpoint: auv3midiBrainEndpoint, ChannelIndex: -1,
-				Note: "session-derived AUM mixer (auto-create failed: " + err.Error() + ")",
-			})
-		} else {
-			persistNeeded = true
-			created = append(created, createdDevice{
-				Name: mixerName, Device: mixerID, Channel: mixerSend,
-				Endpoint: auv3midiBrainEndpoint, Kind: "mixer",
-			})
-		}
-	default:
-		note := "session-derived AUM mixer (propose-only; create with auv3midi available, or bind_device)"
-		if !mixerChanOK {
-			note = "session-derived AUM mixer (channel not inferable — session not wired to the convention yet)"
-		}
-		proposed = append(proposed, proposedBinding{
-			Name: mixerName, Device: mixerID, Channel: mixerSend,
-			Endpoint: auv3midiBrainEndpoint, ChannelIndex: -1, Note: note,
-		})
-	}
-
-	// --- Hosted AUv3 nodes -> devices -------------------------------------
-	for ci, ch := range sm.Channels {
-		for _, n := range ch.Nodes {
-			if n.Component == nil {
-				continue // built-in node, not a hosted AUv3 plugin
-			}
-			logicalBase := device.FirstNonEmpty(ch.Title, n.ComponentName, n.Component.Subtype)
-			logical := uniqueLogical(sanitize.ID(logicalBase), used)
-
-			pb := proposedBinding{
-				Name:         logical,
-				Endpoint:     auv3midiBrainEndpoint,
-				ChannelIndex: ci,
-				Slot:         n.Slot,
-				Component:    n.Component,
-			}
-
-			var nodeType *device.DeviceType
-			if dump := findProbeForComponent(dumps, *n.Component); dump != nil {
-				if def, _, derr := device.DeviceTypeFromProbe(*dump, device.ProbeOptions{}); derr == nil {
-					pb.Device = def.ID
-					nodeType = def
-				}
-				pb.MatchedProbe = device.ProbeID(*dump)
-				matched++
-			} else {
-				pb.Note = "no staged probe matches this component; run the auv3 probe for this plugin, then re-import"
-				unmatched = append(unmatched, fmt.Sprintf("%s [%s/%s/%s]", n.ComponentName, n.Component.Type, n.Component.Subtype, n.Component.Manufacturer))
-			}
-
-			send, chanOK := channelOf(ci)
-			if chanOK {
-				pb.Channel = send
-			} else {
-				pb.Note = strings.TrimSpace(pb.Note + " (channel defaulted to 0 — no assigned mapping to infer it)")
-			}
-
-			// Auto-create only when we have a generated type, an inferred
-			// channel and the transport; everything else falls back to a
-			// proposal (the documented fallback).
-			if autoCreate && nodeType != nil && chanOK {
-				if err := s.createAUMDevice(nodeType, logical, send); err != nil {
-					pb.Note = strings.TrimSpace(pb.Note + " (auto-create failed: " + err.Error() + ")")
-					proposed = append(proposed, pb)
-					continue
-				}
-				persistNeeded = true
-				created = append(created, createdDevice{
-					Name: logical, Device: nodeType.ID, Channel: send,
-					Endpoint: auv3midiBrainEndpoint, Kind: "node",
-				})
-				continue
-			}
-			proposed = append(proposed, pb)
-		}
-	}
-
-	if persistNeeded {
-		if err := s.persistDevices(); err != nil {
-			// The devices are bound + tools generated; only persistence failed.
-			created = append(created, createdDevice{Name: "(warning)", Device: "could not persist devices.yaml: " + err.Error()})
-		}
+	// A tool-driven import that changed the rig — created devices, or replaced
+	// the previous session's even when its own creations all failed — makes
+	// its session the daemon's current session: the marker must track what the
+	// rig models, and a brain reconnect re-imports this one. Notify watchers
+	// and push the control-surface manifest, same as the auto-import path.
+	if len(o.surface) > 0 || len(o.replaced) > 0 {
+		s.setCurrentAUMSession(o.sessionID)
+		s.notifyAUMRig("import_aum_session", o)
+		s.pushControlSurface(o)
 	}
 
 	var b strings.Builder
-	nodeCount := matched + len(unmatched)
-	if autoCreate {
-		fmt.Fprintf(&b, "import of %q: auto-created %d device(s), %d node(s) total (%d matched a staged probe)\n", sess.Title(), len(created), nodeCount, matched)
+	if o.autoCreate {
+		fmt.Fprintf(&b, "import of %q: auto-created %d device(s) with %d control(s) from the session's mappings, %d node(s) total (%d matched a staged probe)\n",
+			o.title, len(o.created), o.rig.Controls(), len(o.rig.Nodes), o.matched)
 	} else {
-		fmt.Fprintf(&b, "import of %q: proposing devices, %d node(s) total (%d matched a staged probe)\n", sess.Title(), nodeCount, matched)
+		fmt.Fprintf(&b, "import of %q: proposing devices (%d mapped control(s)), %d node(s) total (%d matched a staged probe)\n",
+			o.title, o.rig.Controls(), len(o.rig.Nodes), o.matched)
 	}
-	for _, cd := range created {
+	if len(o.replaced) > 0 {
+		fmt.Fprintf(&b, "replaced %d device(s) from the previous session import: %s\n", len(o.replaced), strings.Join(o.replaced, ", "))
+	}
+	for _, cd := range o.created {
 		if cd.Kind == "" {
 			fmt.Fprintf(&b, "  %s\n", cd.Device) // a warning row
 			continue
 		}
-		fmt.Fprintf(&b, "  created %-22s device=%s channel=%d endpoint=%s [%s]\n", cd.Name, cd.Device, cd.Channel, cd.Endpoint, cd.Kind)
+		fmt.Fprintf(&b, "  created %-22s device=%s channel=%d endpoint=%s [%s, %d control(s)]\n", cd.Name, cd.Device, cd.Channel, cd.Endpoint, cd.Kind, cd.Controls)
 	}
-	for _, pb := range proposed {
+	for _, pb := range o.proposed {
 		dev := pb.Device
 		if dev == "" {
 			dev = "?"
@@ -832,22 +900,36 @@ func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequ
 		}
 		b.WriteByte('\n')
 	}
-	if len(unmatched) > 0 {
-		fmt.Fprintf(&b, "unmatched node(s) (no probe): %d\n", len(unmatched))
+	if len(o.unmatched) > 0 {
+		fmt.Fprintf(&b, "node(s) without a staged probe (controls still derived from the session): %d\n", len(o.unmatched))
 	}
-	if len(proposed) > 0 {
+	if n := len(o.rig.Skipped); n > 0 {
+		fmt.Fprintf(&b, "%d enabled mapping(s) not expressible as controls:\n", n)
+		const show = 10
+		for i, sk := range o.rig.Skipped {
+			if i >= show {
+				fmt.Fprintf(&b, "  ... and %d more\n", n-show)
+				break
+			}
+			fmt.Fprintf(&b, "  %s/%s (%s): %s\n", sk.Collection, sk.Target, sk.TypeName, sk.Reason)
+		}
+	}
+	if len(o.proposed) > 0 {
 		b.WriteString("review the proposal(s), then create with bind_device (transport auv3midi, endpoint \"brain\").\n")
 	}
 
 	structured := map[string]any{
-		"sessionID":        sessionID,
-		"title":            sess.Title(),
-		"autoCreated":      created,
-		"proposedDevices":  proposed,
-		"matchedNodes":     matched,
-		"unmatchedNodes":   unmatched,
-		"sessionMap":       sm,
-		"stagedProbeCount": len(dumps),
+		"sessionID":        o.sessionID,
+		"title":            o.title,
+		"autoCreated":      o.created,
+		"proposedDevices":  o.proposed,
+		"replacedDevices":  o.replaced,
+		"derivedControls":  o.rig.Controls(),
+		"skippedMappings":  o.rig.Skipped,
+		"matchedNodes":     o.matched,
+		"unmatchedNodes":   o.unmatched,
+		"sessionMap":       o.sm,
+		"stagedProbeCount": o.dumps,
 	}
 	return structResult(b.String(), structured), nil
 }
@@ -855,27 +937,48 @@ func (s *Server) handleImportAUMSession(_ context.Context, req *mcp.CallToolRequ
 // createAUMDevice stages a generated device type (register + persist) and binds
 // a single-connection device on it over the auv3midi brain channel, generating
 // its control tool. send is the 1-based send channel; the wire (0-based)
-// channel stored on the device is send-1 (clamped to 0). It does not persist
-// devices.yaml — the caller batches that once.
-func (s *Server) createAUMDevice(dt *device.DeviceType, logical string, send int) error {
+// channel stored on the device is send-1 (clamped to 0) — cosmetic for
+// session-derived types, whose controls pin their own channels. session tags
+// the device for the session-rig replace-on-reimport lifecycle. It does not
+// persist devices.yaml — the caller batches that once.
+func (s *Server) createAUMDevice(dt *device.DeviceType, logical string, send int, session string) error {
 	if err := s.registerDeviceType(dt); err != nil {
 		return err
 	}
-	wire := send - 1
-	if wire < 0 {
-		wire = 0
-	}
+	wire := clampSend(send) - 1
 	d := engine.Device{
 		Name:     logical,
 		DeviceID: dt.ID,
 		Endpoint: auv3midiBrainEndpoint,
 		Channel:  wire,
+		Session:  session,
 	}
 	if err := s.eng.Bind(d); err != nil {
 		return err
 	}
 	s.refreshToolsForDevice(d)
 	return nil
+}
+
+// unregisterDeviceType retires a generated device type: drop it from the
+// registry and delete its staged YAML — the inverse of registerDeviceType,
+// used when a session re-import replaces the previous session's rig. Best
+// effort: a missing file is fine, anything else is only logged.
+func (s *Server) unregisterDeviceType(id string) {
+	s.eng.Registry().Remove(id)
+	if err := os.Remove(filepath.Join(config.DeviceTypesDir(), id+".yaml")); err != nil && !os.IsNotExist(err) {
+		log.Printf("retire device type %q: %v", id, err)
+	}
+}
+
+// clampSend normalizes a suggested 1-based send channel to the binding floor:
+// DeriveRig reports 0 when it could not infer one, and channel 1 is the
+// harmless default (session-derived controls pin their own channels anyway).
+func clampSend(send int) int {
+	if send < 1 {
+		return 1
+	}
+	return send
 }
 
 // --- author ---------------------------------------------------------------

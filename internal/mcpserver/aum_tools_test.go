@@ -318,38 +318,47 @@ func TestAUMImportAutoCreatesDevices(t *testing.T) {
 		t.Fatalf("import did not auto-create:\n%s", text)
 	}
 
-	// The session-derived mixer device was created (bound on wire ch 2 = send 3).
-	mixer, ok := s.eng.DeviceFor("aum")
+	// The session device was created (bound on wire ch 2 = send 3) and tagged
+	// with the session id for the replace-on-reimport lifecycle.
+	sd, ok := s.eng.DeviceFor("aum")
 	if !ok {
-		t.Fatalf("mixer device not created:\n%s", text)
+		t.Fatalf("session device not created:\n%s", text)
 	}
-	if mixer.DeviceID != "aum_rig2" {
-		t.Fatalf("mixer device type = %q, want aum_rig2", mixer.DeviceID)
+	if sd.DeviceID != "aum_rig2" {
+		t.Fatalf("session device type = %q, want aum_rig2", sd.DeviceID)
 	}
-	if mixer.ControlChannel() != 2 {
-		t.Fatalf("mixer wire channel = %d, want 2", mixer.ControlChannel())
+	if sd.ControlChannel() != 2 {
+		t.Fatalf("session device wire channel = %d, want 2", sd.ControlChannel())
 	}
-	if mixer.ControlEndpoint() != "brain" {
-		t.Fatalf("mixer endpoint = %q, want brain", mixer.ControlEndpoint())
+	if sd.ControlEndpoint() != "brain" {
+		t.Fatalf("session device endpoint = %q, want brain", sd.ControlEndpoint())
+	}
+	if sd.Session != "rig2" {
+		t.Fatalf("session device tag = %q, want rig2", sd.Session)
 	}
 	if _, ok := s.eng.Registry().Get("aum_rig2"); !ok {
-		t.Fatal("session-derived mixer device type not registered")
+		t.Fatal("session device type not registered")
 	}
 
-	// The hosted node became a device on its matrix-derived channel (wire 2).
+	// The hosted node became a session-scoped device on its mapped channel
+	// (authored send ch 3 → wire 2).
 	node, ok := s.eng.DeviceFor("gitarre")
 	if !ok {
 		t.Fatalf("node device not created:\n%s", text)
 	}
-	if node.DeviceID != "gtr1" || node.ControlChannel() != 2 {
-		t.Fatalf("node device = %q ch %d, want gtr1 ch 2", node.DeviceID, node.ControlChannel())
+	if node.DeviceID != "rig2_gitarre" || node.ControlChannel() != 2 {
+		t.Fatalf("node device = %q ch %d, want rig2_gitarre ch 2", node.DeviceID, node.ControlChannel())
 	}
-	if _, ok := s.eng.Registry().Get("gtr1"); !ok {
-		t.Fatal("node device type (gtr1) not registered")
+	if node.Session != "rig2" {
+		t.Fatalf("node device tag = %q, want rig2", node.Session)
+	}
+	nt, ok := s.eng.Registry().Get("rig2_gitarre")
+	if !ok {
+		t.Fatal("node device type (rig2_gitarre) not registered")
 	}
 
 	// Both generated device types were staged to disk, and the rig persisted.
-	for _, id := range []string{"aum_rig2", "gtr1"} {
+	for _, id := range []string{"aum_rig2", "rig2_gitarre"} {
 		if _, err := os.Stat(filepath.Join(config.DeviceTypesDir(), id+".yaml")); err != nil {
 			t.Fatalf("device type %q not staged: %v", id, err)
 		}
@@ -358,14 +367,151 @@ func TestAUMImportAutoCreatesDevices(t *testing.T) {
 		t.Fatalf("devices.yaml not persisted: %v", err)
 	}
 
-	// The generated mixer type carries session-derived strip controls named from
-	// the strip title (Gitarre) plus the global transport block.
-	mt, _ := s.eng.Registry().Get("aum_rig2")
-	if _, ok := mt.Control("gitarre_level"); !ok {
-		t.Fatal("mixer type missing gitarre_level control")
+	// The session device type carries strip controls named from the strip
+	// title (Gitarre) plus the global transport block, each pinning the
+	// mapping's stored channel (send ch 3).
+	st, _ := s.eng.Registry().Get("aum_rig2")
+	lvl, ok := st.Control("gitarre_level")
+	if !ok {
+		t.Fatal("session type missing gitarre_level control")
 	}
-	if _, ok := mt.Control("transport"); !ok {
-		t.Fatal("mixer type missing transport control")
+	if lvl.Channel == nil || *lvl.Channel != 3 {
+		t.Fatalf("gitarre_level pinned channel = %v, want 3", lvl.Channel)
+	}
+	if _, ok := st.Control("transport"); !ok {
+		t.Fatal("session type missing transport control")
+	}
+
+	// The node type's control mirrors the session mapping exactly: the
+	// convention assigned cutoff CC 30 on send ch 3.
+	cut, ok := nt.Control("cutoff")
+	if !ok {
+		t.Fatalf("node type missing cutoff control: %v", nt.ControlNames())
+	}
+	if cut.CC == nil || *cut.CC != 30 {
+		t.Fatalf("cutoff CC = %v, want 30", cut.CC)
+	}
+	if cut.Channel == nil || *cut.Channel != 3 {
+		t.Fatalf("cutoff pinned channel = %v, want 3", cut.Channel)
+	}
+}
+
+func TestAUMImportReplacesPreviousSessionRig(t *testing.T) {
+	s := newAUMServerWithBrain(t)
+	stageProbe(t)
+
+	author := func(outID, strip string) {
+		t.Helper()
+		if res := call(t, s.handleAuthorAUMSession, map[string]any{
+			"out_id": outID,
+			"channels": []any{
+				map[string]any{"kind": "audio", "title": strip, "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+				map[string]any{"kind": "audio", "title": "Master"},
+			},
+			"convention": map[string]any{"channel": 1, "start_cc": 30},
+		}); res.IsError {
+			t.Fatalf("author %s failed: %s", outID, resultText(res))
+		}
+	}
+	author("first", "Gitarre")
+	author("second", "Keys")
+
+	if res := call(t, s.handleImportAUMSession, map[string]any{"session_id": "first"}); res.IsError {
+		t.Fatalf("first import failed: %s", resultText(res))
+	}
+	if _, ok := s.eng.DeviceFor("gitarre"); !ok {
+		t.Fatal("first import did not create gitarre")
+	}
+
+	// Importing the next session replaces the previous session's devices
+	// (the daemon models the one session AUM has loaded).
+	res := call(t, s.handleImportAUMSession, map[string]any{"session_id": "second"})
+	if res.IsError {
+		t.Fatalf("second import failed: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "replaced") {
+		t.Fatalf("second import did not report replacement:\n%s", resultText(res))
+	}
+	if _, ok := s.eng.DeviceFor("gitarre"); ok {
+		t.Fatal("previous session's gitarre device was not removed")
+	}
+	if _, ok := s.eng.DeviceFor("keys"); !ok {
+		t.Fatal("second import did not create keys")
+	}
+	for _, d := range s.eng.Devices() {
+		if d.Session != "second" {
+			t.Fatalf("device %q carries session tag %q, want second", d.Name, d.Session)
+		}
+	}
+
+	// The first session's generated types were retired with its devices —
+	// from the registry and from the staged device-types dir — while the
+	// second session's are present.
+	for _, id := range []string{"aum_first", "first_gitarre"} {
+		if _, ok := s.eng.Registry().Get(id); ok {
+			t.Fatalf("retired type %q still registered", id)
+		}
+		if _, err := os.Stat(filepath.Join(config.DeviceTypesDir(), id+".yaml")); !os.IsNotExist(err) {
+			t.Fatalf("retired type %q still staged (err %v)", id, err)
+		}
+	}
+	for _, id := range []string{"aum_second", "second_keys"} {
+		if _, ok := s.eng.Registry().Get(id); !ok {
+			t.Fatalf("current type %q not registered", id)
+		}
+		if _, err := os.Stat(filepath.Join(config.DeviceTypesDir(), id+".yaml")); err != nil {
+			t.Fatalf("current type %q not staged: %v", id, err)
+		}
+	}
+}
+
+func TestAUMImportOfUnmappedSessionKeepsPreviousRig(t *testing.T) {
+	s := newAUMServerWithBrain(t)
+	stageProbe(t)
+
+	if res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"out_id": "mapped",
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+		"convention": map[string]any{"channel": 1, "start_cc": 30},
+	}); res.IsError {
+		t.Fatalf("author mapped failed: %s", resultText(res))
+	}
+	if res := call(t, s.handleImportAUMSession, map[string]any{"session_id": "mapped"}); res.IsError {
+		t.Fatalf("import mapped failed: %s", resultText(res))
+	}
+	if _, ok := s.eng.DeviceFor("gitarre"); !ok {
+		t.Fatal("mapped import did not create gitarre")
+	}
+	if id := s.currentAUMSessionID(); id != "mapped" {
+		t.Fatalf("current session = %q, want mapped", id)
+	}
+
+	// A bare (unmapped) session derives zero controls: importing it must NOT
+	// wipe the working rig, and the current-session marker must not move.
+	if res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"out_id": "bare",
+		"bare":   true,
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Empty"},
+		},
+	}); res.IsError {
+		t.Fatalf("author bare failed: %s", resultText(res))
+	}
+	res := call(t, s.handleImportAUMSession, map[string]any{"session_id": "bare"})
+	if res.IsError {
+		t.Fatalf("import bare failed: %s", resultText(res))
+	}
+	if strings.Contains(resultText(res), "replaced 2 device(s)") {
+		t.Fatalf("unmapped import replaced the previous rig:\n%s", resultText(res))
+	}
+	if _, ok := s.eng.DeviceFor("gitarre"); !ok {
+		t.Fatal("unmapped import wiped the previous session's rig")
+	}
+	if id := s.currentAUMSessionID(); id != "mapped" {
+		t.Fatalf("current session moved to %q on a no-op import, want mapped", id)
 	}
 }
 

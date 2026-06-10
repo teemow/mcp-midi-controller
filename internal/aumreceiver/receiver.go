@@ -76,6 +76,12 @@ type Manifest struct {
 // this to mount the session surface alongside the AUv3-probe surface on one
 // shared LAN listener; Handler wraps it for standalone use / tests.
 //
+// onStaged (may be nil) is invoked after each upload is written. onDownloaded
+// (may be nil) is invoked with the bare staged filename after the iPad
+// downloads it — the surest signal that session is about to be loaded into
+// AUM, which the daemon uses to track its "current session" and auto-import
+// the session rig. Both run synchronously after the response is served.
+//
 // Routes:
 //
 //	POST   /aum-session           stage one uploaded .aumproj (raw bplist bytes)
@@ -83,22 +89,21 @@ type Manifest struct {
 //	GET    /aum-session/{file}    download a staged .aumproj / .aum_midimap
 //	DELETE /aum-session/{file}    remove one staged file
 //	DELETE /aum-session           clear all staged files
-func Register(mux *http.ServeMux, outDir string, onStaged func(Result)) {
+func Register(mux *http.ServeMux, outDir string, onStaged func(Result), onDownloaded func(file string)) {
 	mux.HandleFunc("POST /aum-session", handleUpload(outDir, onStaged))
 	mux.HandleFunc("GET /aum-session", handleManifest(outDir))
-	mux.HandleFunc("GET /aum-session/{file}", handleDownload(outDir))
+	mux.HandleFunc("GET /aum-session/{file}", handleDownload(outDir, onDownloaded))
 	mux.HandleFunc("DELETE /aum-session/{file}", handleDelete(outDir))
 	mux.HandleFunc("DELETE /aum-session", handleDeleteAll(outDir))
 }
 
 // Handler builds the standalone receiver: the AUM-session routes plus a
-// /healthz liveness endpoint. Sessions are staged in outDir. If onStaged is
-// non-nil it is invoked (synchronously) after each upload is written, e.g. so
-// the daemon can notify connected MCP clients new data arrived.
-func Handler(outDir string, onStaged func(Result)) http.Handler {
+// /healthz liveness endpoint. Sessions are staged in outDir. onStaged and
+// onDownloaded behave as documented on Register.
+func Handler(outDir string, onStaged func(Result), onDownloaded func(file string)) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
-	Register(mux, outDir, onStaged)
+	Register(mux, outDir, onStaged, onDownloaded)
 	return mux
 }
 
@@ -239,8 +244,9 @@ func summarize(path string, entry *ManifestEntry) {
 // handleDownload serves one staged file by name. The {file} segment is
 // client-supplied, so it is constrained to a bare .aumproj / .aum_midimap
 // filename: anything with a path separator or ".." could escape the staging dir
-// and read an arbitrary file.
-func handleDownload(outDir string) http.HandlerFunc {
+// and read an arbitrary file. After the bytes are served, onDownloaded (when
+// non-nil) is told which file the iPad fetched.
+func handleDownload(outDir string, onDownloaded func(file string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("file")
 		if !safeStagedName(name) {
@@ -260,6 +266,9 @@ func handleDownload(outDir string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 		_, _ = w.Write(data)
+		if onDownloaded != nil {
+			onDownloaded(name)
+		}
 	}
 }
 
