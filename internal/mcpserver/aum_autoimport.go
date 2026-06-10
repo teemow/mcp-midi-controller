@@ -42,11 +42,12 @@ func WithAUMAutoImport(enabled bool) Option {
 // --- hook points ------------------------------------------------------------
 
 // OnAUMSessionDownloaded is the aum receiver's download callback: the iPad
-// fetched a staged file, so (for a .aumproj) that session becomes the daemon's
-// current session and — with auto-import enabled — its rig is imported and the
-// control-surface manifest pushed. Midimap downloads are ignored (nothing to
-// import). It runs synchronously; the receiver invokes it after the response
-// is served, so the download itself is never delayed.
+// fetched a staged file (identified by its staging-dir-relative path, which
+// may carry subfolder segments), so (for a .aumproj) that session becomes the
+// daemon's current session and — with auto-import enabled — its rig is
+// imported and the control-surface manifest pushed. Midimap downloads are
+// ignored (nothing to import). It runs synchronously; the receiver invokes it
+// after the response is served, so the download itself is never delayed.
 func (s *Server) OnAUMSessionDownloaded(file string) {
 	if aum.FileKind(file) != aum.KindSession {
 		return

@@ -73,6 +73,146 @@ func TestUploadStagesSessionAndNotifies(t *testing.T) {
 	}
 }
 
+func TestUploadWithPathMirrorsFolderStructure(t *testing.T) {
+	dir := t.TempDir()
+	ts := httptest.NewServer(Handler(dir, nil, nil))
+	defer ts.Close()
+
+	// ?path= stages the file verbatim under its iPad-relative path.
+	resp, err := http.Post(ts.URL+"/aum-session?path=Live%20sets/New%20Fast%20Forward.aumproj",
+		"application/octet-stream", bytes.NewReader(templateBytes(t)))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var res Result
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if res.Path != "Live sets/New Fast Forward.aumproj" {
+		t.Fatalf("path = %q, want the verbatim relative path", res.Path)
+	}
+	if res.ID != "Live sets/New Fast Forward" {
+		t.Fatalf("id = %q, want path without extension", res.ID)
+	}
+	staged := filepath.Join(dir, "Live sets", "New Fast Forward.aumproj")
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("expected staged file %s: %v", staged, err)
+	}
+
+	// The manifest lists the nested file with its relative path, and the
+	// download route serves it by that path.
+	mresp, err := http.Get(ts.URL + "/aum-session")
+	if err != nil {
+		t.Fatalf("GET manifest: %v", err)
+	}
+	var man Manifest
+	if err := json.NewDecoder(mresp.Body).Decode(&man); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	_ = mresp.Body.Close()
+	if len(man.Sessions) != 1 {
+		t.Fatalf("manifest sessions = %d, want 1", len(man.Sessions))
+	}
+	e := man.Sessions[0]
+	if e.Path != "Live sets/New Fast Forward.aumproj" || e.File != "New Fast Forward.aumproj" {
+		t.Fatalf("manifest entry = %+v, want nested path + bare filename", e)
+	}
+
+	dresp, err := http.Get(ts.URL + "/aum-session/Live%20sets/New%20Fast%20Forward.aumproj")
+	if err != nil {
+		t.Fatalf("GET nested download: %v", err)
+	}
+	got := readAll(t, dresp)
+	_ = dresp.Body.Close()
+	if dresp.StatusCode != http.StatusOK || !bytes.Equal(got, templateBytes(t)) {
+		t.Fatalf("nested download status=%d bytes=%d", dresp.StatusCode, len(got))
+	}
+}
+
+func TestUploadRejectsTraversalPath(t *testing.T) {
+	dir := t.TempDir()
+	ts := httptest.NewServer(Handler(dir, nil, nil))
+	defer ts.Close()
+
+	for _, p := range []string{"../escape.aumproj", "a/../../b.aumproj", ".hidden/x.aumproj", "x.txt"} {
+		resp, err := http.Post(ts.URL+"/aum-session?path="+strings.ReplaceAll(p, " ", "%20"),
+			"application/octet-stream", bytes.NewReader(templateBytes(t)))
+		if err != nil {
+			t.Fatalf("POST %q: %v", p, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("path %q: status = %d, want 400", p, resp.StatusCode)
+		}
+	}
+}
+
+func TestDeleteNestedPrunesEmptyFolders(t *testing.T) {
+	dir := t.TempDir()
+	ts := httptest.NewServer(Handler(dir, nil, nil))
+	defer ts.Close()
+
+	nested := filepath.Join(dir, "Live sets", "deep")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "demo.aumproj"), templateBytes(t), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/aum-session/Live%20sets/deep/demo.aumproj", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Live sets")); !os.IsNotExist(err) {
+		t.Fatalf("emptied subfolder was not pruned (err=%v)", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("staging root must survive pruning: %v", err)
+	}
+}
+
+func TestDeleteAllClearsNestedFiles(t *testing.T) {
+	dir := t.TempDir()
+	ts := httptest.NewServer(Handler(dir, nil, nil))
+	defer ts.Close()
+
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for _, p := range []string{"root.aumproj", filepath.Join("sub", "nested.aumproj")} {
+		if err := os.WriteFile(filepath.Join(dir, p), templateBytes(t), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/aum-session", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE all: %v", err)
+	}
+	var res DeleteAllResult
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_ = resp.Body.Close()
+	if res.Deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", res.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub")); !os.IsNotExist(err) {
+		t.Fatalf("emptied subfolder was not pruned (err=%v)", err)
+	}
+}
+
 func TestUploadFallsBackToTitleForID(t *testing.T) {
 	dir := t.TempDir()
 	ts := httptest.NewServer(Handler(dir, nil, nil))

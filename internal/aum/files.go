@@ -6,7 +6,12 @@ package aum
 // and how a file is summarized for a listing. Keeping these in the aum package
 // means the two layers cannot drift on what "a session file" is.
 
-import "strings"
+import (
+	"io/fs"
+	"path"
+	"path/filepath"
+	"strings"
+)
 
 // File kinds returned by FileKind.
 const (
@@ -30,6 +35,60 @@ func FileKind(name string) string {
 // StripExt strips the staging extension(s) from a filename to recover its id.
 func StripExt(name string) string {
 	return strings.TrimSuffix(strings.TrimSuffix(name, ".aumproj"), ".aum_midimap")
+}
+
+// SafeRelPath validates a client- or agent-supplied staging-dir-relative path
+// and returns its canonical slash-separated form. It must point at a .aumproj /
+// .aum_midimap file, stay strictly inside the staging dir (no absolute paths,
+// no ".." traversal), and contain no hidden ("."-prefixed) segments. Filenames
+// and folder names are otherwise kept verbatim — the staged tree mirrors the
+// iPad's AUM folder, which freely uses spaces and unicode.
+func SafeRelPath(p string) (string, bool) {
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = path.Clean(strings.TrimLeft(p, "/"))
+	if p == "" || p == "." {
+		return "", false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || strings.HasPrefix(seg, ".") {
+			return "", false
+		}
+	}
+	if FileKind(p) == "" {
+		return "", false
+	}
+	return p, true
+}
+
+// WalkStaged visits every staged .aumproj / .aum_midimap under dir (at any
+// depth — staging mirrors the iPad's AUM folder tree), calling fn with the
+// file's slash-separated relative path, its full path, its kind, and its
+// FileInfo (nil when stat fails). Unreadable subtrees are skipped so one bad
+// folder does not hide the rest; a missing dir is returned as the underlying
+// not-exist error for the caller to classify.
+func WalkStaged(dir string, fn func(rel, full, kind string, info fs.FileInfo)) error {
+	return filepath.WalkDir(dir, func(full string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if full == dir {
+				return err
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		kind := FileKind(d.Name())
+		if kind == "" {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, full)
+		if rerr != nil {
+			return nil
+		}
+		info, _ := d.Info()
+		fn(filepath.ToSlash(rel), full, kind, info)
+		return nil
+	})
 }
 
 // FileSummary is the parsed, listing-level view of a staged session/midimap.
