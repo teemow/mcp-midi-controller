@@ -20,6 +20,25 @@ type ControlSurface struct {
 	Title   string `json:"title,omitempty"`
 
 	Devices []SurfaceDevice `json:"devices"`
+
+	// Sessions is the daemon's session-switch registry: one entry per staged
+	// session pinned to a Program Change on the reserved session-switch
+	// channel. The brain renders it as a switcher row; a tap emits the PC
+	// locally (AUM's hand-mapped global "Session Load" action fires) and sends
+	// a sessionSwitch frame upstream so the daemon re-syncs. Present on every
+	// push, so the switcher is fullState-cached in every registered session.
+	Sessions []SurfaceSession `json:"sessions,omitempty"`
+}
+
+// SurfaceSession is one registered cross-session switch: tapping it loads the
+// named session via the pinned Program Change.
+type SurfaceSession struct {
+	Name    string `json:"name"`
+	Program int    `json:"program"`
+	Channel int    `json:"channel"` // 1-based, like SurfaceMsg.Channel
+	// Current marks the daemon's current session (the one this manifest was
+	// derived from / last switched to).
+	Current bool `json:"current,omitempty"`
 }
 
 // SurfaceDevice is one session-derived device (the session device or one

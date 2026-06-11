@@ -95,6 +95,13 @@ func DesiredStatePath() string { return filepath.Join(StateDir(), "desired-state
 // restarts. Volatile (state dir), never committed.
 func CurrentAUMSessionPath() string { return filepath.Join(StateDir(), "current-aum-session.json") }
 
+// AUMSessionSwitchPath is the persisted PC-to-session registry: which staged
+// session each Program Change on the session-switch channel loads. Programs
+// are pinned — the user's hand-wired AUM global "Session Load" mappings depend
+// on them — so the file lives in the state dir but survives re-registration
+// (entries are never renumbered).
+func AUMSessionSwitchPath() string { return filepath.Join(StateDir(), "aum-session-switch.json") }
+
 // AUv3ProbesDir is the staging dir for AUv3 parameter-tree dumps shipped by the
 // off-daemon cmd/auv3-probe receiver and ingested via import_auv3_probe. It is
 // volatile (under the state dir), not rig-as-code: the dumps are a throwaway

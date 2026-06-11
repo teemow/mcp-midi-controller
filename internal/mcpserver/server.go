@@ -62,6 +62,13 @@ type Server struct {
 	// interleave.
 	aumImportMu sync.Mutex
 
+	// sessionSwitchMu serializes the session-switch registry's
+	// load-mutate-save cycle (register / remove): concurrent mutations must
+	// never drop an entry or double-assign a program — the user's hand-wired
+	// AUM "Session Load" mappings depend on the pins. Plain readers need no
+	// lock (saves are atomic writes). See aum_session_switch.go.
+	sessionSwitchMu sync.Mutex
+
 	// usbAllowWrites is the daemon's master USB write gate (config
 	// usb_allow_writes). With it off, USB write tools (set_param, write_pattern,
 	// recall_pattern, select_preset) are never registered and a real usb_write

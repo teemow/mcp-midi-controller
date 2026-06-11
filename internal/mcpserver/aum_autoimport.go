@@ -183,7 +183,7 @@ func (s *Server) pushControlSurface(o *aumImportOutcome) {
 	if s.midi == nil || len(o.surface) == 0 {
 		return
 	}
-	frame := buildControlSurface(o)
+	frame := s.buildControlSurface(o)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.midi.SendJSON(ctx, frame); err != nil {
@@ -198,12 +198,15 @@ func (s *Server) pushControlSurface(o *aumImportOutcome) {
 // buildControlSurface reduces the import outcome's created devices to the
 // compact controlSurface frame the brain renders: per control its widget kind
 // plus the exact wire message — the same DeriveRig output the control_* tools
-// speak, so surface taps and tool calls emit identical MIDI.
-func buildControlSurface(o *aumImportOutcome) midicontrol.ControlSurface {
+// speak, so surface taps and tool calls emit identical MIDI. The session-switch
+// registry rides along as the sessions section, so EVERY import/connect push
+// carries the switcher (and the brain fullState-caches it per session).
+func (s *Server) buildControlSurface(o *aumImportOutcome) midicontrol.ControlSurface {
 	cs := midicontrol.ControlSurface{
-		Type:    midicontrol.ControlSurfaceType,
-		Session: o.sessionID,
-		Title:   o.title,
+		Type:     midicontrol.ControlSurfaceType,
+		Session:  o.sessionID,
+		Title:    o.title,
+		Sessions: s.surfaceSessions(),
 	}
 	for _, src := range o.surface {
 		dev := midicontrol.SurfaceDevice{Name: src.logical}
