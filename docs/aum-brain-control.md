@@ -56,9 +56,11 @@ What "deep enough" still requires:
   scene CCs authored as "ch1" were stored `ch=1` = MIDI ch2.)
 - **Global actions are invisible to the file model.** AUM stores **Session Load**
   and some **Tempo Preset** actions **globally**, not inside the `.aumproj`, so
-  they do **not** appear in `get_aum_session`. The session model is blind to the
-  exact lever that does cross-session scene changes — a gap to close (track the
-  global action set, or own session-switch a different way).
+  they do **not** appear in `get_aum_session`. The daemon therefore cannot
+  *author* the cross-session lever — it owns it a different way: the
+  **session-switch registry** (see below) pins each staged session to a Program
+  Change on the reserved channel 16, and the user hand-maps AUM's global
+  "Session Load" action to that PC once via Learn.
 - **Message-type gaps — mostly closed.** The version-13 `specState` `type` enum
   is now mapped (`docs/research/aum-session.md`): 0 = CC, 1 = Note, **2 =
   Program Change**, **3 = Pitch Bend / Channel Pressure** (split by `data1`).
@@ -137,7 +139,7 @@ further out, the north-star scriptable on-device host.
 | Automatic import + manifest push | **done** — on session download to the iPad and on brain connect (`aum_auto_import`, default on); broadcasts `aum-rig`, pushes the `controlSurface` frame |
 | Brain control surface UI (on-device, offline-capable) | **done** — the brain caches the manifest in its AU `fullState` and renders faders/toggles/triggers/enums/presets that emit locally into AUM, no daemon round-trip |
 | Scene engine driving the brain via the standard map | **not yet** — scenes exist; wiring them to a session-baked brain mapping is open |
-| Cross-session **Session Load** by the brain | **open** — global actions are invisible to the file model |
+| Cross-session **Session Load** by the brain | **done** — the session-switch registry pins PCs on channel 16; `switch_aum_session` and the brain's switcher row both fire them (one-time AUM Learn wiring per session) |
 | PC authoring (preset recall) | **done** — `specState` type 2 mapped and importable |
 | Pitch Bend / Channel Pressure | **read-only** — parsed (`specState` type 3) but no control type in the device model or brain protocol; `DeriveRig` reports them as skipped |
 | Live brain-driven scene-change loop on-device | **not yet** — the next end-to-end goal |
@@ -163,13 +165,44 @@ further out, the north-star scriptable on-device host.
 The same `DeriveRig` output drives the MCP `control_*` tools and the web UI, so
 all three surfaces (agent, browser, iPad) emit identical MIDI.
 
+### Cross-session switching (implemented)
+
+AUM's "Session Load" is a **global** action — never stored in the `.aumproj` —
+so the daemon cannot author it. Instead it owns a **session-switch registry**
+(`aum-session-switch.json` in the state dir): each staged session is pinned to a
+Program Change on the reserved session-switch channel
+(`device.SessionSwitchChannel` = 16; PCs cannot collide with the tap CCs that
+share the channel, and preset-load PCs stay on the binding channel 1..15).
+Programs are **never renumbered** — the user's hand-wired AUM mappings depend
+on them; removing an entry leaves a hole.
+
+- **Registry tools:** `register_aum_session_switch {session, program?}` pins a
+  session (next free program by default), `list_aum_session_switches` lists the
+  registry with a per-entry Learn cheat-sheet ("AUM > MIDI Control > Session
+  Load `<name>` ← PC `<program>` ch16") and marks the current session,
+  `remove_aum_session_switch {session}` unpins.
+- **One-time AUM wiring per session:** open MIDI Control → add "Session Load
+  `<session>`" → arm Learn → call `switch_aum_session` for that entry to bind
+  the PC. From then on the switch is a single PC.
+- **Switching, daemon side:** `switch_aum_session {session|program}` sends the
+  PC through the brain hub, sets the target as the daemon's current session,
+  re-imports its rig and re-pushes the manifest, and broadcasts
+  `aum-session-switch` — so the `control_*` tools, web UI and brain surface all
+  target the new rig.
+- **Switching, brain side:** the manifest's `sessions` section renders as a
+  switcher row above the device rack (fullState-cached per session like the
+  rest of the surface, so it works offline). A tap emits the PC locally into
+  AUM **and** sends a `{"type":"sessionSwitch","program":N}` frame upstream;
+  the daemon resolves it via the registry and follows (current session,
+  re-import, re-push). With the daemon offline the local PC still switches the
+  session, and the daemon re-syncs on the next connect.
+
 ### Next steps (rough order)
 
 1. **Wire the scene engine to the brain** — make `recall_scene` express scenes as
    the standard CCs the brain emits, so a scene is a brain action, not just a
    daemon action.
-2. **Close the remaining session model gaps** — model AUM's global Session-Load
-   action set so cross-session changes are first-class; confirm the packed-`spec`
+2. **Close the remaining session model gaps** — confirm the packed-`spec`
    codes for PC/PBEND/CHPRS.
 3. **Prove the live loop** — brain (or footswitch) → standard mapping → scene /
    session change, verified on-device via the audio tap.

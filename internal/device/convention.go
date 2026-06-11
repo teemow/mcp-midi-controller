@@ -60,6 +60,16 @@ func ConventionTransportCC(target string) (int, bool) {
 // disk as TapControlChannel-1 (= 15), like every other AUM channel field.
 const TapControlChannel = 16
 
+// SessionSwitchChannel is the reserved 1-based MIDI channel for cross-session
+// Session Load Program Changes: the daemon's session-switch registry pins one
+// PC program per staged session, and the user hand-maps AUM's global "Session
+// Load" actions (never stored in the .aumproj) to PCs on this channel. It
+// shares channel 16 with the tap toggles deliberately — taps are CCs, session
+// switches are PCs, distinct message types that cannot collide — while staying
+// clear of the preset-load PCs, which ride the binding channel (1..15). See
+// docs/research/aum.md ("Session / Preset load").
+const SessionSwitchChannel = 16
+
 const (
 	// tapStartCC / tapMaxCC bound the contiguous CC block tap-bypass toggles
 	// occupy on TapControlChannel: 77..95, a band clear of the mixer (≤76),

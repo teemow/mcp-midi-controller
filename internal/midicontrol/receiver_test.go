@@ -21,10 +21,10 @@ func TestHubPushesCommands(t *testing.T) {
 	var connects, disconnects atomic.Int32
 
 	mux := http.NewServeMux()
-	Register(mux, hub,
-		func(string) { connects.Add(1) },
-		func(string) { disconnects.Add(1) },
-	)
+	Register(mux, hub, Callbacks{
+		OnConnect:    func(string) { connects.Add(1) },
+		OnDisconnect: func(string) { disconnects.Add(1) },
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -105,7 +105,7 @@ func TestHubPushesCommands(t *testing.T) {
 func TestHubSendJSONControlSurface(t *testing.T) {
 	hub := NewHub()
 	mux := http.NewServeMux()
-	Register(mux, hub, nil, nil)
+	Register(mux, hub, Callbacks{})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -174,5 +174,52 @@ func TestHubSendJSONControlSurface(t *testing.T) {
 	}
 	if err := hub.SendJSON(ctx, frame); err != ErrNoBrain {
 		t.Fatalf("SendJSON after disconnect = %v, want ErrNoBrain", err)
+	}
+}
+
+// TestReceiverDispatchesSessionSwitchFrames sends brain→daemon frames and
+// asserts only well-formed sessionSwitch frames reach the callback — the
+// upstream half of the cross-session switcher (the brain emitted the PC into
+// AUM locally and tells the daemon to follow).
+func TestReceiverDispatchesSessionSwitchFrames(t *testing.T) {
+	hub := NewHub()
+	programs := make(chan int, 4)
+	mux := http.NewServeMux()
+	Register(mux, hub, Callbacks{OnSessionSwitch: func(program int) { programs <- program }})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/midi-control", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.CloseNow() }()
+
+	// Noise first: a non-JSON frame and an unknown type are drained silently.
+	if err := c.Write(ctx, websocket.MessageText, []byte("not json")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"ack","program":9}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// The real thing.
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"sessionSwitch","program":3}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case got := <-programs:
+		if got != 3 {
+			t.Fatalf("dispatched program = %d, want 3", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("sessionSwitch frame never dispatched")
+	}
+	select {
+	case got := <-programs:
+		t.Fatalf("unexpected extra dispatch (program %d) — noise frames must be ignored", got)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

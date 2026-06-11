@@ -235,15 +235,18 @@ func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server, a
 		func(remote string) { srv.NotifyHostDiagnostics(true, remote) },
 		func(remote string) { srv.NotifyHostDiagnostics(false, remote) },
 	)
-	midicontrol.Register(mux, midiHub,
-		func(remote string) {
+	midicontrol.Register(mux, midiHub, midicontrol.Callbacks{
+		OnConnect: func(remote string) {
 			srv.NotifyMidiControl(true, remote)
 			// Re-import the current session's rig and push the control-surface
 			// manifest to the freshly connected brain (config-gated, async).
 			srv.OnMidiControlConnected()
 		},
-		func(remote string) { srv.NotifyMidiControl(false, remote) },
-	)
+		OnDisconnect: func(remote string) { srv.NotifyMidiControl(false, remote) },
+		// The brain's switcher row was tapped: follow the session switch
+		// (update the current session, re-import, re-push). Async inside.
+		OnSessionSwitch: srv.OnBrainSessionSwitch,
+	})
 
 	log.Printf("iPad receiver listening on %s (auv3 probes -> %s, aum sessions -> %s, audio tap -> ws /audio-stream, diagnostics -> ws /diagnostics, midi control -> ws /midi-control)", addr, probesDir, sessionsDir)
 	return lanhttp.Serve(ctx, addr, mux)

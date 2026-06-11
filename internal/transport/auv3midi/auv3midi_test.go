@@ -80,7 +80,9 @@ func TestSendRoutesToBrain(t *testing.T) {
 	var connects atomic.Int32
 
 	mux := http.NewServeMux()
-	midicontrol.Register(mux, hub, func(string) { connects.Add(1) }, nil)
+	midicontrol.Register(mux, hub, midicontrol.Callbacks{
+		OnConnect: func(string) { connects.Add(1) },
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

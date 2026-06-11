@@ -394,6 +394,55 @@ func (s *Server) registerAUMTools() {
 			"required": ["collection"]
 		}`),
 	}, s.handleExportAUMMidiMap)
+
+	// Session switching: the persisted PC-to-session registry behind the
+	// brain's switcher row and AUM's hand-mapped global "Session Load"
+	// actions. Handlers live in aum_session_switch.go.
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "register_aum_session_switch",
+		Description: "Pin a staged AUM session to a Program Change on the reserved session-switch channel (16), so it becomes switchable: by switch_aum_session and by the brain's on-device switcher row. " +
+			"Programs are pinned forever (never renumbered) because the user hand-maps AUM's global \"Session Load\" action to each PC once via Learn — the returned setup line is that one-time wiring. Re-pushes the control-surface manifest so a connected brain shows the new entry.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"session": {"type": "string", "description": "Staged session id to pin (see list_aum_sessions)."},
+				"program": {"type": "integer", "description": "Explicit PC program 0..127 (default: the next free one)."}
+			},
+			"required": ["session"]
+		}`),
+	}, s.handleRegisterAUMSessionSwitch)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "list_aum_session_switches",
+		Description: "List the session-switch registry: per entry the pinned PC program, the staged session, and the one-time AUM Learn wiring cheat-sheet line (\"AUM > MIDI Control > Session Load <name> <- PC <program> ch16\"). " +
+			"Marks the daemon's current session.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}, s.handleListAUMSessionSwitches)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "remove_aum_session_switch",
+		Description: "Remove a session from the session-switch registry. Its program becomes a hole (other entries are never renumbered, so their hand-wired AUM mappings keep working); remember to also delete the matching Session Load action in AUM's MIDI Control.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"session": {"type": "string", "description": "Registered session id (see list_aum_session_switches)."}
+			},
+			"required": ["session"]
+		}`),
+	}, s.handleRemoveAUMSessionSwitch)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "switch_aum_session",
+		Description: "Switch AUM to a registered session: send its pinned Program Change through the brain (AUM fires the hand-mapped global Session Load), set it as the daemon's current session, re-import its rig and re-push the control-surface manifest — so the control_* tools, web UI and brain surface all target the new session. " +
+			"Requires a connected brain and the one-time AUM wiring from register_aum_session_switch.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"session": {"type": "string", "description": "Registered session id to switch to."},
+				"program": {"type": "integer", "description": "Or the pinned PC program (overridden by session)."}
+			}
+		}`),
+	}, s.handleSwitchAUMSession)
 }
 
 // --- list / get -----------------------------------------------------------

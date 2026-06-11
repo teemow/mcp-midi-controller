@@ -154,7 +154,7 @@ func TestBuildControlSurfaceFromImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	frame := buildControlSurface(o)
+	frame := s.buildControlSurface(o)
 
 	if frame.Type != midicontrol.ControlSurfaceType {
 		t.Fatalf("frame type = %q, want %q", frame.Type, midicontrol.ControlSurfaceType)

@@ -213,6 +213,18 @@ on the **same** channel makes one PC fire both — bind them on **separate
 channels** (or drive presets through the per-plugin auv3 probe workflow) to keep
 them independent. The scene engine sends PC before CC, so these recall first.
 
+**Session-switch channel convention:** `session_load` PCs ride the reserved
+channel **16** (`device.SessionSwitchChannel`), while `preset_load` PCs stay on
+the binding channel (1..15) — that separation keeps the two independent as
+required above. Channel 16 is shared with the tap-bypass toggles
+(`device.TapControlChannel`), which is safe because taps are **CCs** and session
+switches are **PCs**: distinct message types that cannot collide. The daemon
+owns a persisted PC-to-session registry (`aum-session-switch.json` in the state
+dir, see `register_aum_session_switch` / `switch_aum_session`); AUM's global
+"Session Load" actions are hand-mapped once per session (they are global state,
+never stored in the `.aumproj`, so the daemon cannot author them — use the
+Learn cheat-sheet from `list_aum_session_switches`).
+
 ### MMC over SysEx (alternative transport path)
 
 Channel-less SysEx (the binding channel does not apply). Requires AUM Transport
