@@ -247,7 +247,7 @@ func (s *Server) handleRegisterAUMSessionSwitch(_ context.Context, req *mcp.Call
 		return structResult(fmt.Sprintf("session %q already registered on program %d (name refreshed)\nsetup: %s", id, existing.Program, row.Setup), row), nil
 	}
 
-	program := -1
+	var program int
 	if args.Program != nil {
 		program = *args.Program
 		if program < 0 || program > 127 {
