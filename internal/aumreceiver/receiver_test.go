@@ -329,6 +329,104 @@ func TestManifestAndDownloadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestManifestRevBumpsAndShortCircuits covers the staging rev contract the
+// iPad's sync engine polls against: every write (upload, delete, clear-all)
+// bumps the manifest rev, and GET /aum-session?rev=<current> answers 304
+// without a body.
+func TestManifestRevBumpsAndShortCircuits(t *testing.T) {
+	dir := t.TempDir()
+	ts := httptest.NewServer(Handler(dir, nil, nil))
+	defer ts.Close()
+
+	manifestRev := func() int64 {
+		t.Helper()
+		resp, err := http.Get(ts.URL + "/aum-session")
+		if err != nil {
+			t.Fatalf("GET manifest: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var man Manifest
+		if err := json.NewDecoder(resp.Body).Decode(&man); err != nil {
+			t.Fatalf("decode manifest: %v", err)
+		}
+		return man.Rev
+	}
+
+	if rev := manifestRev(); rev != 0 {
+		t.Fatalf("fresh staging rev = %d, want 0", rev)
+	}
+
+	// Upload bumps.
+	resp, err := http.Post(ts.URL+"/aum-session?path=Live%20sets/Demo.aumproj",
+		"application/octet-stream", bytes.NewReader(templateBytes(t)))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	rev := manifestRev()
+	if rev != 1 {
+		t.Fatalf("rev after upload = %d, want 1", rev)
+	}
+
+	// Polling with the current rev short-circuits to 304.
+	resp, err = http.Get(ts.URL + "/aum-session?rev=1")
+	if err != nil {
+		t.Fatalf("GET manifest?rev=1: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("poll with current rev: status = %d, want 304", resp.StatusCode)
+	}
+	// A stale rev still yields the full manifest.
+	resp, err = http.Get(ts.URL + "/aum-session?rev=0")
+	if err != nil {
+		t.Fatalf("GET manifest?rev=0: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("poll with stale rev: status = %d, want 200", resp.StatusCode)
+	}
+
+	// Delete bumps.
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/aum-session/Live%20sets/Demo.aumproj", nil)
+	dresp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	_ = dresp.Body.Close()
+	if rev = manifestRev(); rev != 2 {
+		t.Fatalf("rev after delete = %d, want 2", rev)
+	}
+
+	// Clear-all on an already-empty dir does NOT bump (nothing changed)…
+	req, _ = http.NewRequest(http.MethodDelete, ts.URL+"/aum-session", nil)
+	dresp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE all: %v", err)
+	}
+	_ = dresp.Body.Close()
+	if rev = manifestRev(); rev != 2 {
+		t.Fatalf("rev after no-op clear = %d, want 2", rev)
+	}
+
+	// …but a clear-all that removes files does.
+	resp, err = http.Post(ts.URL+"/aum-session?name=again.aumproj",
+		"application/octet-stream", bytes.NewReader(templateBytes(t)))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	req, _ = http.NewRequest(http.MethodDelete, ts.URL+"/aum-session", nil)
+	dresp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE all: %v", err)
+	}
+	_ = dresp.Body.Close()
+	if rev = manifestRev(); rev != 4 {
+		t.Fatalf("rev after upload+clear = %d, want 4", rev)
+	}
+}
+
 func TestDownloadInvokesOnDownloaded(t *testing.T) {
 	dir := t.TempDir()
 	var downloaded []string

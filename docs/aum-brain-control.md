@@ -197,6 +197,44 @@ on them; removing an entry leaves a hole.
   re-import, re-push). With the daemon offline the local PC still switches the
   session, and the daemon re-syncs on the next connect.
 
+### Testing process — iterate on copies, never on the originals
+
+The author→sync→load loop above (staging mirror, auto-download, auto-import,
+session switching) is **not proven end-to-end yet**. Until it is, the user's
+original `.aumproj` sessions are treated as **read-only masters** — a bug in the
+serializer, an instrumentation pass, or AUM saving over a half-broken session
+must never cost a real session. The process is:
+
+1. **Generate copies from the originals.** For every session selected for the
+   load list, create a **byte-identical copy** next to the original in the
+   staging tree, suffixed ` (mcp test)` (plain file copy — no round-trip
+   through the serializer, so the copy is exactly the original). Regenerate a
+   copy from its original whenever the original changes on the iPad (the
+   mirror sync keeps the staged originals current) or a test copy needs a
+   clean reset.
+2. **Feature work and tests iterate over the copies only.**
+   `instrument_aum_session`, `edit_aum_session`, imports, brain/manifest tests
+   — all of it targets the ` (mcp test)` ids. Never write to an original id.
+3. **The session-switch registry pins the copies.** The load list
+   (`register_aum_session_switch`) points at the copy ids, so
+   `switch_aum_session` and the brain's switcher row only ever load test
+   copies. Note: the switcher button label comes from the session's *internal*
+   title, which the byte-copy preserves — the button says the original name
+   while loading the copy.
+4. **The user loads the copies.** The automatic session sync is upload-only
+   (iPad → daemon); staged copies reach the iPad via the auv3-probe app's
+   per-entry **download** action (which writes each file back to its mirrored
+   folder in the AUM tree). In AUM the user opens the ` (mcp test)` session
+   (not the original) and wires each global "Session Load" action to the
+   **copy file** via the registry's Learn cheat-sheet
+   (`list_aum_session_switches`).
+5. **Graduate when proven.** Once the whole workflow is trusted, apply the
+   final instrumentation to the originals and re-pin the registry — the copies
+   are then disposable.
+
+The concrete rig-specific list (which sessions, copy ids, pinned programs) is
+private: `docs/private/aum-projects.md`.
+
 ### Next steps (rough order)
 
 1. **Wire the scene engine to the brain** — make `recall_scene` express scenes as

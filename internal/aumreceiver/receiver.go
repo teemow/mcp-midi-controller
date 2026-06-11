@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,7 +78,13 @@ type ManifestEntry struct {
 // Manifest is the GET /aum-session response: every stageable file the iPad can
 // download.
 type Manifest struct {
-	Dir      string          `json:"dir"`
+	Dir string `json:"dir"`
+	// Rev is the staging dir's monotonic change counter (aum.StagingRev),
+	// bumped on every write — receiver uploads/deletes AND MCP-tool
+	// author/edit/instrument/export. The app polls `GET /aum-session?rev=<n>`
+	// with the last rev it saw and gets a 304 when nothing changed, so an
+	// idle poll never walks or re-parses the staged tree.
+	Rev      int64           `json:"rev"`
 	Sessions []ManifestEntry `json:"sessions"`
 }
 
@@ -94,7 +101,8 @@ type Manifest struct {
 // Routes:
 //
 //	POST   /aum-session            stage one uploaded .aumproj (raw bplist bytes)
-//	GET    /aum-session            manifest of stageable sessions/midimaps (JSON)
+//	GET    /aum-session            manifest of stageable sessions/midimaps (JSON;
+//	                               ?rev=<n> answers 304 when the staging rev matches)
 //	GET    /aum-session/{file...}  download a staged .aumproj / .aum_midimap
 //	DELETE /aum-session/{file...}  remove one staged file
 //	DELETE /aum-session            clear all staged files
@@ -188,6 +196,7 @@ func handleUpload(outDir string, onStaged func(Result)) http.HandlerFunc {
 				_ = os.Chtimes(dest, t, t)
 			}
 		}
+		aum.BumpStagingRev(outDir)
 
 		res := Result{
 			ID:       aum.StripExt(rel),
@@ -216,9 +225,23 @@ func handleUpload(outDir string, onStaged func(Result)) http.HandlerFunc {
 // ones the aum tools authored/edited). Each entry's session summary is
 // best-effort: an unreadable file is still listed with its error so it is
 // visible, not silently dropped.
+//
+// With ?rev=<n> the handler answers 304 Not Modified when n equals the current
+// staging rev, before walking (or parsing) anything — the cheap poll the iPad's
+// sync engine runs while foregrounded. The rev is read BEFORE the walk so a
+// write racing the walk yields a stale rev (and a prompt re-fetch), never a
+// fresh rev on stale content.
 func handleManifest(outDir string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		man := Manifest{Dir: outDir, Sessions: []ManifestEntry{}}
+	return func(w http.ResponseWriter, r *http.Request) {
+		rev := aum.StagingRev(outDir)
+		if q := r.URL.Query().Get("rev"); q != "" {
+			if seen, err := strconv.ParseInt(q, 10, 64); err == nil && seen == rev {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+
+		man := Manifest{Dir: outDir, Rev: rev, Sessions: []ManifestEntry{}}
 		err := aum.WalkStaged(outDir, func(rel, full, kind string, info fs.FileInfo) {
 			entry := ManifestEntry{
 				ID:   aum.StripExt(rel),
@@ -313,6 +336,7 @@ func handleDelete(outDir string) http.HandlerFunc {
 			return
 		}
 		pruneEmptyDirs(outDir, filepath.Dir(full))
+		aum.BumpStagingRev(outDir)
 		log.Printf("deleted staged AUM session %s", full)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -358,6 +382,9 @@ func handleDeleteAll(outDir string) http.HandlerFunc {
 		}
 		for _, d := range dirs {
 			pruneEmptyDirs(outDir, d)
+		}
+		if deleted > 0 {
+			aum.BumpStagingRev(outDir)
 		}
 		log.Printf("cleared %d staged AUM session(s) from %s", deleted, outDir)
 		writeJSON(w, DeleteAllResult{Deleted: deleted})

@@ -164,8 +164,16 @@ func TestAUMToolsNestedSessionPaths(t *testing.T) {
 	if !strings.Contains(resultText(res), edited) {
 		t.Fatalf("edit did not stage back to the nested path %s:\n%s", edited, resultText(res))
 	}
-	if entries, err := os.ReadDir(config.AUMSessionsDir()); err != nil || len(entries) != 1 {
-		t.Fatalf("staging root polluted by edit (entries=%v, err=%v)", entries, err)
+	// The root must hold only the "Live sets" folder (plus the hidden .rev
+	// staging counter every write maintains) — no stray session files.
+	entries, err := os.ReadDir(config.AUMSessionsDir())
+	if err != nil {
+		t.Fatalf("read staging root: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "Live sets" && e.Name() != ".rev" {
+			t.Fatalf("staging root polluted by edit (unexpected entry %q)", e.Name())
+		}
 	}
 
 	// The import outcome's session id matches the staging-relative id the

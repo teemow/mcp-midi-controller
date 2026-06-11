@@ -2300,6 +2300,10 @@ func stageAUMFile(id, ext string, data []byte) (fullPath, file string, err error
 	if err := os.WriteFile(fullPath, data, 0o644); err != nil {
 		return "", "", err
 	}
+	// Every MCP-tool write counts as a staging change: bump the shared rev so
+	// the iPad's manifest poll (GET /aum-session?rev=) sees authored/edited
+	// files, not just receiver uploads.
+	aum.BumpStagingRev(config.AUMSessionsDir())
 	return fullPath, file, nil
 }
 
