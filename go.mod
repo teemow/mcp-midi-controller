@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/beevik/etree v1.6.0
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/teemow/midi-device v0.1.0
