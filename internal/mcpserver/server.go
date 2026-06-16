@@ -16,7 +16,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/config"
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 	"github.com/teemow/mcp-midi-controller/internal/midicontrol"

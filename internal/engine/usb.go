@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/transport"
-	"github.com/teemow/mcp-midi-controller/internal/usbcodec"
+	"github.com/teemow/midi-device/device/usbcodec"
 )
 
 // This file is the engine's USB editor/readback surface: a request/reply

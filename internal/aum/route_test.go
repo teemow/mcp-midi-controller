@@ -3,7 +3,7 @@ package aum
 import (
 	"testing"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // loopSpec authors a minimal loop-ready layout: a MIDI strip hosting a "brain"

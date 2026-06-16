@@ -29,7 +29,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // discoveredDevice is one candidate surfaced by discover_devices. Source is the

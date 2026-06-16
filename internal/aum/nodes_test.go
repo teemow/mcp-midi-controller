@@ -3,7 +3,7 @@ package aum
 import (
 	"testing"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // nsState resolves a node's archiveNodeState into a plain key->dereferenced

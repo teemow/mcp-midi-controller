@@ -33,7 +33,7 @@ package aum
 // the structural topology — the thing being replicated — is identical either
 // way.
 
-import "github.com/teemow/mcp-midi-controller/internal/device"
+import "github.com/teemow/midi-device/device"
 
 // GradedSession is one rung of the S1..S5 ladder: a stable id (for staging /
 // addressing), a human title and one-line description, and the BuildSpec that

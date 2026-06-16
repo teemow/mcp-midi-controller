@@ -7,6 +7,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/teemow/midi-device v0.1.0
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
 	gitlab.com/gomidi/midi/v2 v2.3.23

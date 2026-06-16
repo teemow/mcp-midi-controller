@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // gradedExpect captures the structural facts each rung must satisfy, derived

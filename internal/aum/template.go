@@ -17,7 +17,7 @@ package aum
 // tree of (placeholder) leaves in the version-13 specState encoding, and a
 // transport clock. It exercises every shape the readers and editors handle.
 
-import "github.com/teemow/mcp-midi-controller/internal/device"
+import "github.com/teemow/midi-device/device"
 
 // TemplateComponent is the synthetic AUv3 component the template's hosted node
 // carries. Its FourCCs are deliberately generic placeholders, not a real

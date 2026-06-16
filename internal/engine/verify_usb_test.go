@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // verifyUSBYAML is a device with a BLE control ("patch") whose name matches a

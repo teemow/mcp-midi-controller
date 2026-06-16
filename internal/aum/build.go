@@ -24,7 +24,7 @@ package aum
 import (
 	"fmt"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // BuildSpec describes a session to author from scratch. The zero value is not

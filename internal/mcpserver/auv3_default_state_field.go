@@ -22,7 +22,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 func (s *Server) handleSetAUv3DefaultStateField(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
