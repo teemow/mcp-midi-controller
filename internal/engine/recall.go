@@ -8,7 +8,7 @@ import (
 
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // SaveScene snapshots the current desired-state into a named scene. When

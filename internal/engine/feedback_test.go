@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // fakeTransport is an in-memory transport for the feedback tests. It records

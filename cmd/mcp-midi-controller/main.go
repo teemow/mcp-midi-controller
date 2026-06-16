@@ -19,7 +19,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
-	"github.com/teemow/mcp-midi-controller/internal/auv3receiver"
+	"github.com/teemow/midi-transport/auv3"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
@@ -27,13 +27,13 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/mcpserver"
 	"github.com/teemow/mcp-midi-controller/internal/mdns"
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
-	"github.com/teemow/mcp-midi-controller/internal/transport/auv3midi"
-	"github.com/teemow/mcp-midi-controller/internal/transport/blemidi"
-	"github.com/teemow/mcp-midi-controller/internal/transport/osc"
-	"github.com/teemow/mcp-midi-controller/internal/transport/usbhid"
-	"github.com/teemow/mcp-midi-controller/internal/transport/usbmidi"
+	"github.com/teemow/midi-transport/midicontrol"
+	"github.com/teemow/midi-transport"
+	"github.com/teemow/midi-transport/auv3midi"
+	"github.com/teemow/midi-transport/blemidi"
+	"github.com/teemow/midi-transport/osc"
+	"github.com/teemow/midi-transport/usbhid"
+	"github.com/teemow/midi-transport/usbmidi"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -216,7 +216,7 @@ func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server, a
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
-	auv3receiver.Register(mux, probesDir, func(dump device.ProbeDump, res auv3receiver.Result) {
+	auv3.Register(mux, probesDir, func(dump device.ProbeDump, res auv3.Result) {
 		srv.NotifyAUv3Probe(res.ID, dump.Name, res.Params, res.Writable)
 	})
 	aumreceiver.Register(mux, sessionsDir,

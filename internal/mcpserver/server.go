@@ -19,7 +19,7 @@ import (
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
+	"github.com/teemow/midi-transport/midicontrol"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 )

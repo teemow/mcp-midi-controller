@@ -12,7 +12,7 @@ import (
 
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // fakeBLE is a no-op transport that claims the "blemidi" id so authored

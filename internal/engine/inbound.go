@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // InboundEvent is a decoded inbound transport event annotated with its source.

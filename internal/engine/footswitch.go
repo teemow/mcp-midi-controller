@@ -9,7 +9,7 @@ import (
 
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // defaultOSCPort is the X32's OSC/UDP control port, used when a binding's OSC

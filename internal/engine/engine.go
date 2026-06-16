@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // defaultTransport is the transport used when a tool call omits one. BLE-MIDI

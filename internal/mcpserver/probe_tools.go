@@ -15,7 +15,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // probeDefaultDurationMS is how long probe_sound holds the notes (and thus how

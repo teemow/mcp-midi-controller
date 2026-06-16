@@ -7,7 +7,7 @@ import (
 
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // fakeDiscoverBLE is a blemidi transport that returns a fixed set of endpoints

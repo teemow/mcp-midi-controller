@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 	"github.com/teemow/midi-device/device/usbcodec"
 )
 

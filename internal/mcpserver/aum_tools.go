@@ -32,7 +32,7 @@ import (
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 	"github.com/teemow/midi-device/device/sanitize"
-	"github.com/teemow/mcp-midi-controller/internal/transport/auv3midi"
+	"github.com/teemow/midi-transport/auv3midi"
 )
 
 // auv3midiTransport is the transport id the AUM session rig speaks (the LAN
