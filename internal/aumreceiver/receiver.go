@@ -30,7 +30,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/aum"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
-	"github.com/teemow/mcp-midi-controller/internal/sanitize"
+	"github.com/teemow/midi-device/device/sanitize"
 )
 
 // resp renders this receiver's LAN errors without leaking internal detail.

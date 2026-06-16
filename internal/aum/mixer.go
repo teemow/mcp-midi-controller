@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
-	"github.com/teemow/mcp-midi-controller/internal/sanitize"
+	"github.com/teemow/midi-device/device"
+	"github.com/teemow/midi-device/device/sanitize"
 )
 
 // mixerStripControl maps one convention "Channel controls" target to the

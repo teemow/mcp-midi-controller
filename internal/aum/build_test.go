@@ -3,7 +3,7 @@ package aum
 import (
 	"testing"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // buildTestSpec returns a representative authoring spec: two audio strips

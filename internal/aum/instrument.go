@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // InstrumentOptions tunes the banking allocator. The zero value is usable: it

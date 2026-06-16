@@ -16,7 +16,7 @@ package aum
 import (
 	"sort"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // Session is the typed view of a decoded AUM session (.aumproj). It wraps the

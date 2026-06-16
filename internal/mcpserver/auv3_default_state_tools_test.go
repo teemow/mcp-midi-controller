@@ -8,7 +8,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // gtr1Component is the tuple stageProbe writes; default states are matched to it.

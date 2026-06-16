@@ -28,7 +28,7 @@ package aum
 import (
 	"fmt"
 
-	"github.com/teemow/mcp-midi-controller/internal/device"
+	"github.com/teemow/midi-device/device"
 )
 
 // ProbeBrainNode / ProbeTapNode return NodeSpecs for the two rig plugins with
