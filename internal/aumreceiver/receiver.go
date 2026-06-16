@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/teemow/mcp-midi-controller/internal/aum"
+	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/midi-device/device/sanitize"
 )
