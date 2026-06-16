@@ -30,7 +30,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // WithAUMAutoImport enables the automatic session-rig import (config

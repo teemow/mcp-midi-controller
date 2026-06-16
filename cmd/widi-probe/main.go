@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/teemow/mcp-midi-controller/internal/transport"
-	"github.com/teemow/mcp-midi-controller/internal/transport/blemidi"
+	"github.com/teemow/midi-transport"
+	"github.com/teemow/midi-transport/blemidi"
 )
 
 // CME SysEx header (00 20 63 = CME manufacturer id, 0F = product group).

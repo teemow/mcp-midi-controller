@@ -35,7 +35,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // sessionSwitchEntry pins one staged session to one PC program. Name is the

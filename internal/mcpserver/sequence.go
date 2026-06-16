@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // The sequence feature lets one play_notes / probe_sound call execute a timed

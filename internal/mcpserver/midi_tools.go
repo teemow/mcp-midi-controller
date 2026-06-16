@@ -10,8 +10,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport/midicontrol"
+	"github.com/teemow/midi-transport"
 )
 
 // maxNoteDurationMS caps how long play_notes will hold a note (and block the

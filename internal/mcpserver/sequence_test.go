@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teemow/mcp-midi-controller/internal/midicontrol"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 func intp(v int) *int { return &v }

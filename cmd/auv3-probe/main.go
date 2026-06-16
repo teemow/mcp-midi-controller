@@ -37,7 +37,7 @@ import (
 
 	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
-	"github.com/teemow/mcp-midi-controller/internal/auv3receiver"
+	"github.com/teemow/midi-transport/auv3"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 )
@@ -66,7 +66,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
-	auv3receiver.Register(mux, *probes, nil)
+	auv3.Register(mux, *probes, nil)
 	aumreceiver.Register(mux, *sessions, nil, nil)
 
 	log.Printf("auv3-probe receiver listening on %s (auv3 probes -> %s, aum sessions -> %s)", *listen, *probes, *sessions)

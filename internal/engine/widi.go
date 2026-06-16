@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 	"github.com/teemow/mcp-midi-controller/internal/widi"
 )
 

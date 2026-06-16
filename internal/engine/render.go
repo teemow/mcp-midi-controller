@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/mcp-midi-controller/internal/transport"
+	"github.com/teemow/midi-transport"
 )
 
 // renderControl turns a validated control value into the transport event(s)
