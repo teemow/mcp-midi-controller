@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teemow/mcp-midi-controller/internal/aum"
+	"github.com/teemow/aum-session-go/aum"
 )
 
 // templateBytes returns a valid .aumproj byte stream (the synthetic template).

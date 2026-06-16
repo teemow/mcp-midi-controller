@@ -27,7 +27,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/teemow/mcp-midi-controller/internal/aum"
+	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"

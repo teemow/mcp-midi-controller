@@ -35,7 +35,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/teemow/mcp-midi-controller/internal/aum"
+	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
 	"github.com/teemow/mcp-midi-controller/internal/auv3receiver"
 	"github.com/teemow/mcp-midi-controller/internal/config"
