@@ -26,6 +26,9 @@ builds:
       # runner requires a per-arch C toolchain and ALSA pkg-config.
       - CGO_ENABLED=1
       - 'CC={{- if eq .Arch "arm64" }}aarch64-linux-gnu-gcc{{- else }}gcc{{- end }}'
+      # rtmidi is C++: cgo links its objects with CXX, which must also be the
+      # cross compiler or the arm64 link fails with "Relocations in generic ELF".
+      - 'CXX={{- if eq .Arch "arm64" }}aarch64-linux-gnu-g++{{- else }}g++{{- end }}'
       - 'PKG_CONFIG_PATH={{- if eq .Arch "arm64" }}/usr/lib/aarch64-linux-gnu/pkgconfig{{- else }}/usr/lib/x86_64-linux-gnu/pkgconfig{{- end }}'
     mod_timestamp: '{{ .CommitTimestamp }}'
     flags:

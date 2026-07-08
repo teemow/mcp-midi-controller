@@ -10,7 +10,7 @@ if [ -z "${CI:-}" ]; then
   exit 0
 fi
 
-if command -v aarch64-linux-gnu-gcc >/dev/null && [ -f /usr/lib/aarch64-linux-gnu/pkgconfig/alsa.pc ]; then
+if command -v aarch64-linux-gnu-g++ >/dev/null && [ -f /usr/lib/aarch64-linux-gnu/pkgconfig/alsa.pc ]; then
   echo "Cross-compile dependencies already installed."
   exit 0
 fi
@@ -45,4 +45,4 @@ Architectures: arm64
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
 sudo apt-get update
-sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev libasound2-dev:arm64
+sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev libasound2-dev:arm64
