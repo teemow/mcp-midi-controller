@@ -24,11 +24,14 @@ sudo python3 - <<'PYEOF'
 from pathlib import Path
 
 path = Path('/etc/apt/sources.list.d/ubuntu.sources')
-stanzas = [s for s in path.read_text().split('\n\n') if s.strip()]
 fixed = []
-for stanza in stanzas:
+# Deb822 stanzas are separated by blank lines. Only stanzas containing a
+# Types: field are real sources; comment-only blocks must stay untouched or
+# apt rejects the file as malformed.
+for stanza in path.read_text().split('\n\n'):
     lines = [l for l in stanza.splitlines() if not l.startswith('Architectures:')]
-    lines.append('Architectures: amd64')
+    if any(l.startswith('Types:') for l in lines):
+        lines.append('Architectures: amd64')
     fixed.append('\n'.join(lines))
 path.write_text('\n\n'.join(fixed) + '\n')
 PYEOF
