@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/midi-device/device"
 )
 
 // ccPtr is a small helper for building CC controls in tests.

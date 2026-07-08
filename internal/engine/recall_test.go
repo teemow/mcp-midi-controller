@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/midi-device/device"
 )
 
 // newRecallTestEngine builds an engine with the settle pedal definition bound on

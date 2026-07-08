@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/midi-device/device"
 )
 
 // TestGetHostDiagnostics fills a store with a representative envelope and checks

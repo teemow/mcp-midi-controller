@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/teemow/midi-transport"
 	"github.com/teemow/mcp-midi-controller/internal/widi"
+	"github.com/teemow/midi-transport"
 )
 
 // WIDI dongle configuration lives outside the normal control/scene surface: it

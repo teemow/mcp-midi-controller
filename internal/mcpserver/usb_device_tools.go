@@ -9,8 +9,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/midi-device/device"
 )
 
 // This file generates the SEMANTIC, per-binding USB tools from a device's USB

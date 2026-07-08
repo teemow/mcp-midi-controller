@@ -16,12 +16,12 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/config"
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
-	"github.com/teemow/midi-transport/midicontrol"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
+	"github.com/teemow/midi-device/device"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // Version is reported to MCP clients.

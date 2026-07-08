@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/midi-device/device"
 )
 
 // probeTestServer builds a server whose audio store is pre-filled with a known
