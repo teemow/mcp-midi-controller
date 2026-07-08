@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/midi-device/device"
 )
 
 // connDeviceYAML is a device type whose control transport is the in-memory

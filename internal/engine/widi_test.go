@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/teemow/mcp-midi-controller/internal/widi"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport"
-	"github.com/teemow/mcp-midi-controller/internal/widi"
 )
 
 // fakeDongle is a transport double that emulates a WIDI dongle: it answers

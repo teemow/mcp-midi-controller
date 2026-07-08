@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/midi-device/device"
 )
 
 const settleDeviceYAML = `id: pedal

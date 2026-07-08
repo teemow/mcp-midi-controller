@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport"
 )
 

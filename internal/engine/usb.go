@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/teemow/midi-device/device"
-	"github.com/teemow/midi-transport"
 	"github.com/teemow/midi-device/device/usbcodec"
+	"github.com/teemow/midi-transport"
 )
 
 // This file is the engine's USB editor/readback surface: a request/reply

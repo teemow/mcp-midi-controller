@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/teemow/midi-device/device"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/midi-device/device"
 )
 
 // rolandPatchWriteAddr is the Roland/Boss editor PATCH_WRITE command: a DT1 of
