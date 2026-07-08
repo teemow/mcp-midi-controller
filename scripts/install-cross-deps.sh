@@ -16,8 +16,22 @@ if command -v aarch64-linux-gnu-gcc >/dev/null && [ -f /usr/lib/aarch64-linux-gn
 fi
 
 sudo dpkg --add-architecture arm64
-# Restrict the default (amd64) repos and add arm64 from ports.ubuntu.com.
-sudo sed -i 's/^Architectures:.*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+# Restrict the default repos to amd64 and add arm64 from ports.ubuntu.com.
+# A plain sed on "Architectures:" is not enough: stanzas without that field
+# (the security stanza on current runner images) default to every dpkg
+# architecture and then 404 on arm64 indexes.
+sudo python3 - <<'PYEOF'
+from pathlib import Path
+
+path = Path('/etc/apt/sources.list.d/ubuntu.sources')
+stanzas = [s for s in path.read_text().split('\n\n') if s.strip()]
+fixed = []
+for stanza in stanzas:
+    lines = [l for l in stanza.splitlines() if not l.startswith('Architectures:')]
+    lines.append('Architectures: amd64')
+    fixed.append('\n'.join(lines))
+path.write_text('\n\n'.join(fixed) + '\n')
+PYEOF
 CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
 sudo tee /etc/apt/sources.list.d/arm64-ports.sources >/dev/null <<EOF
 Types: deb
