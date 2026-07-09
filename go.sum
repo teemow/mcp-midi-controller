@@ -21,8 +21,8 @@ github.com/teemow/aum-session-go v0.2.0 h1:lYzCSVdgXkEciq7tKvOUjgtCVO8JtyIGfKZA3
 github.com/teemow/aum-session-go v0.2.0/go.mod h1:lEZWDPOifC5AGlXwEumAGMGEhIbnSy4W2ZUSiOm61ho=
 github.com/teemow/midi-device v0.2.0 h1:XrIzmHDS1XND78g8AWrDQ0UQFRFuFiqogeq3thpm3QA=
 github.com/teemow/midi-device v0.2.0/go.mod h1:pLwP3pDlGDZSQgq7taL6Je840wOBt8MvwPfAdNFeb/Y=
-github.com/teemow/midi-transport v0.1.0 h1:1KsI/k5Wzcze3AMC4ROabC1BCV7oKxDOCl+8ipY4SBA=
-github.com/teemow/midi-transport v0.1.0/go.mod h1:A+0eviYlQ4LnlF5gkypSRn0nfijvWcAwvLCO/imbwJE=
+github.com/teemow/midi-transport v0.2.0 h1:pR4l9O154j5usesTcaIGKsbfuG4567iXqYjYBVqYP8s=
+github.com/teemow/midi-transport v0.2.0/go.mod h1:jcc4G781GLaiPSpG0KRdUy6lh9kYCRbOEzpr+wDokIA=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
 github.com/tidwall/gjson v1.19.0 h1:xwxm7n691Uf3u5OFjzngavjGTh55KX5q/9w9xHW88JU=
 github.com/tidwall/gjson v1.19.0/go.mod h1:V37/opeE/JbLUOfH0QTXiNez2l0RUjYUhpT4szFQAfc=
