@@ -8,7 +8,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/teemow/aum-session-go v0.1.0
-	github.com/teemow/midi-device v0.1.0
+	github.com/teemow/midi-device v0.2.0
 	github.com/teemow/midi-transport v0.1.0
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
