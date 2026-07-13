@@ -3,7 +3,7 @@ module github.com/teemow/mcp-midi-controller
 go 1.26.3
 
 require (
-	github.com/beevik/etree v1.6.0
+	github.com/beevik/etree v1.7.0
 	github.com/coder/websocket v1.8.15
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/modelcontextprotocol/go-sdk v1.6.1
