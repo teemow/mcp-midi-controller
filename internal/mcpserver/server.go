@@ -166,11 +166,18 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 // broadcast sends one info-level MCP log notification (under logger) to every
 // connected session. Clients receive it only after setting a logging level (per
 // the MCP spec). It is the shared body of every notify* method below.
+//
+// MCP logging is deprecated as of protocol version 2026-07-28 (SEP-2577), so
+// the go-sdk flags these calls, but the revision offers no successor for
+// pushing rig events at a connected agent: subscriptions/listen only
+// multiplexes list-changed notifications. Logging stays functional for at
+// least a twelve-month deprecation window, so keep using it — and silence the
+// staticcheck deprecation warning — until a replacement channel exists.
 func (s *Server) broadcast(logger string, data map[string]any) {
-	p := &mcp.LoggingMessageParams{Level: "info", Logger: logger, Data: data}
+	p := &mcp.LoggingMessageParams{Level: "info", Logger: logger, Data: data} //nolint:staticcheck // SA1019: deprecated MCP logging, see doc comment
 	ctx := context.Background()
 	for sess := range s.mcp.Sessions() {
-		_ = sess.Log(ctx, p)
+		_ = sess.Log(ctx, p) //nolint:staticcheck // SA1019: deprecated MCP logging, see doc comment
 	}
 }
 
