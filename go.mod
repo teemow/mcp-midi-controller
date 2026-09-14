@@ -6,7 +6,7 @@ require (
 	github.com/beevik/etree v1.8.0
 	github.com/coder/websocket v1.8.15
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/teemow/aum-session-go v0.2.0
 	github.com/teemow/midi-device v0.2.0
 	github.com/teemow/midi-transport v0.2.0
