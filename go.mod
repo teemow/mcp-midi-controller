@@ -10,7 +10,7 @@ require (
 	github.com/teemow/aum-session-go v0.2.0
 	github.com/teemow/midi-device v0.2.0
 	github.com/teemow/midi-transport v0.2.0
-	github.com/tidwall/gjson v1.19.0
+	github.com/tidwall/gjson v1.20.0
 	github.com/tidwall/sjson v1.2.5
 	gitlab.com/gomidi/midi/v2 v2.3.24
 	golang.org/x/sys v0.48.0
