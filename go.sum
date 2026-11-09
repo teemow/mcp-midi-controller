@@ -23,12 +23,12 @@ github.com/teemow/midi-device v0.2.0 h1:XrIzmHDS1XND78g8AWrDQ0UQFRFuFiqogeq3thpm
 github.com/teemow/midi-device v0.2.0/go.mod h1:pLwP3pDlGDZSQgq7taL6Je840wOBt8MvwPfAdNFeb/Y=
 github.com/teemow/midi-transport v0.2.0 h1:pR4l9O154j5usesTcaIGKsbfuG4567iXqYjYBVqYP8s=
 github.com/teemow/midi-transport v0.2.0/go.mod h1:jcc4G781GLaiPSpG0KRdUy6lh9kYCRbOEzpr+wDokIA=
-github.com/tidwall/gjson v1.20.1 h1:Jmex4ygKZxn92HFHlejG8sHcEODHttXyrj63hsJ7/GE=
-github.com/tidwall/gjson v1.20.1/go.mod h1:V37/opeE/JbLUOfH0QTXiNez2l0RUjYUhpT4szFQAfc=
+github.com/tidwall/gjson v1.20.2 h1:Ag48cSOUCOq/sheSLXV3M4ZS0FOd4YMnY1N7FRoxGQY=
+github.com/tidwall/gjson v1.20.2/go.mod h1:jV1Xkr7LRLVFhesDFU/nInoQ+MjVlnuqkUreTWMveUo=
 github.com/tidwall/match v1.1.1 h1:+Ho715JplO36QYgwN9PGYNhgZvoUSc9X2c80KVTi+GA=
 github.com/tidwall/match v1.1.1/go.mod h1:eRSPERbgtNPcGhD8UCthc6PmLEQXEWd3PRB5JTxsfmM=
-github.com/tidwall/pretty v1.2.0 h1:RWIZEg2iJ8/g6fDDYzMpobmaoGh5OLl4AXtGUGPcqCs=
-github.com/tidwall/pretty v1.2.0/go.mod h1:ITEVvHYasfjBbM0u2Pg8T2nJnzm8xPwvNhhsoaGGjNU=
+github.com/tidwall/pretty v1.3.0 h1:DZmEzADnMIbThFXXslDgq9C0LCC/xzMrONm7iM77RM0=
+github.com/tidwall/pretty v1.3.0/go.mod h1:ITEVvHYasfjBbM0u2Pg8T2nJnzm8xPwvNhhsoaGGjNU=
 github.com/tidwall/sjson v1.2.7 h1:Y8ItpPgG+Ywa8Or+tgYBAHf/TxmydtarGOps+YnC7Dw=
 github.com/tidwall/sjson v1.2.7/go.mod h1:AUfjzrBxlnS1BVSN0kqWbZZ0d8c/W2Ci1tLdMFPkrPA=
 github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zIM+UJPGz4=
