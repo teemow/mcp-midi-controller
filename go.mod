@@ -13,7 +13,7 @@ require (
 	github.com/tidwall/gjson v1.20.2
 	github.com/tidwall/sjson v1.2.8
 	gitlab.com/gomidi/midi/v2 v2.3.24
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
