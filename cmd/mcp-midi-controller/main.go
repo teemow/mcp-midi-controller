@@ -142,9 +142,10 @@ func main() {
 				log.Printf("iPad receiver: %v", err)
 			}
 		}()
-		// Announce the receiver on the LAN (Bonjour _mcpmidi._tcp via Avahi) so
-		// the iPad app and its AUv3 extensions auto-discover the daemon. A
-		// failure must not gate startup: log it with the manual fallback.
+		// Announce the receiver on the LAN (Bonjour _mcpmidi._tcp via Avahi on
+		// Linux, mDNSResponder on macOS) so the iPad app and its AUv3
+		// extensions auto-discover the daemon. A failure must not gate
+		// startup: log it with the manual fallback.
 		go func() {
 			port, err := receiverPort(cfg.AUv3ReceiverAddr)
 			if err != nil {
@@ -153,7 +154,7 @@ func main() {
 			}
 			txt := []string{"version=" + version, "capabilities=audio,midi,sessions,diagnostics"}
 			if err := mdns.Announce(ctx, "mcp-midi-controller", port, txt); err != nil {
-				log.Printf("%v (iPad discovery needs avahi-publish-service or the manual-host override)", err)
+				log.Printf("%v (iPad discovery needs a manual announcement — avahi-publish-service on Linux, dns-sd -R on macOS — or the manual-host override)", err)
 			}
 		}()
 	}
