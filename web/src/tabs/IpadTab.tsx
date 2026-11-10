@@ -32,8 +32,9 @@ export function IpadTab() {
       <Panel title="AUM over USB">
         <p className="mb-3 text-xs leading-relaxed text-cyan-100/50">
           Look at and touch the iPad through WebDriverAgent: screenshot, read AUM's state (tempo,
-          session, fader levels) from its own display, tap by label, point or named control, and wait
-          for AUM to show what a MIDI message should have changed.
+          session, fader levels, mute / solo / arm, node bypass, open panels) from its own display,
+          tap, double-tap, hold, swipe, drag or type, and wait for AUM to show what a MIDI message
+          should have changed.
         </p>
         <ToolList
           names={[
@@ -45,7 +46,30 @@ export function IpadTab() {
             "ipad_tap",
             "ipad_hold",
             "ipad_swipe",
+            "ipad_drag",
+            "ipad_text",
             "ipad_launch",
+          ]}
+        />
+      </Panel>
+
+      <Panel title="AUM operations">
+        <p className="mb-3 text-xs leading-relaxed text-cyan-100/50">
+          AUM's screens and actions by name: each finds its target in AUM's tree, acts, and reads AUM
+          back to verify the result. Actions that change or lose state (remove, eject, load, save,
+          clear, record, Clear All) need confirm and belong on a scratch or (mcp test) session.
+        </p>
+        <ToolList
+          names={[
+            "aum_panel",
+            "aum_channel",
+            "aum_node",
+            "aum_transport",
+            "aum_files",
+            "aum_midi_routing",
+            "aum_midi_control",
+            "aum_settings",
+            "aum_file_player",
           ]}
         />
       </Panel>
