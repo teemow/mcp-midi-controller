@@ -100,7 +100,14 @@ func (t *Timeline) leadTicks() int64 {
 // plugin has the patch in place when the section's first note arrives and the
 // parameters sent at the section's start are not overwritten by the load. A
 // plugin loads in wall-clock time, so the lead is time, whatever the tempo.
-const presetLead = 250 * time.Millisecond
+//
+// A plugin is deaf while it loads: measured on a device, two of five
+// instruments swallowed every note sent up to 250 ms after the Program Change
+// and played the ones from 275 ms on, with a rare miss at 300 ms; the others
+// answered within 150 ms. 400 ms leaves the slow ones a margin. The price is
+// the end of the section before: what that track plays in its last 400 ms is
+// cut or lost.
+const presetLead = 400 * time.Millisecond
 
 // rampSpacingTicks is the closest two steps of a ramp are placed.
 const rampSpacingTicks = PPQ / 32
