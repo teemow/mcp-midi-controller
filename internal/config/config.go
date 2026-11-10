@@ -40,11 +40,31 @@ type Config struct {
 	// control-surface manifest to the brain. Default true; set false to keep
 	// imports strictly tool-driven.
 	AUMAutoImport bool `yaml:"aum_auto_import"`
+
+	// IPadWDAURL is the WebDriverAgent endpoint for the iPad UI tools
+	// (ipad_*, get_aum_ui, wait_for_aum_ui): the USB channel into the iPad's
+	// screen that operates AUM by touch and verifies MIDI against AUM's own
+	// display. auv3-probe's scripts/ipad forwards WDA to 127.0.0.1:8100 on the
+	// host the iPad is plugged into; point this at that host when the daemon
+	// runs elsewhere. Default "http://127.0.0.1:8100"; "" disables the tools.
+	IPadWDAURL string `yaml:"ipad_wda_url"`
+
+	// IPadGoIOS is the go-ios CLI the iPad tools use read-only, to diagnose a
+	// missing tunnel / disk image and to resolve sideloaded apps' bundle IDs.
+	// Default "ios" (on PATH); give an absolute path when the service's PATH
+	// lacks it.
+	IPadGoIOS string `yaml:"ipad_go_ios"`
 }
 
 // Default returns the default config.
 func Default() Config {
-	return Config{ListenAddr: "127.0.0.1:7799", AUv3ReceiverAddr: ":7800", AUMAutoImport: true}
+	return Config{
+		ListenAddr:       "127.0.0.1:7799",
+		AUv3ReceiverAddr: ":7800",
+		AUMAutoImport:    true,
+		IPadWDAURL:       "http://127.0.0.1:8100",
+		IPadGoIOS:        "ios",
+	}
 }
 
 // ConfigDir returns $XDG_CONFIG_HOME/mcp-midi-controller (rig-as-code).

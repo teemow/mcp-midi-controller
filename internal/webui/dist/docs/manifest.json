@@ -13,6 +13,10 @@
       "title": "usb-tools"
     },
     {
+      "path": "ipad-control.md",
+      "title": "ipad-control"
+    },
+    {
       "path": "research/agent-loop.md",
       "title": "research/agent-loop"
     },

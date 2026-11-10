@@ -31,6 +31,12 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
     LAN listener separate from the loopback MCP endpoint). Agents then see what's
     available via the `list_auv3_probes` / `get_auv3_probe` tools and turn a dump
     into a device type with `import_auv3_probe`.
+- **Sees and touches AUM over USB**: the `ipad_*` tools drive the iPad's screen
+  through WebDriverAgent (screenshots, the accessibility tree, tap / hold /
+  swipe), and `get_aum_ui` / `wait_for_aum_ui` read AUM's tempo, session,
+  transport and fader levels back from its own display, so MIDI the daemon sends
+  is verified against what AUM actually shows. See
+  [`docs/ipad-control.md`](docs/ipad-control.md).
 - **Owns BLE discovery + pairing** itself (via BlueZ over D-Bus) — no manual
   `bluetoothctl`.
 - **Extendable without writing Go**: add gear by dropping a YAML device type, or
@@ -89,6 +95,8 @@ internal/
                            staged dumps feed list/get/import_auv3_probe)
   audiotap/                ProbeAudioTap audio-stream WebSocket receiver +
                            in-memory level/window store (feeds get_audio_tap)
+  ipad/                    WebDriverAgent client: the iPad's UI over USB, AUM
+                           state parsing (feeds ipad_* / get_aum_ui / wait_for_aum_ui)
 init/                      systemd user unit
 scripts/                   validate.sh (hardware-validation harness) + capture tooling
 .cursor/mcp.json           Cursor MCP client config (points at the loopback daemon)
@@ -172,6 +180,11 @@ the full author → load → play → hear → tweak loop,
 heading — the in-host brain as a near-complete AUM remote, gated by how well we
 model sessions and a standard mapping for scene changes — see
 [`docs/aum-brain-control.md`](docs/aum-brain-control.md).
+
+Separately from the LAN receiver, the iPad tools reach AUM's **user interface
+over USB** through WebDriverAgent (`ipad_wda_url` in `config.yaml`, default
+`http://127.0.0.1:8100`, as forwarded by auv3-probe's `scripts/ipad wda`; `""`
+disables them). See [`docs/ipad-control.md`](docs/ipad-control.md).
 
 ## Web UI (signalwave)
 

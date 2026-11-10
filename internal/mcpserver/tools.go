@@ -126,6 +126,11 @@ func (s *Server) registerGlobalTools() {
 	// MIDI into the rig through the ProbeMidiBrain LAN channel) are wired in
 	// registerMidiTools.
 	s.registerMidiTools()
+	// ipad_* / get_aum_ui / wait_for_aum_ui (the USB channel into the iPad's
+	// UI over WebDriverAgent: operate AUM by touch, verify MIDI against AUM's
+	// own display) are wired in registerIPadTools when WithIPad attached a
+	// client.
+	s.registerIPadTools()
 }
 
 func (s *Server) handleListDevices(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
