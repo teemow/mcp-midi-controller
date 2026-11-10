@@ -23,6 +23,7 @@ import (
 
 	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
+	"github.com/teemow/mcp-midi-controller/internal/defaultstate"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-device/device/sanitize"
 )
@@ -40,7 +41,7 @@ func (s *Server) registerAUv3DefaultStateTools() {
 				"file": {"type": "string", "description": "Explicit path to a .aumproj (overrides session_id)."},
 				"channel": {"type": "integer", "description": "Mixer channel index of the node."},
 				"slot": {"type": "integer", "description": "Slot index of the node within the channel chain."},
-				"out_id": {"type": "string", "description": "Default-state file id (defaults to the sanitized component subtype)."},
+				"out_id": {"type": "string", "description": "Default-state file id (defaults to the component id <type>-<subtype>-<manufacturer>, the audio unit's probe id)."},
 				"name": {"type": "string", "description": "Optional human label stored in the file."},
 				"merge": {"type": "boolean", "description": "Merge captured keys into an existing file for this audio unit (default false = replace)."}
 			},
@@ -74,7 +75,7 @@ func (s *Server) registerAUv3DefaultStateTools() {
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"id": {"type": "string", "description": "Default-state file id (its filename without .yaml). Created if absent."},
+				"id": {"type": "string", "description": "Default-state file id (its filename without .yaml). Created if absent. capture_auv3_default_state names a unit's file by its component id <type>-<subtype>-<manufacturer>."},
 				"component": {
 					"type": "object",
 					"description": "Audio-unit identity tuple the default is matched on.",
@@ -183,9 +184,9 @@ func (s *Server) handleCaptureAUv3DefaultState(_ context.Context, req *mcp.CallT
 		State:     entries,
 	}
 
-	id := device.FirstNonEmpty(sanitize.ID(args.OutID), sanitize.ID(node.Component.Subtype), sanitize.ID(node.ComponentName))
+	id := device.FirstNonEmpty(sanitize.ID(args.OutID), defaultstate.ID(*node.Component, node.ComponentName))
 	if id == "" {
-		return textResult("cannot derive a default-state id (empty subtype/name); pass out_id", true), nil
+		return textResult("cannot derive a default-state id (empty component type, subtype and name); pass out_id", true), nil
 	}
 	outPath := filepath.Join(config.AUv3DefaultStatesDir(), id+".yaml")
 
