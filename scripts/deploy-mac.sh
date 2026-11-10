@@ -4,10 +4,11 @@
 #
 #   scripts/deploy-mac.sh           install / refresh both launchd agents, then
 #                                   build, install and restart the daemon now
-#   scripts/deploy-mac.sh --update  what the update agent runs every 5 minutes:
-#                                   fetch origin/main; when it moved (or got a
-#                                   new release tag), fast-forward this clone,
-#                                   build, install and restart. Otherwise silent.
+#   scripts/deploy-mac.sh --update  what the update agent runs every 5 minutes
+#                                   (and once on wake): fetch origin/main; when
+#                                   it moved (or got a new release tag),
+#                                   fast-forward this clone, build, install and
+#                                   restart. Otherwise silent.
 #
 # Two agents in ~/Library/LaunchAgents, rendered from init/:
 #   com.teemow.mcp-midi-controller         the daemon (KeepAlive on failure)
@@ -81,7 +82,8 @@ install_agent() {
 }
 
 # build_and_restart <version>: build into a temp file next to the binary, swap
-# it in atomically, restart the daemon agent.
+# it in atomically, restart the daemon: reloading its agent when its definition
+# changed, else a kickstart.
 build_and_restart() {
   local version=$1 tmp
   tmp="$(dirname "$BIN")/.mcp-midi-controller.new.$$"
@@ -94,8 +96,13 @@ build_and_restart() {
   mv -f "$tmp" "$BIN"
   echo "$version" >"$DEPLOYED"
   rm -f "$FAILED"
-  launchctl kickstart -k "$DOMAIN/$LABEL"
+  install_agent "$LABEL" || launchctl kickstart -k "$DOMAIN/$LABEL"
   log "deployed $version ($BIN), restarted $LABEL"
+  # The update agent cannot reload itself (bootout would end this very run),
+  # so a change to its own definition waits for a full deploy.
+  if ! render "init/$UPDATE_LABEL.plist" | cmp -s - "$AGENTS_DIR/$UPDATE_LABEL.plist"; then
+    log "init/$UPDATE_LABEL.plist changed: run scripts/deploy-mac.sh once to reload the update agent"
+  fi
 }
 
 update() {

@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Keeps the macOS daemon on the latest main: every 5 minutes (launchd can
-  defer a run by a few minutes) and at login it runs scripts/deploy-mac.sh
-  update mode, which rebuilds and restarts the
+  Keeps the macOS daemon on the latest main: every 5 minutes on the clock,
+  at login, and once on wake (launchd runs a calendar slot that came due
+  during sleep when the Mac wakes; a plain StartInterval would skip it) it
+  runs scripts/deploy-mac.sh update mode, which rebuilds and restarts the
   daemon only when origin/main moved. Installed (with @REPO@ / @HOME@ filled
   in) by scripts/deploy-mac.sh.
 -->
@@ -19,8 +20,21 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
-	<key>StartInterval</key>
-	<integer>300</integer>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict><key>Minute</key><integer>0</integer></dict>
+		<dict><key>Minute</key><integer>5</integer></dict>
+		<dict><key>Minute</key><integer>10</integer></dict>
+		<dict><key>Minute</key><integer>15</integer></dict>
+		<dict><key>Minute</key><integer>20</integer></dict>
+		<dict><key>Minute</key><integer>25</integer></dict>
+		<dict><key>Minute</key><integer>30</integer></dict>
+		<dict><key>Minute</key><integer>35</integer></dict>
+		<dict><key>Minute</key><integer>40</integer></dict>
+		<dict><key>Minute</key><integer>45</integer></dict>
+		<dict><key>Minute</key><integer>50</integer></dict>
+		<dict><key>Minute</key><integer>55</integer></dict>
+	</array>
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>LowPriorityIO</key>
