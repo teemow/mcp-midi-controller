@@ -112,10 +112,10 @@ By hand, the same steps:
 3. **The app.** <https://console.cloud.google.com/auth/overview> → *Get
    started*: an app name and your address, audience *External*, your address as
    contact, agree, *Create*. No logo and no scopes.
-4. **Publish it.** <https://console.cloud.google.com/auth/audience> →
-   *Publish app*. An app left in "Testing" loses its sign-in after seven days;
-   "In production" it stays. With only `drive.file` and no logo there is no
-   review to pass.
+4. **Let yourself in.** A new app is in "Testing", and only its test users
+   may sign in: <https://console.cloud.google.com/auth/audience> → *Test
+   users* → *Add users* → your address → *Save*. See
+   [Testing or published](#testing-or-published) for what that status costs.
 5. **The client.** <https://console.cloud.google.com/auth/clients> → *Create
    client* → application type **TVs and Limited Input devices** → *Create* →
    *Download JSON*. Google shows the client secret only at this point.
@@ -124,19 +124,36 @@ By hand, the same steps:
    daemon's host, readable by its owner only (`chmod 600`). If the config dir
    is a git repository, keep this file out of it.
 
+### Testing or published
+
+In "Testing", Google ends a sign-in seven days after it was approved. The
+daemon then says it is no longer connected, and `connect_google_drive` has to
+be run and approved again: once a week.
+
+*Publish app* on the Audience page lifts that. Google only offers it once the
+Branding page is complete, which for an app open to accounts outside an
+organisation means a link to a home page and to a privacy policy, on a domain
+entered under *Authorized domains*. With only `drive.file`, no verification is
+mandatory after that; until the brand is verified the consent screen shows the
+app's domain instead of its name.
+
+A project that belongs to a Google Workspace organisation can make the app
+*Internal* instead, which has no seven-day limit; a personal account cannot.
+
 ### Sign in, once
 
 The daemon has no browser, so it signs in the way a TV does:
 
 1. `connect_google_drive` returns a link and a short code.
 2. Open the link on any device, enter the code, pick the account and approve.
-   Google names your app and what it asks for: to see and manage only the
-   files it creates.
+   While the app is in "Testing", Google first says it has not verified the
+   app: continue, it is yours. Then it names your app and what it asks for: to
+   see, edit, create and delete only the Drive files used with this app.
 3. `get_google_drive` says when the sign-in has arrived, and whose Drive it is.
 
-The code is valid for 30 minutes. The sign-in lasts until you end it:
-`connect_google_drive` with `disconnect: true` revokes it at Google and deletes
-it on the host. You can also remove the app's access in your Google account;
+The code is valid for 30 minutes. The sign-in lasts until you end it (or, in
+"Testing", for seven days): `connect_google_drive` with `disconnect: true`
+revokes it at Google and deletes it on the host. You can also remove the app's access in your Google account;
 the daemon notices at its next call and asks to be connected again.
 
 ### Upload
@@ -219,4 +236,19 @@ The test suite covers:
   token, client secret or device code appears in a tool's answer, an error or
   the log.
 
-Not yet checked on a real Google account.
+Checked on a real Google account (a personal one, the app in "Testing"):
+
+- the sign-in with a client of the type "TVs and Limited Input devices" and
+  the `drive.file` scope: the code entered, the account chosen, the access
+  approved, the sign-in arrived at the daemon within its polling interval;
+- `get_google_drive` naming the account (Drive's `about` answers with this
+  scope);
+- the upload folder made on first use;
+- a 28.8 MB FLAC (a five-track song of two minutes) uploaded in four pieces in
+  11 seconds, its checksum in the Drive equal to the local one, the link
+  opening the file in Drive with Drive's own audio player.
+
+Not checked on a real account yet: the upload folder found again by its id
+after a rename or a move, an access token replaced after its hour, an upload
+resumed after a real connection loss, a sign-in ended by Google after seven
+days, and a published app.
