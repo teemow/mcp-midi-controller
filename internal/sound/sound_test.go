@@ -129,6 +129,92 @@ func TestMeasureNoteWobbleAndTuning(t *testing.T) {
 	}
 }
 
+// TestMeasureNoteGlide checks a note that scoops into its pitch is described
+// as that, and not as a pitch that wanders: a bass patch on a device started
+// every note 140 cents flat and was on it after 150 ms.
+func TestMeasureNoteGlide(t *testing.T) {
+	target := hz(33)
+	scoop := func(t float64) float64 {
+		// The phase of a sine whose pitch rises to the target: 140 cents
+		// flat at first, half of that every 80 ms.
+		const tau = 0.08 / math.Ln2
+		flat := math.Pow(2, -140.0/1200) - 1
+		return math.Sin(2 * math.Pi * target * (t + flat*tau*(1-math.Exp(-t/tau))))
+	}
+	s := MeasureNote(tone(1300, 60, 900, scoop, organ(0.2)), 57, 100)
+	if s.Sounds != "A1" || math.Abs(s.Cents) > 5 || s.Transpose != 24 {
+		t.Errorf("pitch = %s %+.0f cents, transpose %d; want the note it settles on, A1", s.Sounds, s.Cents, s.Transpose)
+	}
+	if s.GlideCents > -40 || s.GlideCents < -150 || s.GlideMS < 60 || s.GlideMS > 320 || !hasRemark(s, "cents flat and reaches the note after") {
+		t.Errorf("glide = %.0f cents over %.0f ms, remarks %v", s.GlideCents, s.GlideMS, s.Remarks)
+	}
+	if s.WobbleCents > 15 || hasRemark(s, "wanders") {
+		t.Errorf("a scoop was taken for a wandering pitch: %.0f cents, %v", s.WobbleCents, s.Remarks)
+	}
+}
+
+// TestFoldOctaves checks a track read an octave high in some frames is
+// brought to its real pitch, and that a glide and a melody are left alone.
+func TestFoldOctaves(t *testing.T) {
+	track := func(hz ...float64) []pitchFrame {
+		out := make([]pitchFrame, len(hz))
+		for i, f := range hz {
+			out[i] = pitchFrame{f, float64(i) * 30}
+		}
+		return out
+	}
+	// A lead whose second harmonic outweighs its fundamental.
+	folded := foldOctaves(track(110.2, 55.1, 55.0, 110.1, 55.1, 220.3, 55.0, 110.0, 55.1, 55.0))
+	for i, f := range folded {
+		if math.Abs(f.hz-55) > 0.3 {
+			t.Errorf("frame %d = %.1f Hz after folding, want 55", i, f.hz)
+		}
+	}
+	for name, tr := range map[string][]pitchFrame{
+		"a steady note": track(220, 220.1, 219.9, 220, 220.2, 220),
+		"a glide":       track(50.6, 52.8, 54.6, 54.9, 55, 55, 55.1, 55),
+		"a melody":      track(220, 220, 261.6, 261.6, 329.6, 329.6, 220, 220),
+		"one octave up": track(220, 440, 440, 440, 440, 440, 440, 440, 440, 440),
+	} {
+		got := foldOctaves(tr)
+		for i := range tr {
+			if got[i] != tr[i] {
+				t.Errorf("%s: frame %d changed from %.1f to %.1f Hz", name, i, tr[i].hz, got[i].hz)
+			}
+		}
+	}
+}
+
+// TestSettlePitch checks which pitch a sound of several partials is given: a
+// weak or detuned fundamental is still the pitch, and only a period nothing
+// sounds at gives way to the strongest partial.
+func TestSettlePitch(t *testing.T) {
+	// A sequence patch on a device: the fundamental 10 dB under its octave
+	// and 77 cents sharp of the period found.
+	s := Sound{Note: 57, Hz: 110, Partials: []Partial{{Hz: 223, Note: "A3"}, {Hz: 439, Note: "A4", DB: -9}, {Hz: 115, Note: "A#2", DB: -10}}}
+	setPitch(&s, 110)
+	settlePitch(&s)
+	if s.Sounds != "A2" || s.Transpose != 12 || len(s.Remarks) != 0 {
+		t.Errorf("a detuned fundamental: %s, transpose %d, %v; want A2 and +12", s.Sounds, s.Transpose, s.Remarks)
+	}
+	// A note with a fifth under it: nothing sounds at their common period.
+	s = Sound{Note: 69, Partials: []Partial{{Hz: 440, Note: "A4"}, {Hz: 293.7, Note: "D4", DB: -9}}}
+	setPitch(&s, 146.8)
+	settlePitch(&s)
+	if s.Sounds != "A4" || s.Transpose != 0 || !hasRemark(s, "several notes sound at once") {
+		t.Errorf("a layered fifth: %s, transpose %d, %v; want A4", s.Sounds, s.Transpose, s.Remarks)
+	}
+	// A brass patch with a sub-oscillator: at pitch, and the octave under it
+	// is said.
+	s = Sound{Note: 57, Partials: []Partial{{Hz: 220, Note: "A3"}, {Hz: 110, Note: "A2", DB: -8}}}
+	setPitch(&s, 220)
+	settlePitch(&s)
+	describeLayers(&s)
+	if s.Transpose != 0 || !hasRemark(s, "has an octave below it (-8 dB)") {
+		t.Errorf("a sub-octave: transpose %d, %v", s.Transpose, s.Remarks)
+	}
+}
+
 func TestMeasureNoteLayerAndSilence(t *testing.T) {
 	// A preset that puts a fifth under every note, 9 dB down.
 	layered := func(t float64) float64 {
@@ -170,6 +256,21 @@ func drum(bodyHz, bodyAmp, noiseAmp, brightness, lengthMS float64) Clip {
 	return tone(1200, 15, 60, gen, env)
 }
 
+// block renders a hit whose energy sits between a drum's body and a cymbal:
+// a cluster of partials from 700 to 2400 Hz, 150 ms long. A device's kit had
+// such a pad where a closed hat was expected.
+func block() Clip {
+	gen := func(t float64) float64 {
+		var v float64
+		for i, f := range []float64{710, 930, 1180, 1420, 1790, 2360} {
+			v += math.Sin(2*math.Pi*f*t+float64(i)) / 6
+		}
+		return v
+	}
+	env := func(on, off float64) float64 { return 0.5 * math.Pow(10, -1.5*on/0.15) }
+	return tone(1200, 15, 60, gen, env)
+}
+
 func TestMeasureHitAndLanes(t *testing.T) {
 	kit := map[int]Clip{
 		49: drum(55, 0.8, 0.02, 0, 180),    // kick
@@ -179,6 +280,7 @@ func TestMeasureHitAndLanes(t *testing.T) {
 		58: drum(160, 0.6, 0.01, 0, 250),   // high tom
 		63: drum(0, 0, 0.4, 0.97, 400),     // open hat
 		66: drum(0, 0, 0.3, 0.97, 1500),    // crash
+		60: block(),                        // something in the middle
 	}
 	var pads []Pad
 	for note := 48; note <= 67; note++ {
@@ -195,7 +297,7 @@ func TestMeasureHitAndLanes(t *testing.T) {
 		}
 	}
 	lanes := NameLanes(pads)
-	want := map[string]int{"kick": 49, "snare": 51, "hat": 54, "tom_low": 56, "tom_high": 58, "open_hat": 63, "crash": 66}
+	want := map[string]int{"kick": 49, "snare": 51, "hat": 54, "tom_low": 56, "tom_high": 58, "perc": 60, "open_hat": 63, "crash": 66}
 	for lane, note := range want {
 		if lanes[lane] != note {
 			t.Errorf("lane %s = %d, want %d", lane, lanes[lane], note)

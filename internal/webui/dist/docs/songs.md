@@ -211,14 +211,16 @@ finds that out by playing a note and measuring the tap:
 
 | | |
 |-|-|
-| pitch | The note that sounds, as `transpose`: the semitones to add to a written note so it sounds as written (12 for a preset an octave low). How far it is out of tune, and how far a held note wanders. |
+| pitch | The note a held note settles on, as `transpose`: the semitones to add to a written note so it sounds as written (12 for a preset an octave low). How far it is out of tune, how far it wanders once it has settled, and whether it glides into the note: from how far off and for how long. |
 | level | rms and sample peak of the held note, in dBFS. |
 | envelope | Attack, whether a held note sustains or how fast it decays, how long it rings after the release. |
 | layers | Strong partials that are no harmonic of the note: a fifth, a second voice. |
 
 With `kit: true` the instrument is treated as a drum machine: every note of a
 range is hit, the ones that sound are its pads, each with level, length and
-brightness and a guess at what it is. The guesses make up a drum map
+brightness and a guess at what it is: kick and toms by their pitch, a snare by
+the gap between its drum and its rattle, hats and cymbals by their length, and
+`perc` for what sits in the middle. The guesses make up a drum map
 (`kick: 49, snare: 51, …`); they come from the sound alone, so read them and
 correct them with `set_sound`.
 
@@ -524,8 +526,24 @@ a device, in sessions authored from a song:
   left to doze, timers fired up to 1.2 s late and the hits around such a stall
   were about 50 ms off the grid.
 
+- **Measuring a preset.** The analysis behind `audition_sound` was run over
+  notes captured on a device with `probe_sound`, in a song's session. For
+  seven presets of four synths it gave the transposition found by hand
+  before: two octaves low twice, one octave low twice, at pitch three times.
+  It also found what the hand measurement had not looked for: one bass preset
+  starts every note 140 cents flat and is on it after 150 ms, one brass
+  preset has an octave under the note at -8 dB, and one sequence preset
+  jumps between octaves by itself. Twenty notes of a drum machine gave its
+  eight pads: the kick, the snare, three toms pitched within 1 Hz of the hand
+  measurement, two bright pads of 50 and 180 ms, and one in the middle that
+  the first song had used as its closed hat. A note took 75 to 95 ms from
+  being sent to sounding at the tap.
+
 Not yet measured:
 
+- `load_song`, `check_song`, `open_sound_lab` and `audition_sound` themselves,
+  a session with `presets: all` and a song with `calibrate`: the test suite
+  runs them against a stand-in for the iPad;
 - `transport: true` through a whole song;
 - a ramp on a plugin parameter (the song played ramps on levels only);
 - sessions authored with `track_taps` or `full_control`.
