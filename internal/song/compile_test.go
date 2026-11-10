@@ -327,8 +327,9 @@ arrangement: [build, drop]
 }
 
 func TestLevelLaw(t *testing.T) {
-	// Unity sits at 1/sqrt(2) of the fader's travel and +12 dB at its top.
-	for db, want := range map[float64]int{0: 90, 12: 127, -12: 64, -90: 0, -200: 0, 30: 127} {
+	// The values measured on AUM: 90 is unity, 127 is +6 dB, and every
+	// halving is 12 dB down.
+	for db, want := range map[float64]int{0: 90, 6: 127, -2: 80, -5.9: 64, -10.9: 48, -17.9: 32, -30: 16, -90: 0, -200: 0, 30: 127} {
 		if got := levelWire(db); got != want {
 			t.Errorf("levelWire(%g) = %d, want %d", db, got, want)
 		}

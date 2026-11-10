@@ -178,6 +178,10 @@ type Plan struct {
 // BrainStrip is the strip the brain sits on; the tracks follow it.
 const BrainStrip = 0
 
+// firstInsertSlot is the slot of an audio strip's first insert: slot 0 is the
+// strip's source and slot 1 its output node.
+const firstInsertSlot = 2
+
 // midiReservedCC reports the controllers MIDI itself gives a meaning the pool
 // must not borrow: bank select, data entry, the (N)RPN selectors and the
 // channel-mode messages.
@@ -248,17 +252,19 @@ func NewPlan(s *Song, cat Catalog) (*Plan, error) {
 		if t.Level != nil {
 			tp.homeLevel = *t.Level
 		}
+		// AUM stores a strip as [source, output, inserts…]: the instrument is
+		// slot 0, the output slot 1, and the effects follow from slot 2.
 		tp.Nodes = append(tp.Nodes, newNode(at+"/instrument", t.ID, tp.Strip, 0, t.Instrument, ""))
 		for j, fx := range t.Effects {
-			tp.Nodes = append(tp.Nodes, newNode(fmt.Sprintf("%s/effects/%d", at, j), t.ID, tp.Strip, 1+j, fx, fx.EffectID()))
+			tp.Nodes = append(tp.Nodes, newNode(fmt.Sprintf("%s/effects/%d", at, j), t.ID, tp.Strip, firstInsertSlot+j, fx, fx.EffectID()))
 		}
 		p.Tracks = append(p.Tracks, tp)
 	}
-	// The master strip is [bus source, hardware output, effects…]: its
-	// effects sit after the fader, from slot 2.
+	// The master strip is [bus source, hardware output, effects…]; its
+	// effects are post-fader.
 	p.MasterStrip = BrainStrip + 1 + len(s.Tracks)
 	for j, fx := range s.Master {
-		p.Master = append(p.Master, newNode(fmt.Sprintf("/master/%d", j), MasterTrack, p.MasterStrip, 2+j, fx, fx.EffectID()))
+		p.Master = append(p.Master, newNode(fmt.Sprintf("/master/%d", j), MasterTrack, p.MasterStrip, firstInsertSlot+j, fx, fx.EffectID()))
 	}
 	if err := e.err(); err != nil {
 		return nil, err
@@ -682,12 +688,14 @@ func paramWire(p device.ProbeParam, v Value) (int, error) {
 	return clamp7(int(math.Round(pos * 127))), nil
 }
 
-// The fader. A strip's level is stored as a linear gain (1 is unity) while its
-// MIDI mapping moves the fader's travel, 0..1, with unity at 1/√2 of the way
-// and +12 dB at the top: gain = 4·travel⁴.
+// The fader. A strip's level is stored as a linear gain (1 is unity). Its MIDI
+// mapping follows gain = 2·(value/127)², measured on AUM by sweeping a mapped
+// CC and reading the fader: 90 is unity, every halving of the value is 12 dB
+// down, and 127 is +6 dB — the most a CC can reach, though the fader itself
+// goes to +12.
 const (
-	// MaxLevelDB is the top of AUM's fader.
-	MaxLevelDB = 12.0
+	// MaxLevelDB is the highest level a song can set.
+	MaxLevelDB = 6.0
 	// minLevelDB is treated as silence.
 	minLevelDB = -90.0
 )
@@ -705,8 +713,7 @@ func LevelGain(db float64) float64 {
 
 // levelWire converts a level in dB to the CC value that moves the fader there.
 func levelWire(db float64) int {
-	travel := math.Pow(LevelGain(db)/4, 0.25)
-	return clamp7(int(math.Round(travel * 127)))
+	return clamp7(int(math.Round(127 * math.Sqrt(LevelGain(db)/2))))
 }
 
 func clamp7(v int) int {

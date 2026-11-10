@@ -158,7 +158,7 @@ What can be set:
 
 | | On | Value |
 |-|----|-------|
-| `level` | a track | dB; 0 is unity, up to +12 |
+| `level` | a track | dB; 0 is unity, up to +6 |
 | `mute` | a track | `true` / `false` |
 | `preset` | an instrument or effect | the name of one of the plugin's factory presets |
 | `bypass` | an instrument or effect | `true` / `false` |

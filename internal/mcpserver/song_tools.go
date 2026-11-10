@@ -836,8 +836,13 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		Preroll: time.Duration(args.PrerollMS) * time.Millisecond,
 	}
 	if args.Transport {
-		start, stop := cs.plan.Transport["Start Play"], cs.plan.Transport["Stop/Rewind"]
-		opts.Before = []song.Event{{Kind: song.Control, Channel: start.Channel, Data1: start.Number, Data2: 127}}
+		// Stop/Rewind only stops a running transport, so rewind first to start
+		// from the top.
+		rewind, start, stop := cs.plan.Transport["Rewind"], cs.plan.Transport["Start Play"], cs.plan.Transport["Stop/Rewind"]
+		opts.Before = []song.Event{
+			{Kind: song.Control, Channel: rewind.Channel, Data1: rewind.Number, Data2: 127},
+			{Kind: song.Control, Channel: start.Channel, Data1: start.Number, Data2: 127},
+		}
 		opts.After = []song.Event{{Kind: song.Control, Channel: stop.Channel, Data1: stop.Number, Data2: 127}}
 	}
 

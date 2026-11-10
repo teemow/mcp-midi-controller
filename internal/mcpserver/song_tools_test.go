@@ -353,8 +353,8 @@ collect:
 		t.Fatalf("got %d preset loads before the first note (at %d), want the two tracks' presets: %+v", programs, firstNote, got)
 	}
 	// Transport start right before the first note, stop at the very end.
-	if b := got[firstNote-1]; b.Type != "cc" || b.Controller != 102 || b.Value != 127 {
-		t.Errorf("before the first note: %+v, want the transport start", b)
+	if r, b := got[firstNote-2], got[firstNote-1]; r.Controller != 104 || b.Type != "cc" || b.Controller != 102 || b.Value != 127 {
+		t.Errorf("before the first note: %+v then %+v, want the transport rewind and start", r, b)
 	}
 	if e := got[len(got)-1]; e.Type != "cc" || e.Controller != 103 {
 		t.Errorf("last frame: %+v, want the transport stop", e)

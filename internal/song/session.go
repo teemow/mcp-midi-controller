@@ -181,14 +181,14 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			return nil, rep, err
 		}
 		if o.TrackTaps {
-			// A track's chain is its nodes, the fader, then the tap.
-			if err := tapToggle(tp.Strip, len(tp.Nodes)+1); err != nil {
+			// A track's tap follows its effects.
+			if err := tapToggle(tp.Strip, firstInsertSlot+len(tp.Nodes)-1); err != nil {
 				return nil, rep, err
 			}
 		}
 	}
-	// The master's chain is the bus source, the fader, its effects, the tap.
-	if err := tapToggle(p.MasterStrip, 2+len(p.Master)); err != nil {
+	// The master's tap follows its effects.
+	if err := tapToggle(p.MasterStrip, firstInsertSlot+len(p.Master)); err != nil {
 		return nil, rep, err
 	}
 

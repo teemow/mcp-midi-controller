@@ -29,10 +29,13 @@ func TestPlanLayout(t *testing.T) {
 		t.Errorf("control channels = %v, want 4..16", p.ControlChannels)
 	}
 
-	// Slots: the instrument, then the effects; master effects follow the
-	// master's bus source and fader.
-	if n := p.Node("lead", "space"); n == nil || n.Strip != 2 || n.Slot != 2 || n.MIDI {
-		t.Errorf("lead's reverb = %+v, want strip 2 slot 2 without MIDI", n)
+	// Slots, as AUM stores a strip: the instrument at 0, the output at 1, the
+	// effects from 2. The master's effects follow its bus source and output.
+	if n := p.Node("lead", "delay"); n == nil || n.Strip != 2 || n.Slot != 2 {
+		t.Errorf("lead's first effect is at strip %d slot %d, want strip 2 slot 2", n.Strip, n.Slot)
+	}
+	if n := p.Node("lead", "space"); n == nil || n.Strip != 2 || n.Slot != 3 || n.MIDI {
+		t.Errorf("lead's reverb is at strip %d slot %d (MIDI %v), want strip 2 slot 3 without MIDI", n.Strip, n.Slot, n.MIDI)
 	}
 	if n := p.Node("lead", ""); n == nil || n.Slot != 0 || !n.MIDI {
 		t.Errorf("lead's instrument = %+v, want slot 0 with MIDI", n)
@@ -258,9 +261,18 @@ func TestBuildSession(t *testing.T) {
 	if re.Title() != "Test Song" || re.Tempo() != 120 {
 		t.Errorf("session = %q at %g BPM, want the song's title and tempo", re.Title(), re.Tempo())
 	}
-	// bass: synth, delay, bus destination. The fader carries the track's -3 dB.
-	if n := len(chans[1].Nodes); n != 3 {
-		t.Errorf("bass chain has %d slots, want instrument, effect, output", n)
+	// bass, as AUM stores it: the synth, the output, then the delay. The fader
+	// carries the track's -3 dB.
+	bassChain := chans[1].Nodes
+	if len(bassChain) != 3 || bassChain[0].Component == nil || bassChain[0].Component.Subtype != "Syn1" ||
+		bassChain[1].ArchiveDescClass != "BusDestDescription" ||
+		bassChain[2].Component == nil || bassChain[2].Component.Subtype != "Dly1" {
+		t.Errorf("bass chain = %+v, want instrument, output, effect", bassChain)
+	}
+	// lead: synth, output, delay, reverb.
+	if lead := chans[2].Nodes; len(lead) != 4 || lead[1].ArchiveDescClass != "BusDestDescription" ||
+		lead[3].Component == nil || lead[3].Component.Subtype != "Rvb1" {
+		t.Errorf("lead chain = %+v, want instrument, output, two effects", lead)
 	}
 	if fl := chans[1].FaderLevel; fl == nil || *fl < 0.70 || *fl > 0.71 {
 		t.Errorf("bass fader = %v, want the gain of -3 dB", fl)
@@ -294,7 +306,8 @@ func TestBuildSession(t *testing.T) {
 	check("Channels/chan1/Channel controls/Mute", bass.Mute)
 	check("Channels/chan1/slot0/_AUMNode:Bypass", p.Node("bass", "").Bypass)
 	check("Channels/chan1/slot0/cutoff", p.Node("bass", "").Params[0].At)
-	check("Channels/chan1/slot1/mix", p.Node("bass", "echo").Params[0].At)
+	check("Channels/chan1/slot2/mix", p.Node("bass", "echo").Params[0].At)
+	check("Channels/chan1/slot2/_AUMNode:Bypass", p.Node("bass", "echo").Bypass)
 	check("Channels/chan4/slot2/_AUMNode:Bypass", p.Node(MasterTrack, "glue").Bypass)
 	check("Transport/Start Play", p.Transport["Start Play"])
 	tap, _ := device.ConventionTapCC(1)
