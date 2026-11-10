@@ -137,6 +137,7 @@ func (s *Server) registerSongTools() {
 
 	s.registerSongLoadTools(songArg)
 	s.registerSoundTools()
+	s.registerSongMixTools(songArg)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "play_song",
@@ -158,7 +159,7 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "stop_song",
-		Description: "Stop the playing song and release every sounding note.",
+		Description: "Stop the playing song and release every sounding note. Also ends a running mix measurement (mix_song).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, s.handleStopSong)
 
@@ -861,6 +862,13 @@ func playbackText(st song.Status) string {
 }
 
 func (s *Server) handleStopSong(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// A mix measurement plays the song in passes: end it, not only the pass
+	// that is playing.
+	s.mixMu.Lock()
+	if s.mix != nil && !s.mix.finished() {
+		s.mix.cancel()
+	}
+	s.mixMu.Unlock()
 	st := s.player.Stop()
 	return structResult(playbackText(st), map[string]any{"playback": st}), nil
 }
