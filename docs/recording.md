@@ -132,12 +132,12 @@ In "Testing", Google ends a sign-in seven days after it was approved. The
 daemon then says it is no longer connected, and `connect_google_drive` has to
 be run and approved again: once a week.
 
-*Publish app* on the Audience page lifts that. Google only offers it once the
-Branding page is complete, which for an app open to accounts outside an
-organisation means a link to a home page and to a privacy policy, on a domain
-entered under *Authorized domains*. With only `drive.file`, no verification is
-mandatory after that; until the brand is verified the consent screen shows the
-app's domain instead of its name.
+*Publish app* on the Audience page lifts that. For a new app on a personal
+account the console did not offer it: the button stays disabled until the
+Branding page is complete. What Google asks of an app open to accounts outside
+an organisation, and what verification follows, is in its own documentation:
+[Manage OAuth App Branding](https://support.google.com/cloud/answer/15549049)
+and [Manage App Audience](https://support.google.com/cloud/answer/15549945).
 
 A project that belongs to a Google Workspace organisation can make the app
 *Internal* instead, which has no seven-day limit; a personal account cannot.
@@ -155,8 +155,9 @@ The daemon has no browser, so it signs in the way a TV does:
 
 The code is valid for 30 minutes. The sign-in lasts until you end it (or, in
 "Testing", for seven days): `connect_google_drive` with `disconnect: true`
-revokes it at Google and deletes it on the host. You can also remove the app's access in your Google account;
-the daemon notices at its next call and asks to be connected again.
+revokes it at Google and deletes it on the host. You can also remove the
+app's access in your Google account; the daemon notices at its next call and
+asks to be connected again.
 
 ### Upload
 
@@ -242,7 +243,7 @@ Checked on a real Google account (a personal one, the app in "Testing"):
 
 - the sign-in with a client of the type "TVs and Limited Input devices" and
   the `drive.file` scope: the code entered, the account chosen, the access
-  approved, the sign-in arrived at the daemon within its polling interval;
+  approved, the sign-in arrived at the daemon;
 - `get_google_drive` naming the account (Drive's `about` answers with this
   scope);
 - the upload folder made on first use;

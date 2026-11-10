@@ -1041,7 +1041,9 @@ func TestPlaySongRecordsSequenced(t *testing.T) {
 	stageSequencer(t)
 	// The stand-in session: when the transport starts it makes a noise louder
 	// than the song for the first 600 ms of the lead-in (1.6 s for this song),
-	// falls silent, and plays the song from the end of the lead-in on.
+	// falls silent, and plays the song from the end of the lead-in on. music
+	// gets how long the song sounded.
+	music := make(chan time.Duration, 1)
 	brain(t, hub, func(cmd midicontrol.Command) {
 		if cmd.Type != "cc" || cmd.Controller != 102 {
 			return
@@ -1052,8 +1054,10 @@ func TestPlaySongRecordsSequenced(t *testing.T) {
 			time.Sleep(time.Until(start.Add(600 * time.Millisecond)))
 			feed.set(0)
 			time.Sleep(time.Until(start.Add(1600 * time.Millisecond)))
+			on := time.Now()
 			feed.set(0.5)
 			time.Sleep(time.Until(start.Add(3200 * time.Millisecond)))
+			music <- time.Since(on)
 			feed.set(0)
 		}()
 	})
@@ -1083,4 +1087,43 @@ func TestPlaySongRecordsSequenced(t *testing.T) {
 	if _, _, peak := readFLAC(t, last.Path); math.Abs(peak-0.5) > 0.001 {
 		t.Errorf("the file peaks at %.3f: the noise of the lead-in (0.9) is in it", peak)
 	}
+	// And all of the song is in it: a mark that came after the first note
+	// would have cut the note's beginning off.
+	want := <-music
+	if got := soundSpan(t, last.Path, 0.25); got < want-60*time.Millisecond || got > want+60*time.Millisecond {
+		t.Errorf("the file holds %v of the song, which sounded for %v: its beginning was cut", got, want)
+	}
+}
+
+// soundSpan decodes a recording and returns how long it sounds: from its
+// first to its last sample at or over level (a fraction of full scale).
+func soundSpan(t *testing.T, path string, level float64) time.Duration {
+	t.Helper()
+	stream, err := flac.ParseFile(path)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	defer func() { _ = stream.Close() }()
+	first, last, at := -1, -1, 0
+	for {
+		f, err := stream.ParseNext()
+		if err != nil {
+			break
+		}
+		for i := range f.Subframes[0].NSamples {
+			for _, sub := range f.Subframes {
+				if math.Abs(float64(sub.Samples[i]))/(1<<23) >= level {
+					if first < 0 {
+						first = at + i
+					}
+					last = at + i
+				}
+			}
+		}
+		at += f.Subframes[0].NSamples
+	}
+	if first < 0 {
+		return 0
+	}
+	return time.Duration(last-first+1) * time.Second / time.Duration(stream.Info.SampleRate)
 }

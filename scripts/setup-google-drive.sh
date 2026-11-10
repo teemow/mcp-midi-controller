@@ -295,7 +295,13 @@ fi
 ask GDRIVE_PROJECT_ID "Project ID, then Enter:"
 write_env GDRIVE_PROJECT_ID "$GDRIVE_PROJECT_ID"
 q="?project=${GDRIVE_PROJECT_ID}"
-[[ -n "$known" ]] && known="Done on an earlier run? The page shows it: just press Enter."
+# The hint that a stage may be done already only fits the project the earlier
+# run worked on.
+if [[ -n "$known" && "$GDRIVE_PROJECT_ID" == "$known" ]]; then
+  known="Done on an earlier run? The page shows it: just press Enter."
+else
+  known=""
+fi
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
 stage "Enable the Google Drive API"
