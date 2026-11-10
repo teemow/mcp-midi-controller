@@ -71,9 +71,12 @@ shows it:
 - peak and mean level in dBFS, over all channels;
 - what was cut before the first sound and after the last, and the fade;
 - **stalls**: every place where the tap's stream arrived more than 200 ms
-  late, or the tap dropped and dialled in again. The audio has a break there.
-  A recording without stalls is the stream as the tap sent it. A host that
-  dozes while a song plays is the usual cause; so is a busy Wi-Fi;
+  late, or the tap dropped and dialled in again. A recording without stalls
+  is the stream as the tap sent it. Where there are stalls, audio may be
+  missing: the tap drops what it cannot send. The record holds how much audio
+  arrived and how long that took, and `list_recordings` says whether the take
+  is whole. A busy Wi-Fi is the usual cause; a host that dozes would be
+  another, so the daemon holds its host awake while it records;
 - the Google Drive link, once uploaded.
 
 A recording is named after its song (or the `name` given) and the time it was

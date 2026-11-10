@@ -868,3 +868,69 @@ func TestRecordingUploadsItself(t *testing.T) {
 		t.Errorf("stop after a failed upload: %s", text)
 	}
 }
+
+// TestRecordingHoldsTheHostAwake: the host is held awake from the start of a
+// recording until its file is written, and a recording that never starts
+// holds nothing.
+func TestRecordingHoldsTheHostAwake(t *testing.T) {
+	var held, released atomic.Int32
+	hub := midicontrol.NewHub()
+	s, feed := newRecordingServer(t, WithMidiControl(hub), WithHostAwake(func() func() {
+		held.Add(1)
+		var once sync.Once
+		return func() { once.Do(func() { released.Add(1) }) }
+	}))
+	brain(t, hub, func(midicontrol.Command) {})
+	feed.set(0.5)
+
+	if res := call(t, s.handleStartRecording, map[string]any{"seconds": 0.3}); res.IsError {
+		t.Fatalf("start: %s", resultText(res))
+	}
+	if held.Load() != 1 || released.Load() != 0 {
+		t.Errorf("while recording: held %d, released %d; want one hold", held.Load(), released.Load())
+	}
+	lastRecording(t, s)
+	for deadline := time.Now().Add(5 * time.Second); released.Load() != 1 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if held.Load() != 1 || released.Load() != 1 {
+		t.Errorf("after the recording: held %d, released %d; want the hold released", held.Load(), released.Load())
+	}
+
+	// A refused recording holds nothing; a recorded song that cannot start
+	// gives back both holds, the recording's and the playback's.
+	if res := call(t, s.handleStartRecording, map[string]any{"tap": "nope"}); !res.IsError || held.Load() != 1 {
+		t.Errorf("a refused recording: %s (held %d)", resultText(res), held.Load())
+	}
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "tracks": []string{"nope"}, "record": true}); !res.IsError {
+		t.Fatalf("a playback of an unknown track started: %s", resultText(res))
+	}
+	if held.Load() != 3 || released.Load() != 3 {
+		t.Errorf("after a recorded song that did not start: held %d, released %d; want 3 and 3", held.Load(), released.Load())
+	}
+}
+
+// TestDescribeRecordingStalls: late audio is told apart from missing audio by
+// the clock.
+func TestDescribeRecordingStalls(t *testing.T) {
+	m := recording.Meta{
+		Name: "Take", Format: recording.FLAC, Seconds: 60, SampleRate: 48000, Channels: 2, BitDepth: 24,
+		TrimmedLeadMS: 2000, CapturedSeconds: 70, WallSeconds: 70.02,
+		Stalls: []audiotap.Stall{{Frame: 48000 * 12, GapMS: 350}, {Frame: 48000 * 30, GapMS: 900, Reconnect: true}},
+	}
+	text := describeRecording(m, "")
+	if !strings.Contains(text, "arrived late 2 time(s) while recording, at 0:10.0 (350 ms) 0:28.0 (900 ms): all of the audio arrived, so the take is whole") {
+		t.Errorf("late but whole: %s", text)
+	}
+	m.WallSeconds = 71.3
+	if text = describeRecording(m, ""); !strings.Contains(text, "about 1.30 s of audio never arrived, so the take has a break there") {
+		t.Errorf("audio missing: %s", text)
+	}
+	m.Stalls = nil
+	if text = describeRecording(m, ""); strings.Contains(text, "late") || strings.Contains(text, "arrived") {
+		t.Errorf("no stalls: %s", text)
+	}
+}

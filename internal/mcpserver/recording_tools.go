@@ -81,6 +81,11 @@ type activeRecording struct {
 	stopOnce sync.Once
 	done     chan struct{} // closed once the recording is finished
 	marked   sync.Once
+
+	// awake releases the hold that keeps the host awake while the recording
+	// runs: a host that dozes reads the tap's stream late, and the tap drops
+	// what it cannot send.
+	awake func()
 }
 
 func (ar *activeRecording) setPhase(p string) {
@@ -210,6 +215,7 @@ func (s *Server) beginRecording(opts recordOptions) (*activeRecording, error) {
 		upload:  opts.Upload || (opts.Song != "" && loadConfig().GoogleDrive.AutoUpload),
 		seconds: opts.Seconds, forSong: opts.Song != "",
 		phase: "recording", stop: make(chan struct{}), done: make(chan struct{}),
+		awake: s.holdAwake(),
 	}
 	s.rec.current = ar
 	return ar, nil
@@ -222,6 +228,7 @@ func (s *Server) abortRecording(ar *activeRecording) {
 		return
 	}
 	_, _ = ar.capture.Stop()
+	ar.awake()
 	s.rec.mu.Lock()
 	if s.rec.current == ar {
 		s.rec.current = nil
@@ -280,8 +287,10 @@ func (s *Server) runRecording(ar *activeRecording) {
 }
 
 // finishRecording stops the capture, turns it into a file and records how
-// that went.
+// that went. The host stays held awake until the file is written and, when
+// asked for, uploaded.
 func (s *Server) finishRecording(ar *activeRecording) {
+	defer ar.awake()
 	ar.setPhase("finishing")
 	store := s.recordings()
 	st, err := ar.capture.Stop()
@@ -359,6 +368,11 @@ func clockTenths(seconds float64) string {
 	return fmt.Sprintf("%d:%02d.%d", tenths/600, tenths/10%60, tenths%10)
 }
 
+// missingAudioSeconds is how much less audio than time a recording may hold
+// before audio counts as missing: a batch on its way and the drift between
+// the tap's clock and the host's account for less.
+const missingAudioSeconds = 0.1
+
 // megabytes renders a file size.
 func megabytes(bytes int64) string { return fmt.Sprintf("%.1f MB", float64(bytes)/1e6) }
 
@@ -393,13 +407,20 @@ func describeRecording(m recording.Meta, path string) string {
 	}
 	b.WriteByte('\n')
 	if n := len(m.Stalls); n > 0 {
-		fmt.Fprintf(&b, "  the tap's stream stalled %d time(s) while recording, so the take has a break at", n)
+		fmt.Fprintf(&b, "  the tap's stream arrived late %d time(s) while recording, at", n)
 		for i, st := range m.Stalls {
 			if i == 4 {
 				fmt.Fprintf(&b, " … (%d more)", n-i)
 				break
 			}
 			fmt.Fprintf(&b, " %s (%d ms)", clockTenths(float64(st.Frame)/float64(m.SampleRate)-float64(m.TrimmedLeadMS)/1000), st.GapMS)
+		}
+		// The tap drops what it cannot send, so audio that came late may also
+		// be audio that is missing. The clock tells: less audio than time.
+		if missing := m.WallSeconds - m.CapturedSeconds; missing > missingAudioSeconds {
+			fmt.Fprintf(&b, ": about %.2f s of audio never arrived, so the take has a break there", missing)
+		} else {
+			b.WriteString(": all of the audio arrived, so the take is whole")
 		}
 		b.WriteByte('\n')
 	}
