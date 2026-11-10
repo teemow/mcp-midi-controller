@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the macOS daemon on the latest main: every 5 minutes (and at login)
+  runs scripts/deploy-mac.sh update mode, which rebuilds and restarts the
+  daemon only when origin/main moved. Installed (with @REPO@ / @HOME@ filled
+  in) by scripts/deploy-mac.sh.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.teemow.mcp-midi-controller.update</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>@REPO@/scripts/deploy-mac.sh</string>
+		<string>--update</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/mcp-midi-controller-update.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/mcp-midi-controller-update.log</string>
+</dict>
+</plist>

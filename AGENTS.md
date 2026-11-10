@@ -16,3 +16,13 @@ original `.aumproj` sessions are read-only masters:
 Process details: `docs/aum-brain-control.md` ("Testing process — iterate on
 copies"). The rig-specific list of sessions and copy ids is private:
 `docs/private/aum-projects.md`.
+
+## The Mac follows main by itself
+
+The rig's macOS host runs the daemon under launchd and updates itself from
+`main` within 5 minutes of a merge (`scripts/deploy-mac.sh --update`, see the
+README's macOS section). Don't build or copy binaries onto it by hand: merge to
+`main`, then confirm the version on the first line of
+`~/Library/Logs/mcp-midi-controller.log`. If it doesn't move, read
+`~/Library/Logs/mcp-midi-controller-update.log` (a clone with local changes or
+on another branch, or a failed build, stops the update).

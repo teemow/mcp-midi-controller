@@ -186,6 +186,31 @@ over USB** through WebDriverAgent (`ipad_wda_url` in `config.yaml`, default
 `http://127.0.0.1:8100`, as forwarded by auv3-probe's `scripts/ipad wda`; `""`
 disables them). See [`docs/ipad-control.md`](docs/ipad-control.md).
 
+## Running on macOS (launchd), always on the latest main
+
+On a Mac the daemon runs as a launchd user agent, and a second agent keeps it on
+the latest `main`. From a clone kept on `main`:
+
+```bash
+scripts/deploy-mac.sh      # install both agents, build, install, restart
+```
+
+- `com.teemow.mcp-midi-controller` runs `/usr/local/bin/mcp-midi-controller`
+  (override with `MCP_MIDI_BIN`), restarting it after a crash
+  ([`init/com.teemow.mcp-midi-controller.plist`](init/com.teemow.mcp-midi-controller.plist)).
+- `com.teemow.mcp-midi-controller.update` runs `scripts/deploy-mac.sh --update`
+  every 5 minutes and at login: when `origin/main` moved (or got its release
+  tag) it fast-forwards the clone, builds with the version stamped in, swaps the
+  binary and restarts the daemon. Otherwise it does nothing
+  ([`init/com.teemow.mcp-midi-controller.update.plist`](init/com.teemow.mcp-midi-controller.update.plist)).
+- It never touches a clone with local changes or on another branch, and a build
+  that fails leaves the running daemon alone until `main` moves again.
+- Logs: `~/Library/Logs/mcp-midi-controller.log` (daemon, first line is the
+  version) and `~/Library/Logs/mcp-midi-controller-update.log` (updates).
+
+Go and the Xcode command line tools are the only build requirements; the SPA
+in `internal/webui/dist` is committed.
+
 ## Web UI (signalwave)
 
 The daemon embeds **signalwave**, an in-browser control app, served on the same

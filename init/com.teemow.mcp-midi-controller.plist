@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  mcp-midi-controller as a launchd user agent: the macOS counterpart of
+  init/mcp-midi-controller.service. Starts at login and restarts after a crash
+  or failed start (e.g. network not up yet), like Restart=on-failure.
+  Config is read from ~/.config/mcp-midi-controller (defaults when absent:
+  MCP on 127.0.0.1:7799, iPad receiver on :7800).
+  Installed (with @BIN@ / @HOME@ filled in) by scripts/deploy-mac.sh.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.teemow.mcp-midi-controller</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@BIN@</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>2</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/mcp-midi-controller.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/mcp-midi-controller.log</string>
+</dict>
+</plist>
