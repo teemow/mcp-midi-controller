@@ -239,6 +239,25 @@ _install_client() {
   fi
 }
 
+# visit URL shows a page's address and opens it in the browser, without
+# waiting for the opener: where no browser is running yet, xdg-open starts one
+# and only returns when that browser is closed. The opener runs in a session
+# of its own, so Ctrl-C in the wizard does not reach the browser.
+visit() {
+  local url="$1" opener=""
+  printf '  %s↗ opening%s %s\n' "$GREEN" "$RESET" "$url"
+  for opener in wslview explorer.exe xdg-open open; do
+    command -v "$opener" >/dev/null 2>&1 || continue
+    if command -v setsid >/dev/null 2>&1; then
+      setsid -f "$opener" "$url" </dev/null >/dev/null 2>&1 || true
+    else
+      ( "$opener" "$url" </dev/null >/dev/null 2>&1 & )
+    fi
+    return 0
+  done
+  warn "no browser opener here: open that address yourself"
+}
+
 run_wizard() {
 
 TOTAL_STAGES=6
@@ -252,25 +271,25 @@ banner "Google Drive for mcp-midi-controller: your own OAuth client"
 stage "A Google Cloud project"
 say "The client lives in a Google Cloud project of your own. Use an existing"
 say "one or create one now (no billing account is needed for the Drive API)."
-open_url "https://console.cloud.google.com/projectcreate"
 step "Sign in with the Google account whose Drive the recordings go to."
 step "Project name: anything, e.g. \"mcp-midi-controller\". Click Create."
 step "Copy the Project ID: it is shown under the name field while creating,"
-step "and later in the project picker at the top (not the project number)."
-ask GDRIVE_PROJECT_ID "Project ID:"
+say "  and later in the project picker at the top (not the project number)."
+visit "https://console.cloud.google.com/projectcreate"
+say "When the project exists, come back here."
+ask GDRIVE_PROJECT_ID "Paste the Project ID, then Enter:"
 q="?project=${GDRIVE_PROJECT_ID}"
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
 stage "Enable the Google Drive API"
-open_url "https://console.cloud.google.com/apis/library/drive.googleapis.com${q}"
 step "Check the project named at the top is ${GDRIVE_PROJECT_ID}."
 step "Click Enable and wait until the page shows \"API Enabled\" / Manage."
-pause "Enabled? Press Enter"
+visit "https://console.cloud.google.com/apis/library/drive.googleapis.com${q}"
+pause "Enabled? Press Enter for the next stage"
 
 # ── 3 ─────────────────────────────────────────────────────────────────────
 stage "Register the app (the consent screen)"
 say "Google shows this app's name when you approve the daemon later."
-open_url "https://console.cloud.google.com/auth/overview${q}"
 step "Click \"Get started\"."
 step "App Information: App name e.g. \"mcp-midi-controller\", User support"
 step "email: your address. Next."
@@ -280,7 +299,8 @@ step "Finish: tick the Google API Services User Data Policy box. Continue,"
 step "then Create."
 note "No logo, no scopes to add: the daemon asks for the one scope it needs"
 note "(drive.file: only the files it creates itself) when you approve it."
-pause "Created? Press Enter"
+visit "https://console.cloud.google.com/auth/overview${q}"
+pause "Created? Press Enter for the next stage"
 
 # ── 4 ─────────────────────────────────────────────────────────────────────
 stage "Publish the app"
@@ -288,22 +308,22 @@ say "While an app is in \"Testing\", Google ends its sign-in after 7 days and"
 say "the daemon would ask you to approve it again every week. \"In production\""
 say "the sign-in stays. With only the drive.file scope and no logo there is no"
 say "review to pass, and nobody else can use the client without its secret."
-open_url "https://console.cloud.google.com/auth/audience${q}"
 step "Under \"Publishing status\" click \"Publish app\", then Confirm."
 step "The status now reads \"In production\"."
-pause "In production? Press Enter"
+visit "https://console.cloud.google.com/auth/audience${q}"
+pause "In production? Press Enter for the next stage"
 
 # ── 5 ─────────────────────────────────────────────────────────────────────
 stage "Create the OAuth client"
 say "The daemon has no browser of its own, so it signs in the way a TV does:"
 say "it shows a code and you enter it on any device. That needs this client type."
-open_url "https://console.cloud.google.com/auth/clients${q}"
 step "Click \"Create client\"."
 step "Application type: \"TVs and Limited Input devices\"."
 step "Name: e.g. \"mcp-midi-controller daemon\". Click Create."
 step "In the \"OAuth client created\" dialog click \"Download JSON\"."
 warn "Google shows the client secret only now: download before closing the dialog."
-pause "Downloaded? Press Enter"
+visit "https://console.cloud.google.com/auth/clients${q}"
+pause "Downloaded? Press Enter for the last stage"
 
 # ── 6 ─────────────────────────────────────────────────────────────────────
 stage "Install the client file"
