@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // TestLoadSong takes a saved song to a loaded session in one call: authored,
@@ -45,9 +46,15 @@ func TestLoadSong(t *testing.T) {
 		t.Errorf("loaded session = %q, want the song's", got)
 	}
 	// The check set the song's own sound before it played: two preset loads.
-	r.mu.Lock()
-	programs := len(r.Programs)
-	r.mu.Unlock()
+	countPrograms := func(cmds []midicontrol.Command) (n int) {
+		for _, cmd := range cmds {
+			if cmd.Type == "pc" {
+				n++
+			}
+		}
+		return n
+	}
+	programs := countPrograms(r.waitCommands(func(cmds []midicontrol.Command) bool { return countPrograms(cmds) >= 2 }))
 	if programs != 2 {
 		t.Errorf("the check sent %d preset loads, want the two tracks' presets", programs)
 	}
