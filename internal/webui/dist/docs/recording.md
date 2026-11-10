@@ -41,6 +41,10 @@ then exactly that long), otherwise it runs until `stop_recording`, for 30
 minutes at most. `tap` picks a tap by name when several are streaming. One
 recording runs at a time.
 
+A recording is finished by the daemon that began it. A daemon restarted while
+it records leaves no recording, only its raw capture (a `.f32.part` file in
+the recordings dir), which is deleted when the next recording starts.
+
 ### The cut
 
 When a recording ends, the silence around the sound is cut (`trim: false` keeps
@@ -158,11 +162,14 @@ The daemon has no browser, so it signs in the way a TV does:
    see, edit, create and delete only the Drive files used with this app.
 3. `get_google_drive` says when the sign-in has arrived, and whose Drive it is.
 
-The code is valid for 30 minutes. The sign-in lasts until you end it (or, in
-"Testing", for seven days): `connect_google_drive` with `disconnect: true`
-revokes it at Google and deletes it on the host. You can also remove the
-app's access in your Google account; the daemon notices at its next call and
-asks to be connected again.
+The code is valid for 30 minutes, and the daemon that gave it out has to be
+the one that sees it approved: a daemon restarted in between has forgotten
+it, and `connect_google_drive` gives a new one.
+
+The sign-in lasts until you end it (or, in "Testing", for seven days):
+`connect_google_drive` with `disconnect: true` revokes it at Google and
+deletes it on the host. You can also remove the app's access in your Google
+account; the daemon notices at its next call and asks to be connected again.
 
 ### Upload
 
@@ -259,4 +266,27 @@ Checked on a real Google account (a personal one, the app in "Testing"):
 Not checked on a real account yet: the upload folder found again by its id
 after a rename or a move, an access token replaced after its hour, an upload
 resumed after a real connection loss, a sign-in ended by Google after seven
-days, and a published app.
+days, whether the daemon still sees its upload folder after a sign-in was
+revoked and made anew, and a published app.
+
+Checked on a rig (the daemon on a Mac, AUM on an iPad): a five-track song of
+2:04 played live by `play_song` with `record`, twice.
+
+- Each recording began before the opening sound was set, ended by itself
+  after the tail, and was cut at the first note, 1.28 s in. The takes are
+  2:06.4 and 2:06.7 long.
+- Their levels (peak -2.3 and -1.5 dBFS, mean -18.7 and -18.2 dBFS) lie on
+  both sides of a take of the same song joined by hand from `get_audio_clip`
+  earlier (-1.75 dBFS peak, -18.4 dBFS mean).
+- In the first take the tap's stream arrived late four times, by 0.3 to 0.8
+  seconds. No audio was missing (128.21 s of it arrived in 128.20 s), and the
+  record says both. The second take has no stall.
+- With `auto_upload` on and the daemon not yet signed in, the first take was
+  kept and its upload reported as not connected; `upload_recording` sent it
+  once the daemon was signed in. The second take uploaded itself, 28.7 MB in
+  10 seconds.
+- The daemon on the rig signed in with the client another daemon had used
+  before. It found the folder that one had made, by its name, and made no
+  second one; its next upload went by the folder's remembered id.
+- A sign-in that had arrived survived two restarts of the daemon. One that
+  was still waiting for approval did not.
