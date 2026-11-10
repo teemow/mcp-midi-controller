@@ -173,7 +173,7 @@ Loading a preset resets a plugin's parameters, so after a preset change every
 parameter the song sets on that plugin is sent again. The load itself is sent
 400 ms before its section, because a plugin is deaf while it loads (see
 [Status](#status)). What that track plays in the last 400 ms of the section
-before is cut or lost.
+before is cut, lost or already played with the new preset.
 
 **Automation** moves a control within a section:
 

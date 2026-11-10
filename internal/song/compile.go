@@ -103,10 +103,11 @@ func (t *Timeline) leadTicks() int64 {
 //
 // A plugin is deaf while it loads: measured on a device, two of five
 // instruments swallowed every note sent up to 250 ms after the Program Change
-// and played the ones from 275 ms on, with a rare miss at 300 ms; the others
-// answered within 150 ms. 400 ms leaves the slow ones a margin. The price is
-// the end of the section before: what that track plays in its last 400 ms is
-// cut or lost.
+// and played the ones from 275 ms on, but still lost two in sixteen at 300 ms
+// and none in thirty-two at 350 and 400 ms; the others answered within 150 ms.
+// 400 ms leaves the slow ones a margin. The price is the end of the section
+// before: what that track plays in its last 400 ms is cut, lost or already
+// played with the new preset.
 const presetLead = 400 * time.Millisecond
 
 // rampSpacingTicks is the closest two steps of a ramp are placed.
