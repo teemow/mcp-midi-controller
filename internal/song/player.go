@@ -131,9 +131,13 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 		endTick:   tl.Sections[last].Tick + int64(tl.Sections[last].Bars)*tl.BarTicks,
 	}
 
-	// The opening state replaces every control change up to the start; after
-	// it, the timeline's own changes apply. A change that leads into the
-	// section after the last one played (a preset sent early) is left out.
+	// The opening state replaces the starting section's own control changes
+	// up to the start; after it, the timeline's own changes apply. A preset
+	// that leads into a later section is kept even when it is due at or
+	// before the start (the sections between are shorter than the lead): it
+	// goes out as the playback starts, or that section would play with the
+	// wrong preset. A change that leads into the section after the last one
+	// played (a preset sent early) is left out.
 	var events []Event
 	for _, e := range tl.Events {
 		if e.Section < opts.From || e.Section > last {
@@ -145,7 +149,7 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 				continue
 			}
 		default:
-			if e.Tick <= pb.startTick {
+			if e.Section == opts.From && e.Tick <= pb.startTick {
 				continue
 			}
 		}

@@ -141,6 +141,92 @@ func TestPlayerPlaysAPart(t *testing.T) {
 	}
 }
 
+// shortSectionSong has a one-bar pickup shorter than presetLead (300 ms at this
+// tempo and meter) ahead of a verse that changes the lead's preset. The verse's
+// preset load is therefore due before the pickup starts.
+const shortSectionSong = `
+title: Short Section
+tempo: 400
+time_signature: 2/4
+tracks:
+  - id: lead
+    instrument: {plugin: synth, preset: Warm Pad}
+patterns:
+  a:
+    step: 1/4
+    notes: "A3 ."
+scenes:
+  bright:
+    lead: {preset: Bright Lead}
+sections:
+  pickup:
+    bars: 1
+    play: {lead: a}
+  verse:
+    bars: 2
+    scene: bright
+    play: {lead: a}
+arrangement: [pickup, verse, pickup, verse]
+`
+
+// TestPlayerSendsLoadsDueBeforeTheStart checks a preset load that leads into a
+// later section is sent although it is due at or before the playback's start:
+// the opening state stands for the starting section's sound only. Without the
+// load, the section after a short one would play with the wrong preset.
+func TestPlayerSendsLoadsDueBeforeTheStart(t *testing.T) {
+	tl, _ := compileTest(t, shortSectionSong)
+	if short := tl.TickTime(tl.Sections[1].Tick); short >= presetLead {
+		t.Fatalf("the pickup lasts %v, the test needs it shorter than the preset lead (%v)", short, presetLead)
+	}
+	for _, c := range []struct {
+		name string
+		from int
+	}{
+		{"from the top", 0},    // the verse's load is clamped to the song's start
+		{"from the pickup", 2}, // the verse's load is due before the pickup starts
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var want []Event
+			for _, e := range tl.Events {
+				if e.Kind == Program && e.Section == c.from+1 {
+					want = append(want, e)
+				}
+			}
+			if len(want) != 1 || want[0].Tick > tl.Sections[c.from].Tick {
+				t.Fatalf("the verse's preset loads = %v, want one due at or before the pickup's start (tick %d)", want, tl.Sections[c.from].Tick)
+			}
+			var rec recorder
+			var p Player
+			if _, err := p.Start("test", tl, PlayOptions{From: c.from, Count: 2, Preroll: 20 * time.Millisecond}, rec.send); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if final := waitDone(t, &p); final.Outcome != "finished" {
+				t.Fatalf("final status = %+v, want finished", final)
+			}
+			got := rec.snapshot()
+			opening := len(tl.Sections[c.from].State)
+			var loads []Event
+			firstNote := -1
+			for i, e := range got[opening:] {
+				switch e.Kind {
+				case Program:
+					loads = append(loads, e)
+					if firstNote >= 0 {
+						t.Errorf("the verse's preset load was sent after the first note (event %d)", i)
+					}
+				case NoteOn:
+					if firstNote < 0 {
+						firstNote = i
+					}
+				}
+			}
+			if len(loads) != 1 || loads[0] != want[0] {
+				t.Errorf("after the opening state the player sent the loads %v, want the verse's %s", loads, describe(want[0]))
+			}
+		})
+	}
+}
+
 func TestPlayerStopReleasesNotes(t *testing.T) {
 	tl, _ := compileTest(t, testSong) // 12 s at 120 BPM
 	var rec recorder
