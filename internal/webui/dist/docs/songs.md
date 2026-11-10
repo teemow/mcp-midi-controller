@@ -158,7 +158,7 @@ What can be set:
 
 | | On | Value |
 |-|----|-------|
-| `level` | a track | dB; 0 is unity, up to +12 |
+| `level` | a track | dB; 0 is unity, up to +6 |
 | `mute` | a track | `true` / `false` |
 | `preset` | an instrument or effect | the name of one of the plugin's factory presets |
 | `bypass` | an instrument or effect | `true` / `false` |
@@ -264,19 +264,44 @@ matrix routes with their port name and filters, every mapping, the preset-load
 actions.
 
 What a session file says and what AUM does with it are two things. Measured on
-a device so far, from earlier work: a route keyed by the brain's port name is
-applied, a destination filtered to one channel passes that channel, and a
-preset-load action mapped to a Program Change loads the preset. Not yet
-measured for a session authored by `author_song_session`:
+a device, in sessions authored from a song:
 
-- that AUM accepts preset-load actions written from scratch (their shape is
-  copied from a session AUM saved);
+- **Routing.** One brain plays every track. A note on a track's channel
+  sounded only that track's instrument (its pitch read back at the tap), and a
+  message on a control channel made no sound.
+- **Preset loads written from scratch.** A Program Change on channel 15 loaded
+  the mapped preset on each of four plugins; timbre and level changed at the
+  tap every time.
+- **Transport.** The mapped CCs on channel 15 started and stopped AUM's
+  transport. Stopping does not rewind, so `play_song` rewinds before it
+  starts. While the transport ran, AUM's DSP load rose from 40 % to 85 % in a
+  five-track session, which is why `transport` is off unless asked for.
+- **Strip layout.** AUM stores a strip as its source, its output, then its
+  inserts, and counts the inserts ahead of the fader. Sessions are authored
+  that way; with the effects stored before the output, AUM took the first
+  effect for the strip's output.
+- **Fader law.** A level stored in the session is linear gain: tracks authored
+  at -3 to -10 dB showed exactly those values. A mapped fader CC follows
+  gain = 2·(value/127)², which puts unity at 90 and +6 dB at 127. Every `level` the
+  song sends is converted by that law.
+
+Not yet measured:
+
 - which way a bypass and a mute latch (the song sends 127 for bypassed/muted,
   0 for active);
-- the fader law behind `level` (assumed: unity at 1/√2 of the fader's travel,
-  +12 dB at the top);
 - how long a plugin takes to load a preset, against the 250 ms a preset change
-  is sent ahead of its section.
+  is sent ahead of its section;
+- how a parameter's CC value maps onto the parameter's range (assumed: linear
+  from its minimum to its maximum);
+- a whole song played by `play_song`: the measurements above are single
+  messages sent into an authored session.
+
+Not every plugin behaves when a session hosts it from scratch. One synth came
+up as "invalidated" on every load, and one drum machine loaded and took its
+preset but stayed silent. Default patches also sounded one or two octaves
+below the written note on three synths. Play each instrument alone and listen
+at the tap before writing for it, and set the track's `transpose` where it is
+needed.
 
 ## Files
 
