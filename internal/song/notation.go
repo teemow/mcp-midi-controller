@@ -96,6 +96,10 @@ func parseStep(step string) (int64, error) {
 // semitone is the pitch class of each note letter.
 var semitone = map[byte]int{'c': 0, 'd': 2, 'e': 4, 'f': 5, 'g': 7, 'a': 9, 'b': 11}
 
+// ParseNote reads a note as a song writes it: a name ("A2", "C#4", "Eb3"; C4
+// is middle C) or a MIDI note number.
+func ParseNote(s string) (int, error) { return parseNote(s) }
+
 // parseNote parses a note name ("A2", "C#4", "Eb3"; C4 is MIDI 60) or a plain
 // MIDI note number.
 func parseNote(s string) (int, error) {

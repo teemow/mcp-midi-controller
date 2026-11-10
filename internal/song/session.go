@@ -204,7 +204,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		}
 		for _, pr := range n.Presets {
 			if err := sess.AddPresetLoad(n.Strip, n.Slot, aum.PresetLoad{
-				Name: pr.Name, Number: pr.Number, Program: pr.Program, Channel: GlobalChannel - 1,
+				Name: pr.Name, Number: pr.Number, Program: pr.Program, Channel: pr.Channel - 1,
 			}); err != nil {
 				return nil, rep, err
 			}

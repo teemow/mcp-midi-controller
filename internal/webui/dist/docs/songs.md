@@ -15,6 +15,7 @@ that plays inside AUM.
 | Step | Tool | |
 |------|------|-|
 | 1. Look | `list_song_plugins`, `get_song_plugin` | Which instruments and effects are installed (the staged AUv3 probes), their factory presets and parameters. |
+| | `open_sound_lab`, `audition_sound`, `list_sounds` | What a preset sounds like, before it is in a song. See [Sounds](#sounds). |
 | 2. Write | `save_song` | Store the document. It is checked first; see [What is checked](#what-is-checked). |
 | 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song, or from a section, or only some tracks. |
@@ -192,6 +193,45 @@ sections:
 instrument, or of `effect`. `bar` (1-based, default 1) and `bars` (default: to
 the section's end) place the ramp.
 
+## Sounds
+
+A preset's name says little about its sound. One sounds at the written pitch,
+the next an octave below it, a third is 20 dB quieter or has a second note
+layered in. A drum machine puts its pads on notes of its own. `audition_sound`
+finds that out by playing a note and measuring the tap:
+
+| | |
+|-|-|
+| pitch | The note that sounds, as `transpose`: the semitones to add to a written note so it sounds as written (12 for a preset an octave low). How far it is out of tune, and how far a held note wanders. |
+| level | rms and sample peak of the held note, in dBFS. |
+| envelope | Attack, whether a held note sustains or how fast it decays, how long it rings after the release. |
+| layers | Strong partials that are no harmonic of the note: a fifth, a second voice. |
+
+With `kit: true` the instrument is treated as a drum machine: every note of a
+range is hit, the ones that sound are its pads, each with level, length and
+brightness and a guess at what it is. The guesses make up a drum map
+(`kick: 49, snare: 51, …`); they come from the sound alone, so read them and
+correct them with `set_sound`.
+
+A preset is loaded through a Program Change, so it can only be auditioned in a
+session that maps it:
+
+- **The lab.** `open_sound_lab` takes a list of instruments and loads a
+  session of one strip each, nothing else in the path, with `presets: all`. It
+  is the song `sound_lab` and is loaded like one. Any preset of those
+  instruments is then one `audition_sound` away, a second or two each, several
+  per call (`presets`, or `query` for every preset with a word in its name).
+- **A song's own session**, when its `session:` block says `presets: all`. The
+  candidate is then heard through the track's own effect chain.
+
+Measured in the lab, on a clean path with the fader at unity, the result is
+stored in the **sound catalogue**: one YAML file per plugin under `sounds/` in
+the config dir. `list_sounds` reads it. A measurement through an effect chain,
+with parameters set on the instrument or with the fader moved is reported but
+not stored: it is the chain's sound, not the preset's. What `set_sound`
+corrects (a transposition, a drum map, a comment) is kept when the preset is
+measured again.
+
 ## What is checked
 
 `save_song` refuses a document that does not hold together, and reports every
@@ -251,7 +291,16 @@ session:
   track_taps: true      # a ProbeAudioTap after every track's fader
   full_control: true    # map every other parameter of every plugin as well
   hardware: x32         # the master's output profile; builtin is the default
+  presets: all          # a Preset Load for every factory preset, not only the song's
 ```
+
+With `presets: all` every factory preset of every plugin gets a Program Change:
+the instruments' first, then the effects', filling channel 15 and then the
+control channels below it (128 to a channel, so a five-track song has room for
+1280). A preset's address then depends only on the session's layout. The song
+can change to any preset, and any can be auditioned in the loaded session,
+without a new one. Presets beyond the room are left out and counted; one the
+song names must fit.
 
 They are part of the document, so changing one makes the session out of date
 like a new plugin does. The same options as arguments of `load_song` or
@@ -366,6 +415,7 @@ needed.
 | | Where |
 |-|-------|
 | Songs | `$XDG_CONFIG_HOME/mcp-midi-controller/songs/<id>.yaml` — part of the rig's configuration, like scenes |
+| The sound catalogue | `$XDG_CONFIG_HOME/mcp-midi-controller/sounds/<plugin id>.yaml` — measured per rig, and readable and correctable by hand |
 | Authored sessions | the AUM staging dir (state dir), like every authored session |
 | Which session a song was authored into | `song-sessions.json` in the state dir |
 | MIDI exports | `song-exports/` in the state dir |

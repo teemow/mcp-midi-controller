@@ -21,6 +21,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/song"
+	"github.com/teemow/mcp-midi-controller/internal/sound"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
@@ -106,6 +107,10 @@ type Server struct {
 	songs  *song.Store
 	player song.Player
 
+	// sounds is the rig's sound catalogue: what the presets of its plugins
+	// were measured to sound like. See sound_tools.go.
+	sounds *sound.Catalog
+
 	// songSessionsMu serializes the load-change-save cycle of the record of
 	// which session each song was authored into.
 	songSessionsMu sync.Mutex
@@ -172,6 +177,7 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		mcp:        mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
 		scenes:     scene.NewStore(config.ScenesDir()),
 		songs:      song.NewStore(config.SongsDir()),
+		sounds:     sound.NewCatalog(config.SoundsDir()),
 		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},
 	}

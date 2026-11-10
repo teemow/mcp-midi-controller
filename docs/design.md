@@ -286,6 +286,9 @@ Global tools:
   `author_song_session` builds the AUM session that hosts it; `load_song`
   takes it from there into AUM (the iPad pulls the file, AUM loads it, brain
   and tap connect) and `check_song` tells whether every track sounds;
+  `open_sound_lab` / `audition_sound` play any preset and measure what it
+  sounds like into the rig's sound catalogue (`internal/sound`,
+  `list_sounds` / `set_sound`);
   `play_song` / `stop_song` / `get_song_playback` play it through the brain;
   and `export_song_midi` writes it as a Standard MIDI File. See
   `docs/songs.md`; `docs/song-authoring.md` is the design of the tools around
