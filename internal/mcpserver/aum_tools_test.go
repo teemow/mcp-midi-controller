@@ -36,7 +36,17 @@ func newAUMServerWithBrain(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	return New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}))
+	s := New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}))
+	waitBackgroundAtCleanup(t, s)
+	return s
+}
+
+// waitBackgroundAtCleanup keeps a receiver callback's goroutine from outliving
+// its test: registered after the t.TempDir calls, it runs before their
+// RemoveAll, so the config and state dirs are never removed under a write.
+func waitBackgroundAtCleanup(t *testing.T, s *Server) {
+	t.Helper()
+	t.Cleanup(s.waitBackground)
 }
 
 // gtr1ProbeID is the staged id of stageProbe's dump: device.ProbeID of its

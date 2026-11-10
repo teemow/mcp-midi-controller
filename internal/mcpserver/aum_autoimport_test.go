@@ -18,7 +18,9 @@ func newAutoImportServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	return New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}), WithAUMAutoImport(true))
+	s := New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}), WithAUMAutoImport(true))
+	waitBackgroundAtCleanup(t, s)
+	return s
 }
 
 // authorConventionSession stages a 2-strip session (Gitarre hosting the probe
@@ -82,8 +84,15 @@ func TestAUMAutoImportOnBrainConnect(t *testing.T) {
 	stageProbe(t)
 	authorConventionSession(t, s, "rig_conn", "Gitarre")
 
+	// The hook hands its work to a goroutine (the receiver callback must not
+	// block); connect waits until that work is over.
+	connect := func() {
+		s.OnMidiControlConnected()
+		s.waitBackground()
+	}
+
 	// Brain connect with no current session is a no-op.
-	s.reimportCurrentAUMSession()
+	connect()
 	if n := len(s.eng.Devices()); n != 0 {
 		t.Fatalf("connect with no current session created %d device(s)", n)
 	}
@@ -92,13 +101,13 @@ func TestAUMAutoImportOnBrainConnect(t *testing.T) {
 	// import re-runs even though no download happens now — the daemon may have
 	// restarted in between.
 	s.setCurrentAUMSession("rig_conn")
-	s.reimportCurrentAUMSession()
+	connect()
 	if _, ok := s.eng.DeviceFor("gitarre"); !ok {
 		t.Fatal("brain connect did not re-import the current session")
 	}
 
 	// A second connect replaces (not duplicates) the session rig.
-	s.reimportCurrentAUMSession()
+	connect()
 	count := 0
 	for _, d := range s.eng.Devices() {
 		if d.Session == "rig_conn" {
