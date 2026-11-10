@@ -14,5 +14,9 @@ jobs:
     uses: teemow/github-workflows/.github/workflows/release-go.yml@main
     with:
       tag: ${{ needs.release.outputs.tag }}
+      # Keep native and arm64 Ubuntu packages on the same stable toolchain.
+      # ubuntu-latest moved to 26.04 and apt proposed runtime downgrades.
+      # Match the packaging job in ci.yml when changing this image.
+      runs-on: ubuntu-24.04
     permissions:
       contents: write
