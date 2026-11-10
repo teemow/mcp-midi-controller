@@ -32,6 +32,12 @@ type PlayOptions struct {
 	// Before and After are sent as the first note is due and once the last has
 	// ended — the session's transport start and stop, when wanted.
 	Before, After []Event
+	// OnEnd, when set, is called once with the playback's final status when it
+	// is over, however it ended: finished, stopped or failed. It runs on the
+	// playback's goroutine after the last event went out, and Stop (and so the
+	// next Start) waits for it: it must not block or start another playback.
+	// A Start that returns an error began no playback and does not call it.
+	OnEnd func(Status)
 }
 
 // Status is where a playback stands.
@@ -157,12 +163,16 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 		pb.mu.Lock()
 		pb.outcome = outcome
 		pb.mu.Unlock()
+		final := pb.status()
 		p.mu.Lock()
 		if p.cur == pb {
-			p.last = pb.status()
+			p.last = final
 			p.cur = nil
 		}
 		p.mu.Unlock()
+		if opts.OnEnd != nil {
+			opts.OnEnd(final)
+		}
 	}()
 	return pb.status(), nil
 }

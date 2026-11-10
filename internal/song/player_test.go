@@ -184,18 +184,154 @@ func TestPlayerReportsSendFailure(t *testing.T) {
 	}
 }
 
+// ends collects the statuses a playback's OnEnd was called with.
+type ends struct {
+	mu  sync.Mutex
+	got []Status
+	ch  chan Status
+}
+
+func newEnds() *ends { return &ends{ch: make(chan Status, 8)} }
+
+func (e *ends) onEnd(st Status) {
+	e.mu.Lock()
+	e.got = append(e.got, st)
+	e.mu.Unlock()
+	e.ch <- st
+}
+
+func (e *ends) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.got)
+}
+
+// wait returns the status of the next playback to end.
+func (e *ends) wait(t *testing.T) Status {
+	t.Helper()
+	select {
+	case st := <-e.ch:
+		return st
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnEnd was not called")
+		return Status{}
+	}
+}
+
+// TestPlayerOnEndFinished checks a playback that runs to its end reports it
+// once, after its last event, with the status the player then shows.
+func TestPlayerOnEndFinished(t *testing.T) {
+	tl, _ := fastSong(t)
+	var rec recorder
+	var p Player
+	end := newEnds()
+	after := Event{Kind: Control, Channel: 15, Data1: 103, Data2: 127}
+	sentAtEnd := -1
+	onEnd := func(st Status) {
+		sentAtEnd = len(rec.snapshot())
+		end.onEnd(st)
+	}
+	if _, err := p.Start("test", tl, PlayOptions{Preroll: 20 * time.Millisecond, After: []Event{after}, OnEnd: onEnd}, rec.send); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := end.count(); n != 0 {
+		t.Fatalf("OnEnd was called %d time(s) while the song played", n)
+	}
+	st := end.wait(t)
+	if st.Playing || st.Outcome != "finished" || st.Song != "test" || st.PositionMS != st.DurationMS {
+		t.Errorf("OnEnd got %+v, want test finished at its end", st)
+	}
+	if got := p.Status(); got != st {
+		t.Errorf("player status = %+v, OnEnd got %+v", got, st)
+	}
+	got := rec.snapshot()
+	if sentAtEnd != len(got) || got[len(got)-1] != after {
+		t.Errorf("OnEnd ran after %d of %d events; the last is %s", sentAtEnd, len(got), describe(got[len(got)-1]))
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := end.count(); n != 1 {
+		t.Errorf("OnEnd was called %d times, want once", n)
+	}
+}
+
+// TestPlayerOnEndStopped checks Stop returns only once OnEnd has run, and that
+// a playback replaced by the next Start ends as stopped before the new one
+// begins.
+func TestPlayerOnEndStopped(t *testing.T) {
+	tl, _ := compileTest(t, testSong) // 12 s at 120 BPM
+	var rec recorder
+	var p Player
+	first, second := newEnds(), newEnds()
+	if _, err := p.Start("first", tl, PlayOptions{Preroll: 10 * time.Millisecond, OnEnd: first.onEnd}, rec.send); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if _, err := p.Start("second", tl, PlayOptions{Preroll: 10 * time.Millisecond, OnEnd: second.onEnd}, rec.send); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if first.count() != 1 || second.count() != 0 {
+		t.Fatalf("after the second Start: first ended %d time(s), second %d; want 1 and 0", first.count(), second.count())
+	}
+	if st := first.wait(t); st.Song != "first" || st.Outcome != "stopped" {
+		t.Errorf("the replaced playback ended as %+v, want first stopped", st)
+	}
+	time.Sleep(60 * time.Millisecond)
+	st := p.Stop()
+	if second.count() != 1 {
+		t.Fatalf("Stop returned before OnEnd ran (%d calls)", second.count())
+	}
+	if got := second.wait(t); got != st || st.Song != "second" || st.Outcome != "stopped" {
+		t.Errorf("OnEnd got %+v, Stop returned %+v; want second stopped", got, st)
+	}
+	// Stopping with nothing playing ends nothing.
+	p.Stop()
+	if first.count() != 1 || second.count() != 1 {
+		t.Errorf("a second Stop called OnEnd again: first %d, second %d", first.count(), second.count())
+	}
+}
+
+// TestPlayerOnEndFailed checks a playback ended by a send error reports that
+// error, whether it struck in the opening state or among the notes.
+func TestPlayerOnEndFailed(t *testing.T) {
+	tl, _ := fastSong(t)
+	for name, fail := range map[string]int{
+		"opening state": 1,
+		"notes":         len(tl.Sections[0].State) + 5,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := recorder{fail: fail}
+			var p Player
+			end := newEnds()
+			if _, err := p.Start("test", tl, PlayOptions{Preroll: 10 * time.Millisecond, OnEnd: end.onEnd}, rec.send); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if st := end.wait(t); st.Playing || st.Outcome != "brain gone" || st.Sent != fail-1 {
+				t.Errorf("OnEnd got %+v, want the send error after %d events", st, fail-1)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if n := end.count(); n != 1 {
+				t.Errorf("OnEnd was called %d times, want once", n)
+			}
+		})
+	}
+}
+
 func TestPlayerRejectsBadOptions(t *testing.T) {
 	tl, _ := fastSong(t)
 	var p Player
 	var rec recorder
-	if _, err := p.Start("test", tl, PlayOptions{From: 3}, rec.send); err == nil {
+	end := newEnds()
+	if _, err := p.Start("test", tl, PlayOptions{From: 3, OnEnd: end.onEnd}, rec.send); err == nil {
 		t.Error("Start accepted a section past the arrangement")
 	}
-	if _, err := p.Start("test", tl, PlayOptions{Tracks: []string{"tuba"}}, rec.send); err == nil {
+	if _, err := p.Start("test", tl, PlayOptions{Tracks: []string{"tuba"}, OnEnd: end.onEnd}, rec.send); err == nil {
 		t.Error("Start accepted a track the song does not have")
 	}
 	if st := p.Status(); st.Playing {
 		t.Errorf("a refused Start left the player playing: %+v", st)
+	}
+	if n := end.count(); n != 0 {
+		t.Errorf("a refused Start called OnEnd %d time(s)", n)
 	}
 }
 
