@@ -25,7 +25,10 @@ type Pad struct {
 	// when it has one (toms, kicks).
 	CentroidHz float64 `yaml:"centroid_hz" json:"centroid_hz"`
 	LowPct     float64 `yaml:"low_pct" json:"low_pct"`
-	PitchHz    float64 `yaml:"pitch_hz,omitempty" json:"pitch_hz,omitempty"`
+	// MidPct is how much of the energy lies between 600 and 1500 Hz. A snare
+	// leaves a gap there, between its drum and its rattle.
+	MidPct  float64 `yaml:"mid_pct" json:"mid_pct"`
+	PitchHz float64 `yaml:"pitch_hz,omitempty" json:"pitch_hz,omitempty"`
 }
 
 const (
@@ -72,24 +75,28 @@ func MeasureHit(c Clip, note int) (Pad, bool) {
 	head := m[onset*hop : min(onset*hop+int(sr*padHeadMS/1000), len(m))]
 	p.LevelDB = round1(rmsDB(head))
 	if mag, binHz := spectrum(head, sr, padFFT); mag != nil {
-		var sum, weighted, low float64
+		var sum, weighted, low, mid float64
 		for k, a := range mag {
 			sum += a * a
 			weighted += a * a * float64(k) * binHz
-			if float64(k)*binHz < bodyHz {
+			switch hz := float64(k) * binHz; {
+			case hz < bodyHz:
 				low += a * a
+			case hz < midHz:
+				mid += a * a
 			}
 		}
 		if sum > 0 {
 			p.CentroidHz = math.Round(weighted / sum)
 			p.LowPct = math.Round(100 * low / sum)
+			p.MidPct = math.Round(100 * mid / sum)
 		}
 	}
 	// A drum's pitch is read off its body, after the click of the attack.
 	body := m[min(onset*hop+int(0.015*sr), len(m)):min(onset*hop+int(0.2*sr), len(m))]
 	if track := pitchTrack(body, sr); len(track) > 0 {
-		sort.Float64s(track)
-		p.PitchHz = round1(track[len(track)/2])
+		sort.Slice(track, func(i, j int) bool { return track[i].hz < track[j].hz })
+		p.PitchHz = round1(track[len(track)/2].hz)
 	}
 	return p, true
 }
@@ -98,7 +105,10 @@ func MeasureHit(c Clip, note int) (Pad, bool) {
 // long the hit lasts. They are guesses: a kit decides what its pads are.
 const (
 	bodyHz       = 600.0  // a drum's body lies under this
-	cymbalLowPct = 5.0    // a hat or cymbal has less of its energy there
+	midHz        = 1500.0 // and a snare's rattle above this
+	cymbalLowPct = 5.0    // a hat or cymbal has less of its energy under bodyHz
+	snareLowPct  = 10.0   // a snare has at least this much of it there
+	snareMidPct  = 15.0   // and less than this between bodyHz and midHz
 	lowDrumHz    = 450.0  // kicks and toms sit below
 	cymbalHz     = 3500.0 // hats and cymbals above
 	kickPitchHz  = 110.0  // a low drum pitched under this may be the kick
@@ -182,9 +192,13 @@ func NameLanes(pads []Pad) map[string]int {
 			give(p, "open_hat")
 		case cymbal:
 			give(p, "crash")
-		default:
-			// Between the drums and the cymbals: noise with a body.
+		case p.LowPct >= snareLowPct && p.MidPct < snareMidPct:
+			// A drum under a rattle, with little in between.
 			give(p, "snare")
+		default:
+			// Something in the middle: a clap, a rim, a block. The sound
+			// alone does not tell which.
+			give(p, "perc")
 		}
 	}
 	return lanes
