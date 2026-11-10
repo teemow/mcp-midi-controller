@@ -265,7 +265,15 @@ run_wizard() {
 TOTAL_STAGES=6
 local dests=("$@")
 (( ${#dests[@]} )) || dests=(local)
-local q="" newest=""
+local q="" newest="" known=""
+
+# What is entered here (the project id: not a secret) is kept outside the
+# repository, so a wizard started again carries on where the last one stopped.
+if [[ "$ENV_FILE" == ".env" ]]; then
+  ENV_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/mcp-midi-controller/setup-google-drive.env"
+  mkdir -p "$(dirname "$ENV_FILE")"
+fi
+known=$(_existing GDRIVE_PROJECT_ID || true)
 
 banner "Google Drive for mcp-midi-controller: your own OAuth client"
 
@@ -273,19 +281,27 @@ banner "Google Drive for mcp-midi-controller: your own OAuth client"
 stage "A Google Cloud project"
 say "The client lives in a Google Cloud project of your own. Use an existing"
 say "one or create one now (no billing account is needed for the Drive API)."
-step "Sign in with the Google account whose Drive the recordings go to."
-step "Project name: anything, e.g. \"mcp-midi-controller\". Click Create."
-step "Copy the Project ID: it is shown under the name field while creating,"
-say "  and later in the project picker at the top (not the project number)."
-visit "https://console.cloud.google.com/projectcreate"
-say "When the project exists, come back here."
-ask GDRIVE_PROJECT_ID "Paste the Project ID, then Enter:"
+if [[ -n "$known" ]]; then
+  say "An earlier run of this wizard used the project ${BOLD}${known}${RESET}."
+  say "Press Enter to carry on with it, or type another Project ID."
+else
+  step "Sign in with the Google account whose Drive the recordings go to."
+  step "Project name: anything, e.g. \"mcp-midi-controller\". Click Create."
+  step "Copy the Project ID: it is shown under the name field while creating,"
+  say "  and later in the project picker at the top (not the project number)."
+  visit "https://console.cloud.google.com/projectcreate"
+  say "When the project exists, come back here."
+fi
+ask GDRIVE_PROJECT_ID "Project ID, then Enter:"
+write_env GDRIVE_PROJECT_ID "$GDRIVE_PROJECT_ID"
 q="?project=${GDRIVE_PROJECT_ID}"
+[[ -n "$known" ]] && known="Done on an earlier run? The page shows it: just press Enter."
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
 stage "Enable the Google Drive API"
 step "Check the project named at the top is ${GDRIVE_PROJECT_ID}."
 step "Click Enable and wait until the page shows \"API Enabled\" / Manage."
+[[ -n "$known" ]] && note "$known"
 visit "https://console.cloud.google.com/apis/library/drive.googleapis.com${q}"
 pause "Enabled? Press Enter for the next stage"
 
@@ -301,6 +317,7 @@ step "Finish: tick the Google API Services User Data Policy box. Continue,"
 step "then Create."
 note "No logo, no scopes to add: the daemon asks for the one scope it needs"
 note "(drive.file: only the files it creates itself) when you approve it."
+[[ -n "$known" ]] && note "$known (An app that exists shows its overview, not \"Get started\".)"
 visit "https://console.cloud.google.com/auth/overview${q}"
 pause "Created? Press Enter for the next stage"
 
@@ -312,6 +329,7 @@ say "the sign-in stays. With only the drive.file scope and no logo there is no"
 say "review to pass, and nobody else can use the client without its secret."
 step "Under \"Publishing status\" click \"Publish app\", then Confirm."
 step "The status now reads \"In production\"."
+[[ -n "$known" ]] && note "$known"
 visit "https://console.cloud.google.com/auth/audience${q}"
 pause "In production? Press Enter for the next stage"
 
