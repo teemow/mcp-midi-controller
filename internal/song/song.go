@@ -38,6 +38,10 @@ type Song struct {
 	// Swing delays every second grid step by this fraction of a step (0 is
 	// straight, 0.33 a triplet feel). A pattern may set its own.
 	Swing float64 `yaml:"swing,omitempty" json:"swing,omitempty"`
+	// Calibrate compiles the song against the rig's sound catalogue: notes
+	// are sounding pitch, levels are loudness, and a drum track's lanes are
+	// its kit's pads. See calibrate.go.
+	Calibrate bool `yaml:"calibrate,omitempty" json:"calibrate,omitempty"`
 
 	Tracks []Track `yaml:"tracks" json:"tracks"`
 	// Master is the effect chain on the master strip, after the fader.
@@ -114,6 +118,17 @@ type Track struct {
 	// DrumMap names the notes of a drum track's lanes (lane -> note name or
 	// number), on top of the General MIDI names every drum track knows.
 	DrumMap map[string]string `yaml:"drum_map,omitempty" json:"drum_map,omitempty"`
+
+	// kit is the measured drum map of the kit the track plays in the section
+	// being compiled (lane -> note) and kitName its preset; set only while a
+	// calibrated song compiles. With a kit, a lane is one of its pads, not a
+	// General MIDI note.
+	kit     map[string]int
+	kitName string
+	// anyLane lets a lane nothing knows compile to a silent placeholder: a
+	// calibrated song's lanes are checked against its kit, which needs the
+	// catalogue, so a compile without one must not reject them.
+	anyLane bool
 }
 
 // Plugin is one hosted audio unit — a track's instrument, one of its effects or
@@ -547,7 +562,7 @@ func (s *Song) Validate() error {
 					e.addf("%s/play/%s/%d: pattern %q has drum lanes but %q is not a drum track (set kind: drums)", at, tid, i, pid, tid)
 				}
 				if err == nil && !broken[pid] {
-					if _, perr := compilePattern(pid, p, meter, s.Swing, t); perr != nil {
+					if _, perr := compilePattern(pid, p, meter, s.Swing, s.laneTrack(t)); perr != nil {
 						e.addf("%s/play/%s/%d: %v", at, tid, i, perr)
 					}
 				}
@@ -639,6 +654,18 @@ func effectIDs(effects []Plugin) string {
 		ids[i] = fx.EffectID()
 	}
 	return strings.Join(ids, ", ")
+}
+
+// laneTrack returns the track a pattern is checked against where no kit is
+// known: a calibrated song's drum lanes are its kit's pads, which only the
+// plan can tell, so they pass here and are checked when the song is planned.
+func (s *Song) laneTrack(t *Track) *Track {
+	if !s.Calibrate || t == nil || t.Kind != "drums" {
+		return t
+	}
+	open := *t
+	open.anyLane = true
+	return &open
 }
 
 // TrackChannel returns the MIDI channel (1-based) track i plays on.

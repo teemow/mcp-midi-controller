@@ -199,7 +199,7 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 	if err != nil {
 		return textResult("the lab: "+err.Error(), true), nil
 	}
-	cs, err := compileSong(soundLabID, sg)
+	cs, err := s.compileSong(soundLabID, sg)
 	if err != nil {
 		return textResult("the lab: "+err.Error(), true), nil
 	}

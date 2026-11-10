@@ -187,11 +187,11 @@ func TestSongPluginTools(t *testing.T) {
 
 	res = call(t, s.handleGetSongPlugin, map[string]any{"plugin": "syn1", "query": "pad"})
 	text = resultText(res)
-	if res.IsError || !strings.Contains(text, "presets (2 of 2 matching)") || !strings.Contains(text, "Warm Pad") || strings.Contains(text, "Deep Bass") {
+	if res.IsError || !strings.Contains(text, "presets (2 of 2 matching, 0 measured)") || !strings.Contains(text, "Warm Pad") || strings.Contains(text, "Deep Bass") {
 		t.Fatalf("presets matching pad: %s", text)
 	}
 	res = call(t, s.handleGetSongPlugin, map[string]any{"plugin": "syn1", "query": "cutoff"})
-	if text := resultText(res); !strings.Contains(text, "Cutoff (cutoff): 0..1, now 0.5") {
+	if text := resultText(res); !strings.Contains(text, "Cutoff (cutoff): 0..1, default patch 0.5") {
 		t.Fatalf("params matching cutoff: %s", text)
 	}
 	if res := call(t, s.handleGetSongPlugin, map[string]any{"plugin": "nope"}); !res.IsError {
