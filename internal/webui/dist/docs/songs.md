@@ -511,9 +511,9 @@ a device, in sessions authored from a song:
 
 Not yet measured:
 
-- `load_song`, `check_song`, `open_sound_lab` and `audition_sound` themselves
-  and a session with `presets: all`: the test suite runs them against a
-  stand-in for the iPad;
+- `load_song`, `check_song`, `open_sound_lab` and `audition_sound` themselves,
+  a session with `presets: all` and a song with `calibrate`: the test suite
+  runs them against a stand-in for the iPad;
 - `transport: true` through a whole song;
 - a ramp on a plugin parameter (the song played ramps on levels only);
 - sessions authored with `track_taps` or `full_control`.
