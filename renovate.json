@@ -1,3 +1,11 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "The packaging job in ci.yml and the release in auto-release.yml share one pinned runner image. Moving it is a change by hand, to both, proven by the packaging job.",
+      "matchManagers": ["github-actions"],
+      "matchDatasources": ["github-runners"],
+      "enabled": false
+    }
+  ]
 }
