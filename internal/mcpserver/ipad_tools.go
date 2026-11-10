@@ -576,6 +576,9 @@ func describeAUMState(st ipad.AUMState) string {
 	if st.TempoBar {
 		b.WriteString(", tempo bar open")
 	}
+	if st.Keyboard {
+		b.WriteString(", keyboard open")
+	}
 	b.WriteByte('\n')
 	if st.Session != "" {
 		fmt.Fprintf(&b, "session: %q\n", st.Session)

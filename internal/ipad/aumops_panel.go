@@ -88,22 +88,36 @@ func (d *AUMDriver) openPanel(panel string) (AUMResult, error) {
 		}
 		return d.result("open "+panel, ok, verdict(ok, "opened "+d.St.overlaySummary(), panel+" did not open: "+d.St.overlaySummary()), d.St.Overlays), nil
 	case "midi_routing":
+		if err := d.clearOverlays("routing"); err != nil {
+			return AUMResult{}, err
+		}
 		ok, err := d.openRouting()
 		return d.result("open midi_routing", ok, verdict(ok, "MIDI routing matrix open", "the routing matrix did not open"), nil), err
 	case "navigator":
+		if d.St.Panel() == "NAVIGATOR" {
+			return d.result("open navigator", true, "Navigator open", d.St.Overlays), nil
+		}
+		if err := d.clearOverlays(""); err != nil {
+			return AUMResult{}, err
+		}
 		x, y, _ := AUMTarget("navigator", d.win)
 		if err := d.tap(x, y, "Navigator"); err != nil {
 			return AUMResult{}, err
 		}
-		ok, err := d.until(aumWait, func(st AUMState) bool { return navigatorOpen(d) })
+		ok, err := d.until(aumWait, func(st AUMState) bool { return st.Panel() == "NAVIGATOR" })
 		return d.result("open navigator", ok, verdict(ok, "Navigator open", "the Navigator did not open"), d.St.Overlays), err
 	case "engine_info":
-		before := len(d.St.Overlays)
+		if err := d.clearOverlays(""); err != nil {
+			return AUMResult{}, err
+		}
 		x, y, _ := AUMTarget("engine_info", d.win)
 		if err := d.tap(x, y, "DSP %"); err != nil {
 			return AUMResult{}, err
 		}
-		ok, err := d.until(aumWait, func(st AUMState) bool { return len(st.Overlays) > before })
+		ok, err := d.until(aumWait, func(st AUMState) bool {
+			o := st.Overlay("popover")
+			return o != nil && strings.HasPrefix(strings.ToUpper(o.Title), "ENGINE")
+		})
 		return d.result("open engine_info", ok, verdict(ok, "Engine Info open: "+d.St.overlaySummary(), "Engine Info did not open"), d.St.Overlays), err
 	case "tempo":
 		ok, err := d.ensureTempoBar()
@@ -118,11 +132,17 @@ func (d *AUMDriver) openPanel(panel string) (AUMResult, error) {
 		ok, err := d.until(aumWait, func(st AUMState) bool { return st.Overlay("popover") != nil })
 		return d.result("open clock_options", ok, verdict(ok, "Clock Options open", "Clock Options did not open: "+d.St.overlaySummary()), d.St.Overlays), err
 	case "keyboard":
+		if d.St.Keyboard {
+			return d.result("open keyboard", true, "keyboard open", nil), nil
+		}
+		if err := d.clearOverlays(""); err != nil {
+			return AUMResult{}, err
+		}
 		x, y, _ := AUMTarget("keyboard", d.win)
 		if err := d.tap(x, y, "keyboard"); err != nil {
 			return AUMResult{}, err
 		}
-		ok, err := d.until(aumWait, func(st AUMState) bool { return d.findText("HIDE", nil) != nil })
+		ok, err := d.until(aumWait, func(st AUMState) bool { return st.Keyboard })
 		return d.result("open keyboard", ok, verdict(ok, "keyboard open", "the keyboard did not open"), nil), err
 	}
 	names := make([]string, len(AUMPanels))
@@ -194,13 +214,32 @@ func (d *AUMDriver) openRouting() (bool, error) {
 	return d.until(aumWait, func(st AUMState) bool { return st.Overlay("routing") != nil })
 }
 
-func navigatorOpen(d *AUMDriver) bool {
-	return d.findText("CHANNELS", nil) != nil && d.findText("PLUGINS", nil) != nil
+// clearOverlays closes the popovers, alerts and side panels in front (all
+// but kind keep): they cover the top bar, and a tap outside a popover only
+// closes it.
+func (d *AUMDriver) clearOverlays(keep string) error {
+	for i := 0; i < 4; i++ {
+		o := d.St.Overlay("")
+		if o == nil || (keep != "" && o.Kind == keep) {
+			return nil
+		}
+		res, err := d.closeTop()
+		if err != nil {
+			return err
+		}
+		if !res.Verified {
+			return fmt.Errorf("the %s %q in front did not close", o.Kind, o.Title)
+		}
+	}
+	return fmt.Errorf("could not clear the mixer: %s", d.St.overlaySummary())
 }
 
 func (d *AUMDriver) ensureTempoBar() (bool, error) {
 	if d.St.TempoBar {
 		return true, nil
+	}
+	if err := d.clearOverlays(""); err != nil {
+		return false, err
 	}
 	x, y, _ := AUMTarget("tempo", d.win)
 	if err := d.tap(x, y, "tempo ♩"); err != nil {
@@ -250,9 +289,13 @@ func (d *AUMDriver) closeTop() (AUMResult, error) {
 		if err := d.tap(30, 32, "the tempo bar's ✕"); err != nil {
 			return AUMResult{}, err
 		}
-	case d.findText("HIDE", nil) != nil:
+	case d.St.Keyboard:
 		what = "keyboard"
-		if err := d.tapText("HIDE", nil); err != nil {
+		b := d.findPrefix("HIDE", nil)
+		if b == nil {
+			return AUMResult{}, fmt.Errorf("the keyboard has no HIDE button")
+		}
+		if err := d.tapRect(b.Rect, b.Label); err != nil {
 			return AUMResult{}, err
 		}
 	default:
@@ -273,7 +316,7 @@ func (d *AUMDriver) topSignature() string {
 	if d.St.TempoBar {
 		b.WriteString("tempo|")
 	}
-	if d.findText("HIDE", nil) != nil {
+	if d.St.Keyboard {
 		b.WriteString("keyboard|")
 	}
 	return b.String()

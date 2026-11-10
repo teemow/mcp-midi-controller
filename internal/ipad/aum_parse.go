@@ -41,6 +41,9 @@ type AUMState struct {
 	// TempoBar is true while the tempo bar (close, TAP, ‹ ♩ ›, metronome,
 	// Clock Options) replaces the top left.
 	TempoBar bool `json:"tempo_bar,omitempty"`
+	// Keyboard is true while AUM's built-in keyboard covers the bottom of
+	// the mixer (its toolbar starts with "HIDE↓").
+	Keyboard bool `json:"keyboard,omitempty"`
 	// Overlays are the popovers, side panels, alerts and the MIDI routing
 	// matrix over the mixer, front-most last.
 	Overlays []AUMOverlay `json:"overlays,omitempty"`
@@ -169,7 +172,36 @@ var (
 	reTempo      = regexp.MustCompile(`♩\s*(\d+(?:\.\d+)?)`)
 	rePosition   = regexp.MustCompile(`^-?\d+:\d+\s+-?\d+:\d+(?:\.\d+)?$`)
 	rePluginWin  = regexp.MustCompile(` @[A-Z]+\d+$`)
+	// reGlued matches the texts iOS glues into the accessibility label of
+	// an unlabelled AUM control: meter readings, the DSP load, the main
+	// meter's stale "SESSION: …" label and the about line.
+	reGlued = regexp.MustCompile(`^(-∞|DSP:.*|SESSION:.*|Copyright.*|[-+]?\d+(\.\d+)?\s*(dB|%)?)$`)
 )
+
+// cleanLabel drops what iOS glued into an unlabelled control's label from
+// the texts around it: "-∞, DSP:  2 %, -∞, Name, Name" is "Name", and a
+// label made only of such texts is "". Other labels are returned as they are.
+func cleanLabel(s string) string {
+	if !strings.Contains(s, ", ") {
+		return s
+	}
+	var keep []string
+	dropped := false
+	for _, p := range strings.Split(s, ", ") {
+		if reGlued.MatchString(strings.TrimSpace(p)) {
+			dropped = true
+			continue
+		}
+		if len(keep) > 0 && keep[len(keep)-1] == p {
+			continue
+		}
+		keep = append(keep, p)
+	}
+	if !dropped {
+		return s
+	}
+	return strings.Join(keep, ", ")
+}
 
 const sessionPrefix = "SESSION: "
 
@@ -211,6 +243,14 @@ func ParseAUM(root *Element, window Size) AUMState {
 				st.StartScreen = true
 			case el.Label == "TAP" && el.Rect.Y < 60:
 				st.TempoBar = true
+			case st.TempoBPM == nil && el.Rect.Y < 60 && reTempo.MatchString(el.Label):
+				// The tempo bar shows the tempo as a button between ‹ and ›.
+				if v, err := strconv.ParseFloat(reTempo.FindStringSubmatch(el.Label)[1], 64); err == nil {
+					st.TempoBPM = &v
+					st.tempoFrame = el.Rect
+				}
+			case strings.HasPrefix(el.Label, "HIDE") && !el.Hidden:
+				st.Keyboard = true
 			}
 		case "ScrollView":
 			if st.mixer.Empty() && el.Rect.Width >= window.Width*0.9 && el.Rect.Height >= window.Height*0.8 {
@@ -307,6 +347,9 @@ func parseStrip(n int, s *Element, window Size) AUMChannel {
 		ch.Number, _ = strconv.Atoi(m[1])
 		ch.Name = m[2]
 	}
+	// Under a side panel or the routing matrix AUM marks the whole mixer
+	// invisible; its M/S/R states still hold.
+	under := title.Hidden
 	s.Walk(func(el *Element, _ int) bool {
 		switch {
 		case el.Type == "Button" && ch.LevelFrame == nil && reLevel.MatchString(el.Label):
@@ -320,7 +363,7 @@ func parseStrip(n int, s *Element, window Size) AUMChannel {
 		case el.Label == "%.1f" && ch.FaderFrame == nil:
 			ff := el.Rect
 			ch.FaderFrame = &ff
-		case el.Type == "Other" && (el.Label == "MUTE" || el.Label == "SOLO" || el.Label == "REC") && !el.Hidden && !el.Rect.Empty():
+		case el.Type == "Other" && (el.Label == "MUTE" || el.Label == "SOLO" || el.Label == "REC") && (!el.Hidden || under) && !el.Rect.Empty():
 			on, fr := el.Selected(), el.Rect
 			switch el.Label {
 			case "MUTE":
@@ -330,7 +373,7 @@ func parseStrip(n int, s *Element, window Size) AUMChannel {
 			case "REC":
 				ch.Armed, ch.RecFrame = &on, &fr
 			}
-		case el.Type == "Button" && el.Label == "+1" && !el.Hidden:
+		case el.Type == "Button" && el.Label == "+1" && (!el.Hidden || under):
 			ar := el.Rect
 			ch.AddSlot = &ar
 		case el.Type == "ScrollView" && ch.inserts.Empty():
@@ -362,7 +405,7 @@ func parseNodes(s *Element, ch AUMChannel) []AUMNode {
 		if r.Width < 70 || r.Width > 110 {
 			return true
 		}
-		n := AUMNode{Label: el.Label, Frame: r, OnScreen: !el.Hidden}
+		n := AUMNode{Label: cleanLabel(el.Label), Frame: r, OnScreen: !el.Hidden}
 		switch {
 		case ch.Kind == "midi":
 			n.Role = "midi"
@@ -421,8 +464,9 @@ func parseNodes(s *Element, ch AUMChannel) []AUMNode {
 
 // parseOverlays finds what covers the mixer: popovers (an element of type
 // Popover, titled by its navigation bar or first text), alerts, the side
-// panels (a full-height column at the right edge, titled in its header) and
-// the MIDI routing matrix (navigation bar "MIDI ROUTING").
+// panels (a full-height column at the right edge, titled in its header or,
+// for the Navigator, its navigation bar) and the MIDI routing matrix
+// (navigation bar "MIDI ROUTING").
 func parseOverlays(root *Element, window Size) []AUMOverlay {
 	var out []AUMOverlay
 	root.Walk(func(el *Element, _ int) bool {
@@ -451,25 +495,40 @@ func isSidePanel(el *Element, window Size) bool {
 		r.Width >= 200 && r.Width <= 500 && math.Abs(r.X+r.Width-window.Width) <= 2 && panelTitle(el) != ""
 }
 
-// panelTitle is the text in a side panel's 60-point header.
+// panelTitle is the text in a side panel's 60-point header, or the
+// identifier of a navigation bar at its top (the Navigator).
 func panelTitle(el *Element) string {
 	t := el.First(func(e *Element) bool {
 		return e.Type == "StaticText" && e.Label != "" && e.Rect.Y <= 1 && e.Rect.Height >= 40 && e.Rect.Height <= 70
 	})
-	if t == nil {
-		return ""
+	if t != nil {
+		return t.Label
 	}
-	return t.Label
+	if nb := el.First(func(e *Element) bool { return e.Type == "NavigationBar" && e.Identifier != "" && e.Rect.Y <= 1 }); nb != nil {
+		return nb.Identifier
+	}
+	return ""
 }
 
+// popoverTitle is the identifier of the popover's navigation bar, else its
+// first text that is not a button's caption; a bare menu has none.
 func popoverTitle(el *Element) string {
 	if nb := el.First(func(e *Element) bool { return e.Type == "NavigationBar" && e.Identifier != "" }); nb != nil {
 		return nb.Identifier
 	}
-	if t := el.First(func(e *Element) bool { return e.Type == "StaticText" && e.Label != "" && !e.Rect.Empty() }); t != nil {
-		return t.Label
+	var find func(e *Element, inButton bool) string
+	find = func(e *Element, inButton bool) string {
+		if e.Type == "StaticText" && e.Label != "" && !e.Rect.Empty() && !inButton {
+			return e.Label
+		}
+		for _, c := range e.Children {
+			if t := find(c, inButton || e.Type == "Button"); t != "" {
+				return t
+			}
+		}
+		return ""
 	}
-	return ""
+	return find(el, false)
 }
 
 func newOverlay(kind, title string, el *Element) AUMOverlay {
@@ -481,9 +540,9 @@ func newOverlay(kind, title string, el *Element) AUMOverlay {
 		}
 		switch e.Type {
 		case "Button":
-			if e.Label != "" && e.Label != "chevron" && !seen[e.Label] {
-				seen[e.Label] = true
-				o.Buttons = append(o.Buttons, e.Label)
+			if l := cleanLabel(e.Label); l != "" && l != "chevron" && !seen[l] {
+				seen[l] = true
+				o.Buttons = append(o.Buttons, l)
 			}
 		case "TextField", "SearchField", "TextView", "SecureTextField":
 			o.Fields = append(o.Fields, e.Value)
@@ -512,7 +571,7 @@ func formRows(el *Element, title string) []AUMRow {
 					texts = append(texts, item{e: e, text: e.Label})
 				}
 			case "Button":
-				t := e.Text()
+				t := cleanLabel(e.Text())
 				if t == "" {
 					for _, c := range e.Children {
 						if c.Type == "StaticText" && c.Label != "" {

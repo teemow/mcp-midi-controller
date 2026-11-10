@@ -226,7 +226,7 @@ func TestAUMTransportSetTempo(t *testing.T) {
 		t.Fatalf("set_tempo: %+v, %v", res, err)
 	}
 	g := w.GestureLog()
-	if len(g) != 5 || g[0] != "tap 30,30" || g[1] != "doubleTap 170,33" || g[4] != "tap 30,32" {
+	if len(g) != 5 || g[0] != "tap 30,30" || g[1] != "doubleTap 168,33" || g[4] != "tap 30,32" {
 		t.Fatalf("gestures = %v", g)
 	}
 	if _, err := c.AUMTransport(context.Background(), AUMRequest{Action: "record"}); !errors.Is(err, ErrNeedsConfirm) {
@@ -388,11 +388,14 @@ func TestAUMFilesList(t *testing.T) {
 	files := mixer()
 	files.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "FILES", Rows: [][2]string{{"Sessions", ""}, {"Recordings", ""}}}}
 	sessions := mixer()
-	sessions.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "Sessions", Rows: [][2]string{{"scratch (mcp test)", "today"}, {"other", "yesterday"}}}}
+	sessions.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "Sessions", Cells: [][2]string{{"scratch (mcp test)", "today"}, {"other", "yesterday"}}}}
 	w, c := opFake(t, ipadtest.DefaultAUM(), files, sessions)
 	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "list"})
-	if err != nil || !res.Verified || !strings.Contains(res.Message, "scratch (mcp test)") {
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "2 entries: scratch (mcp test), other") {
 		t.Fatalf("list: %+v, %v", res, err)
+	}
+	if es, ok := res.Data.([]AUMFileEntry); !ok || len(es) != 2 || es[0].Detail != "today" {
+		t.Fatalf("entries = %#v", res.Data)
 	}
 	// The FILES icon above its caption (965,169), then the Sessions row.
 	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 997,137" || g[1] != "tap 1026,95" {
@@ -442,5 +445,98 @@ func TestAUMPanelSetAndNodeName(t *testing.T) {
 	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "name", Channel: "4", Node: "1", Name: "FX"})
 	if err != nil || !res.Verified || w.Fields[0] != "FX" {
 		t.Fatalf("name: %+v, %v", res, err)
+	}
+}
+
+// TestParseAUMLiveShapes covers shapes first seen on a live AUM: glued
+// accessibility labels, the mixer marked invisible under a side panel, the
+// Navigator's navigation bar, the keyboard and a bare long-press menu.
+func TestParseAUMLiveShapes(t *testing.T) {
+	parse := func(a ipadtest.AUM) AUMState {
+		t.Helper()
+		root, err := ParseSource(a.Source())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ParseAUM(root, Size{Width: 1210, Height: 834})
+	}
+	menu := ipadtest.DefaultAUM()
+	st := parse(menu)
+	if st.Panel() != "MENU" {
+		t.Fatalf("panel = %q", st.Panel())
+	}
+	if m := st.Channels[2].Muted; m == nil || !*m {
+		t.Fatalf("strip 3 under the menu: muted = %v", m)
+	}
+	if n := st.Channels[0].Nodes; len(n) != 1 || n[0].Label != "MIDI 1" {
+		t.Fatalf("MIDI node = %+v", n)
+	}
+
+	settings := mixer()
+	settings.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "SETTINGS", Rows: [][2]string{{"Sample Rate", "48 kHz"}}}}
+	st = parse(settings)
+	if o := st.Overlay("panel"); o == nil || strings.Join(o.Buttons, "|") != "48 kHz" {
+		t.Fatalf("settings panel = %+v", o)
+	}
+
+	nav := mixer()
+	nav.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "NAVIGATOR", NavBar: true, Frame: &[4]float64{938, 0, 272, 834}, Buttons: []string{"CHANNELS", "PLUGINS"}}}
+	nav.Keyboard = true
+	nav.Overlays = append(nav.Overlays, ipadtest.Overlay{Kind: "popover", Buttons: []string{"POST FADER", "PRE FADER"}})
+	st = parse(nav)
+	if st.Panel() != "NAVIGATOR" || !st.Keyboard {
+		t.Fatalf("navigator %q, keyboard %v", st.Panel(), st.Keyboard)
+	}
+	if o := st.Overlay("popover"); o == nil || o.Title != "" || len(o.Buttons) != 2 {
+		t.Fatalf("bare menu = %+v", o)
+	}
+}
+
+func TestCleanLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"-∞, DSP:  2 %, -∞, Arp, Arp":                        "Arp",
+		"SESSION: Old, Copyright (c) Someone, DSP:  0 %, -∞": "",
+		"-∞, EFFECT (AU)":                                    "EFFECT (AU)",
+		"Bass, Lead":                                         "Bass, Lead",
+		"+0.0 dB":                                            "+0.0 dB",
+		"Synth Two @A1":                                      "Synth Two @A1",
+		"Delay, 1/4, 50 %":                                   "Delay, 1/4",
+	} {
+		if got := cleanLabel(in); got != want {
+			t.Errorf("cleanLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAUMPanelNavigatorAndKeyboard(t *testing.T) {
+	menu := ipadtest.DefaultAUM()
+	bare := mixer()
+	nav := mixer()
+	nav.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "NAVIGATOR", NavBar: true, Frame: &[4]float64{938, 0, 272, 834}}}
+	w, c := opFake(t, menu, bare, nav, bare)
+	res, err := c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "navigator"})
+	if err != nil || !res.Verified {
+		t.Fatalf("open navigator: %+v, %v", res, err)
+	}
+	// The menu closes first (its close icon), then the Navigator button.
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 1190,30" || g[1] != "tap 1085,33" {
+		t.Fatalf("gestures = %v", g)
+	}
+	res, err = c.AUMPanel(context.Background(), AUMRequest{Action: "close"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "NAVIGATOR") {
+		t.Fatalf("close navigator: %+v, %v", res, err)
+	}
+
+	keys := mixer()
+	keys.Keyboard = true
+	w, c = opFake(t, mixer(), keys, mixer())
+	if res, err = c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "keyboard"}); err != nil || !res.Verified {
+		t.Fatalf("open keyboard: %+v, %v", res, err)
+	}
+	if res, err = c.AUMPanel(context.Background(), AUMRequest{Action: "close"}); err != nil || !res.Verified || !strings.Contains(res.Message, "keyboard") {
+		t.Fatalf("close keyboard: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 52,817" || g[1] != "tap 34,678" {
+		t.Fatalf("HIDE gestures = %v", g)
 	}
 }

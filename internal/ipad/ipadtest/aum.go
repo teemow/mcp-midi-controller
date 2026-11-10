@@ -47,6 +47,11 @@ type Overlay struct {
 	Buttons []string
 	// Fields are text fields (their values).
 	Fields []string
+	// Cells are list cells (FILES): a name and the detail line below it.
+	Cells [][2]string
+	// NavBar titles a side panel with a navigation bar and a close button
+	// (the Navigator) instead of a 60-point header text.
+	NavBar bool
 	// Frame overrides the default frame (x, y, w, h).
 	Frame *[4]float64
 }
@@ -75,6 +80,8 @@ type AUM struct {
 	Routing *Routing
 	// MeterSource is printed above the main meter (default "SPKR OUT").
 	MeterSource string
+	// Keyboard opens the built-in keyboard with its HIDE↓ toolbar button.
+	Keyboard bool
 }
 
 // Routing is the MIDI routing matrix of a synthetic AUM screen.
@@ -90,6 +97,16 @@ func (r Routing) Cell(i, j int) [4]float64 {
 }
 
 type node map[string]any
+
+// hide marks n and everything in it invisible (WDA isVisible "0").
+func hide(n node) {
+	n["isVisible"] = "0"
+	if kids, ok := n["children"].([]node); ok {
+		for _, k := range kids {
+			hide(k)
+		}
+	}
+}
 
 func el(typ, label string, x, y, w, h float64, children ...node) node {
 	n := node{
@@ -126,11 +143,16 @@ func (a AUM) Source() json.RawMessage {
 	}
 	if a.Tempo != "" {
 		if a.TempoBar {
+			// ✕, TAP, ‹ ♩ ›, metronome, Clock Options •••; the tempo is a
+			// button here.
 			top = append(top,
 				el("Button", "", 0, 0, 60, 60),
-				el("Button", "TAP", 60, 10, 50, 44),
-				el("StaticText", "♩"+a.Tempo, 150, 22, 40, 22),
-				el("Button", "", 240, 10, 30, 44).with("traits", "Button"))
+				el("Button", "TAP", 60, 8, 50, 50),
+				el("Button", "", 110, 8, 30, 50),
+				el("Button", "♩"+a.Tempo, 138, 8, 60, 50).with("traits", "StaticText, Button"),
+				el("Button", "", 200, 8, 30, 50),
+				el("Button", "", 230, 8, 50, 50).with("traits", "Button"),
+				el("Button", "", 280, 8, 50, 50))
 		} else {
 			top = append(top, el("StaticText", "♩"+a.Tempo, 0, 22, 60, 22))
 		}
@@ -159,7 +181,16 @@ func (a AUM) Source() json.RawMessage {
 			el("Button", "AUDIO", tile+64, 372, 150, 45, el("StaticText", "AUDIO", tile+113, 383, 52, 23)),
 			el("Button", "MIDI", tile+64, 425, 150, 45, el("StaticText", "MIDI", tile+121, 436, 36, 23)),
 			el("Button", "IMPORT", tile+64, 477, 150, 45, el("StaticText", "IMPORT", tile+109, 488, 60, 23)))))
-	main := []node{el("Other", "", 0, 0, W, 60, top...), el("ScrollView", "", 0, 60, W, 774, mixer...)}
+	mixerView := el("ScrollView", "", 0, 60, W, 774, mixer...)
+	// Under a side panel or the routing matrix AUM marks the mixer invisible.
+	covered := a.Session != "" || a.Routing != nil
+	for _, o := range a.Overlays {
+		covered = covered || o.Kind == "panel"
+	}
+	if covered {
+		hide(mixerView)
+	}
+	main := []node{el("Other", "", 0, 0, W, 60, top...), mixerView}
 	if a.StartScreen {
 		main = append(main, el("Button", "LAST STATE", 457, 505, 115, 30), el("Button", "DEFAULT", 457, 568, 115, 30))
 	}
@@ -174,6 +205,11 @@ func (a AUM) Source() json.RawMessage {
 	}
 	if a.Routing != nil {
 		main = append(main, routing(*a.Routing))
+	}
+	if a.Keyboard {
+		main = append(main, el("Other", "", 0, 666, W, 168,
+			el("Button", "HIDE↓", 10, 666, 48, 24, el("StaticText", "HIDE↓", 13, 669, 42, 18)),
+			el("Button", "DSP:  3 %", 1152, 666, 48, 24)))
 	}
 	for _, o := range a.Overlays {
 		main = append(main, overlay(o)...)
@@ -206,7 +242,9 @@ func strip(x float64, s Strip) node {
 	midi := s.Level == ""
 	var kids []node
 	if midi {
-		kids = append(kids, el("Other", "", x, 127, 228, 88, nodeButton(s.Title, x+111, 127, 88, false)...))
+		// AUM glues texts around a MIDI node into its label.
+		glued := "-∞, DSP:  2 %, -∞, " + s.Title + ", " + s.Title
+		kids = append(kids, el("Other", "", x, 127, 228, 88, nodeButton(glued, x+111, 127, 88, false)...))
 	} else {
 		src := s.Source
 		if src == "" {
@@ -283,7 +321,15 @@ func overlay(o Overlay) []node {
 		if o.Frame != nil {
 			f = *o.Frame
 		}
-		kids := []node{el("Other", "", f[0], 0, f[2], 60, el("StaticText", o.Title, f[0]+40, 0, f[2]-80, 60))}
+		// The back button's label is glued from texts around it, as AUM's is.
+		kids := []node{el("Other", "", f[0], 0, f[2], 60,
+			el("Button", "SESSION: Old, Copyright (c) Someone, DSP:  0 %, -∞", f[0], 0, 60, 60),
+			el("StaticText", o.Title, f[0]+40, 0, f[2]-80, 60))}
+		if o.NavBar {
+			kids = []node{el("NavigationBar", "", f[0], 0, f[2], 50,
+				el("StaticText", o.Title, f[0]+95, 17, 82, 20).with("traits", "Header"),
+				el("Button", "", f[0]+f[2]-56, 5, 40, 40)).with("rawIdentifier", o.Title)}
+		}
 		kids = append(kids, body(o, f[0], 70, f[2])...)
 		return []node{el("Other", "", f[0], f[1], f[2], f[3], kids...)}
 	case "alert":
@@ -324,6 +370,12 @@ func body(o Overlay, x, y, w float64) []node {
 	}
 	for _, b := range o.Buttons {
 		out = append(out, el("Button", b, x+16, y+5, w-32, 40, el("StaticText", b, x+w/2-40, y+15, 80, 20)))
+		y += 50
+	}
+	for _, c := range o.Cells {
+		out = append(out, el("Cell", "", x, y, w, 51,
+			el("StaticText", c[0], x+65, y+7, 120, 20),
+			el("StaticText", c[1], x+65, y+29, 110, 14)))
 		y += 50
 	}
 	return out

@@ -344,7 +344,7 @@ func TestAUMToolsOverMCP(t *testing.T) {
 	// wait_for_aum_ui takes the new expectations.
 	w.SetScreens(muted.Source())
 	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "wait_for_aum_ui", Arguments: map[string]any{
-		"channels": []map[string]any{{"channel": "2", "muted": true}, {"channel": "2", "nodes": []map[string]any{{"node": "LP", "bypassed": false}}}},
+		"channels":    []map[string]any{{"channel": "2", "muted": true}, {"channel": "2", "nodes": []map[string]any{{"node": "LP", "bypassed": false}}}},
 		"strip_count": 6, "no_overlay": true, "timeout_ms": 0,
 	}})
 	if err != nil || res.IsError || !strings.HasPrefix(resultText(res), "matched") {

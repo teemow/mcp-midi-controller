@@ -3,6 +3,7 @@ package ipad
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -69,7 +70,7 @@ func (c *Client) AUMFiles(ctx context.Context, r AUMRequest) (AUMResult, error) 
 // filesPanel is the open FILES panel (the front side panel), or nil.
 func (d *AUMDriver) filesPanel() *AUMOverlay {
 	o := d.St.Overlay("panel")
-	if o == nil || o.Title == "MENU" || o.Title == "SETTINGS" || o.Title == "MIDI CONTROL" {
+	if o == nil || o.Title == "MENU" || o.Title == "SETTINGS" || o.Title == "MIDI CONTROL" || o.Title == "NAVIGATOR" {
 		return nil
 	}
 	return o
@@ -92,7 +93,7 @@ func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 		if strings.EqualFold(p.Title, view) {
 			break
 		}
-		if row := d.findText(view, &p.Frame); row != nil {
+		if row := d.findText(view, listArea(p)); row != nil {
 			if err := d.openRow(row, p.Title); err != nil {
 				return nil, err
 			}
@@ -112,9 +113,9 @@ func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 		if p == nil {
 			return nil, fmt.Errorf("FILES closed")
 		}
-		row := d.findText(folder, &p.Frame)
+		row := d.findText(folder, listArea(p))
 		if row == nil {
-			return p, fmt.Errorf("no folder %q in %s (rows: %s)", folder, p.Title, rowLabels(p))
+			return p, fmt.Errorf("no folder %q in %s (entries: %s)", folder, p.Title, entryNames(p))
 		}
 		if err := d.openRow(row, p.Title); err != nil {
 			return nil, err
@@ -124,16 +125,76 @@ func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 }
 
 // openRow taps a list row and waits for the panel to change.
+// openRow taps a row of the FILES panel titled title and waits for the
+// panel's title to change (the list slides in before its header does).
 func (d *AUMDriver) openRow(row *Element, title string) error {
-	before := rowLabels(d.St.Overlay(""))
 	if err := d.tapRect(row.Rect, row.Text()); err != nil {
 		return err
 	}
 	_, err := d.until(aumWait, func(st AUMState) bool {
 		o := st.Overlay("")
-		return o == nil || o.Title != title || rowLabels(o) != before
+		return o == nil || o.Title != title
 	})
 	return err
+}
+
+// listArea is a side panel below its 60-point header, so a row search does
+// not hit the header's title.
+func listArea(p *AUMOverlay) *Rect {
+	return &Rect{X: p.Frame.X, Y: p.Frame.Y + 60, Width: p.Frame.Width, Height: p.Frame.Height - 60}
+}
+
+// AUMFileEntry is one entry of a FILES list: a session, recording or
+// folder, with the line below its name (date, size).
+type AUMFileEntry struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail,omitempty"`
+	Frame  Rect   `json:"frame"`
+}
+
+// fileEntries reads the cells of a FILES list: each holds the entry's name
+// and, below it, a smaller detail line.
+func fileEntries(p *AUMOverlay) []AUMFileEntry {
+	var out []AUMFileEntry
+	if p == nil || p.el == nil {
+		return out
+	}
+	p.el.Walk(func(e *Element, _ int) bool {
+		if e.Type != "Cell" || e.Hidden {
+			return true
+		}
+		var texts []*Element
+		e.Walk(func(t *Element, _ int) bool {
+			if t.Type == "StaticText" && t.Label != "" && !t.Hidden && !t.Rect.Empty() {
+				texts = append(texts, t)
+			}
+			return true
+		})
+		if len(texts) == 0 {
+			return false
+		}
+		sort.SliceStable(texts, func(i, j int) bool { return texts[i].Rect.Y < texts[j].Rect.Y })
+		fe := AUMFileEntry{Name: texts[0].Label, Frame: e.Rect}
+		if len(texts) > 1 {
+			fe.Detail = texts[1].Label
+		}
+		out = append(out, fe)
+		return false
+	})
+	return out
+}
+
+// entryNames lists a FILES panel's entries, else its rows.
+func entryNames(p *AUMOverlay) string {
+	es := fileEntries(p)
+	if len(es) == 0 {
+		return rowLabels(p)
+	}
+	l := make([]string, len(es))
+	for i, e := range es {
+		l[i] = e.Name
+	}
+	return strings.Join(limit(l, 40), ", ")
 }
 
 func rowLabels(o *AUMOverlay) string {
@@ -152,7 +213,8 @@ func (d *AUMDriver) listFiles(view string, path []string) (AUMResult, error) {
 	if err != nil {
 		return AUMResult{}, err
 	}
-	return d.result(strings.ToLower(view), true, fmt.Sprintf("%s: %s", p.Title, rowLabels(p)), p.Rows), nil
+	es := fileEntries(p)
+	return d.result(strings.ToLower(view), true, fmt.Sprintf("%s: %d entries: %s", p.Title, len(es), entryNames(p)), es), nil
 }
 
 // loadSession taps a session row in FILES → Sessions: AUM loads it at once.
@@ -161,12 +223,12 @@ func (d *AUMDriver) loadSession(path []string, name string) (AUMResult, error) {
 	if err != nil {
 		return AUMResult{}, err
 	}
-	row := d.findText(name, &p.Frame)
+	row := d.findText(name, listArea(p))
 	if row == nil {
-		row = d.findText(name+".aumproj", &p.Frame)
+		row = d.findText(name+".aumproj", listArea(p))
 	}
 	if row == nil {
-		return AUMResult{}, fmt.Errorf("no session %q in %s (rows: %s)", name, p.Title, rowLabels(p))
+		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)", name, p.Title, entryNames(p))
 	}
 	if err := d.tapRect(row.Rect, "session "+name); err != nil {
 		return AUMResult{}, err
@@ -227,9 +289,9 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	if err != nil {
 		return AUMResult{}, err
 	}
-	row := d.findText(name, &p.Frame)
+	row := d.findText(name, listArea(p))
 	if row == nil {
-		return AUMResult{}, fmt.Errorf("no session %q in %s (rows: %s)", name, p.Title, rowLabels(p))
+		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)", name, p.Title, entryNames(p))
 	}
 	if err := d.hold(row.Rect, "session "+name); err != nil {
 		return AUMResult{}, err

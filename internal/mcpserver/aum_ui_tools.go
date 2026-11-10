@@ -172,7 +172,7 @@ func (s *Server) registerAUMUITools() {
 	}, s.aumHandler("aum_files", s.ipad.AUMFiles))
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name: "aum_midi_routing",
+		Name:        "aum_midi_routing",
 		Description: "AUM's MIDI routing matrix: read (sources along the top, destinations on the right, and the connected cells — read from a screenshot, since AUM's tree lacks them), connect / disconnect (source, destination: names or parts of them; checks the cell before and after), destination (opens a destination's panel: Connect MIDI Sources, All Notes Off, the MIDI filter; path taps further rows such as a filter section)." + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -205,7 +205,7 @@ func (s *Server) registerAUMUITools() {
 	}, s.aumHandler("aum_midi_control", s.ipad.AUMMIDIControl))
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name: "aum_settings",
+		Name:        "aum_settings",
 		Description: "AUM's Settings (global, not part of a session): read (every row and its value, scrolling the panel), set (setting: a row label such as \"Confirm Eject\", \"Bit Depth\", \"Sample Rate\"; value as AUM prints it: ON, OFF, INT 24, 48 kHz, …; steps the value button until it reads value, or picks it from the list it opens). Change settings only when asked, and set them back afterwards." + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -219,7 +219,7 @@ func (s *Server) registerAUMUITools() {
 	}, s.aumHandler("aum_settings", s.ipad.AUMSettings))
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name: "aum_file_player",
+		Name:        "aum_file_player",
 		Description: "A File Player channel: open/read (FILE PLAYER: selected file, duration, format, Loop, Sync, Original BPM, Number of Beats, Rate, Beat Offset, Normalize), set (setting Loop, Sync or Normalize; value ON/OFF), load (name: the sound file; path: SOUNDFILES folders, e.g. [\"AUM Recordings\", \"<session>\"]; loads at once), play_enable (the PLAY ENABLE toggle; on, or flip). The player runs with the transport." + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
