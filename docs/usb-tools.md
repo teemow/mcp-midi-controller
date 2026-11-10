@@ -91,7 +91,7 @@ neither current transport offers.
 
 ### 1. Transports (code-level extension point)
 
-- **`usbmidi`** — finish the existing stub (`internal/transport/usbmidi`). Wrap
+- **`usbmidi`** — finish the existing stub (`usbmidi`, now in [midi-transport](https://github.com/teemow/midi-transport)). Wrap
   gomidi: `FindOutPort`/`FindInPort` by name substring, `Send(raw)`, and a
   `Listen` that emits inbound SysEx frames. (The spike already does exactly this.)
 - **`usbhid`** *(new)* — hidraw `open`/`read`/`write`/`poll` keyed by VID:PID
@@ -116,7 +116,7 @@ type USBSession interface {
 
 Per-protocol implementations supply the framing (checksums, nibbling, identity
 gate, editor-mode enable). All of these already exist in `cmd/usb-probe` and move
-into `internal/usbcodec/<protocol>`.
+into `device/usbcodec` in [midi-device](https://github.com/teemow/midi-device), one file per protocol.
 
 ### 3. USB device profile
 
@@ -124,7 +124,7 @@ A device's USB capability is described by a **profile** that pairs a protocol
 codec (Go) with a declarative **address/parameter map** (YAML, where tabular):
 
 ```yaml
-# internal/device/device-types/sl-2.yaml  (the `usb:` section, alongside controls:)
+# device/device-types/sl-2.yaml in midi-device  (the `usb:` section, alongside controls:)
 usb:
   protocol: roland-address-sysex      # codec id (Go): framing + checksum + handshake
   identity: { mfg: 0x41, model: "00 00 00 00 1D", device: 0x10 }
@@ -303,7 +303,7 @@ Reads are unconditionally safe. Writes change persistent device state (DT1,
 > paths.
 
 1. **Finish `usbmidi` transport** (stub → real) + the request/reply session;
-   port the SL-2 codec out of `cmd/usb-probe` into `internal/usbcodec/roland`.
+   port the SL-2 codec out of `cmd/usb-probe` into `device/usbcodec/roland.go` (midi-device).
 2. **SL-2 read tools** (`sl2_read_system`/`read_patch`/`list_patterns`/`get_param`)
    — read-only, highest value, fully confirmed.
 3. **USB connection** + `list_devices`/`describe_device` integration.

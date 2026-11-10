@@ -139,9 +139,10 @@ func main() {
 	}
 
 	// The AUM mixer device type is no longer bundled (it is session-derived now,
-	// see internal/aum.MixerDeviceType). For this BLE-direct harness, register a
-	// tiny standalone "aum" type carrying just the transport toggle on blemidi so
-	// the convenience --control path keeps working without a session.
+	// see aum.MixerDeviceType in github.com/teemow/aum-session-go). For this
+	// BLE-direct harness, register a tiny standalone "aum" type carrying just
+	// the transport toggle on blemidi so the convenience --control path keeps
+	// working without a session.
 	cc20 := 20
 	aumType := &device.DeviceType{
 		ID:        "aum",

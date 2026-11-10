@@ -1,8 +1,9 @@
 package mcpserver
 
-// This file is Phase 4b: the MCP surface over the internal/aum read/edit/author
-// library. The read tools (list/get/diff/import) reason about staged AUM
-// sessions; the write tools (author/edit/export) generate .aumproj /
+// This file is Phase 4b: the MCP surface over the aum read/edit/author
+// library (github.com/teemow/aum-session-go). The read tools
+// (list/get/diff/import) reason about staged AUM sessions; the write tools
+// (author/edit/export) generate .aumproj /
 // .aum_midimap files into the same staging dir the aum receiver serves, so the
 // iPad can download them back into AUM. All session files are private rig
 // snapshots and live only under the gitignored state dir

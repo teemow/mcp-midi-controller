@@ -15,7 +15,7 @@ from them.
 > app exists at [github.com/teemow/auv3-probe](https://github.com/teemow/auv3-probe)
 > and has been run on-device: it enumerates installed AUv3s, dumps each
 > `AUParameterTree`, and POSTs the JSON to the daemon's **built-in probe
-> receiver** (`internal/auv3receiver`, a LAN listener separate from the
+> receiver** (the `auv3` package of [midi-transport](https://github.com/teemow/midi-transport), a LAN listener separate from the
 > loopback MCP endpoint; config `auv3_receiver_addr`, default `:7800`), which
 > stages one `<ProbeID>.json` per plugin under the state dir. Agents read what's
 > available and configurable via `list_auv3_probes` / `get_auv3_probe` and

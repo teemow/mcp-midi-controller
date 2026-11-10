@@ -3,7 +3,7 @@
 // and a short rolling PCM window in memory, giving an agent "ears" on the rig
 // via the get_audio_tap MCP tool.
 //
-// Like internal/auv3receiver and internal/aumreceiver it is a SEPARATE listener
+// Like midi-transport's auv3 receiver and internal/aumreceiver it is a SEPARATE listener
 // from the loopback-only MCP endpoint (the iPad cannot reach loopback). Its
 // surface is intentionally tiny: a single WebSocket endpoint that only ingests
 // audio + features into an in-memory store. It never touches the engine,

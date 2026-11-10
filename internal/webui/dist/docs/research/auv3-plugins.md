@@ -64,11 +64,12 @@ the plugin's MIDI-Learn instead of (or in addition to) AUM.
 
 ## Per-plugin convention CC maps
 
-All maps use `value: range 0-127` unless noted. Each plugin is bound on its own
+The maps below are bundled device types in [midi-device](https://github.com/teemow/midi-device)
+(`device/device-types/`). All maps use `value: range 0-127` unless noted. Each plugin is bound on its own
 MIDI channel; `preset` is `program_change` (only meaningful if AUM maps Program
 Change to preset recall for that node).
 
-### Arturia iSEM — `internal/device/device-types/isem.yaml`
+### Arturia iSEM — `device/device-types/isem.yaml`
 
 Physical model of the 1974 Oberheim SEM: dual oscillator (saw + variable-width
 pulse w/ PWM), 12 dB/oct multi-mode filter (continuous LP -> notch -> HP, fixed
@@ -94,7 +95,7 @@ portamento and a mod matrix.
 
 Source: <https://www.arturia.com/products/ios-instruments/isem/overview>
 
-### Kai Aras Agonizer — `internal/device/device-types/agonizer.yaml`
+### Kai Aras Agonizer — `device/device-types/agonizer.yaml`
 
 Monophonic wavetable bass synth (with Jakob Haq): dual wavetable oscillators
 (morph + cross-mod), sub + noise, "Mangle" pre-filter section (Drive, Bitcrush,
@@ -122,7 +123,7 @@ AD + ADSR envelopes, tube master drive, 2 stereo FX (chorus, delay).
 Sources: <https://numericalaudio.com/agonizer/iOS/> ·
 <https://apps.apple.com/app/agonizer/id1583662383>
 
-### Korg iMS-20 — `internal/device/device-types/ims20.yaml`
+### Korg iMS-20 — `device/device-types/ims20.yaml`
 
 CMT recreation of the 1978 MS-20: 2 VCO, 2 self-oscillating VCF (HPF + LPF, each
 cutoff + peak), 1 VCA, 2 EG, a Modulation Generator (MG), patch panel, and an
@@ -148,7 +149,7 @@ SQ-10-style sequencer.
 Sources: <https://www.korg.com/products/software/ims20/> ·
 <https://www.korguser.net/ims20/html/help/en/synth.html>
 
-### FabFilter Pro-Q — `internal/device/device-types/fabfilter-pro-q.yaml`
+### FabFilter Pro-Q — `device/device-types/fabfilter-pro-q.yaml`
 
 Parametric EQ used as the representative FabFilter plugin. Each band: Frequency
 (5 Hz - 30 kHz), Gain (-30..+30 dB, Bell/Shelf only), Q. Global Output Gain

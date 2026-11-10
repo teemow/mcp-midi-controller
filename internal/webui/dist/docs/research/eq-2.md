@@ -1,6 +1,6 @@
 # Source Audio EQ2 — MIDI implementation research
 
-Research note backing `internal/device/device-types/eq-2.yaml`. The EQ2
+Research note backing `device/device-types/eq-2.yaml` in [midi-device](https://github.com/teemow/midi-device). The EQ2
 (Programmable EQ, model SA270) is a Source Audio **One Series** pedal with
 **full MIDI implementation**: 128 presets recallable by Program Change, and
 effectively every DSP parameter reachable by Control Change. Unlike the Boss

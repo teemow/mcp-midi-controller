@@ -1,5 +1,5 @@
 // Package lanhttp holds the plumbing shared by the daemon's LAN-facing HTTP
-// receivers (internal/auv3receiver and internal/aumreceiver): a graceful server
+// receivers (midi-transport's auv3 and internal/aumreceiver): a graceful server
 // runner with conservative timeouts, a /healthz handler, atomic file writes,
 // and a leak-free error responder. These listeners face an untrusted LAN, so
 // centralizing them keeps one copy of the "bound the resources a slow/hostile

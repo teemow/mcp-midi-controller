@@ -34,7 +34,7 @@ for the absent MIDI echo (`docs/research/auv3-feedback.md`).
 A field-by-field diff of the five `House by the lake` reference sessions
 (`System collapse` 11ch, `Kings Cross Station` 13ch, `My Bird` 12ch,
 `Neon Ghosts` 18ch, `Fast forward` 18ch — all `version 13`, `sampleRate 44100`)
-decoded off-device through `internal/aum`. This pins the exact authorable v13
+decoded off-device through the `aum` package of [aum-session-go](https://github.com/teemow/aum-session-go). This pins the exact authorable v13
 shape and **corrects** several earlier assumptions (see the corrections below).
 
 > **Note on provenance.** This was meant to be cross-checked against the AUM
@@ -324,7 +324,7 @@ that the `{type, subtype, manufacturer}` tuple matches a probe dump.
 So `audioComponentDescription` →
 `{type:"aumu", subtype:"…", manufacturer:"…"}` — **exactly** the
 `ProbeComponent` fields (`type`/`subtype`/`manufacturer`, FourCC strings) in
-`internal/device/auv3probe.go`. That makes node→probe matching a direct
+`device/auv3probe.go` in [midi-device](https://github.com/teemow/midi-device). That makes node→probe matching a direct
 component-tuple lookup; `componentName` is the human fallback / sanity check.
 (`componentFlags`/`Mask` are the trailing 8 bytes; not needed.)
 
@@ -542,7 +542,7 @@ diffed; the control surface for the convention is `midiCtrlState`.
 
 ## How Phase C consumes this
 
-- **`cmd/aum-probe`** (off-daemon, mirrors `internal/auv3receiver`): decode the
+- **`cmd/aum-probe`** (off-daemon, mirrors the probe receiver, `auv3` in midi-transport): decode the
   bplist with `howett.net/plist`, resolve the `NSKeyedArchiver` graph, and emit
   a flat **session map** JSON: ordered channels (kind, index, fader/mute/solo),
   per channel its nodes (`archiveDescClass`; for AUv3 the decoded component
@@ -596,7 +596,7 @@ The only remaining export unknown is the PC/PBEND/CHPRS `type` codes (open item)
 
 ## Authoring from scratch: what crashes AUM (verified via device crash logs)
 
-Synthesizing a session with `internal/aum` (`BuildSession`) and loading it on a
+Synthesizing a session with aum-session-go's `aum` (`BuildSession`) and loading it on a
 real iPad surfaced two **distinct** crash classes. They were told apart by
 pulling AUM's actual crash reports off the device (`idevicecrashreport` over USB,
 libimobiledevice; `.ips` files), which is the decisive tool — the on-screen
@@ -699,7 +699,7 @@ requirement) are diagnosed via device crash logs and fixed/guarded.
 - Go plist decoder: `howett.net/plist`.
 - Project context: `docs/research/aum.md` (convention + message types),
   `docs/research/auv3-feedback.md` (probe dumps, open-loop posture,
-  `fullState` opacity), `internal/device/auv3probe.go` (`ProbeComponent`),
+  `fullState` opacity), `device/auv3probe.go` in midi-device (`ProbeComponent`),
   the AUM roadmap (Phase C).
 ```
 

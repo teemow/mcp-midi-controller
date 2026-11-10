@@ -40,7 +40,7 @@ the per-key blob falls into a small set of encodings, and a large share is
 |-------|-----------------------|-------------|
 | **JSON** | PatternBud `data`, Moog Model D `State`, KORG Module `globalData`/`kernelData`, Atom Piano Roll² per-field | Yes — parse/edit/re-emit |
 | **XML** (JUCE) | `jucePluginState` (Audio Damage, Caelum, BABY Audio, Audible Genius, Continua), UVI `<ModulePreset>` | Yes — with a small binary prefix preserved (see below) |
-| **NSKeyedArchiver bplist** | cpio `data`, FPKT DigiStix `seq`, Agonizer `sequencerState` | **Yes — same format as `.aumproj`; reuse `internal/aum/archive.go`** |
+| **NSKeyedArchiver bplist** | cpio `data`, FPKT DigiStix `seq`, Agonizer `sequencerState` | **Yes — same format as `.aumproj`; reuse `aum/archive.go` of [aum-session-go](https://github.com/teemow/aum-session-go)** |
 | **Structured binary** (name→float table) | most `data` keys (iSEM, KORG, Moog, Agonizer, SynthMaster, Zeeon) | Partially — recognizable `[name][float32]` records |
 | **Proprietary opaque** | FabFilter `FFBS`, iSEM `ISEMPatch` (RIFF), Loopy `Document` (rtfd), Bram Bos `SETTINGS` | No — keep `base64`, use preset/macro CC |
 
@@ -129,14 +129,14 @@ XML and JSON are stored as `text` because they *are* UTF-8 — this keeps the
 storage model a clean text-vs-binary split and guarantees byte-exact
 re-encoding. **Structured (set-by-path) editing** of those text bodies, and the
 **`archive` form** for NSKeyedArchiver `bplist` leaves (decoded via
-`internal/aum`), are layered on top later (Tiers 1–2 below) and do not change
+the `aum` package of aum-session-go), are layered on top later (Tiers 1–2 below) and do not change
 this storage contract.
 
 ### Tier 0 — text detection on capture (do first; cheap, high value)
 
 Classifier in the capture path (the throwaway scanner already prototypes it):
 
-1. `bplist00` + `$archiver` → `archive` (decode via `internal/aum`).
+1. `bplist00` + `$archiver` → `archive` (decode via aum-session-go's `aum`).
 2. leading `<?xml`/`<` (after an optional short binary prefix) → `xml`
    (split off and base64 the prefix).
 3. leading `{`/`[`, valid UTF-8, parses as JSON → `json`.
@@ -170,7 +170,7 @@ entries are Tier 2.)
 
 ### Tier 2 — reuse the NSKeyedArchiver codec
 
-`bplist` leaves are the *same* format as `.aumproj`. `internal/aum/archive.go`
+`bplist` leaves are the *same* format as `.aumproj`. `aum/archive.go` (aum-session-go)
 already decodes and re-encodes it. Wiring `archive`-typed entries through it
 gives full read/write of sequencer/preset state (cpio, DigiStix, Agonizer) for
 free — the single highest-leverage reuse in this design.
@@ -231,7 +231,7 @@ and CRUD are covered by `internal/mcpserver/auv3_default_state_tools_test.go`
 
 Next slices:
 
-- **Tier 2** `archive` form for `bplist` leaves via the `internal/aum` codec
+- **Tier 2** `archive` form for `bplist` leaves via the `aum` codec of aum-session-go
   (the package-layering note in the handoff still applies: the `archive` form
   lives in `aum`/`mcpserver`, not `device`).
 

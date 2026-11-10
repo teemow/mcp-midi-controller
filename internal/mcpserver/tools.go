@@ -108,7 +108,8 @@ func (s *Server) registerGlobalTools() {
 	// registerAuthoringTools.
 	s.registerAuthoringTools()
 	// AUM session tools (list/get/diff/import/author/edit + export_aum_midimap)
-	// over the internal/aum library are wired in registerAUMTools.
+	// over the aum library (github.com/teemow/aum-session-go) are wired in
+	// registerAUMTools.
 	s.registerAUMTools()
 	// User-defined per-audio-unit default states (capture/list/get) over the
 	// config-dir YAML store are wired in registerAUv3DefaultStateTools.

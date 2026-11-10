@@ -2,9 +2,10 @@
 // iPad app (github.com/teemow/auv3-probe). It serves two sibling surfaces on one
 // listener:
 //
-//   - AUv3 parameter-tree dumps (internal/auv3receiver): the app walks each
-//     plugin's AUParameterTree and POSTs the JSON here; this stages it on disk
-//     for the daemon to ingest via the import_auv3_probe MCP tool.
+//   - AUv3 parameter-tree dumps (github.com/teemow/midi-transport/auv3): the
+//     app walks each plugin's AUParameterTree and POSTs the JSON here; this
+//     stages it on disk for the daemon to ingest via the import_auv3_probe
+//     MCP tool.
 //   - AUM sessions (internal/aumreceiver): the app uploads .aumproj /
 //     .aum_midimap bytes it read out of AUM's folder and downloads sessions the
 //     aum tools authored/edited so it can write them back into AUM.
@@ -13,7 +14,7 @@
 // config.AUv3ReceiverAddr unless disabled), so this command is only needed to
 // run the receiver separately from the daemon — e.g. on a different host, or
 // staging into custom directories. The shared implementations live in
-// internal/auv3receiver and internal/aumreceiver.
+// github.com/teemow/midi-transport/auv3 and internal/aumreceiver.
 //
 // Endpoints:
 //

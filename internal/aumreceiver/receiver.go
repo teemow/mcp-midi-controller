@@ -1,6 +1,6 @@
 // Package aumreceiver is the off-MCP LAN listener that moves AUM session files
 // between the iPad and the daemon. It is the AUM-session sibling of
-// internal/auv3receiver: the auv3-probe iPad app POSTs raw .aumproj bytes it
+// midi-transport's auv3 receiver: the auv3-probe iPad app POSTs raw .aumproj bytes it
 // read out of AUM's folder, the daemon stages them on disk for the aum MCP
 // tools (list/get/diff/import_aum_session), and the same app downloads sessions
 // the tools authored or edited so it can write them back into AUM.
