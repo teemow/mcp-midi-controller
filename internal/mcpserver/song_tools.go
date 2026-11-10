@@ -2,8 +2,9 @@ package mcpserver
 
 // This file is the MCP surface over internal/song: write a song as one
 // document, author the AUM session that hosts its instruments and effects, and
-// play it through the ProbeMidiBrain so it can be heard (and listened to with
-// the audio tap) without a sequencer in the session.
+// play it so it can be heard (and listened to with the audio tap): from the
+// sequencer the session hosts with the whole song in it, or live through the
+// ProbeMidiBrain, event by event.
 //
 // A song lives in the config dir like a scene does. The session authored from
 // it is staged like every other authored session, and the daemon remembers
@@ -118,7 +119,8 @@ func (s *Server) registerSongTools() {
 		Name: "author_song_session",
 		Description: "Author the AUM session a song plays in and stage it for the iPad: a ProbeMidiBrain strip, one strip per track (instrument, effect chain, fader) and a master strip with the master effects and a ProbeAudioTap. " +
 			"The MIDI matrix gives every track its own channel and keeps notes out of AUM's MIDI Control; every control the song uses (levels, mutes, bypasses, parameters, preset loads) is mapped. " +
-			"Load the staged session in AUM, then play_song. Author again after changing what the song hosts or controls, or its tempo — changing only notes, patterns or the arrangement needs no new session.",
+			"When the sequencer Atom | Piano Roll² is installed, the session also hosts it next to the brain with the whole song in it — every note and control change — so play_song only has to start AUM's transport. " +
+			"Load the staged session in AUM, then play_song. Author again after changing what the song hosts or controls, or its tempo. Changed notes, patterns or arrangement play live at once; the sequencer plays them once the session is authored and loaded again.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -126,6 +128,7 @@ func (s *Server) registerSongTools() {
 				"out_id": {"type": "string", "description": "Staging id of the session, which may name a subfolder (default \"Songs/<title>\")."},
 				"track_taps": {"type": "boolean", "description": "Also put a ProbeAudioTap after every track's fader, so each track can be listened to on its own (get_audio_tap name=…). The master always has one."},
 				"full_control": {"type": "boolean", "description": "Also map every other parameter of every plugin, around the song's own mappings, so the whole session is controllable (control_* tools, the brain's surface)."},
+				"sequencer": {"type": "boolean", "description": "Host the sequencer with the song in it (default: yes when Atom | Piano Roll² is among the staged AUv3 probes). false leaves it out: the song then plays live only."},
 				"hardware": {"type": "string", "enum": ["builtin", "x32"], "description": "Hardware-I/O profile for the master's output (default builtin)."}
 			},
 			"required": ["song"]
@@ -134,17 +137,20 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "play_song",
-		Description: "Play a song through the ProbeMidiBrain: set the session to the opening section's sound, then send every note and control change when it is due. Returns at once; the song plays on (get_song_playback, stop_song) — listen with get_audio_tap meanwhile. " +
-			"Play the whole song, or from a section, for a number of sections, or only some tracks. The song's session must be the one loaded in AUM.",
+		Description: "Play a song. Returns at once; the song plays on (get_song_playback, stop_song) — listen with get_audio_tap meanwhile. The song's session must be the one loaded in AUM. " +
+			"Two modes. sequenced: the sequencer in the song's session plays it, locked to AUM's transport; the daemon only starts the transport from the top and stops it at the end. It is the whole song, as it was when the session was authored. " +
+			"live: the daemon sets the session to the opening section's sound, then sends every note and control change through the ProbeMidiBrain when it is due; it plays the song as it is stored now, from any section, for a number of sections, or only some tracks. " +
+			"Without mode, the whole song plays sequenced when its session holds the song as it is now, and live otherwise.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				` + songArg + `,
-				"from": {"type": "string", "description": "Where to start: a section id (its first occurrence) or a 1-based position in the arrangement. Default: the top."},
-				"sections": {"type": "integer", "minimum": 1, "description": "How many arrangement entries to play (default: to the end)."},
-				"tracks": {"type": "array", "items": {"type": "string"}, "description": "Play only these tracks' notes (default: all)."},
-				"transport": {"type": "boolean", "description": "Also start AUM's transport with the first note and stop it at the end, for plugins that follow the host clock."},
-				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."}
+				"mode": {"type": "string", "enum": ["sequenced", "live"], "description": "How to play (default: sequenced when the session's sequencer holds the song as it is now and the whole song is asked for, else live)."},
+				"from": {"type": "string", "description": "Live: where to start, a section id (its first occurrence) or a 1-based position in the arrangement. Default: the top."},
+				"sections": {"type": "integer", "minimum": 1, "description": "Live: how many arrangement entries to play (default: to the end)."},
+				"tracks": {"type": "array", "items": {"type": "string"}, "description": "Live: play only these tracks' notes (default: all)."},
+				"transport": {"type": "boolean", "description": "Live: also start AUM's transport with the first note and stop it at the end, for plugins that follow the host clock. Sequenced playing always runs the transport."},
+				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Live: wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."}
 			},
 			"required": ["song"]
 		}`),
@@ -152,13 +158,13 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "stop_song",
-		Description: "Stop the playing song and release every sounding note.",
+		Description: "Stop the playing song: release every sounding note (live), or stop and rewind AUM's transport (sequenced).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, s.handleStopSong)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "get_song_playback",
-		Description: "Where the playing song stands (section, bar, position), or how the last playback ended.",
+		Description: "Where the playing song stands (mode, section, bar, position), or how the last playback ended. A sequenced song's position is the daemon's clock since it started the transport, not read from AUM.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, s.handleGetSongPlayback)
 
@@ -199,6 +205,16 @@ func rigProbe(cat song.Catalog, node aum.NodeSpec) *device.ProbeDump {
 		return &d
 	}
 	return nil
+}
+
+// sequencerProbe finds the staged probe of the sequencer a song's session can
+// host, and its probe id; nil when the plugin was never scanned.
+func sequencerProbe(cat song.Catalog) (*device.ProbeDump, string) {
+	id := device.ProbeID(device.ProbeDump{Component: song.AtomComponent})
+	if d, ok := cat[id]; ok {
+		return &d, id
+	}
+	return nil, id
 }
 
 // pluginKind is the role a component type plays in a song.
@@ -424,6 +440,9 @@ type songSummary struct {
 	// SessionCurrent reports whether the authored session still matches the
 	// song's control layout.
 	SessionCurrent *bool `json:"session_current,omitempty"`
+	// SequenceCurrent reports, for a session that hosts the sequencer, whether
+	// it holds the song as it is now (absent without a sequencer).
+	SequenceCurrent *bool `json:"sequence_current,omitempty"`
 }
 
 type songSectionRow struct {
@@ -489,6 +508,16 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 			fmt.Fprintf(&b, "session: %s\n", rec.Session)
 		} else {
 			fmt.Fprintf(&b, "session: %s is out of date (the song's tempo, plugins or controls changed): run author_song_session and load it again\n", rec.Session)
+		}
+		if rec.Sequence != "" {
+			seqCurrent := rec.sequenceCurrent(tl)
+			sum.SequenceCurrent = &seqCurrent
+			switch {
+			case seqCurrent:
+				b.WriteString("playing: from the session's sequencer (play_song starts AUM's transport)\n")
+			case current:
+				b.WriteString("playing: live; the session's sequencer holds an older version of the song (run author_song_session and load it again to play from it)\n")
+			}
 		}
 	} else {
 		b.WriteString("session: not authored yet (author_song_session)\n")
@@ -638,6 +667,17 @@ func (s *Server) handleDeleteSong(_ context.Context, req *mcp.CallToolRequest) (
 type songSessionRecord struct {
 	Session     string `json:"session"`
 	Fingerprint string `json:"fingerprint"`
+	// Sequencer is the probe id of the sequencer the session hosts and
+	// Sequence the fingerprint of the song it holds (song.Sequence); both
+	// empty for a session without one.
+	Sequencer string `json:"sequencer,omitempty"`
+	Sequence  string `json:"sequence,omitempty"`
+}
+
+// sequenceCurrent reports whether the recorded session's sequencer holds the
+// song as tl has it now, in a session whose layout still matches.
+func (r songSessionRecord) sequenceCurrent(tl *song.Timeline) bool {
+	return r.Sequence != "" && r.Fingerprint == tl.Fingerprint && r.Sequence == tl.Sequence().Fingerprint()
 }
 
 // loadSongSessions reads the record of authored song sessions (empty when
@@ -690,6 +730,7 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 		TrackTaps   bool   `json:"track_taps"`
 		FullControl bool   `json:"full_control"`
 		Hardware    string `json:"hardware"`
+		Sequencer   *bool  `json:"sequencer"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -721,6 +762,18 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	defaults := loadAUv3DefaultStates()
 	opts.Prepare = func(ns *aum.NodeSpec) error { return applyDefaultState(ns, defaults) }
 
+	// The sequencer is hosted whenever it is installed, unless asked not to.
+	rec := songSessionRecord{Fingerprint: cs.timeline.Fingerprint}
+	seqDump, seqID := sequencerProbe(cat)
+	switch {
+	case args.Sequencer != nil && !*args.Sequencer:
+	case seqDump != nil:
+		opts.Sequencer, opts.Sequence = seqDump, cs.timeline.Sequence()
+		rec.Sequencer, rec.Sequence = seqID, opts.Sequence.Fingerprint()
+	case args.Sequencer != nil:
+		return textResult(fmt.Sprintf("/sequencer: the sequencer Atom | Piano Roll² (%s) is not among the staged AUv3 probes; install it and open the auv3-probe app on the iPad so it is scanned, or leave sequencer out to play the song live", seqID), true), nil
+	}
+
 	sess, rep, err := cs.plan.BuildSession(opts)
 	if err != nil {
 		return textResult("author session: "+err.Error(), true), nil
@@ -736,7 +789,8 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	if err != nil {
 		return textResult("stage session: "+err.Error(), true), nil
 	}
-	if err := s.recordSongSession(cs.id, songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint}); err != nil {
+	rec.Session = outID
+	if err := s.recordSongSession(cs.id, rec); err != nil {
 		return textResult("record song session: "+err.Error(), true), nil
 	}
 
@@ -748,6 +802,10 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	}
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "  strip 1: Brain (ProbeMidiBrain), which plays every track and drives MIDI Control on channels %d-16\n", cs.plan.ControlChannels[0])
+	if q := opts.Sequence; q != nil {
+		fmt.Fprintf(&b, "           + %s holding the whole song (%d notes, %d control changes) after a lead-in of %d bar(s), routed like the brain\n",
+			seqDump.Name, len(q.Notes), len(q.Controls), q.LeadBars)
+	}
 	for _, tp := range cs.plan.Tracks {
 		names := make([]string, len(tp.Nodes))
 		for i, n := range tp.Nodes {
@@ -761,15 +819,22 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	}
 	b.WriteString(" > ProbeAudioTap\n")
 	fmt.Fprintf(&b, "next: the iPad's auv3-probe app pulls it into AUM's folder (%s); open it in AUM, then play_song\n", file)
+	switch {
+	case opts.Sequence != nil:
+		b.WriteString("play_song starts AUM's transport and the sequencer plays the song; after a change to the notes it plays live until this session is authored and loaded again\n")
+	case args.Sequencer == nil:
+		fmt.Fprintf(&b, "the song plays live through the brain: the sequencer Atom | Piano Roll² (%s) is not among the staged AUv3 probes\n", seqID)
+	}
 
 	return structResult(b.String(), map[string]any{
-		"song":     cs.id,
-		"id":       outID,
-		"file":     file,
-		"path":     path,
-		"download": "/aum-session/" + file,
-		"report":   rep,
-		"layout":   cs.plan,
+		"song":      cs.id,
+		"id":        outID,
+		"file":      file,
+		"path":      path,
+		"download":  "/aum-session/" + file,
+		"report":    rep,
+		"layout":    cs.plan,
+		"sequenced": opts.Sequence != nil,
 	}), nil
 }
 
@@ -818,6 +883,7 @@ func songStart(tl *song.Timeline, from string) (int, error) {
 func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Song      string   `json:"song"`
+		Mode      string   `json:"mode"`
 		From      string   `json:"from"`
 		Sections  int      `json:"sections"`
 		Tracks    []string `json:"tracks"`
@@ -838,20 +904,6 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if err != nil {
 		return textResult("/from: "+err.Error(), true), nil
 	}
-	opts := song.PlayOptions{
-		From: from, Count: args.Sections, Tracks: args.Tracks,
-		Preroll: time.Duration(args.PrerollMS) * time.Millisecond,
-	}
-	if args.Transport {
-		// Stop/Rewind only stops a running transport, so rewind first to start
-		// from the top.
-		rewind, start, stop := cs.plan.Transport["Rewind"], cs.plan.Transport["Start Play"], cs.plan.Transport["Stop/Rewind"]
-		opts.Before = []song.Event{
-			{Kind: song.Control, Channel: rewind.Channel, Data1: rewind.Number, Data2: 127},
-			{Kind: song.Control, Channel: start.Channel, Data1: start.Number, Data2: 127},
-		}
-		opts.After = []song.Event{{Kind: song.Control, Channel: stop.Channel, Data1: stop.Number, Data2: 127}}
-	}
 
 	// The song must be playing into its own session. Both checks are
 	// warnings: the daemon only knows what the iPad last downloaded, not what
@@ -869,29 +921,121 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
-	// The player keeps the time with the host's timers, and a host that dozes
-	// fires them late. Hold it awake from before the opening sound goes out
-	// until the playback is over, however it ends.
-	release := s.holdAwake()
-	opts.OnEnd = func(song.Status) { release() }
-	st, err := s.player.Start(cs.id, cs.timeline, opts, func(ctx context.Context, e song.Event) error {
+	mode, note, err := songPlayMode(args.Mode, rec, cs.timeline, from != 0 || args.Sections > 0 || len(args.Tracks) > 0)
+	if err != nil {
+		return textResult("/mode: "+err.Error(), true), nil
+	}
+	send := func(ctx context.Context, e song.Event) error {
 		return s.sendBrain(ctx, songCommand(e))
-	})
+	}
+	cc := func(at song.Assignment, value int) song.Event {
+		return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
+	}
+	// Stop/Rewind only stops a running transport, so a start rewinds first to
+	// begin at the top.
+	rewind, start, stop := cs.plan.Transport["Rewind"], cs.plan.Transport["Start Play"], cs.plan.Transport["Stop/Rewind"]
+	bypass := cs.plan.SequencerBypass
+
+	// The player keeps the time with the host's timers, and a host that dozes
+	// fires them late: a live song stutters, a sequenced one is stopped late
+	// and reports a position that stood still. Hold the host awake from
+	// before the first message goes out until the playback is over, however
+	// it ends.
+	release := s.holdAwake()
+	onEnd := func(song.Status) { release() }
+
+	var st song.Status
+	seq := cs.timeline.Sequence()
+	if mode == song.ModeSequenced {
+		// The sequencer runs with the transport; everything else is in it. The
+		// transport is rewound again at the end, so the session's own play
+		// button starts the song from the top too.
+		st, err = s.player.StartSequenced(cs.id, cs.timeline, seq, song.SequencedOptions{
+			Start: []song.Event{cc(bypass, 0), cc(rewind, 127), cc(start, 127)},
+			Stop:  []song.Event{cc(stop, 127), cc(rewind, 127)},
+			OnEnd: onEnd,
+		}, send)
+	} else {
+		opts := song.PlayOptions{
+			From: from, Count: args.Sections, Tracks: args.Tracks,
+			Preroll: time.Duration(args.PrerollMS) * time.Millisecond,
+			OnEnd:   onEnd,
+		}
+		if args.Transport {
+			opts.Before = []song.Event{cc(rewind, 127), cc(start, 127)}
+			opts.After = []song.Event{cc(stop, 127)}
+			if rec.Sequence != "" {
+				// The session's sequencer would play the song from the top along
+				// with the transport: keep it out while the song is played live.
+				opts.Before = append([]song.Event{cc(bypass, 127)}, opts.Before...)
+				opts.After = append(opts.After, cc(bypass, 0))
+			}
+		}
+		st, err = s.player.Start(cs.id, cs.timeline, opts, send)
+	}
 	if err != nil {
 		release() // no playback began, so nothing will end
 		return textResult("play_song: "+err.Error(), true), nil
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "playing %q from %s (bar %d), %s", cs.song.Title, cs.timeline.Sections[from].Name, cs.timeline.Sections[from].Bar, clock(time.Duration(st.DurationMS)*time.Millisecond))
-	if len(args.Tracks) > 0 {
-		fmt.Fprintf(&b, ", tracks %s", strings.Join(args.Tracks, ", "))
+	if mode == song.ModeSequenced {
+		fmt.Fprintf(&b, "started AUM's transport: the session's sequencer plays %q from the top, %s after a lead-in of %.1f s", cs.song.Title,
+			clock(time.Duration(st.DurationMS)*time.Millisecond), seq.Lead().Seconds())
+	} else {
+		fmt.Fprintf(&b, "playing %q live from %s (bar %d), %s", cs.song.Title, cs.timeline.Sections[from].Name, cs.timeline.Sections[from].Bar, clock(time.Duration(st.DurationMS)*time.Millisecond))
+		if len(args.Tracks) > 0 {
+			fmt.Fprintf(&b, ", tracks %s", strings.Join(args.Tracks, ", "))
+		}
 	}
 	b.WriteString("\nlisten with get_audio_tap, follow with get_song_playback, end with stop_song\n")
+	if note != "" {
+		fmt.Fprintf(&b, "note: %s\n", note)
+	}
 	for _, w := range warnings {
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
-	return structResult(b.String(), map[string]any{"playback": st, "warnings": warnings}), nil
+	return structResult(b.String(), map[string]any{"playback": st, "mode": mode, "warnings": warnings}), nil
+}
+
+// songPlayMode decides how a song is played. want is the mode asked for ("" to
+// choose), rec the session the song was authored into, and partial whether
+// only a part of the song is asked for (a start section, a number of sections
+// or some tracks). The sequencer plays the whole song, as it was authored;
+// anything else is played live. note says why a song that has a sequencer is
+// played live anyway.
+func songPlayMode(want string, rec songSessionRecord, tl *song.Timeline, partial bool) (mode, note string, err error) {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want != "" && want != song.ModeLive && want != song.ModeSequenced {
+		return "", "", fmt.Errorf("%q is not a mode (sequenced, live)", want)
+	}
+	var blocked string // why the sequencer cannot play what is asked for
+	switch {
+	case rec.Sequence == "":
+		blocked = "the song's session hosts no sequencer (author_song_session hosts one when Atom | Piano Roll² is installed)"
+	case partial:
+		blocked = "the sequencer plays the whole song from the top; from, sections and tracks are played live"
+	case rec.Fingerprint != tl.Fingerprint:
+		blocked = "the song's tempo, plugins or controls changed since its session was authored: run author_song_session and load it again"
+	case !rec.sequenceCurrent(tl):
+		blocked = "the session's sequencer holds an older version of the song: run author_song_session and load it again to play from it"
+	}
+	switch {
+	case want == song.ModeSequenced && blocked != "":
+		return "", "", fmt.Errorf("%s", blocked)
+	case want == song.ModeLive:
+		return song.ModeLive, "", nil
+	case blocked == "":
+		return song.ModeSequenced, "", nil
+	case rec.Sequence == "" || partial:
+		// Nothing to explain: there is no sequencer, or a part was asked for.
+		return song.ModeLive, "", nil
+	case rec.Fingerprint != tl.Fingerprint:
+		// play_song's own warning about the outdated session says it.
+		return song.ModeLive, "", nil
+	default:
+		return song.ModeLive, "played live: " + blocked, nil
+	}
 }
 
 // playbackText renders a playback status.
@@ -899,11 +1043,13 @@ func playbackText(st song.Status) string {
 	switch {
 	case st.Song == "":
 		return "no song has been played"
+	case st.Playing && st.LeadInMS > 0:
+		return fmt.Sprintf("playing %q (%s): AUM's transport runs, the first bar comes in %.1f s", st.Song, st.Mode, float64(st.LeadInMS)/1000)
 	case st.Playing:
-		return fmt.Sprintf("playing %q: %s, bar %d, %s of %s", st.Song, st.Section, st.Bar,
+		return fmt.Sprintf("playing %q (%s): %s, bar %d, %s of %s", st.Song, st.Mode, st.Section, st.Bar,
 			clock(time.Duration(st.PositionMS)*time.Millisecond), clock(time.Duration(st.DurationMS)*time.Millisecond))
 	default:
-		return fmt.Sprintf("%q %s at %s of %s (%s, bar %d)", st.Song, st.Outcome,
+		return fmt.Sprintf("%q (%s) %s at %s of %s (%s, bar %d)", st.Song, st.Mode, st.Outcome,
 			clock(time.Duration(st.PositionMS)*time.Millisecond), clock(time.Duration(st.DurationMS)*time.Millisecond), st.Section, st.Bar)
 	}
 }

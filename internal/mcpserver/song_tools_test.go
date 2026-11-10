@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -353,7 +354,7 @@ func TestPlaySong(t *testing.T) {
 		t.Fatalf("author: %s", resultText(res))
 	}
 	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "preroll_ms": 20, "transport": true})
-	if res.IsError || !strings.Contains(resultText(res), `playing "Night Drive" from verse (bar 1)`) || strings.Contains(resultText(res), "warning:") {
+	if res.IsError || !strings.Contains(resultText(res), `playing "Night Drive" live from verse (bar 1)`) || strings.Contains(resultText(res), "warning:") || strings.Contains(resultText(res), "note:") {
 		t.Fatalf("play: %s", resultText(res))
 	}
 
@@ -421,7 +422,7 @@ collect:
 	}
 
 	res = call(t, s.handleGetSongPlayback, map[string]any{})
-	if !strings.Contains(resultText(res), `"night_drive" finished`) {
+	if !strings.Contains(resultText(res), `"night_drive" (live) finished`) {
 		t.Errorf("playback status: %s", resultText(res))
 	}
 	if res := call(t, s.handleStopSong, map[string]any{}); res.IsError {
@@ -591,5 +592,319 @@ func TestExportSongMIDI(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(config.SongExportsDir(), "night_drive.mid"))
 	if err != nil || !strings.HasPrefix(string(data), "MThd") {
 		t.Fatalf("exported file: %v, %d bytes", err, len(data))
+	}
+}
+
+// stageSequencer stages the probe of the sequencer a song's session can host,
+// the way the receiver stores a scanned plugin.
+func stageSequencer(t *testing.T) {
+	t.Helper()
+	dump := device.ProbeDump{Component: song.AtomComponent, Name: "Atom | Piano Roll²"}
+	data, err := json.Marshal(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config.AUv3ProbesDir(), device.ProbeID(dump)+".json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// collectFrames gathers what the brain is sent until the playback has ended.
+func collectFrames(t *testing.T, s *Server, frames <-chan midicontrol.Command) []midicontrol.Command {
+	t.Helper()
+	var got []midicontrol.Command
+	deadline := time.After(15 * time.Second)
+	for {
+		playing := s.player.Status().Playing
+		select {
+		case cmd, ok := <-frames:
+			if !ok {
+				return got
+			}
+			got = append(got, cmd)
+		case <-time.After(150 * time.Millisecond):
+			if !playing {
+				return got
+			}
+		case <-deadline:
+			t.Fatal("playback did not finish")
+		}
+	}
+}
+
+// TestAuthorSongSessionSequencer: with the sequencer installed, the song's
+// session hosts it with the song in it, and the song knows whether that copy
+// is still the song.
+func TestAuthorSongSessionSequencer(t *testing.T) {
+	s := newSongServer(t)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+
+	// Not installed: asking for it is an error, the default plays live.
+	res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive", "sequencer": true})
+	if !res.IsError || !strings.Contains(resultText(res), "/sequencer:") || !strings.Contains(resultText(res), "aumi-apr2-_v_e_e_k") {
+		t.Fatalf("asking for a sequencer that is not staged: %s", resultText(res))
+	}
+	res = call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"})
+	if res.IsError || !strings.Contains(resultText(res), "the song plays live through the brain") {
+		t.Fatalf("author without the sequencer staged: %s", resultText(res))
+	}
+	if rec := loadSongSessions()["night_drive"]; rec.Sequence != "" || rec.Sequencer != "" {
+		t.Errorf("record = %+v, want no sequencer", rec)
+	}
+
+	stageSequencer(t)
+	res = call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive", "sequencer": false})
+	if res.IsError || strings.Contains(resultText(res), "holding the whole song") || loadSongSessions()["night_drive"].Sequence != "" {
+		t.Fatalf("sequencer: false hosted one: %s", resultText(res))
+	}
+	res = call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"})
+	text := resultText(res)
+	for _, want := range []string{
+		"+ Atom | Piano Roll² holding the whole song (23 notes,", "after a lead-in of 2 bar(s), routed like the brain",
+		"play_song starts AUM's transport and the sequencer plays the song",
+	} {
+		if res.IsError || !strings.Contains(text, want) {
+			t.Errorf("author report lacks %q:\n%s", want, text)
+		}
+	}
+	rec := loadSongSessions()["night_drive"]
+	if rec.Session != "Songs/Night Drive" || rec.Sequencer != "aumi-apr2-_v_e_e_k" || rec.Sequence == "" {
+		t.Errorf("record = %+v, want the session with its sequencer and the sequence's fingerprint", rec)
+	}
+
+	sess, err := aum.OpenFile(filepath.Join(config.AUMSessionsDir(), "Songs", "Night Drive.aumproj"))
+	if err != nil {
+		t.Fatalf("open the staged session: %v", err)
+	}
+	brain := sess.Channels()[song.BrainStrip]
+	if len(brain.Nodes) != 2 || brain.Nodes[song.SequencerSlot].Component == nil || *brain.Nodes[song.SequencerSlot].Component != song.AtomComponent {
+		t.Fatalf("brain strip = %+v, want the brain and the sequencer", brain.Nodes)
+	}
+	doc, err := sess.NodeAuStateDoc(song.BrainStrip, song.SequencerSlot)
+	if err != nil || !strings.Contains(string(doc["patterns"]), `"pitch":33`) || len(doc["store"]) == 0 {
+		t.Errorf("the staged sequencer does not hold the song's notes (%v, %d keys)", err, len(doc))
+	}
+
+	// The song says how it plays: from the sequencer while that holds it …
+	res = call(t, s.handleGetSong, map[string]any{"song": "night_drive"})
+	if !strings.Contains(resultText(res), "playing: from the session's sequencer") {
+		t.Fatalf("get after author: %s", resultText(res))
+	}
+	// … live after a change to the notes, until the session is authored again.
+	edited := strings.Replace(toolSong, `"A1 . A1 . A1 . G1 ."`, `"A1 A1 A1 . E1 . G1 ."`, 1)
+	res = call(t, s.handleSaveSong, map[string]any{"yaml": edited})
+	if res.IsError || !strings.Contains(resultText(res), "session: Songs/Night Drive\n") || !strings.Contains(resultText(res), "playing: live; the session's sequencer holds an older version of the song") {
+		t.Fatalf("save with new notes: %s", resultText(res))
+	}
+	res = call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"})
+	if res.IsError {
+		t.Fatalf("author again: %s", resultText(res))
+	}
+	if res = call(t, s.handleGetSong, map[string]any{"song": "night_drive"}); !strings.Contains(resultText(res), "playing: from the session's sequencer") {
+		t.Fatalf("get after authoring again: %s", resultText(res))
+	}
+}
+
+// TestPlaySongSequenced plays the song from its session's sequencer: the brain
+// is sent what starts AUM's transport and, at the end, what stops it, and not
+// one note.
+func TestPlaySongSequenced(t *testing.T) {
+	hub := midicontrol.NewHub()
+	mux := http.NewServeMux()
+	midicontrol.Register(mux, hub, midicontrol.Callbacks{})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var s *Server
+	host := &fakeHost{status: func() song.Status { return s.player.Status() }}
+	s = newSongServer(t, WithMidiControl(hub), WithHostAwake(host.hold))
+	t.Cleanup(func() { s.player.Stop() })
+	stageSequencer(t)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	frames, _ := dialBrain(t, srv, hub)
+
+	// No session yet: nothing to play from, the song plays live.
+	res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "mode": "sequenced"})
+	if !res.IsError || !strings.Contains(resultText(res), "hosts no sequencer") {
+		t.Fatalf("sequenced without a session: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "mode": "sideways"}); !res.IsError {
+		t.Fatalf("an unknown mode was accepted: %s", resultText(res))
+	}
+	// A part of the song is not the sequencer's to play.
+	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "mode": "sequenced", "tracks": []string{"bass"}})
+	if !res.IsError || !strings.Contains(resultText(res), "plays the whole song from the top") {
+		t.Fatalf("sequenced with tracks: %s", resultText(res))
+	}
+
+	// The whole song, no mode named: the sequencer plays it.
+	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive"})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, `started AUM's transport: the session's sequencer plays "Night Drive" from the top`) ||
+		!strings.Contains(text, "after a lead-in of 1.6 s") || strings.Contains(text, "warning:") {
+		t.Fatalf("play: %s", text)
+	}
+	if st := call(t, s.handleGetSongPlayback, map[string]any{}); !strings.Contains(resultText(st), `playing "night_drive" (sequenced): AUM's transport runs, the first bar comes in`) {
+		t.Errorf("playback status in the lead-in: %s", resultText(st))
+	}
+	// The host is held awake for a sequenced song as for a live one; nothing
+	// refused above took a hold.
+	if held, released := host.counts(); held != 1 || released != 0 {
+		t.Errorf("while the sequencer plays: %d hold(s) taken, %d released, want one held", held, released)
+	}
+	got := collectFrames(t, s, frames)
+	host.waitReleased(t)
+	if st := host.lastEnd(); st.Outcome != "finished" || st.Mode != song.ModeSequenced {
+		t.Errorf("the hold was released at %+v, want the sequenced song finished", st)
+	}
+	want := []midicontrol.Command{
+		{Type: "cc", Channel: 15, Controller: 106, Value: 0},   // the sequencer on
+		{Type: "cc", Channel: 15, Controller: 104, Value: 127}, // rewind
+		{Type: "cc", Channel: 15, Controller: 102, Value: 127}, // start
+		{Type: "cc", Channel: 15, Controller: 103, Value: 127}, // stop
+		{Type: "cc", Channel: 15, Controller: 104, Value: 127}, // rewind
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the brain was sent %+v, want the transport's start and stop only", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("frame %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if st := call(t, s.handleGetSongPlayback, map[string]any{}); !strings.Contains(resultText(st), `"night_drive" (sequenced) finished`) {
+		t.Errorf("playback status at the end: %s", resultText(st))
+	}
+
+	// stop_song stops the transport and rewinds it.
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "mode": "sequenced"}); res.IsError {
+		t.Fatalf("play again: %s", resultText(res))
+	}
+	for deadline := time.Now().Add(5 * time.Second); s.player.Status().Sent < 3; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the transport was not started")
+		}
+	}
+	if res := call(t, s.handleStopSong, map[string]any{}); res.IsError || !strings.Contains(resultText(res), "(sequenced) stopped") {
+		t.Fatalf("stop: %s", resultText(res))
+	}
+	got = collectFrames(t, s, frames)
+	if n := len(got); n != 5 || got[n-2].Controller != 103 || got[n-1].Controller != 104 {
+		t.Errorf("a stopped sequenced playback sent %+v, want the start, then stop and rewind", got)
+	}
+
+	// A part plays live in the same session. With the transport, the sequencer
+	// is kept out for the length of the playback.
+	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "from": "chorus", "preroll_ms": 20, "transport": true})
+	if res.IsError || !strings.Contains(resultText(res), `playing "Night Drive" live from chorus (bar 2)`) || strings.Contains(resultText(res), "note:") {
+		t.Fatalf("play a part: %s", resultText(res))
+	}
+	got = collectFrames(t, s, frames)
+	var ccs []int
+	notes := 0
+	for _, cmd := range got {
+		if cmd.Type == "noteOn" {
+			notes++
+		}
+		if cmd.Type == "cc" && cmd.Channel == 15 && cmd.Controller >= 102 && cmd.Controller <= 106 {
+			ccs = append(ccs, cmd.Controller*1000+cmd.Value)
+		}
+	}
+	if fmt.Sprint(ccs) != fmt.Sprint([]int{106127, 104127, 102127, 103127, 106000}) || notes == 0 {
+		t.Errorf("live with the transport sent %v and %d notes, want the sequencer bypassed, rewind, start, the notes, stop, the sequencer back on", ccs, notes)
+	}
+
+	// New notes: the sequencer holds the old song, so the song plays live and
+	// says why; asked to play sequenced, it refuses.
+	edited := strings.Replace(toolSong, `"A1 . A1 . A1 . G1 ."`, `"A1 A1 A1 . E1 . G1 ."`, 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": edited}); res.IsError {
+		t.Fatalf("save with new notes: %s", resultText(res))
+	}
+	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "mode": "sequenced"})
+	if !res.IsError || !strings.Contains(resultText(res), "holds an older version of the song") {
+		t.Fatalf("sequenced with a stale sequence: %s", resultText(res))
+	}
+	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "preroll_ms": 20})
+	if res.IsError || !strings.Contains(resultText(res), `playing "Night Drive" live from verse`) ||
+		!strings.Contains(resultText(res), "note: played live: the session's sequencer holds an older version of the song") {
+		t.Fatalf("play with a stale sequence: %s", resultText(res))
+	}
+	got = collectFrames(t, s, frames)
+	bass := 0
+	for _, cmd := range got {
+		if cmd.Type == "noteOn" && cmd.Channel == 1 {
+			bass++
+		}
+		if cmd.Type == "cc" && cmd.Channel == 15 && (cmd.Controller == 102 || cmd.Controller == 106) {
+			t.Errorf("a live playback without the transport sent %+v", cmd)
+		}
+	}
+	if bass != 10 {
+		t.Errorf("the live playback sent %d bass notes, want the edited song's 10", bass)
+	}
+}
+
+// TestSongPlayMode covers the choice between the two ways to play.
+func TestSongPlayMode(t *testing.T) {
+	sg, err := song.Parse([]byte(toolSong))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSongServer(t)
+	cs, err := compileSong("night_drive", sg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl := cs.timeline
+	current := songSessionRecord{Session: "Songs/Night Drive", Fingerprint: tl.Fingerprint, Sequencer: "seq", Sequence: tl.Sequence().Fingerprint()}
+	noSequencer := songSessionRecord{Session: current.Session, Fingerprint: tl.Fingerprint}
+	oldNotes := current
+	oldNotes.Sequence = "0000000000000000"
+	oldLayout := current
+	oldLayout.Fingerprint = "0000000000000000"
+
+	for _, tc := range []struct {
+		name    string
+		want    string
+		rec     songSessionRecord
+		partial bool
+		mode    string // "" when an error is expected
+		note    string // a fragment of the note, "" for none
+		err     string // a fragment of the error
+	}{
+		{name: "whole song, current sequence", rec: current, mode: song.ModeSequenced},
+		{name: "asked for sequenced", want: "sequenced", rec: current, mode: song.ModeSequenced},
+		{name: "asked for live", want: "live", rec: current, mode: song.ModeLive},
+		{name: "mode in capitals", want: " Sequenced ", rec: current, mode: song.ModeSequenced},
+		{name: "a part", rec: current, partial: true, mode: song.ModeLive},
+		{name: "a part, asked for sequenced", want: "sequenced", rec: current, partial: true, err: "whole song from the top"},
+		{name: "no sequencer", rec: noSequencer, mode: song.ModeLive},
+		{name: "no sequencer, asked for sequenced", want: "sequenced", rec: noSequencer, err: "hosts no sequencer"},
+		{name: "never authored", rec: songSessionRecord{}, mode: song.ModeLive},
+		{name: "old notes", rec: oldNotes, mode: song.ModeLive, note: "older version of the song"},
+		{name: "old notes, asked for sequenced", want: "sequenced", rec: oldNotes, err: "older version of the song"},
+		{name: "old notes, asked for live", want: "live", rec: oldNotes, mode: song.ModeLive},
+		{name: "old layout", rec: oldLayout, mode: song.ModeLive},
+		{name: "old layout, asked for sequenced", want: "sequenced", rec: oldLayout, err: "tempo, plugins or controls changed"},
+		{name: "unknown mode", want: "fast", rec: current, err: "not a mode"},
+	} {
+		mode, note, err := songPlayMode(tc.want, tc.rec, tl, tc.partial)
+		switch {
+		case tc.err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("%s: got mode %q, error %v; want an error with %q", tc.name, mode, err, tc.err)
+			}
+		case err != nil || mode != tc.mode:
+			t.Errorf("%s: got mode %q, error %v; want %q", tc.name, mode, err, tc.mode)
+		case (tc.note == "") != (note == "") || !strings.Contains(note, tc.note):
+			t.Errorf("%s: note %q, want one with %q", tc.name, note, tc.note)
+		}
 	}
 }
