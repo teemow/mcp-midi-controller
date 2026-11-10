@@ -6,6 +6,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
+	"github.com/teemow/mcp-midi-controller/internal/song"
 	"github.com/teemow/midi-transport/midicontrol"
 )
 
@@ -34,6 +37,16 @@ type songRig struct {
 	// Voice is what a note sounds like: its frequency and amplitude (0 is
 	// silence). nil plays every note at its own pitch.
 	Voice func(ch, note int) (hz, amp float64)
+	// Strips maps a strip's mute control (channel, controller) to the note
+	// channel it silences; strips() fills it from a song's plan. A muted
+	// strip's notes do not reach the tap, and as on a device a mute that
+	// reverses the one before it for the same strip within rigMuteWindow is
+	// lost.
+	Strips map[[2]int]int
+	// LostMutes counts the mutes lost that way.
+	LostMutes int
+	muted     map[int]bool
+	muteAt    map[int]time.Time
 	// Programs are the Program Changes received, in order.
 	Programs []midicontrol.Command
 	// Commands is everything received.
@@ -48,6 +61,50 @@ type songRig struct {
 }
 
 const rigSampleRate = 48000
+
+// rigMuteWindow stands for one audio buffer of AUM: two opposite mutes for a
+// strip inside it leave the strip at the first.
+const rigMuteWindow = 25 * time.Millisecond
+
+// strips makes the rig's mixer the one of a song: every track's strip with
+// its mute.
+func (r *songRig) strips(plan *song.Plan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Strips, r.muted, r.muteAt = map[[2]int]int{}, map[int]bool{}, map[int]time.Time{}
+	for _, tp := range plan.Tracks {
+		m := tp.MuteEvent(true)
+		r.Strips[[2]int{m.Channel, m.Data1}] = tp.Channel
+	}
+}
+
+// wantMuted waits until the muted strips are the ones of the given note
+// channels (the brain's connection delivers a mute a moment after the daemon
+// sent it), and fails the test when no mute was lost on the way but the
+// mixer stands otherwise, or when one was lost.
+func (r *songRig) wantMuted(when string, want ...int) {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.mu.Lock()
+		var got []int
+		for ch, on := range r.muted {
+			if on {
+				got = append(got, ch)
+			}
+		}
+		lost := r.LostMutes
+		r.mu.Unlock()
+		sort.Ints(got)
+		if lost == 0 && slices.Equal(got, want) {
+			return
+		}
+		if lost > 0 || time.Now().After(deadline) {
+			r.t.Fatalf("muted strips %s = %v, want %v (%d mute(s) reversed the one before within an audio buffer and were lost)", when, got, want, lost)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // newSongRig starts a server with the test plugins staged and a rig around
 // it. The brain and the tap are not connected yet.
@@ -149,6 +206,17 @@ func (r *songRig) read(c *websocket.Conn) {
 			delete(r.notes, [2]int{cmd.Channel, cmd.Note})
 		case "pc":
 			r.Programs = append(r.Programs, cmd)
+		case "cc":
+			strip, ok := r.Strips[[2]int{cmd.Channel, cmd.Controller}]
+			if !ok {
+				break
+			}
+			on := cmd.Value >= 64
+			if at, seen := r.muteAt[strip]; seen && on != r.muted[strip] && time.Since(at) < rigMuteWindow {
+				r.LostMutes++
+				break
+			}
+			r.muted[strip], r.muteAt[strip] = on, time.Now()
 		}
 		r.mu.Unlock()
 	}
@@ -184,6 +252,9 @@ func (r *songRig) render() {
 	type voice struct{ hz, amp float64 }
 	var voices []voice
 	for k := range r.notes {
+		if r.muted[k[0]] {
+			continue
+		}
 		hz, amp := 440*math.Pow(2, float64(k[1]-69)/12), 0.2
 		if r.Voice != nil {
 			hz, amp = r.Voice(k[0], k[1])

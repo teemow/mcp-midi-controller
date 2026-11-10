@@ -430,9 +430,11 @@ daemon remembers it from the first `ipad_launch` with the full id.
   declaration, no scene) and mutes every strip. Then, one track at a time, it
   unmutes the strip, plays the lowest of the notes the track starts the song
   with (on a drum track the kick rather than a hat) and measures the tap. A
-  track that stays silent is named with its plugin. What another track left
-  ringing in a delay or reverb is behind its mute and counts for nothing. The
-  song's own mutes are put back at the end.
+  track that stays silent is played a second time, and named with its plugin
+  when it is silent again. What another track left ringing in a delay or
+  reverb is behind its mute and counts for nothing. The song's own mutes are
+  put back at the end. A strip's mute and its unmute are sent at least 150 ms
+  apart: AUM can keep the first of two that arrive together (see Status).
 
 It does not run while a song plays. `ui: false` leaves AUM's screen alone
 (reading the session name opens and closes AUM's menu).
@@ -635,7 +637,9 @@ a device, in sessions authored from a song:
 - **Bypass and mute.** Both latch by value: 64 and above bypasses a plugin or
   mutes a strip, 63 and below brings it back, and the same value twice changes
   nothing. Read from AUM's own display and at the tap. The song sends 127 and
-  0.
+  0. A mute and its unmute sent to one strip back to back, about 10 ms apart,
+  left the strip muted in 2 of 10 tries; 30 ms and more apart they left it
+  open in all 24.
 - **Parameters.** A parameter's CC runs linearly over the parameter's range:
   0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
 - **A preset load resets parameters.** Loading a reverb preset put its mix
@@ -694,7 +698,18 @@ the iPad over the LAN and its UI over WebDriverAgent):
 - **The check, and what it got wrong.** `check_song` at the end of that load
   called the drums silent. They were not: it had played their hat while the
   bell's delay was still ringing, and the hat was not 6 dB over that. The
-  check now mutes the other strips and plays the lowest first note.
+  check now mutes the other strips and plays the lowest first note. With
+  that, the next load's check played the kick behind the other strips' mutes
+  and every track answered. The two checks after it called the first track
+  silent, at digital silence, while a note sent by hand sounded, and the
+  second of them left the last track's strip muted: the check had muted the
+  first strip and opened it in the same moment, and muted the last one and
+  put its own mute back in the same moment. That is the pair of mutes
+  measured above.
+- **A failed plugin, seen by the tools.** A lab with the instrument that does
+  not load was reported as loaded "but not every instrument came up", with
+  that instrument marked as failed, read off the screenshot. Its auditions
+  were reported silent and not stored.
 - **The mix.** `mix_song` measured the song's twenty bars and thirteen solo
   passes in 233 s: the fade-in and the fade-out bar by bar, each section, and
   every track alone in every section. After one change of levels, saved
@@ -773,10 +788,10 @@ against a device.
 
 Not yet measured:
 
-- what the first device run of the song tools led to: the check with the
-  other strips muted, a failed node read off a screenshot inside the tools
-  (the rule comes from a device's screenshot), a kit's level taken from its
-  kick, only whole octaves applied by `calibrate`;
+- `check_song` with a strip's mute and its unmute kept 150 ms apart, and its
+  second try of a silent track;
+- a kit's level taken from its kick, and a preset measured off the octave
+  that `calibrate` therefore leaves as written;
 - `audition_sound` in a song's own session with `presets: all`, `set_sound`,
   and `load_song` on a daemon that cannot bring the probe app to the front;
 - `play_song` and `stop_song` in sequenced mode on a device, and

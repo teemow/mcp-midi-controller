@@ -259,6 +259,36 @@ func TestAuditionInASong(t *testing.T) {
 	}
 }
 
+// TestAuditionOnAMutedTrack auditions on a track the song declares muted:
+// its strip is opened for the audition without its own mute sent in the same
+// moment (AUM can keep the first of the two), and muted again afterwards.
+func TestAuditionOnAMutedTrack(t *testing.T) {
+	r := newSongRig(t)
+	fastAuditions(t)
+	r.Voice = presetVoice(r)
+	s := r.s
+	doc := strings.Replace(toolSong, "  - id: bass\n", "  - id: bass\n    mute: true\n", 1) + "session: {presets: all}\n"
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	r.strips(cs.plan)
+	r.pullStaged("Songs/Night Drive.aumproj")
+	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+	if res := call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true}); res.IsError {
+		t.Fatalf("load: %s", resultText(res))
+	}
+	r.wantMuted("after the load", 1)
+	res := call(t, s.handleAuditionSound, map[string]any{"song": "night_drive", "track": "bass", "preset": "Bright Pad", "note": "C3"})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "Bright Pad: sounds C4 +0c") {
+		t.Fatalf("audition on a muted track: %s", text)
+	}
+	r.wantMuted("after the audition", 1)
+}
+
 // programNumbers lists the programs received; r.mu must be held.
 func programNumbers(r *songRig) []int {
 	var out []int
