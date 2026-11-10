@@ -878,7 +878,11 @@ tools of a daemon that has the mode:
   the Rewind did not rewind, one 32 ms and one 99 ms after it did. Stop
   followed at once by Rewind does rewind. `play_song` therefore sends the
   rewind first and the start 200 ms later, in both modes, and a live playback
-  with the transport rewinds again when it has stopped.
+  with the transport rewinds again when it has stopped. With that in the
+  daemon: the transport stopped in the middle of the song and left there, a
+  sequenced `play_song` began at the top, the lead-in silent (-88 dB where the
+  song had read -20 dB) and the fade-in after it; and after a verse played
+  live with the transport, AUM's transport stood at the top.
 
 Not yet measured:
 
@@ -888,8 +892,6 @@ Not yet measured:
   that `calibrate` therefore leaves as written;
 - `audition_sound` in a song's own session with `presets: all`, `set_sound`,
   and `load_song` on a daemon that cannot bring the probe app to the front;
-- `play_song` with its 200 ms between rewind and start, from a transport that
-  does not stand at the top (the gap was measured with messages sent by hand);
 - `get_song_playback` against AUM's own position display (it was measured
   against the sound);
 - a sequenced song on a host that dozes;
