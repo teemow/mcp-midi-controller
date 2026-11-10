@@ -2,8 +2,8 @@ package song
 
 // This file authors a song's AUM session from its plan: the strips, the hosted
 // plugins, the MIDI matrix that lets one ProbeMidiBrain play every track on its
-// own channel, and the MIDI-control mappings behind every control the song
-// uses.
+// own channel, the MIDI-control mappings behind every control the song uses,
+// and, when asked for, the sequencer that holds the whole song (atom.go).
 
 import (
 	"fmt"
@@ -30,6 +30,13 @@ type SessionOptions struct {
 	// FullControl also maps every other target of the session (every
 	// parameter of every plugin) around the song's own mappings.
 	FullControl bool
+	// Sequencer is the staged probe of Atom | Piano Roll² and Sequence the
+	// song laid out for it (Timeline.Sequence). With both set the session
+	// hosts the sequencer next to the brain, holding the whole song, routed
+	// the way the brain is: the song then plays from the session's own
+	// transport. Without them it plays live through the brain only.
+	Sequencer *device.ProbeDump
+	Sequence  *Sequence
 }
 
 // SessionReport summarizes an authored session.
@@ -42,7 +49,17 @@ type SessionReport struct {
 	// many it found no room for.
 	Banked   int `json:"banked,omitempty"`
 	Overflow int `json:"overflow,omitempty"`
+	// Sequenced reports that the session hosts the sequencer with the song in
+	// it: SequenceNotes notes and SequenceControls control changes, after a
+	// lead-in of LeadBars bars.
+	Sequenced        bool `json:"sequenced,omitempty"`
+	SequenceNotes    int  `json:"sequence_notes,omitempty"`
+	SequenceControls int  `json:"sequence_controls,omitempty"`
+	LeadBars         int  `json:"lead_bars,omitempty"`
 }
+
+// SequencerSlot is the sequencer's slot on the brain's strip.
+const SequencerSlot = 1
 
 // emptyBrainProgram is a ProbeMidiBrain program that does nothing. The brain's
 // own default is a demo that sends Program Changes on channel 1 as the
@@ -74,11 +91,27 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		return ns, nil
 	}
 
+	midi := []aum.NodeSpec{brain}
+	if o.Sequence != nil {
+		if o.Sequencer == nil || !aum.ComponentMatches(o.Sequencer.Component, AtomComponent) {
+			return nil, rep, fmt.Errorf("a sequence needs the staged probe of the sequencer it is encoded for, Atom | Piano Roll²")
+		}
+		seq := aum.NodeSpecFromDump(*o.Sequencer)
+		state, err := o.Sequence.AtomState(p.song.Title, BrainStrip, SequencerSlot)
+		if err != nil {
+			return nil, rep, err
+		}
+		seq.StateDoc = state
+		midi = append(midi, seq)
+		rep.Sequenced, rep.LeadBars = true, o.Sequence.LeadBars
+		rep.SequenceNotes, rep.SequenceControls = len(o.Sequence.Notes), len(o.Sequence.Controls)
+	}
+
 	spec := aum.BuildSpec{
 		Title:    p.song.Title,
 		Tempo:    p.song.Tempo,
 		Hardware: o.Hardware,
-		Channels: []aum.ChannelSpec{{Kind: aum.KindMIDI, Title: "Brain", Nodes: []aum.NodeSpec{brain}}},
+		Channels: []aum.ChannelSpec{{Kind: aum.KindMIDI, Title: "Brain", Nodes: midi}},
 	}
 	route := aum.MIDIRoute{From: aum.MIDIEndpoint{Channel: BrainStrip, Slot: 0}}
 	for _, tp := range p.Tracks {
@@ -124,12 +157,25 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		Filter:  &aum.MIDIFilter{Channels: p.ControlChannels},
 	})
 	spec.Routes = []aum.MIDIRoute{route}
+	if o.Sequence != nil {
+		// The sequencer reaches everything the brain reaches, through the same
+		// filters.
+		spec.Routes = append(spec.Routes, aum.MIDIRoute{
+			From: aum.MIDIEndpoint{Channel: BrainStrip, Slot: SequencerSlot},
+			To:   route.To,
+		})
+	}
 
 	sess, built, err := aum.BuildSession(spec)
 	if err != nil {
 		return nil, rep, fmt.Errorf("build session: %w", err)
 	}
 	rep.Strips, rep.Nodes = built.Channels, built.Nodes
+	if o.Sequence != nil {
+		if err := stampAtomVersion(sess, BrainStrip, SequencerSlot); err != nil {
+			return nil, rep, err
+		}
+	}
 
 	// Every mapping is an edit of a placeholder the session already lists, so
 	// index the catalogue once and assign into it.
@@ -153,6 +199,11 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 
 	for target, at := range p.Transport {
 		if _, err := assign("Transport", target, at); err != nil {
+			return nil, rep, err
+		}
+	}
+	if o.Sequence != nil {
+		if _, err := assign(slotCollection(BrainStrip, SequencerSlot), "_AUMNode:Bypass", p.SequencerBypass); err != nil {
 			return nil, rep, err
 		}
 	}

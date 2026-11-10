@@ -170,6 +170,9 @@ type Plan struct {
 	ControlChannels []int `json:"control_channels"`
 	// Transport is the transport actions the session maps, by AUM target.
 	Transport map[string]Assignment `json:"-"`
+	// SequencerBypass switches the session's sequencer off (127) and on (0),
+	// in a session that hosts one.
+	SequencerBypass Assignment `json:"-"`
 
 	song  *Song
 	nodes map[string]*NodePlan // "track/effect" -> node
@@ -177,6 +180,10 @@ type Plan struct {
 
 // BrainStrip is the strip the brain sits on; the tracks follow it.
 const BrainStrip = 0
+
+// sequencerBypassCC is the controller on the global channel that bypasses the
+// session's sequencer. It sits with the transport's (102..105, 108).
+const sequencerBypassCC = 106
 
 // firstInsertSlot is the slot of an audio strip's first insert: slot 0 is the
 // strip's source and slot 1 its output node.
@@ -329,6 +336,8 @@ func NewPlan(s *Song, cat Catalog) (*Plan, error) {
 		p.Transport[target] = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: cc}
 		globalUsed[cc] = true
 	}
+	p.SequencerBypass = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: sequencerBypassCC}
+	globalUsed[sequencerBypassCC] = true
 	var late []*TrackPlan // strips beyond the convention's eight
 	for i, tp := range p.Tracks {
 		vol, okV := device.ConventionMixerCC(i+1, "Volume")
