@@ -618,3 +618,62 @@ func TestUploadSessionMustStayOnTheUploadHost(t *testing.T) {
 		t.Errorf("the client followed it: %v", elsewhere)
 	}
 }
+
+// TestFolderUsable: a folder the daemon made stays usable under its id when
+// the user renames or moves it, and stops being usable in the bin. What the
+// user made by hand is not the daemon's to see at all.
+func TestFolderUsable(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	usable := func(id string) bool {
+		t.Helper()
+		ok, err := r.client.FolderUsable(ctx(t), id)
+		if err != nil {
+			t.Fatalf("FolderUsable(%q): %v", id, err)
+		}
+		return ok
+	}
+	// A folder of the same name made by hand: not found, a second one is made.
+	theirs := r.fake.AddFolder("Songs", "root")
+	id, err := r.client.EnsureFolder(ctx(t), "Songs")
+	if err != nil || id == theirs {
+		t.Fatalf("EnsureFolder = %q, %v; want a folder of the daemon's own beside the user's %q", id, err, theirs)
+	}
+	if !usable("root") || !usable(id) || usable(theirs) || usable("no-such-id") || usable("") {
+		t.Errorf("usable: root %v, own %v, the user's %v, unknown %v, empty %v", usable("root"), usable(id), usable(theirs), usable("no-such-id"), usable(""))
+	}
+	// A file is not a folder.
+	path, _ := payload(t, 100)
+	file, err := r.client.Upload(ctx(t), drive.UploadRequest{Path: path, Name: "x", FolderID: id})
+	if err != nil || usable(file.ID) {
+		t.Errorf("a file counts as a usable folder (%v)", err)
+	}
+	// An upload into the user's own folder is refused, as Drive refuses it.
+	var ae *drive.APIError
+	if _, err := r.client.Upload(ctx(t), drive.UploadRequest{Path: path, Name: "x", FolderID: theirs}); !errors.As(err, &ae) || ae.Status != 404 {
+		t.Errorf("an upload into a folder the daemon cannot see: %v", err)
+	}
+
+	// Renamed and moved, it is the same folder; by name it is no longer found.
+	r.fake.Rename(id, "Takes")
+	r.fake.Move(id, theirs)
+	if !usable(id) {
+		t.Error("a renamed and moved folder is no longer usable")
+	}
+	if again, err := r.client.EnsureFolder(ctx(t), "Songs"); err != nil || again == id || again == theirs {
+		t.Errorf("EnsureFolder after the move = %q, %v; want a new folder", again, err)
+	}
+	// In the bin it is of no use, and is not found by name either.
+	r.fake.Rename(id, "Songs")
+	r.fake.Move(id, "root")
+	r.fake.Trash(id)
+	if usable(id) {
+		t.Error("a folder in the bin is usable")
+	}
+	// An ended sign-in is an error, not "unusable": not knowing must not
+	// make a caller create a second folder.
+	r.fake.RevokeAll()
+	if _, err := r.client.FolderUsable(ctx(t), id); !errors.Is(err, drive.ErrNotConnected) {
+		t.Errorf("FolderUsable without a sign-in: %v", err)
+	}
+}

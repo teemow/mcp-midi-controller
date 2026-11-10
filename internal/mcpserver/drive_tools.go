@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/drive"
+	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/recording"
 )
 
@@ -104,7 +107,7 @@ func (s *Server) registerDriveTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "upload_recording",
 		Description: "Upload a recording to the user's Google Drive and return its link. The upload is resumable: it picks up after a dropped connection, and the file's checksum in the Drive is compared with the local one. " +
-			"The file is private to its owner until they share it. It goes into the folder set in the config (google_drive.folder; the Drive's top level when unset), which the daemon creates on first use. " +
+			"The file is private to its owner until they share it. It goes into the folder set in the config (google_drive.folder; the Drive's top level when unset), which the daemon creates on first use and keeps using when it is renamed or moved in the Drive. " +
 			"A recording that is already in the Drive is not sent again unless again is set.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -334,7 +337,7 @@ func (s *Server) uploadRecording(ctx context.Context, m recording.Meta, name, fo
 		folder = loadConfig().GoogleDrive.Folder
 	}
 	folder = strings.Trim(strings.TrimSpace(folder), "/")
-	folderID, err := client.EnsureFolder(ctx, folder)
+	folderID, err := uploadFolder(ctx, client, folder)
 	if err != nil {
 		return m, false, err
 	}
@@ -358,6 +361,43 @@ func (s *Server) uploadRecording(ctx context.Context, m recording.Meta, name, fo
 		return m, true, fmt.Errorf("the file is in the Drive (%s), but noting that failed: %w", file.Link, err)
 	}
 	return m, true, nil
+}
+
+// uploadFolder returns the id of the Drive folder that uploads into the
+// folder path go to. The daemon remembers the folder it made for a path: the
+// user may rename it or move it anywhere in their Drive, and uploads keep
+// going into it. Only when that folder is gone (in the bin, deleted, or made
+// under another OAuth client) is one looked up by name, or made, again. The
+// caller holds uploadMu, which also serializes the memory file.
+func uploadFolder(ctx context.Context, client *drive.Client, path string) (string, error) {
+	if path == "" {
+		return "root", nil
+	}
+	known := map[string]string{}
+	if data, err := os.ReadFile(config.GoogleDriveFoldersPath()); err == nil {
+		_ = json.Unmarshal(data, &known)
+	}
+	if id := known[path]; id != "" {
+		usable, err := client.FolderUsable(ctx, id)
+		if err != nil {
+			// Not knowing is no reason to make a second folder.
+			return "", fmt.Errorf("look at the upload folder: %w", err)
+		}
+		if usable {
+			return id, nil
+		}
+	}
+	id, err := client.EnsureFolder(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	known[path] = id
+	if data, err := json.MarshalIndent(known, "", "  "); err == nil {
+		if err := os.MkdirAll(filepath.Dir(config.GoogleDriveFoldersPath()), 0o755); err == nil {
+			_ = lanhttp.WriteFileAtomic(config.GoogleDriveFoldersPath(), data, 0o644)
+		}
+	}
+	return id, nil
 }
 
 func (s *Server) handleUploadRecording(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

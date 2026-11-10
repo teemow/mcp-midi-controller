@@ -40,6 +40,7 @@ type File struct {
 	MIMEType    string
 	Description string
 	Parent      string
+	Trashed     bool
 	Data        []byte
 }
 
@@ -81,6 +82,7 @@ type Server struct {
 	shortBy      int64 // > 0: the next chunk is acknowledged this many bytes short
 	damageUpload bool
 
+	foreign  []string // ids of what the user made by hand: invisible to the daemon
 	scopes   []string
 	secrets  []string // every token and code handed out
 	leaks    []string
@@ -101,6 +103,7 @@ func New(t testing.TB) *Server {
 	mux.HandleFunc("POST /revoke", s.handleRevoke)
 	mux.HandleFunc("GET /drive/v3/about", s.authed(s.handleAbout))
 	mux.HandleFunc("GET /drive/v3/files", s.authed(s.handleList))
+	mux.HandleFunc("GET /drive/v3/files/{id}", s.authed(s.handleGet))
 	mux.HandleFunc("POST /drive/v3/files", s.authed(s.handleCreate))
 	mux.HandleFunc("POST /upload/drive/v3/files", s.authed(s.handleUploadStart))
 	mux.HandleFunc("PUT /upload/drive/v3/files", s.authed(s.handleUploadChunk))
@@ -245,6 +248,50 @@ func (s *Server) DamageNextUpload() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.damageUpload = true
+}
+
+// change applies f to the file with the given id.
+func (s *Server) change(id string, f func(*File)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.files {
+		if s.files[i].ID == id {
+			f(&s.files[i])
+			return
+		}
+	}
+	s.t.Errorf("drivetest: no file %q", id)
+}
+
+// Rename is the user renaming a file or folder in their Drive.
+func (s *Server) Rename(id, name string) { s.change(id, func(f *File) { f.Name = name }) }
+
+// Move is the user moving it into another folder ("root": the top level).
+func (s *Server) Move(id, parent string) { s.change(id, func(f *File) { f.Parent = parent }) }
+
+// Trash is the user putting it in the bin.
+func (s *Server) Trash(id string) { s.change(id, func(f *File) { f.Trashed = true }) }
+
+// AddFolder is the user making a folder by hand: one the daemon, with its
+// per-file access, cannot see. It returns the folder's id.
+func (s *Server) AddFolder(name, parent string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.next("user")
+	s.files = append(s.files, File{ID: id, Name: name, MIMEType: folderMIME, Parent: parent})
+	s.foreign = append(s.foreign, id)
+	return id
+}
+
+// visible reports whether the daemon may see a file: with drive.file, only
+// what it created itself. Call with the lock held.
+func (s *Server) visible(id string) bool {
+	for _, f := range s.foreign {
+		if f == id {
+			return false
+		}
+	}
+	return true
 }
 
 // --- what a test asks it ----------------------------------------------------
@@ -450,11 +497,24 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	found := []map[string]string{}
 	for _, f := range s.files {
-		if f.Name == name && f.MIMEType == m[2] && f.Parent == m[3] {
+		if f.Name == name && f.MIMEType == m[2] && f.Parent == m[3] && !f.Trashed && s.visible(f.ID) {
 			found = append(found, map[string]string{"id": f.ID})
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": found})
+}
+
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.files {
+		if f.ID == r.PathValue("id") && s.visible(f.ID) {
+			// A file in the bin is still there, and says so.
+			writeJSON(w, http.StatusOK, map[string]any{"id": f.ID, "name": f.Name, "mimeType": f.MIMEType, "trashed": f.Trashed})
+			return
+		}
+	}
+	apiError(w, http.StatusNotFound, "notFound", "File not found: "+r.PathValue("id"))
 }
 
 // metadata is the file resource a client sends.
@@ -473,14 +533,14 @@ func (m metadata) file() File {
 	return f
 }
 
-// parentExists reports whether a parent id is the root or a known folder.
-// Call with the lock held.
+// parentExists reports whether a parent id is the root or a folder the
+// daemon may put files into. Call with the lock held.
 func (s *Server) parentExists(id string) bool {
 	if id == "root" {
 		return true
 	}
 	for _, f := range s.files {
-		if f.ID == id && f.IsFolder() {
+		if f.ID == id && f.IsFolder() && s.visible(f.ID) {
 			return true
 		}
 	}

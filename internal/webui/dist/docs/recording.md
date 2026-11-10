@@ -149,9 +149,9 @@ file's checksum in the Drive is compared with the local one.
 - `folder` in the config is where files go; `folder` on the call overrides it.
   With `drive.file` the daemon only sees folders it made itself, so it creates
   the folder on first use, and a folder of the same name that you made by hand
-  is not found. The daemon looks its folder up by name under the folder above
-  it, so once you move or rename it, the next upload makes a new one where the
-  config says.
+  is not found. The daemon remembers the folder it made: rename it or move it
+  anywhere in your Drive and uploads keep going into it. Once it is in the
+  bin, the next upload makes a new one where the config says.
 - A recording that is already in the Drive is not sent again (`again: true`
   makes a second file).
 - `name` sets the file's name in the Drive; by default it is the recording's.
@@ -190,6 +190,7 @@ The config is read when a tool needs it; changing it needs no restart.
 | Recordings | `recordings/` in the state dir: `<name>.flac` or `.wav`, and `<name>.json` |
 | OAuth client | `$XDG_CONFIG_HOME/mcp-midi-controller/google-drive-client.json` |
 | Sign-in | `google-drive-token.json` in the state dir |
+| The upload folders the daemon made | `google-drive-folders.json` in the state dir |
 
 Recordings are a private rig signal, like every captured audio: they live in
 the state dir and are never committed.
@@ -210,7 +211,8 @@ The test suite covers:
 - Google Drive against a stand-in server that keeps Google's rules (a valid
   access token on every call, chunks in multiples of 256 KiB): the sign-in
   approved, declined and expired, an access token replaced when it has run out,
-  a revoked sign-in noticed, the folder made once and found again, uploads
+  a revoked sign-in noticed, the folder made once and found again (also after
+  it was renamed and moved, and not after it went into the bin), uploads
   through server errors, rate limits, a connection dropped mid-chunk or gone
   dead, a chunk taken only in part and a session Drive forgot, and that no
   token, client secret or device code appears in a tool's answer, an error or

@@ -970,3 +970,62 @@ func TestDescribeRecordingStalls(t *testing.T) {
 		t.Errorf("no stalls: %s", text)
 	}
 }
+
+// TestUploadFolderIsRemembered: the folder the daemon made for uploads keeps
+// receiving them when the user renames it and moves it somewhere else; only a
+// folder that is gone is made anew.
+func TestUploadFolderIsRemembered(t *testing.T) {
+	r := newDriveRig(t)
+	writeConfig(t, "google_drive:\n  folder: Songs\n")
+	r.signIn()
+	folders := func() (out []drivetest.File) {
+		for _, f := range r.fake.Files() {
+			if f.IsFolder() {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	// upload records a take, uploads it and returns where it landed.
+	upload := func() string {
+		t.Helper()
+		rec := r.record(map[string]any{})
+		if res := r.call(r.s.handleUploadRecording, map[string]any{"recording": rec.Meta.Name}); res.IsError {
+			t.Fatalf("upload: %s", resultText(res))
+		}
+		files := r.uploads()
+		return strings.TrimSuffix(r.fake.Path(files[len(files)-1]), "/"+rec.Meta.File)
+	}
+
+	if at := upload(); at != "Songs" || len(folders()) != 1 {
+		t.Fatalf("the first upload landed in %q with %d folder(s), want a new Songs", at, len(folders()))
+	}
+	songs := folders()[0].ID
+
+	// The user files the folder away under a name of their own.
+	music := r.fake.AddFolder("Music", "root")
+	r.fake.Rename(songs, "Demos")
+	r.fake.Move(songs, music)
+	if at := upload(); at != "Music/Demos" || len(folders()) != 2 {
+		t.Errorf("after the folder was renamed and moved the upload landed in %q with %d folders, want the same folder (Music/Demos)", at, len(folders()))
+	}
+	// The folder on the call is another path: it gets a folder of its own, and
+	// is remembered separately.
+	rec := r.record(map[string]any{})
+	if res := r.call(r.s.handleUploadRecording, map[string]any{"recording": rec.Meta.Name, "folder": "Shared"}); res.IsError {
+		t.Fatalf("upload into another folder: %s", resultText(res))
+	}
+	if at := upload(); at != "Music/Demos" || len(folders()) != 3 {
+		t.Errorf("after an upload into another folder the configured one landed in %q with %d folders", at, len(folders()))
+	}
+
+	// In the bin, the folder is gone: the next upload makes a new Songs.
+	r.fake.Trash(songs)
+	if at := upload(); at != "Songs" || len(folders()) != 4 {
+		t.Errorf("after the folder went into the bin the upload landed in %q with %d folders, want a new Songs", at, len(folders()))
+	}
+	// And that new one is the one remembered from now on.
+	if at := upload(); at != "Songs" || len(folders()) != 4 {
+		t.Errorf("the upload after that landed in %q with %d folders", at, len(folders()))
+	}
+}

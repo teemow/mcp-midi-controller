@@ -193,6 +193,12 @@ func GoogleDriveClientPath() string { return filepath.Join(ConfigDir(), "google-
 // never logged, never returned by a tool.
 func GoogleDriveTokenPath() string { return filepath.Join(StateDir(), "google-drive-token.json") }
 
+// GoogleDriveFoldersPath remembers the Drive folders the daemon created for
+// uploads, by the folder path they were created for, so a folder the user
+// renames or moves in their Drive keeps receiving the uploads. Volatile
+// (state dir): without it the folder is looked up by name again.
+func GoogleDriveFoldersPath() string { return filepath.Join(StateDir(), "google-drive-folders.json") }
+
 // AUMSessionsDir is the staging dir for AUM session (.aumproj) and standalone
 // MIDI-map (.aum_midimap) files: the ones uploaded from the iPad via the aum
 // receiver and the ones authored/edited by the aum MCP tools (then downloaded

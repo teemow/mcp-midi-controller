@@ -661,6 +661,29 @@ func (c *Client) About(ctx context.Context) (Account, error) {
 	return doc.User, nil
 }
 
+// FolderUsable reports whether id is a folder the daemon can still put files
+// into: one it can see, that is a folder and is not in the bin. A folder the
+// user renamed or moved elsewhere in their Drive stays usable; it is the
+// same folder under the same id.
+func (c *Client) FolderUsable(ctx context.Context, id string) (bool, error) {
+	if id == "" || id == "root" {
+		return id == "root", nil
+	}
+	var doc struct {
+		MIMEType string `json:"mimeType"`
+		Trashed  bool   `json:"trashed"`
+	}
+	err := c.getJSON(ctx, "/files/"+url.PathEscape(id), url.Values{"fields": {"id,mimeType,trashed"}}, &doc)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return false, nil // deleted for good, or no longer the daemon's to see
+	}
+	if err != nil {
+		return false, err
+	}
+	return doc.MIMEType == folderMIME && !doc.Trashed, nil
+}
+
 // quote renders a string for a Drive search query.
 func quote(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
@@ -672,7 +695,8 @@ func quote(s string) string {
 // With the drive.file scope the daemon only sees folders it made itself, so a
 // folder of the same name that the user created by hand is not found, and a
 // second one is made beside it. The daemon's own folder is found by its name
-// under its parent, so once it is renamed or moved, a new one is made.
+// under its parent, so a renamed or moved one is not found here either: a
+// caller that wants to keep using it remembers its id (FolderUsable).
 func (c *Client) EnsureFolder(ctx context.Context, path string) (string, error) {
 	parent := "root"
 	for _, name := range strings.Split(path, "/") {
