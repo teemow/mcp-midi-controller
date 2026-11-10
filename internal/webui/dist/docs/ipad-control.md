@@ -153,11 +153,25 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **Nodes**: a loaded node has an inner button (value `1`) over its square
   button; an empty slot (`+`) has none. A bypassed node slides about 55 points
   left of the strip's wire and leaves an eject `⏏` in its place.
-- **Popovers** are elements of type `Popover` titled by their navigation bar;
-  **side panels** (menu, Settings, MIDI Control, FILES) are a full-height
-  column at the right edge with a 60-point header.
+- **Popovers** are elements of type `Popover` titled by their navigation bar
+  (a long-press menu has none); **side panels** (menu, Settings, MIDI Control,
+  FILES) are a full-height column at the right edge with a 60-point header,
+  the Navigator one with a navigation bar instead. The Set level and Edit
+  Value dialogs are alerts with a text field and Cancel / Set.
+- **Under a side panel or the routing matrix** AUM marks the whole mixer
+  invisible; its states still read.
+- **Unlabelled controls** carry labels iOS glues from the texts around them
+  (`-∞, DSP:  2 %, -∞, Arp, Arp` on a MIDI node; the main meter's stale
+  `SESSION: …` on a panel's back button); the parser strips those texts.
+- **The tempo bar** shows the tempo as a button between `‹` and `›`; **the
+  keyboard** covers the mixer's bottom and is closed with its `HIDE↓` button.
+- **FILES** lists cells: a name and a detail line (date) below it. It reopens
+  on the view last shown.
 - **MIDI routing connections** are not in the tree: `aum_midi_routing` reads
   them from a screenshot (a connected cell's fill is lighter).
+- Opening something from the top bar (Navigator, Engine Info, routing, tempo
+  bar, keyboard) first closes the panels and popovers in front: they cover
+  the top bar, and a tap outside a popover only closes it.
 
 The tools take an `app` argument: `aum` (default), `probe` (AUv3 Probe), or any
 bundle ID. Every call opens a WDA session bound to that app, which brings it to
