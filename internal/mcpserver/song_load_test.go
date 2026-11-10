@@ -283,3 +283,73 @@ func TestPlaySongWarnsAboutAnotherSession(t *testing.T) {
 	}
 	call(t, s.handleStopSong, map[string]any{})
 }
+
+// TestLoadSongSequencer checks load_song keeps the session's sequencer on the
+// song: a change to the notes alone leaves the layout as it was, but the
+// sequencer would go on playing the old notes, so the session is authored and
+// pulled again; after that the song plays from the sequencer.
+func TestLoadSongSequencer(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	stageSequencer(t)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	load := func(when string, args map[string]any) string {
+		t.Helper()
+		r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+		args["song"], args["confirm"] = "night_drive", true
+		res := call(t, s.handleLoadSong, args)
+		if res.IsError {
+			t.Fatalf("load %s: %s", when, resultText(res))
+		}
+		return resultText(res)
+	}
+
+	r.pullStaged("Songs/Night Drive.aumproj")
+	if text := load("the first time", map[string]any{}); !strings.Contains(text, "1. author  ok") {
+		t.Fatalf("first load: %s", text)
+	}
+	rec := loadSongSessions()["night_drive"]
+	if rec.Sequence == "" || rec.Sequencer == "" {
+		t.Fatalf("record after the load = %+v, want the sequencer and its song", rec)
+	}
+	if text := load("again", map[string]any{}); !strings.Contains(text, "1. author  skip") {
+		t.Fatalf("second load authored again: %s", text)
+	}
+
+	// New notes: the layout stands, the sequencer is behind.
+	edited := strings.Replace(toolSong, `"A1 . A1 . A1 . G1 ."`, `"A1 A1 A1 . E1 . G1 ."`, 1)
+	res := call(t, s.handleSaveSong, map[string]any{"yaml": edited})
+	if res.IsError || !strings.Contains(resultText(res), "session: Songs/Night Drive\n") || !strings.Contains(resultText(res), "holds an older version of the song") {
+		t.Fatalf("save with new notes: %s", resultText(res))
+	}
+	if text := load("after new notes", map[string]any{}); !strings.Contains(text, "1. author  ok") {
+		t.Fatalf("load after new notes did not author the session again: %s", text)
+	}
+	if now := loadSongSessions()["night_drive"]; now.Sequence == rec.Sequence || now.Pulled != now.SHA256 {
+		t.Errorf("record after new notes = %+v, want the new sequence, pulled", now)
+	}
+	if res := call(t, s.handleGetSong, map[string]any{"song": "night_drive"}); !strings.Contains(resultText(res), "playing: from the session's sequencer") {
+		t.Fatalf("get after the load: %s", resultText(res))
+	}
+
+	// Asked to leave the sequencer out, the session is authored without it and
+	// the next plain load puts it back.
+	if text := load("without the sequencer", map[string]any{"sequencer": false}); !strings.Contains(text, "1. author  ok") {
+		t.Fatalf("load with sequencer: false: %s", text)
+	}
+	if now := loadSongSessions()["night_drive"]; now.Sequence != "" {
+		t.Errorf("record after sequencer: false = %+v, want no sequence", now)
+	}
+	if text := load("with it again", map[string]any{}); !strings.Contains(text, "1. author  ok") {
+		t.Fatalf("load after sequencer: false did not author the sequencer back in: %s", text)
+	}
+
+	// And it plays from there.
+	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive"})
+	if res.IsError || !strings.Contains(resultText(res), "the session's sequencer plays") {
+		t.Fatalf("play: %s", resultText(res))
+	}
+	s.player.Stop()
+}

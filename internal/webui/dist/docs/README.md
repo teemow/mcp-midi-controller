@@ -48,7 +48,8 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
 - **Songs**: write a multi-track song as one YAML document — tracks with
   their instrument and effect chain, patterns, sections with their own sound,
   an arrangement — and the daemon authors the AUM session that hosts it,
-  loads it into AUM and plays it through the brain (`save_song`, `load_song`,
+  loads it into AUM and plays it: from a sequencer in the session that holds
+  the whole song, or live through the brain (`save_song`, `load_song`,
   `play_song`). See [`docs/songs.md`](docs/songs.md).
 - **Rig-as-code**: your device types, devices and scenes live in one
   git-trackable directory.

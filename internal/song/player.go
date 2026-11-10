@@ -5,6 +5,10 @@ package song
 // section's sound, waits for the plugins to settle, then sends every event when
 // it is due. It knows nothing of the transport it sends through; the caller
 // hands it a Sender.
+//
+// A song whose session hosts a sequencer with the song in it (sequence.go) is
+// played the other way: the player sends what starts the session's transport,
+// follows the song by the clock, and sends what stops it (StartSequenced).
 
 import (
 	"context"
@@ -40,10 +44,24 @@ type PlayOptions struct {
 	OnEnd func(Status)
 }
 
+// The two ways a song is played.
+const (
+	// ModeLive: the daemon keeps the time and sends every event when it is due.
+	ModeLive = "live"
+	// ModeSequenced: the sequencer hosted in the song's session plays it; the
+	// daemon starts and stops the session's transport.
+	ModeSequenced = "sequenced"
+)
+
 // Status is where a playback stands.
 type Status struct {
 	Playing bool   `json:"playing"`
 	Song    string `json:"song,omitempty"`
+	// Mode is ModeLive or ModeSequenced.
+	Mode string `json:"mode,omitempty"`
+	// LeadInMS is how long a sequenced playback still has until the song's
+	// first bar: the transport runs, the session takes on its opening sound.
+	LeadInMS int64 `json:"lead_in_ms,omitempty"`
 	// Section is the arrangement entry being played and Bar the song's bar.
 	Section      string `json:"section,omitempty"`
 	SectionIndex int    `json:"section_index"`
@@ -65,6 +83,10 @@ const (
 	flushTimeout = 2 * time.Second
 	// sendTimeout bounds one event's delivery.
 	sendTimeout = 2 * time.Second
+	// sequencedTail is how long the transport runs on after a sequenced song's
+	// last bar. The daemon follows the song by its own clock, which starts a
+	// little ahead of the transport; the tail keeps the stop clear of the end.
+	sequencedTail = 500 * time.Millisecond
 )
 
 // Player plays one song at a time.
@@ -82,14 +104,20 @@ type Player struct {
 // playback is one run of the player.
 type playback struct {
 	id     string
+	mode   string
 	tl     *Timeline
 	cancel context.CancelFunc
 	done   chan struct{}
 
 	startTick, endTick int64
 
-	mu      sync.Mutex
-	started time.Time // when the first note was due; zero during the preroll
+	mu sync.Mutex
+	// started is when the first note was due: zero until the playback's first
+	// message is out (a live preroll, a transport about to start), ahead of
+	// the clock during a sequenced lead-in.
+	started time.Time
+	// lead is a sequenced playback's lead-in.
+	lead    time.Duration
 	sent    int
 	outcome string
 }
@@ -126,7 +154,7 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 
 	ctx, cancel := context.WithCancel(context.Background())
 	pb := &playback{
-		id: id, tl: tl, cancel: cancel, done: make(chan struct{}),
+		id: id, mode: ModeLive, tl: tl, cancel: cancel, done: make(chan struct{}),
 		startTick: tl.Sections[opts.From].Tick,
 		endTick:   tl.Sections[last].Tick + int64(tl.Sections[last].Bars)*tl.BarTicks,
 	}
@@ -157,13 +185,20 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 	}
 	opening := tl.Sections[opts.From].State
 
+	p.launch(pb, opts.OnEnd, func() string { return pb.run(ctx, opening, events, opts, send) })
+	return pb.status(), nil
+}
+
+// launch installs pb as the current playback and runs it in the background.
+// onEnd, when set, gets the final status once the playback is over.
+func (p *Player) launch(pb *playback, onEnd func(Status), run func() string) {
 	p.mu.Lock()
 	p.cur = pb
 	p.mu.Unlock()
 
 	go func() {
 		defer close(pb.done)
-		outcome := pb.run(ctx, opening, events, opts, send)
+		outcome := run()
 		pb.mu.Lock()
 		pb.outcome = outcome
 		pb.mu.Unlock()
@@ -174,36 +209,112 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 			p.cur = nil
 		}
 		p.mu.Unlock()
-		if opts.OnEnd != nil {
-			opts.OnEnd(final)
+		if onEnd != nil {
+			onEnd(final)
 		}
 	}()
+}
+
+// SequencedOptions is how a song is played from the sequencer in its session.
+type SequencedOptions struct {
+	// Start runs the session's transport from the top; Stop ends it. Stop is
+	// sent when the song has ended and when the playback is stopped.
+	Start, Stop []Event
+	// Tail is how long the transport runs on after the last bar. 0 takes the
+	// default.
+	Tail time.Duration
+	// OnEnd is PlayOptions.OnEnd for a sequenced playback.
+	OnEnd func(Status)
+}
+
+// StartSequenced plays the whole song from the sequencer hosted in its
+// session, stopping whatever was playing: it sends opts.Start, follows the
+// sequence q of tl by the clock, and sends opts.Stop at the end. The notes and
+// control changes are the sequencer's; nothing else is sent.
+func (p *Player) StartSequenced(id string, tl *Timeline, q *Sequence, opts SequencedOptions, send Sender) (Status, error) {
+	if len(tl.Sections) == 0 {
+		return Status{}, fmt.Errorf("the song has no sections")
+	}
+	if len(opts.Start) == 0 {
+		return Status{}, fmt.Errorf("nothing to start the session's transport with")
+	}
+
+	p.starting.Lock()
+	defer p.starting.Unlock()
+	p.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pb := &playback{
+		id: id, mode: ModeSequenced, tl: tl, cancel: cancel, done: make(chan struct{}),
+		endTick: tl.Ticks, lead: q.Lead(),
+	}
+	p.launch(pb, opts.OnEnd, func() string { return pb.runSequenced(ctx, q, opts, send) })
 	return pb.status(), nil
+}
+
+// errStopped marks a delivery skipped because the playback was stopped.
+var errStopped = errors.New("stopped")
+
+// deliver sends one event. Stopping is noticed between events, never within
+// one: an event goes out on a context of its own, because a send abandoned
+// halfway can cost the connection the messages still to come.
+func (pb *playback) deliver(ctx context.Context, send Sender, e Event) error {
+	if ctx.Err() != nil {
+		return errStopped
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+	err := send(sctx, e)
+	cancel()
+	if err != nil {
+		return err
+	}
+	pb.mu.Lock()
+	pb.sent++
+	pb.mu.Unlock()
+	return nil
+}
+
+// runSequenced starts the transport, waits the song out and stops the
+// transport. It returns how the playback ended.
+func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts SequencedOptions, send Sender) string {
+	// halt stops the transport. It runs when the playback is cut short too, so
+	// it must not depend on the cancelled context.
+	halt := func() {
+		fctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+		defer cancel()
+		for _, e := range opts.Stop {
+			_ = send(fctx, e)
+		}
+	}
+	for _, e := range opts.Start {
+		if err := pb.deliver(ctx, send, e); err != nil {
+			halt()
+			return err.Error()
+		}
+	}
+	start := time.Now()
+	pb.mu.Lock()
+	pb.started = start.Add(q.Lead())
+	pb.mu.Unlock()
+
+	tail := opts.Tail
+	if tail <= 0 {
+		tail = sequencedTail
+	}
+	select {
+	case <-ctx.Done():
+		halt()
+		return "stopped"
+	case <-time.After(time.Until(start.Add(q.Duration() + tail))):
+		halt()
+		return "finished"
+	}
 }
 
 // run sends the opening state and then every event when it is due. It returns
 // how the playback ended.
 func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayOptions, send Sender) string {
-	// errStopped marks a delivery skipped because the playback was stopped.
-	errStopped := errors.New("stopped")
-	// deliver sends one event. Stopping is noticed between events, never
-	// within one: an event goes out on a context of its own, because a send
-	// abandoned halfway can cost the connection the note-offs still need.
-	deliver := func(e Event) error {
-		if ctx.Err() != nil {
-			return errStopped
-		}
-		sctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
-		err := send(sctx, e)
-		cancel()
-		if err != nil {
-			return err
-		}
-		pb.mu.Lock()
-		pb.sent++
-		pb.mu.Unlock()
-		return nil
-	}
+	deliver := func(e Event) error { return pb.deliver(ctx, send, e) }
 	wait := func(d time.Duration) bool {
 		select {
 		case <-ctx.Done():
@@ -304,14 +415,26 @@ func (pb *playback) status() Status {
 	tl := pb.tl
 	st := Status{
 		Song:       pb.id,
+		Mode:       pb.mode,
 		Playing:    pb.outcome == "",
 		DurationMS: tl.TickTime(pb.endTick - pb.startTick).Milliseconds(),
 		Sent:       pb.sent,
 		Outcome:    pb.outcome,
 	}
 	tick := pb.startTick
+	if pb.started.IsZero() && pb.outcome == "" {
+		// Not begun yet: a sequenced song has its whole lead-in to go.
+		st.LeadInMS = pb.lead.Milliseconds()
+	}
 	if !pb.started.IsZero() {
 		elapsed := time.Since(pb.started)
+		if elapsed < 0 {
+			// The lead-in of a sequenced playback: the song has not begun.
+			if pb.outcome == "" {
+				st.LeadInMS = (-elapsed).Milliseconds()
+			}
+			elapsed = 0
+		}
 		if total := tl.TickTime(pb.endTick - pb.startTick); elapsed > total || pb.outcome == "finished" {
 			elapsed = total
 		}
@@ -333,8 +456,9 @@ func (pb *playback) status() Status {
 	return st
 }
 
-// Stop ends the current playback, releasing every sounding note, and reports
-// where it stood. With nothing playing it reports the last playback's end.
+// Stop ends the current playback, releasing every sounding note (live) or
+// stopping the session's transport (sequenced), and reports where it stood.
+// With nothing playing it reports the last playback's end.
 func (p *Player) Stop() Status {
 	p.mu.Lock()
 	pb := p.cur

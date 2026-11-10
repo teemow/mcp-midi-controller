@@ -36,6 +36,17 @@ type songSessionRecord struct {
 	Pulled string `json:"pulled,omitempty"`
 	// Options are the options the session was authored with.
 	Options song.SessionSpec `json:"options,omitzero"`
+	// Sequencer is the probe id of the sequencer the session hosts and
+	// Sequence the fingerprint of the song it holds (song.Sequence); both
+	// empty for a session without one.
+	Sequencer string `json:"sequencer,omitempty"`
+	Sequence  string `json:"sequence,omitempty"`
+}
+
+// sequenceCurrent reports whether the recorded session's sequencer holds the
+// song as tl has it now, in a session whose layout still matches.
+func (r songSessionRecord) sequenceCurrent(tl *song.Timeline) bool {
+	return r.Sequence != "" && r.Fingerprint == tl.Fingerprint && r.Sequence == tl.Sequence().Fingerprint()
 }
 
 // loadSongSessions reads the record of authored song sessions (empty when
@@ -113,6 +124,9 @@ type songAuthorArgs struct {
 	TrackTaps   *bool
 	FullControl *bool
 	Hardware    string
+	// Sequencer asks for the sequencer with the song in it (true), or for a
+	// session without it (false). nil hosts it when it is installed.
+	Sequencer *bool
 }
 
 // authoredSong is a staged song session.
@@ -121,6 +135,50 @@ type authoredSong struct {
 	SHA256            string
 	Options           song.SessionSpec
 	Report            song.SessionReport
+	// Sequencer is what the session's sequencer is and holds, nil without one.
+	Sequencer *songSequencer
+}
+
+// songSequencer is the sequencer a song's session hosts: the plugin's staged
+// probe, its probe id, and the song laid out for it.
+type songSequencer struct {
+	Probe    *device.ProbeDump
+	ID       string
+	Sequence *song.Sequence
+}
+
+// sequencerProbe finds the staged probe of the sequencer a song's session can
+// host, and its probe id; nil when the plugin was never scanned.
+func sequencerProbe(cat song.Catalog) (*device.ProbeDump, string) {
+	id := device.ProbeID(device.ProbeDump{Component: song.AtomComponent})
+	if d, ok := cat[id]; ok {
+		return &d, id
+	}
+	return nil, id
+}
+
+// songSequencerFor decides whether a song's session hosts the sequencer: it
+// does whenever the plugin is installed, unless asked not to (want false).
+// Asked for (want true) and not installed is an error.
+func songSequencerFor(cs *compiledSong, cat song.Catalog, want *bool) (*songSequencer, error) {
+	probe, id := sequencerProbe(cat)
+	switch {
+	case want != nil && !*want:
+		return nil, nil
+	case probe != nil:
+		return &songSequencer{Probe: probe, ID: id, Sequence: cs.timeline.Sequence()}, nil
+	case want != nil:
+		return nil, fmt.Errorf("/sequencer: the sequencer Atom | Piano Roll² (%s) is not among the staged AUv3 probes; install it and open the auv3-probe app on the iPad so it is scanned, or leave sequencer out to play the song live", id)
+	}
+	return nil, nil
+}
+
+// fingerprint is what the record keeps of the sequencer's song, "" for none.
+func (q *songSequencer) fingerprint() string {
+	if q == nil {
+		return ""
+	}
+	return q.Sequence.Fingerprint()
 }
 
 // songSessionOptions resolves the options a song's session is authored with:
@@ -173,6 +231,13 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	}
 	defaults := loadAUv3DefaultStates()
 	opts.Prepare = func(ns *aum.NodeSpec) error { return applyDefaultState(ns, defaults) }
+	seq, err := songSequencerFor(cs, cat, a.Sequencer)
+	if err != nil {
+		return nil, err
+	}
+	if seq != nil {
+		opts.Sequencer, opts.Sequence = seq.Probe, seq.Sequence
+	}
 
 	sess, rep, err := cs.plan.BuildSession(opts)
 	if err != nil {
@@ -189,9 +254,12 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	if err != nil {
 		return nil, fmt.Errorf("stage session: %w", err)
 	}
-	out := &authoredSong{OutID: outID, File: file, Path: path, SHA256: bytesSHA256(data), Options: opt, Report: rep}
+	out := &authoredSong{OutID: outID, File: file, Path: path, SHA256: bytesSHA256(data), Options: opt, Report: rep, Sequencer: seq}
 	err = s.updateSongSessions(func(all map[string]songSessionRecord) bool {
 		rec := songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint, SHA256: out.SHA256, Options: opt}
+		if seq != nil {
+			rec.Sequencer, rec.Sequence = seq.ID, seq.fingerprint()
+		}
 		// What the iPad holds under this name stays what it fetched. It may
 		// have fetched this very file already, between its staging and now.
 		if prev, ok := all[cs.id]; ok && prev.Session == outID {
@@ -209,9 +277,15 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	return out, nil
 }
 
-// describeSongLayout lists a song session's strips.
-func describeSongLayout(b *strings.Builder, cs *compiledSong) {
+// describeSongLayout lists a song session's strips; seq is its sequencer, nil
+// without one.
+func describeSongLayout(b *strings.Builder, cs *compiledSong, seq *songSequencer) {
 	fmt.Fprintf(b, "  strip 1: Brain (ProbeMidiBrain), which plays every track and drives MIDI Control on channels %d-16\n", cs.plan.ControlChannels[0])
+	if seq != nil {
+		q := seq.Sequence
+		fmt.Fprintf(b, "           + %s holding the whole song (%d notes, %d control changes) after a lead-in of %d bar(s), routed like the brain\n",
+			seq.Probe.Name, len(q.Notes), len(q.Controls), q.LeadBars)
+	}
 	for _, tp := range cs.plan.Tracks {
 		names := make([]string, len(tp.Nodes))
 		for i, n := range tp.Nodes {
@@ -233,6 +307,7 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 		TrackTaps   *bool  `json:"track_taps"`
 		FullControl *bool  `json:"full_control"`
 		Hardware    string `json:"hardware"`
+		Sequencer   *bool  `json:"sequencer"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -241,7 +316,7 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	if fail != nil {
 		return fail, nil
 	}
-	au, err := s.authorSong(cs, songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware})
+	au, err := s.authorSong(cs, songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware, Sequencer: args.Sequencer})
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -253,18 +328,26 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 		fmt.Fprintf(&b, ", %d further target(s) mapped (%d did not fit)", au.Report.Banked, au.Report.Overflow)
 	}
 	b.WriteByte('\n')
-	describeSongLayout(&b, cs)
+	describeSongLayout(&b, cs, au.Sequencer)
 	fmt.Fprintf(&b, "next: load_song has the iPad pull it and loads it in AUM (%s); then play_song\n", au.File)
+	switch {
+	case au.Sequencer != nil:
+		b.WriteString("play_song starts AUM's transport and the sequencer plays the song; after a change to the notes it plays live until the session is authored and loaded again (load_song)\n")
+	case args.Sequencer == nil:
+		_, id := sequencerProbe(songCatalog())
+		fmt.Fprintf(&b, "the song plays live through the brain: the sequencer Atom | Piano Roll² (%s) is not among the staged AUv3 probes\n", id)
+	}
 
 	return structResult(b.String(), map[string]any{
-		"song":     cs.id,
-		"id":       au.OutID,
-		"file":     au.File,
-		"path":     au.Path,
-		"download": "/aum-session/" + au.File,
-		"report":   au.Report,
-		"options":  au.Options,
-		"layout":   cs.plan,
+		"song":      cs.id,
+		"id":        au.OutID,
+		"file":      au.File,
+		"path":      au.Path,
+		"download":  "/aum-session/" + au.File,
+		"report":    au.Report,
+		"options":   au.Options,
+		"layout":    cs.plan,
+		"sequenced": au.Sequencer != nil,
 	}), nil
 }
 

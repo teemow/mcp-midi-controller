@@ -538,3 +538,159 @@ func TestPlayerConcurrentStarts(t *testing.T) {
 		t.Errorf("%d events arrived after Stop: a playback was left running", after-before)
 	}
 }
+
+// tinySong is one bar at a tempo that plays it in 1.2 s. It loads no preset,
+// so its sequence has a lead-in of one bar.
+const tinySong = `
+title: Tiny
+tempo: 200
+tracks:
+  - id: a
+    instrument: {plugin: synth}
+patterns:
+  p: {step: 1/4, notes: "C3 E3 G3 C4"}
+sections:
+  s: {bars: 1, play: {a: p}}
+arrangement: [s]
+`
+
+// transportEvents are stand-ins for the messages that run and stop a session's
+// transport.
+var (
+	seqStart = []Event{{Kind: Control, Channel: 15, Data1: 106}, {Kind: Control, Channel: 15, Data1: 104, Data2: 127}, {Kind: Control, Channel: 15, Data1: 102, Data2: 127}}
+	seqStop  = []Event{{Kind: Control, Channel: 15, Data1: 103, Data2: 127}, {Kind: Control, Channel: 15, Data1: 104, Data2: 127}}
+)
+
+// TestPlayerSequenced plays a song from its session's sequencer: the player
+// sends what starts the transport, nothing while the song runs, and what stops
+// the transport once the lead-in, the song and the tail have passed.
+func TestPlayerSequenced(t *testing.T) {
+	tl, _ := compileTest(t, tinySong)
+	q := tl.Sequence()
+	var rec recorder
+	var p Player
+	began := time.Now()
+	st, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop, Tail: 50 * time.Millisecond}, rec.send)
+	if err != nil {
+		t.Fatalf("StartSequenced: %v", err)
+	}
+	if !st.Playing || st.Mode != ModeSequenced || st.Song != "tiny" || st.DurationMS != tl.Duration().Milliseconds() {
+		t.Errorf("status at start = %+v, want the song playing sequenced for its own length", st)
+	}
+
+	// In the lead-in the song stands at its first bar, with the time to go.
+	time.Sleep(q.Lead() / 3)
+	if st := p.Status(); !st.Playing || st.LeadInMS <= 0 || st.LeadInMS > q.Lead().Milliseconds() || st.PositionMS != 0 || st.Bar != 1 {
+		t.Errorf("status in the lead-in = %+v, want position 0 at bar 1 with the lead-in counting down", st)
+	}
+	if got := rec.snapshot(); len(got) != len(seqStart) {
+		t.Fatalf("sent %d events as the playback started, want the %d that start the transport: %v", len(got), len(seqStart), got)
+	}
+	// In the song the position runs on the song's own clock.
+	time.Sleep(q.Lead())
+	if st := p.Status(); !st.Playing || st.LeadInMS != 0 || st.PositionMS <= 0 || st.Section != "s" {
+		t.Errorf("status in the song = %+v, want a position inside section s", st)
+	}
+
+	final := waitDone(t, &p)
+	took := time.Since(began)
+	if final.Outcome != "finished" || final.Mode != ModeSequenced || final.PositionMS != final.DurationMS || final.LeadInMS != 0 {
+		t.Errorf("final status = %+v, want finished at the end", final)
+	}
+	if want := q.Duration() + 50*time.Millisecond; took < want || took > want+time.Second {
+		t.Errorf("the playback took %v, want the sequence and its tail (%v)", took, want)
+	}
+	got := rec.snapshot()
+	want := append(append([]Event{}, seqStart...), seqStop...)
+	if len(got) != len(want) || final.Sent != len(seqStart) {
+		t.Fatalf("sent %v (status counts %d), want the start then the stop and no note", got, final.Sent)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event %d = %s, want %s", i, describe(got[i]), describe(want[i]))
+		}
+	}
+}
+
+// TestPlayerSequencedStop stops a sequenced song: the transport is stopped at
+// once, and a new playback can follow.
+func TestPlayerSequencedStop(t *testing.T) {
+	tl, _ := fastSong(t)
+	q := tl.Sequence()
+	var rec recorder
+	var p Player
+	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop}, rec.send); err != nil {
+		t.Fatalf("StartSequenced: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	st := p.Stop()
+	if st.Playing || st.Outcome != "stopped" || st.Mode != ModeSequenced {
+		t.Errorf("status after Stop = %+v, want stopped", st)
+	}
+	got := rec.snapshot()
+	if len(got) != len(seqStart)+len(seqStop) || got[len(got)-2] != seqStop[0] || got[len(got)-1] != seqStop[1] {
+		t.Fatalf("after Stop the player had sent %v, want the start and then the stop", got)
+	}
+
+	// A live playback takes over from a sequenced one, which is stopped first.
+	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop}, rec.send); err != nil {
+		t.Fatalf("StartSequenced: %v", err)
+	}
+	if st, err := p.Start("test", tl, PlayOptions{Preroll: 10 * time.Millisecond}, rec.send); err != nil || st.Mode != ModeLive {
+		t.Fatalf("Start after a sequenced playback = %+v, %v", st, err)
+	}
+	got = rec.snapshot()
+	stops := 0
+	for _, e := range got {
+		if e == seqStop[0] {
+			stops++
+		}
+	}
+	if stops != 2 {
+		t.Errorf("the transport was stopped %d times, want once per sequenced playback", stops)
+	}
+	p.Stop()
+}
+
+// TestPlayerSequencedFailures: a start that cannot be sent ends the playback
+// with the error and still tries to stop the transport.
+func TestPlayerSequencedFailures(t *testing.T) {
+	tl, _ := compileTest(t, tinySong)
+	q := tl.Sequence()
+	var p Player
+	if _, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Stop: seqStop}, (&recorder{}).send); err == nil {
+		t.Error("a sequenced playback with nothing to start the transport was accepted")
+	}
+
+	// The second message fails once; what follows goes through again.
+	var mu sync.Mutex
+	var got []Event
+	calls := 0
+	send := func(_ context.Context, e Event) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if calls++; calls == 2 {
+			return errors.New("brain gone")
+		}
+		got = append(got, e)
+		return nil
+	}
+	if _, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop}, send); err != nil {
+		t.Fatalf("StartSequenced: %v", err)
+	}
+	final := waitDone(t, &p)
+	if final.Outcome != "brain gone" {
+		t.Errorf("outcome = %q, want the send's error", final.Outcome)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := append([]Event{seqStart[0]}, seqStop...)
+	if len(got) != len(want) {
+		t.Fatalf("sent %v, want the first start message and then the stop", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event %d = %s, want %s", i, describe(got[i]), describe(want[i]))
+		}
+	}
+}

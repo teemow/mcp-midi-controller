@@ -67,6 +67,7 @@ func (s *Server) registerSongLoadTools(songArg string) {
 				"check": {"type": "boolean", "description": "Play every track's first note and listen (default true)."},
 				"track_taps": {"type": "boolean", "description": "Override the song's session option."},
 				"full_control": {"type": "boolean", "description": "Override the song's session option."},
+				"sequencer": {"type": "boolean", "description": "Host the sequencer with the song in it (default: yes when Atom | Piano Roll² is installed; see author_song_session). false leaves it out."},
 				"hardware": {"type": "string", "enum": ["builtin", "x32"], "description": "Override the song's session option."}
 			},
 			"required": ["song"]
@@ -234,6 +235,7 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 		TrackTaps   *bool  `json:"track_taps"`
 		FullControl *bool  `json:"full_control"`
 		Hardware    string `json:"hardware"`
+		Sequencer   *bool  `json:"sequencer"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -246,7 +248,7 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 		return textResult("load_song needs confirm: true: loading replaces the session open in AUM, and unsaved changes there are lost", true), nil
 	}
 	rep, err := s.runLoadSong(ctx, cs, loadSongArgs{
-		Author:   songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware},
+		Author:   songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware, Sequencer: args.Sequencer},
 		Reauthor: args.Reauthor,
 		Check:    args.Check == nil || *args.Check,
 	})
@@ -289,10 +291,14 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 		s.player.Stop()
 	}
 
-	// 1. Author, unless the staged file is this song's session already.
+	// 1. Author, unless the staged file is this song's session already: its
+	// layout, its options, and in its sequencer the notes as they are now. A
+	// sequencer that cannot be had is authorSong's to report.
 	start := time.Now()
 	want := songSessionOptions(cs.song, author)
+	seq, seqErr := songSequencerFor(cs, songCatalog(), author.Sequencer)
 	current := authored && rec.Session == outID && rec.Fingerprint == cs.timeline.Fingerprint && rec.Options == want &&
+		seqErr == nil && rec.Sequence == seq.fingerprint() &&
 		rec.SHA256 != "" && fileSHA256(stagedSessionPath(outID)) == rec.SHA256
 	if current && !args.Reauthor {
 		rep.skip("author", "the staged %s is the song's session", outID)
