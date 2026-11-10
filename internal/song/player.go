@@ -5,6 +5,10 @@ package song
 // section's sound, waits for the plugins to settle, then sends every event when
 // it is due. It knows nothing of the transport it sends through; the caller
 // hands it a Sender.
+//
+// A song whose session hosts a sequencer with the song in it (sequence.go) is
+// played the other way: the player sends what starts the session's transport,
+// follows the song by the clock, and sends what stops it (StartSequenced).
 
 import (
 	"context"
@@ -452,8 +456,9 @@ func (pb *playback) status() Status {
 	return st
 }
 
-// Stop ends the current playback, releasing every sounding note, and reports
-// where it stood. With nothing playing it reports the last playback's end.
+// Stop ends the current playback, releasing every sounding note (live) or
+// stopping the session's transport (sequenced), and reports where it stood.
+// With nothing playing it reports the last playback's end.
 func (p *Player) Stop() Status {
 	p.mu.Lock()
 	pb := p.cur
