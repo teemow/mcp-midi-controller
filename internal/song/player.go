@@ -36,6 +36,10 @@ type PlayOptions struct {
 	// Before and After are sent as the first note is due and once the last has
 	// ended — the session's transport start and stop, when wanted.
 	Before, After []Event
+	// Rewind is sent before anything else, and Before no sooner than
+	// rewindSettle after it: what puts the session's transport back to the top
+	// for the start in Before.
+	Rewind []Event
 	// OnEnd, when set, is called once with the playback's final status when it
 	// is over, however it ended: finished, stopped or failed. It runs on the
 	// playback's goroutine after the last event went out, and Stop (and so the
@@ -87,6 +91,12 @@ const (
 	// last bar. The daemon follows the song by its own clock, which starts a
 	// little ahead of the transport; the tail keeps the stop clear of the end.
 	sequencedTail = 500 * time.Millisecond
+	// rewindSettle is how long a rewind of the session's transport is given
+	// before the start that is to begin at the top. AUM does not rewind when
+	// the start follows at once: measured on a device, a Start Play 1.4 ms
+	// after the Rewind went on from where the transport stood, one 32 ms
+	// after it began at the top. The margin is for larger audio buffers.
+	rewindSettle = 200 * time.Millisecond
 )
 
 // Player plays one song at a time.
@@ -217,9 +227,10 @@ func (p *Player) launch(pb *playback, onEnd func(Status), run func() string) {
 
 // SequencedOptions is how a song is played from the sequencer in its session.
 type SequencedOptions struct {
-	// Start runs the session's transport from the top; Stop ends it. Stop is
-	// sent when the song has ended and when the playback is stopped.
-	Start, Stop []Event
+	// Rewind puts the session's transport at the top and Start runs it,
+	// rewindSettle later; Stop ends it. Stop is sent when the song has ended
+	// and when the playback is stopped.
+	Rewind, Start, Stop []Event
 	// Tail is how long the transport runs on after the last bar. 0 takes the
 	// default.
 	Tail time.Duration
@@ -228,9 +239,10 @@ type SequencedOptions struct {
 }
 
 // StartSequenced plays the whole song from the sequencer hosted in its
-// session, stopping whatever was playing: it sends opts.Start, follows the
-// sequence q of tl by the clock, and sends opts.Stop at the end. The notes and
-// control changes are the sequencer's; nothing else is sent.
+// session, stopping whatever was playing: it sends opts.Rewind and then
+// opts.Start, follows the sequence q of tl by the clock, and sends opts.Stop
+// at the end. The notes and control changes are the sequencer's; nothing else
+// is sent.
 func (p *Player) StartSequenced(id string, tl *Timeline, q *Sequence, opts SequencedOptions, send Sender) (Status, error) {
 	if len(tl.Sections) == 0 {
 		return Status{}, fmt.Errorf("the song has no sections")
@@ -286,6 +298,20 @@ func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts Sequence
 			_ = send(fctx, e)
 		}
 	}
+	for _, e := range opts.Rewind {
+		if err := pb.deliver(ctx, send, e); err != nil {
+			halt()
+			return err.Error()
+		}
+	}
+	if len(opts.Rewind) > 0 {
+		select {
+		case <-ctx.Done():
+			halt()
+			return "stopped"
+		case <-time.After(rewindSettle):
+		}
+	}
 	for _, e := range opts.Start {
 		if err := pb.deliver(ctx, send, e); err != nil {
 			halt()
@@ -324,6 +350,15 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 		}
 	}
 
+	// The transport is put back first, so the rewind has the whole preroll,
+	// and rewindSettle at the least, before the start.
+	for _, e := range opts.Rewind {
+		if err := deliver(e); err != nil {
+			return err.Error()
+		}
+	}
+	rewound := time.Now()
+
 	// Presets first, a pause for them to load, then everything they would
 	// otherwise overwrite, and a pause again before the first note.
 	preroll := opts.Preroll
@@ -353,6 +388,9 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 		}
 	}
 	if !wait(preroll / 2) {
+		return "stopped"
+	}
+	if d := rewindSettle - time.Since(rewound); len(opts.Rewind) > 0 && d > 0 && !wait(d) {
 		return "stopped"
 	}
 
