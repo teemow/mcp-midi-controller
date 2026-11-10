@@ -538,6 +538,9 @@ func (s *Server) mixSolos(cs *compiledSong, from, last, bars int) []soloPass {
 func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap *audiotap.Store, a mixArgs) (*mixReport, error) {
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
+	// The passes are played one after another: the host must not doze
+	// between them either, or the next one starts into a stalled stream.
+	defer s.holdAwake()()
 	tl := cs.timeline
 	rep := &mixReport{Song: cs.id, Title: cs.song.Title, Tempo: tl.Tempo}
 	began := time.Now()
