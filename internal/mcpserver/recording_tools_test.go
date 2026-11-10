@@ -1029,3 +1029,58 @@ func TestUploadFolderIsRemembered(t *testing.T) {
 		t.Errorf("the upload after that landed in %q with %d folders", at, len(folders()))
 	}
 }
+
+// TestPlaySongRecordsSequenced: a song the session's sequencer plays is
+// recorded too. No note passes through the daemon then, so the recording takes
+// the start of the music from the playback's clock: what sounds in the
+// lead-in, while the presets load, is not in the file.
+func TestPlaySongRecordsSequenced(t *testing.T) {
+	hub := midicontrol.NewHub()
+	s, feed := newRecordingServer(t, WithMidiControl(hub))
+	t.Cleanup(func() { s.player.Stop() })
+	stageSequencer(t)
+	// The stand-in session: when the transport starts it makes a noise louder
+	// than the song for the first 600 ms of the lead-in (1.6 s for this song),
+	// falls silent, and plays the song from the end of the lead-in on.
+	brain(t, hub, func(cmd midicontrol.Command) {
+		if cmd.Type != "cc" || cmd.Controller != 102 {
+			return
+		}
+		go func() {
+			start := time.Now()
+			feed.set(0.9)
+			time.Sleep(time.Until(start.Add(600 * time.Millisecond)))
+			feed.set(0)
+			time.Sleep(time.Until(start.Add(1600 * time.Millisecond)))
+			feed.set(0.5)
+			time.Sleep(time.Until(start.Add(3200 * time.Millisecond)))
+			feed.set(0)
+		}()
+	})
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+
+	res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "record": true})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "the session's sequencer plays") || !strings.Contains(text, `recording it as "Night Drive `) {
+		t.Fatalf("play: %s", text)
+	}
+	last := lastRecording(t, s)
+	if last.Error != "" {
+		t.Fatalf("the recording failed: %s", last.Error)
+	}
+	m := last.Meta
+	// The lead-in that was cut holds the noise; the file starts at the song.
+	if m.TrimmedLeadMS < 1400 {
+		t.Errorf("only %d ms of lead were cut, want the 1.6 s lead-in", m.TrimmedLeadMS)
+	}
+	if m.Seconds < 1.5 || m.Seconds > 6 {
+		t.Errorf("the recording is %.3f s long, want the 1.6 s song and what followed", m.Seconds)
+	}
+	if _, _, peak := readFLAC(t, last.Path); math.Abs(peak-0.5) > 0.001 {
+		t.Errorf("the file peaks at %.3f: the noise of the lead-in (0.9) is in it", peak)
+	}
+}

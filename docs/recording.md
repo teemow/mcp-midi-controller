@@ -24,6 +24,8 @@ has no seams.
 - The recording starts before the opening sound is set and follows the song.
   When the first note goes out, whatever the tap heard until then (a tail still
   ringing from the last playback, a preset loading) stops counting as music.
+  A song played by the sequencer in its session sends no note through the
+  daemon; there the same happens shortly before the lead-in ends.
 - After the last bar it waits for the tail: until the tap has been silent for
   1.5 seconds, for 10 seconds at most.
 - `stop_song` ends the song and, with it, the recording. `stop_recording` ends

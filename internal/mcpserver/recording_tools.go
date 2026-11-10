@@ -34,6 +34,11 @@ const (
 	// maxRecordingSeconds bounds a recording, so one that is never stopped
 	// ends by itself.
 	maxRecordingSeconds = 30 * 60
+	// sequencedMarkMS is how long before the end of a sequenced song's lead-in
+	// its recording stops counting what the tap hears as lead-in: late enough
+	// to be past the lead-in's preset loads and control changes, early enough
+	// that the audio of the first note cannot have arrived yet.
+	sequencedMarkMS = 200
 )
 
 // recorderState is the one recording the daemon makes at a time, and how the
@@ -272,7 +277,19 @@ func (s *Server) runRecording(ar *activeRecording) {
 		// Until the song has ended (or was stopped), then until its tail has
 		// rung out: the tap silent for a while, or the longest tail allowed.
 		running := true
-		for running && s.player.Status().Playing {
+		for running {
+			st := s.player.Status()
+			if !st.Playing {
+				break
+			}
+			// A sequenced song is played by the session itself: no note passes
+			// through the daemon to mark where the music starts (sender), so
+			// the playback's clock does, shortly before its lead-in ends. A
+			// look that comes too late leaves the mark out rather than risk
+			// the first note.
+			if st.Mode == song.ModeSequenced && st.LeadInMS > 0 && st.LeadInMS <= sequencedMarkMS {
+				ar.marked.Do(ar.capture.SoundFromHere)
+			}
 			running = wait()
 		}
 		ar.setPhase("tail")
