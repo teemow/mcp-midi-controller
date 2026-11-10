@@ -151,7 +151,8 @@ file's checksum in the Drive is compared with the local one.
   the folder on first use, and a folder of the same name that you made by hand
   is not found. The daemon remembers the folder it made: rename it or move it
   anywhere in your Drive and uploads keep going into it. Once it is in the
-  bin, the next upload makes a new one where the config says.
+  bin (or deleted), the next upload goes to a folder of the configured name
+  where the config says: one the daemon made there before, or a new one.
 - A recording that is already in the Drive is not sent again (`again: true`
   makes a second file).
 - `name` sets the file's name in the Drive; by default it is the recording's.

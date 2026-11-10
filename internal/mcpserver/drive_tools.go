@@ -392,10 +392,17 @@ func uploadFolder(ctx context.Context, client *drive.Client, path string) (strin
 		return "", err
 	}
 	known[path] = id
-	if data, err := json.MarshalIndent(known, "", "  "); err == nil {
-		if err := os.MkdirAll(filepath.Dir(config.GoogleDriveFoldersPath()), 0o755); err == nil {
-			_ = lanhttp.WriteFileAtomic(config.GoogleDriveFoldersPath(), data, 0o644)
-		}
+	// The upload goes ahead without the memory; it is only said, because a
+	// folder that is then renamed or moved gets a twin at the next upload.
+	data, err := json.MarshalIndent(known, "", "  ")
+	if err == nil {
+		err = os.MkdirAll(filepath.Dir(config.GoogleDriveFoldersPath()), 0o755)
+	}
+	if err == nil {
+		err = lanhttp.WriteFileAtomic(config.GoogleDriveFoldersPath(), data, 0o644)
+	}
+	if err != nil {
+		log.Printf("google drive: could not remember the upload folder %q: %v", path, err)
 	}
 	return id, nil
 }

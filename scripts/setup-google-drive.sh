@@ -241,8 +241,10 @@ _install_client() {
 
 # visit URL shows a page's address and opens it in the browser, without
 # waiting for the opener: where no browser is running yet, xdg-open starts one
-# and only returns when that browser is closed. The opener runs in a session
-# of its own, so Ctrl-C in the wizard does not reach the browser.
+# and only returns when that browser is closed. Where setsid exists the opener
+# runs in a session of its own, so Ctrl-C in the wizard does not reach the
+# browser; elsewhere (macOS, whose open returns at once) it runs in the
+# background, where a script's Ctrl-C is ignored too.
 visit() {
   local url="$1" opener=""
   printf '  %s↗ opening%s %s\n' "$GREEN" "$RESET" "$url"
