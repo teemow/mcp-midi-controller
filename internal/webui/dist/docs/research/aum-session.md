@@ -396,6 +396,17 @@ Notes:
 - Dynamic collections (Session Load, Preset Load, Tempo Presets) are
   user-populated. A standalone Session Load `.aum_midimap` (below) shows their
   shape: keyed by **action name**, each with a `specState` leaf.
+- **Preset Load** actions live in a sub-collection of the node's slot,
+  `slot<N>/_AUMNode:PresetLoadCtrl`. Each action is a leaf keyed
+  `"<idx>:<location>:<preset name>"` (its position in the list; location `1` is
+  a preset the audio unit itself provides) whose `specState` is the trigger —
+  type 2, the Program Change number in `data1`. Beside the leaves, the meta key
+  `"_collection_editor_states"` holds an `NSArray` with one entry per action,
+  in the same order: `{"preset": NodePresetWrapper{location, name, preset:
+  AUAudioUnitPreset{name, num}}}`, where `num` is the audio unit's own preset
+  number. Shape taken from the committed auv3-probe capture
+  `captureprobe_2.aumproj`; `aum.Session.AddPresetLoad` authors it from a probe
+  dump's `factoryPresets`.
 
 > **Key fact — AUM enumerates *every* mappable parameter.** A leaf exists for
 > **every** channel control, node parameter, transport/system action and reserved
@@ -525,9 +536,9 @@ that set tempo on the gear); note Link drift can store it as a near-integer
 **`midiMatrixState`** — AUM's MIDI routing matrix (the "MIDI" tab), not the
 control surface. Keys: `connections` (the source→destination edges),
 `sourcesInfo` / `destsInfo` (the endpoints — names are **private**),
-`customNames`, and `filters` (per-connection event filtering). Read this only if
-routing needs to be diffed; the control surface for the convention is
-`midiCtrlState`.
+`customNames`, and `filters` (per-destination event filtering; the full
+format is in `aum-midi-matrix.md`). Read this only if routing needs to be
+diffed; the control surface for the convention is `midiCtrlState`.
 
 ## How Phase C consumes this
 
