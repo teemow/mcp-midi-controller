@@ -89,7 +89,8 @@ arrangement: [verse, chorus, verse, chorus]
   twelve). `plugin` is the id of a staged AUv3 probe as `list_song_plugins`
   gives it: the unit's type, subtype and manufacturer, such as
   `aumu-mono-_acme` (the example uses short ids to stay readable).
-  `kind: drums` makes it a drum track. `transpose` shifts all its notes.
+  `kind: drums` makes it a drum track. `transpose` shifts all its notes, for
+  a preset that does not sound at the written pitch.
 - **master** — effects on the master strip, after its fader.
 - **patterns** — the phrases; see [Notation](#notation).
 - **scenes** — named sound settings; see [Sound](#sound).
@@ -169,7 +170,12 @@ What can be set:
 A scene addresses the master's effects as the track `master`.
 
 Loading a preset resets a plugin's parameters, so after a preset change every
-parameter the song sets on that plugin is sent again.
+parameter the song sets on that plugin is sent again. The load itself is sent
+400 ms before its section, because a plugin is deaf while it loads (see
+[Status](#status)); where its section begins sooner than that after the
+playback starts, it is sent as the playback starts. What that track plays in
+the 400 ms before the section is cut, lost or already played with the new
+preset.
 
 **Automation** moves a control within a section:
 
@@ -258,6 +264,11 @@ network, not sample-accurate. That is right for writing a song and listening to
 it. Playing a song on stage belongs to the brain itself, locked to AUM's
 transport, which is not built yet.
 
+Because the daemon keeps the time, its host has to stay awake while a song
+plays. A laptop left alone dozes: the system keeps trying to sleep, timers
+fire up to a second late and the notes with them. Hold it awake for the
+session (on macOS `caffeinate -i -s`).
+
 ## Status
 
 The test suite covers the notation, the compiled timeline, the player, and the
@@ -286,24 +297,58 @@ a device, in sessions authored from a song:
   at -3 to -10 dB showed exactly those values. A mapped fader CC follows
   gain = 2·(value/127)², which puts unity at 90 and +6 dB at 127. Every `level` the
   song sends is converted by that law.
+- **Bypass and mute.** Both latch by value: 64 and above bypasses a plugin or
+  mutes a strip, 63 and below brings it back, and the same value twice changes
+  nothing. Read from AUM's own display and at the tap. The song sends 127 and
+  0.
+- **Parameters.** A parameter's CC runs linearly over the parameter's range:
+  0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
+- **A preset load resets parameters.** Loading a reverb preset put its mix
+  back to the preset's own value, and the song's value sent after it held.
+- **A plugin is deaf while it loads a preset.** Two of five instruments lost
+  every note sent up to 250 ms after the Program Change and played the ones
+  from 275 ms on; at 300 ms two notes in sixteen were still lost, at 350 and
+  400 ms none in thirty-two. A third lost a note at 50 ms and played at
+  150 ms. The other two, and a reverb, answered at once. A note that is
+  sounding when the load ends is cut. With preset changes sent 250 ms ahead,
+  a song lost the downbeat of every chorus on the tracks of the slow two,
+  which both change preset there, so they are sent 400 ms ahead now.
+- **A whole song.** A song of five tracks and 56 bars (five instruments,
+  twelve effects, 14 preset loads, 53 mappings) played from start to finish
+  through `play_song`, and `get_song_playback` followed it through its nine
+  sections. Recorded at the master tap, every section sounded: the fade-in,
+  the verse without the lead, the chorus with the lead, the bridge without the
+  drum pattern. What was missing was the downbeat of each chorus on two
+  tracks, the pad's first chord and the arp's first note, lost to the preset
+  load above; the same timeline sent with the 400 ms lead had both.
+- **Timing.** With the host held awake, drum hits recorded at the tap sat on
+  the sixteenth-note grid within 9 ms, 2 ms on average over 63 hits. On a host
+  left to doze, timers fired up to 1.2 s late and the hits around such a stall
+  were about 50 ms off the grid.
 
 Not yet measured:
 
-- which way a bypass and a mute latch (the song sends 127 for bypassed/muted,
-  0 for active);
-- how long a plugin takes to load a preset, against the 250 ms a preset change
-  is sent ahead of its section;
-- how a parameter's CC value maps onto the parameter's range (assumed: linear
-  from its minimum to its maximum);
-- a whole song played by `play_song`: the measurements above are single
-  messages sent into an authored session.
+- `transport: true` through a whole song;
+- a ramp on a plugin parameter (the song played ramps on levels only);
+- sessions authored with `track_taps` or `full_control`.
 
 Not every plugin behaves when a session hosts it from scratch. One synth came
 up as "invalidated" on every load, and one drum machine loaded and took its
-preset but stayed silent. Default patches also sounded one or two octaves
-below the written note on three synths. Play each instrument alone and listen
-at the tap before writing for it, and set the track's `transpose` where it is
-needed.
+preset but stayed silent.
+
+Presets do not agree on pitch either. On three synths one preset sounded at
+the written note and another of the same plugin one or two octaves below it;
+one sounded an octave above with a fifth layered under every note. The track's
+`transpose` corrects its own preset, and a pattern's `transpose` the preset
+that pattern is played with. Other things only listening showed: a tape
+effect's preset bent a held note by more than a semitone either way until two
+of its parameters were turned down, a drum machine's snare clipped inside the
+plugin at any velocity until its own level parameter was. One synth crashed
+once in over a hundred preset loads; AUM marks its node as failed, and loading
+the session again brings it back.
+
+Play each instrument alone and listen at the tap before writing for it, one
+preset at a time.
 
 ## Files
 
