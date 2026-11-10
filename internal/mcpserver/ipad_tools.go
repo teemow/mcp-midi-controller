@@ -522,6 +522,11 @@ func (s *Server) handleIPadLaunch(ctx context.Context, req *mcp.CallToolRequest)
 	if err != nil {
 		return s.ipadError(ctx, err), nil
 	}
+	if ipad.IsApp("probe", app) {
+		// A host without go-ios cannot look this id up; load_song needs it to
+		// bring the probe app forward.
+		rememberIPadApp("probe", app)
+	}
 	return structResult(fmt.Sprintf("%s is in front, window %gx%g points (%s)", app, win.Width, win.Height, win.Orientation()),
 		map[string]any{"app": app, "window": win, "orientation": win.Orientation()}), nil
 }

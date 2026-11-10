@@ -429,7 +429,7 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 				return nil, err
 			}
 			st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlPreset},
-				Assignment{Kind: MsgPC, Channel: GlobalChannel}, pr.Program)
+				Assignment{Kind: MsgPC, Channel: pr.Channel}, pr.Program)
 		}
 		st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlBypass}, n.Bypass, boolWire(w.bypass))
 		for _, pp := range n.Params {
@@ -454,6 +454,40 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 	}
 	return st, nil
 }
+
+// HomeState is the messages that give every track the sound it declares for
+// itself, with no scene applied: the presets first, then everything else.
+// It is the sound a track is checked and auditioned with.
+func (p *Plan) HomeState() ([]Event, error) {
+	st, err := p.sectionState("", Section{})
+	if err != nil {
+		return nil, err
+	}
+	return st.events(0, 0), nil
+}
+
+// TrackHomeState is HomeState for one track alone: its strip and its plugins.
+func (p *Plan) TrackHomeState(track string) ([]Event, error) {
+	st, err := p.sectionState("", Section{})
+	if err != nil {
+		return nil, err
+	}
+	own := &state{}
+	for _, s := range st.settings {
+		if s.target.Track == track {
+			own.set(s.target, s.at, s.value)
+		}
+	}
+	return own.events(0, 0), nil
+}
+
+// MuteEvent is the message that mutes or unmutes a track's strip.
+func (tp *TrackPlan) MuteEvent(muted bool) Event {
+	return Event{Kind: Control, Channel: tp.Mute.Channel, Data1: tp.Mute.Number, Data2: boolWire(muted)}
+}
+
+// HomeMute reports whether the track declares itself muted.
+func (tp *TrackPlan) HomeMute() bool { return tp.homeMute }
 
 // ramp is one compiled automation ramp.
 type ramp struct {

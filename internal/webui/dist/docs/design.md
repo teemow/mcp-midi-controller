@@ -284,10 +284,17 @@ Global tools:
   `delete_song` store a multi-track song as one YAML document;
   `list_song_plugins` / `get_song_plugin` show what it can host;
   `author_song_session` builds the AUM session that hosts it, with the song
-  written into a sequencer plugin when one is installed; `play_song` /
-  `stop_song` / `get_song_playback` play it from that sequencer or live
-  through the brain; and
-  `export_song_midi` writes it as a Standard MIDI File. See `docs/songs.md`.
+  written into a sequencer plugin when one is installed; `load_song`
+  takes it from there into AUM (the iPad pulls the file, AUM loads it, brain
+  and tap connect) and `check_song` tells whether every track sounds;
+  `open_sound_lab` / `audition_sound` play any preset and measure what it
+  sounds like into the rig's sound catalogue (`internal/sound`,
+  `list_sounds` / `set_sound`);
+  `play_song` / `stop_song` / `get_song_playback` play it from that sequencer
+  or live through the brain;
+  and `export_song_midi` writes it as a Standard MIDI File. See
+  `docs/songs.md`; `docs/song-authoring.md` is the design of the tools around
+  writing a song.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
   BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
   per-device settle baked into the event order) and optionally HTTP-POST it to

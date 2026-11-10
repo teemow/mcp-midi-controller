@@ -54,6 +54,7 @@ func (s *Server) OnAUMSessionDownloaded(file string) {
 	}
 	id := aum.StripExt(file)
 	s.setCurrentAUMSession(id)
+	s.noteSessionPulled(id)
 	if !s.aumAutoImport {
 		return
 	}

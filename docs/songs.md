@@ -17,12 +17,16 @@ that plays inside AUM.
 | Step | Tool | |
 |------|------|-|
 | 1. Look | `list_song_plugins`, `get_song_plugin` | Which instruments and effects are installed (the staged AUv3 probes), their factory presets and parameters. |
+| | `open_sound_lab`, `audition_sound`, `list_sounds` | What a preset sounds like, before it is in a song. See [Sounds](#sounds). |
 | 2. Write | `save_song` | Store the document. It is checked first; see [What is checked](#what-is-checked). |
-| 3. Author | `author_song_session` | Build the song's `.aumproj` and stage it. The iPad's auv3-probe app pulls it into AUM's folder. |
-| 4. Load | in AUM | Open the session. Its brain and tap dial the daemon. |
-| 5. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
-| 6. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
-| 7. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3 and 4. A change to what the song hosts or controls, or to its tempo, needs step 3 and 4 before the song sounds right at all; `get_song` and `play_song` say when. |
+| 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
+| 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
+| 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
+| 6. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
+
+`check_song` tells at any time whether the loaded session will sound.
+`author_song_session` does only the first part of step 3: it builds the
+session file and stages it.
 
 `export_song_midi` writes the song as a Standard MIDI File for a sequencer or a
 DAW.
@@ -101,6 +105,8 @@ arrangement: [verse, chorus, verse, chorus]
   the section ends and are cut there; a track left out is silent.
 - **arrangement** — the sections in playing order. A section may appear more
   than once.
+- **session** — optional: how the song's session is built beyond what the
+  tracks say. See [The session](#the-session).
 
 Unknown keys are errors, so a misspelled field is reported rather than ignored.
 
@@ -195,6 +201,47 @@ sections:
 instrument, or of `effect`. `bar` (1-based, default 1) and `bars` (default: to
 the section's end) place the ramp.
 
+## Sounds
+
+A preset's name says little about its sound. One sounds at the written pitch,
+the next an octave below it, a third is 20 dB quieter or has a second note
+layered in. A drum machine puts its pads on notes of its own. `audition_sound`
+finds that out by playing a note and measuring the tap:
+
+| | |
+|-|-|
+| pitch | The note a held note settles on, as `transpose`: the semitones to add to a written note so it sounds as written (12 for a preset an octave low). How far it is out of tune, how far it wanders once it has settled, and whether it glides into the note: from how far off and for how long. |
+| level | rms and sample peak of the held note, in dBFS. |
+| envelope | Attack, whether a held note sustains or how fast it decays, how long it rings after the release. |
+| layers | Strong partials that are no harmonic of the note: a fifth, a second voice. |
+
+With `kit: true` the instrument is treated as a drum machine: every note of a
+range is hit, the ones that sound are its pads, each with level, length and
+brightness and a guess at what it is: kick and toms by their pitch, a snare by
+the gap between its drum and its rattle, hats and cymbals by their length, and
+`perc` for what sits in the middle. The guesses make up a drum map
+(`kick: 49, snare: 51, …`); they come from the sound alone, so read them and
+correct them with `set_sound`.
+
+A preset is loaded through a Program Change, so it can only be auditioned in a
+session that maps it:
+
+- **The lab.** `open_sound_lab` takes a list of instruments and loads a
+  session of one strip each, nothing else in the path, with `presets: all`. It
+  is the song `sound_lab` and is loaded like one. Any preset of those
+  instruments is then one `audition_sound` away, a second or two each, several
+  per call (`presets`, or `query` for every preset with a word in its name).
+- **A song's own session**, when its `session:` block says `presets: all`. The
+  candidate is then heard through the track's own effect chain.
+
+Measured in the lab, on a clean path with the fader at unity, the result is
+stored in the **sound catalogue**: one YAML file per plugin under `sounds/` in
+the config dir. `list_sounds` reads it. A measurement through an effect chain,
+with parameters set on the instrument or with the fader moved is reported but
+not stored: it is the chain's sound, not the preset's. What `set_sound`
+corrects (a transposition, a drum map, a comment) is kept when the preset is
+measured again.
+
 ## What is checked
 
 `save_song` refuses a document that does not hold together, and reports every
@@ -246,9 +293,9 @@ the track's channel and every control change as a MIDI event, after a lead-in
 (see [Playing](#playing)). The clip is armed and does not loop, so it plays
 once whenever the transport runs from the top, whoever starts it. Its bypass
 is mapped (CC 106 on channel 15), which is how a live playback that runs the
-transport keeps it silent. `sequencer: false` leaves it out; `sequencer: true`
-insists on it. [The sequencer's state](#the-sequencers-state) says what is
-written.
+transport keeps it silent. `sequencer: false` as an argument of `load_song` or
+`author_song_session` leaves it out; `sequencer: true` insists on it.
+[The sequencer's state](#the-sequencers-state) says what is written.
 
 The daemon records which session a song was authored into, for which layout,
 and which notes its sequencer holds. Changing notes, patterns or the
@@ -261,6 +308,66 @@ must then be authored and loaded again, and until it is `get_song` and
 The session is staged under `Songs/<title>` by default (`out_id` chooses
 another place), which is also where it lands in AUM's folder on the iPad.
 
+**Options.** A song can say how its session is built:
+
+```yaml
+session:
+  track_taps: true      # a ProbeAudioTap after every track's fader
+  full_control: true    # map every other parameter of every plugin as well
+  hardware: x32         # the master's output profile; builtin is the default
+  presets: all          # a Preset Load for every factory preset, not only the song's
+```
+
+With `presets: all` every factory preset of every plugin gets a Program Change:
+the instruments' first, then the effects', filling channel 15 and then the
+control channels below it (128 to a channel, so a five-track song has room for
+1280). A preset's address then depends only on the session's layout. The song
+can change to any preset, and any can be auditioned in the loaded session,
+without a new one. Presets beyond the room are left out and counted; one the
+song names must fit.
+
+They are part of the document, so changing one makes the session out of date
+like a new plugin does. The same options as arguments of `load_song` or
+`author_song_session` override the document for that call.
+
+## Loading
+
+`load_song` takes a saved song to a session that plays. It reports every step
+and stops at the first one that fails, with what it saw and what to do:
+
+| Step | What happens |
+|------|--------------|
+| author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
+| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward and starts its sync. Skipped when the iPad already has this very file. |
+| load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM has finished restoring the plugins. |
+| connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. |
+| check | `check_song`, below. |
+
+Loading replaces the session open in AUM, so `load_song` needs
+`confirm: true`. Without the iPad UI tools (`ipad_wda_url` empty) it stops
+after the pull and names the session to load by hand.
+
+Bringing the probe app forward needs its bundle id, which carries a signing
+prefix. A daemon on the host the iPad is plugged into looks it up. Any other
+daemon remembers it from the first `ipad_launch` with the full id.
+
+`check_song` answers whether the song will sound if it is played now:
+
+- the brain is connected and the tap is streaming;
+- AUM shows the song's session (the name in its menu), a strip for the brain,
+  every track and the master, and no line that reports a failed plugin;
+- every track answers a note. The daemon sets each track's own sound (its
+  declaration, no scene), plays the track's first note of the song alone and
+  measures the tap. A track that stays silent is named with its plugin.
+
+It does not run while a song plays. `ui: false` leaves AUM's screen alone
+(reading the session name opens and closes AUM's menu).
+
+The daemon knows which session AUM has open only from what it loaded or saw
+there itself, and only until a new brain connects, which is what a session
+load in AUM looks like from outside. `play_song` warns when that session is
+not the song's. It says nothing when it does not know.
+
 ## Playing
 
 `play_song` returns at once; the song plays in the background. There are two
@@ -272,7 +379,7 @@ ways to play, and a session with a sequencer offers both:
 | What the daemon sends | rewind and start; stop and rewind at the end | the opening sound, then every note and control change when it is due |
 | Timing | AUM's own: on the sample | the network's: a few milliseconds either way |
 | What is played | the whole song, as it was when the session was authored | the song as it is stored now: all of it, from a section, a number of sections, only some tracks |
-| After a change to the notes | `save_song`, `author_song_session`, the iPad pulls the session, AUM loads it (every plugin is instantiated again) | `save_song` |
+| After a change to the notes | `save_song`, then `load_song`: the session is authored again, the iPad pulls it, AUM loads it (every plugin is instantiated again) | `save_song` |
 | After a change to what the song hosts or controls, or its tempo | the same | the same: author and load again |
 
 Without `mode`, `play_song` plays sequenced when the whole song is asked for
@@ -451,6 +558,19 @@ a device, in sessions authored from a song:
   left to doze, timers fired up to 1.2 s late and the hits around such a stall
   were about 50 ms off the grid.
 
+- **Measuring a preset.** The analysis behind `audition_sound` was run over
+  notes captured on a device with `probe_sound`, in a song's session. For
+  seven presets of four synths it gave the transposition found by hand
+  before: two octaves low twice, one octave low twice, at pitch three times.
+  It also found what the hand measurement had not looked for: one bass preset
+  starts every note 140 cents flat and is on it after 150 ms, one brass
+  preset has an octave under the note at -8 dB, and one sequence preset
+  jumps between octaves by itself. Twenty notes of a drum machine gave its
+  eight pads: the kick, the snare, three toms pitched within 1 Hz of the hand
+  measurement, two bright pads of 50 and 180 ms, and one in the middle that
+  the first song had used as its closed hat. A note took 75 to 95 ms from
+  being sent to sounding at the tap.
+
 Measured on a device with the sequencer, the same song of five tracks and 56
 bars authored into a session of its own:
 
@@ -507,6 +627,9 @@ against a device.
 
 Not yet measured:
 
+- `load_song`, `check_song`, `open_sound_lab` and `audition_sound` themselves
+  and a session with `presets: all`: the test suite runs them against a
+  stand-in for the iPad;
 - `play_song` and `stop_song` in sequenced mode on a device, and
   `get_song_playback` against AUM's own position;
 - a sequenced song on a host that dozes;
@@ -542,6 +665,7 @@ preset at a time.
 | | Where |
 |-|-------|
 | Songs | `$XDG_CONFIG_HOME/mcp-midi-controller/songs/<id>.yaml` — part of the rig's configuration, like scenes |
+| The sound catalogue | `$XDG_CONFIG_HOME/mcp-midi-controller/sounds/<plugin id>.yaml` — measured per rig, and readable and correctable by hand |
 | Authored sessions | the AUM staging dir (state dir), like every authored session |
 | Which session a song was authored into | `song-sessions.json` in the state dir |
 | MIDI exports | `song-exports/` in the state dir |
