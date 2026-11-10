@@ -39,6 +39,8 @@ type songRig struct {
 	// Commands is everything received.
 	Commands []midicontrol.Command
 	notes    map[[2]int]bool
+	started  time.Time // when the stream began
+	frame    int64     // the frame the stream has been rendered up to
 	brain    *websocket.Conn
 	tap      *audiotap.Store
 	taps     int
@@ -133,6 +135,10 @@ func (r *songRig) read(c *websocket.Conn) {
 			continue
 		}
 		r.mu.Lock()
+		// What sounded until now is rendered before the command changes it,
+		// so the audio follows the commands however late the stream's own
+		// tick runs on a busy machine.
+		r.render()
 		r.Commands = append(r.Commands, cmd)
 		switch cmd.Type {
 		case "noteOn":
@@ -150,43 +156,52 @@ func (r *songRig) read(c *websocket.Conn) {
 func (r *songRig) stream(stop <-chan struct{}) {
 	tick := time.NewTicker(4 * time.Millisecond)
 	defer tick.Stop()
-	start := time.Now()
-	var frame int64
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tick.C:
 		}
-		due := int64(time.Since(start).Seconds() * rigSampleRate)
 		r.mu.Lock()
-		tap := r.tap
-		type voice struct{ hz, amp float64 }
-		var voices []voice
-		for k := range r.notes {
-			hz, amp := 440*math.Pow(2, float64(k[1]-69)/12), 0.2
-			if r.Voice != nil {
-				hz, amp = r.Voice(k[0], k[1])
-			}
-			if amp > 0 {
-				voices = append(voices, voice{hz, amp})
-			}
-		}
+		r.render()
 		r.mu.Unlock()
-		if tap == nil {
-			frame = due
-			continue
-		}
-		buf := make([]float32, 0, 2*(due-frame))
-		for ; frame < due; frame++ {
-			var v float64
-			for _, vc := range voices {
-				v += vc.amp * math.Sin(2*math.Pi*vc.hz*float64(frame)/rigSampleRate)
-			}
-			buf = append(buf, float32(v), float32(v))
-		}
-		tap.AppendAudio(buf)
 	}
+}
+
+// render appends the audio from where the stream stands up to now, with the
+// notes sounding at the moment. r.mu must be held.
+func (r *songRig) render() {
+	if r.started.IsZero() {
+		r.started = time.Now()
+	}
+	due := int64(time.Since(r.started).Seconds() * rigSampleRate)
+	if r.tap == nil {
+		r.frame = due
+		return
+	}
+	type voice struct{ hz, amp float64 }
+	var voices []voice
+	for k := range r.notes {
+		hz, amp := 440*math.Pow(2, float64(k[1]-69)/12), 0.2
+		if r.Voice != nil {
+			hz, amp = r.Voice(k[0], k[1])
+		}
+		if amp > 0 {
+			voices = append(voices, voice{hz, amp})
+		}
+	}
+	if due <= r.frame {
+		return
+	}
+	buf := make([]float32, 0, 2*(due-r.frame))
+	for ; r.frame < due; r.frame++ {
+		var v float64
+		for _, vc := range voices {
+			v += vc.amp * math.Sin(2*math.Pi*vc.hz*float64(r.frame)/rigSampleRate)
+		}
+		buf = append(buf, float32(v), float32(v))
+	}
+	r.tap.AppendAudio(buf)
 }
 
 // pullStaged plays the probe app in front: it fetches a staged session as

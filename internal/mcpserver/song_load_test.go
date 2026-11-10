@@ -30,7 +30,7 @@ func TestLoadSong(t *testing.T) {
 	for _, want := range []string{
 		`"Night Drive" is loaded in AUM as Songs/Night Drive and ready to play`,
 		"1. author  ok    Songs/Night Drive.aumproj: 5 strip(s)",
-		"2. pull    ok    the iPad pulled the session",
+		"2. pull ",
 		`3. load    ok    AUM has "Night Drive" open: 5 strip(s)`,
 		"4. connect ok    brain and tap connected",
 		"sound   ok    every track answers its first note",
@@ -69,8 +69,12 @@ func TestLoadSong(t *testing.T) {
 	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
 	res = call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true})
 	text = resultText(res)
-	if res.IsError || !strings.Contains(text, "1. author  ok") || !strings.Contains(text, "2. pull    ok") {
+	// The stand-in iPad may have fetched the new file before the load asked.
+	if res.IsError || !strings.Contains(text, "1. author  ok") || !strings.Contains(text, "2. pull ") {
 		t.Fatalf("load after a new control: %s", text)
+	}
+	if rec := loadSongSessions()["night_drive"]; rec.Pulled != rec.SHA256 {
+		t.Errorf("after the load the iPad holds %s, the session is %s", rec.Pulled, rec.SHA256)
 	}
 }
 
