@@ -42,8 +42,9 @@ type Meta struct {
 	Silent bool `json:"silent,omitempty"`
 
 	// TrimmedLeadMS and TrimmedTailMS are what was cut before the first sound
-	// and after the last; FadeOutMS the fade given to a take that was still
-	// sounding when it ended.
+	// and after the last; FadeOutMS how much of the end is faded out: the
+	// second kept after the last sound, or the shorter fade of a take that
+	// was still sounding when it ended.
 	TrimmedLeadMS int64 `json:"trimmed_lead_ms"`
 	TrimmedTailMS int64 `json:"trimmed_tail_ms"`
 	FadeOutMS     int64 `json:"fade_out_ms,omitempty"`

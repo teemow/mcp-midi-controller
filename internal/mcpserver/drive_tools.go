@@ -392,7 +392,7 @@ func (s *Server) handleUploadRecording(ctx context.Context, req *mcp.CallToolReq
 			if running {
 				return textResult(fmt.Sprintf("upload_recording: %q is still being recorded", args.Recording), true), nil
 			}
-			return textResult(fmt.Sprintf("/recording: no recording %q (see list_recordings)", args.Recording), true), nil
+			return textResult(fmt.Sprintf("upload_recording: no recording %q (see list_recordings)", args.Recording), true), nil
 		}
 	}
 

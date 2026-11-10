@@ -247,6 +247,42 @@ func TestTimedRecording(t *testing.T) {
 	}
 }
 
+// TestRecordingEndsWhenItsTapIsGone: a recording without a length whose tap
+// stops streaming never reaches its length by the audio, so it ends by the
+// clock, keeps what arrived, and lets the host sleep again.
+func TestRecordingEndsWhenItsTapIsGone(t *testing.T) {
+	var released atomic.Int32
+	reg := audiotap.NewRegistry()
+	s := newSongServer(t, WithAudioTap(reg), WithHostAwake(func() func() {
+		return func() { released.Add(1) }
+	}))
+	s.rec.poll, s.rec.maxRun = 5*time.Millisecond, 200*time.Millisecond
+	tap := reg.Connect("master", "test")
+	tap.SetFormat(audiotap.Format{Encoding: "f32le", Channels: 2, SampleRate: feedRate})
+
+	if res := call(t, s.handleStartRecording, map[string]any{}); res.IsError {
+		t.Fatalf("start: %s", resultText(res))
+	}
+	tone := make([]float32, 2*feedRate/10)
+	for i := range tone {
+		tone[i] = 0.5
+	}
+	tap.AppendAudio(tone)
+	reg.Disconnect("master")
+
+	last := lastRecording(t, s)
+	if last.Error != "" || last.Meta.Seconds != 0.1 {
+		t.Fatalf("a recording whose tap went away: %+v", last)
+	}
+	// The hold is given back as finishRecording returns, just after the result.
+	for deadline := time.Now().Add(5 * time.Second); released.Load() == 0 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if released.Load() != 1 {
+		t.Errorf("the host hold was released %d time(s), want once", released.Load())
+	}
+}
+
 func TestRecordingRefusals(t *testing.T) {
 	s, _ := newRecordingServer(t)
 	for name, tc := range map[string]struct {

@@ -671,9 +671,8 @@ func quote(s string) string {
 //
 // With the drive.file scope the daemon only sees folders it made itself, so a
 // folder of the same name that the user created by hand is not found, and a
-// second one is made beside it. The folder the daemon made can be renamed
-// into or moved under any other afterwards; it is found again by its name
-// under its parent, so a renamed one is made anew.
+// second one is made beside it. The daemon's own folder is found by its name
+// under its parent, so once it is renamed or moved, a new one is made.
 func (c *Client) EnsureFolder(ctx context.Context, path string) (string, error) {
 	parent := "root"
 	for _, name := range strings.Split(path, "/") {

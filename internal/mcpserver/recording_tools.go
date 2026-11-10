@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -44,12 +45,15 @@ type recorderState struct {
 
 	// quietFor is how long the tap must have been silent after a song before
 	// its recording ends, maxTail the longest it waits for that, and poll how
-	// often it looks. Zero takes the defaults; tests shorten them.
-	quietFor, maxTail, poll time.Duration
+	// often it looks. maxRun is the longest a recording without a length runs
+	// by the clock, for a tap that stops streaming before the capture reaches
+	// its length. Zero takes the defaults; tests shorten them.
+	quietFor, maxTail, poll, maxRun time.Duration
 }
 
-func (r *recorderState) timing() (quietFor, maxTail, poll time.Duration) {
+func (r *recorderState) timing() (quietFor, maxTail, poll, maxRun time.Duration) {
 	quietFor, maxTail, poll = 1500*time.Millisecond, 10*time.Second, 50*time.Millisecond
+	maxRun = maxRecordingSeconds*time.Second + 5*time.Second
 	if r.quietFor > 0 {
 		quietFor = r.quietFor
 	}
@@ -58,6 +62,9 @@ func (r *recorderState) timing() (quietFor, maxTail, poll time.Duration) {
 	}
 	if r.poll > 0 {
 		poll = r.poll
+	}
+	if r.maxRun > 0 {
+		maxRun = r.maxRun
 	}
 	return
 }
@@ -229,19 +236,21 @@ func (s *Server) abortRecording(ar *activeRecording) {
 	}
 	_, _ = ar.capture.Stop()
 	ar.awake()
+	// Only this recording's capture file: once current is cleared below, a
+	// new recording may start, and its capture must not be swept away.
+	_ = os.Remove(s.recordings().PartPath(ar.meta.Name))
 	s.rec.mu.Lock()
 	if s.rec.current == ar {
 		s.rec.current = nil
 	}
 	s.rec.mu.Unlock()
-	s.recordings().RemoveStaleParts()
 	close(ar.done)
 }
 
 // runRecording waits for the recording's end and finishes it. It runs on its
 // own goroutine.
 func (s *Server) runRecording(ar *activeRecording) {
-	quietFor, maxTail, poll := s.rec.timing()
+	quietFor, maxTail, poll, maxRun := s.rec.timing()
 	tick := time.NewTicker(poll)
 	defer tick.Stop()
 	// wait blocks until the next look is due; false when the recording was
@@ -280,7 +289,12 @@ func (s *Server) runRecording(ar *activeRecording) {
 		for wait() && time.Now().Before(deadline) {
 		}
 	default:
-		for wait() {
+		// Until stopped, or until the capture reaches its length. A tap that
+		// stops streaming never gets it there, so the clock bounds it too:
+		// a recording nobody stops must not run, and hold the host awake,
+		// for ever.
+		deadline := time.Now().Add(maxRun)
+		for wait() && time.Now().Before(deadline) {
 		}
 	}
 	s.finishRecording(ar)

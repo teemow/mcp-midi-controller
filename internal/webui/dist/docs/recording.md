@@ -149,8 +149,9 @@ file's checksum in the Drive is compared with the local one.
 - `folder` in the config is where files go; `folder` on the call overrides it.
   With `drive.file` the daemon only sees folders it made itself, so it creates
   the folder on first use, and a folder of the same name that you made by hand
-  is not found. Move the daemon's folder wherever you like afterwards; it is
-  found again by its name under its parent.
+  is not found. The daemon looks its folder up by name under the folder above
+  it, so once you move or rename it, the next upload makes a new one where the
+  config says.
 - A recording that is already in the Drive is not sent again (`again: true`
   makes a second file).
 - `name` sets the file's name in the Drive; by default it is the recording's.
