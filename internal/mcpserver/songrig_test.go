@@ -85,7 +85,7 @@ func fastSongWaits(t *testing.T) {
 	// test on a machine too busy to run them.
 	songPullGrace, songPullTimeout, songDialTimeout = 300*time.Millisecond, 20*time.Second, 20*time.Second
 	songPresetWait, songSettleWait = 20*time.Millisecond, 20*time.Millisecond
-	songNoteHold, songNoteTail, songFloorWait = 80*time.Millisecond, 60*time.Millisecond, 40*time.Millisecond
+	songNoteHold, songNoteTail, songFloorWait = 150*time.Millisecond, 150*time.Millisecond, 60*time.Millisecond
 	t.Cleanup(func() {
 		songPullGrace, songPullTimeout, songDialTimeout = old[0], old[1], old[2]
 		songPresetWait, songSettleWait = old[3], old[4]
@@ -204,6 +204,23 @@ func (r *songRig) render() {
 		buf = append(buf, float32(v), float32(v))
 	}
 	r.tap.AppendAudio(buf)
+}
+
+// waitCommands waits until the commands the rig received satisfy done, and
+// returns them. The brain's connection delivers them a moment after the
+// daemon sent them.
+func (r *songRig) waitCommands(done func([]midicontrol.Command) bool) []midicontrol.Command {
+	r.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		r.mu.Lock()
+		cmds := append([]midicontrol.Command(nil), r.Commands...)
+		r.mu.Unlock()
+		if done(cmds) || time.Now().After(deadline) {
+			return cmds
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // pullStaged plays the probe app in front: it fetches a staged session as
