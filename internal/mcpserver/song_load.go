@@ -77,7 +77,8 @@ func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "check_song",
 		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM shows the song's session with its strips and reports no failed plugin, and every track answers a note. " +
-			"For the last, the song's own sound is set (each track's declaration, no scene), every track's first note is played alone and the tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. " +
+			"A plugin that did not load is read off a screenshot: AUM draws its node with a ring of red stripes and says so nowhere else. " +
+			"For the last, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted and the lowest of its first notes played, and the tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
 			"Not while a song plays. ui: false skips the look at AUM (which opens and closes its menu).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -176,6 +177,9 @@ type loadReport struct {
 	OK      bool         `json:"ok"`
 	// Next says what to do when a step failed.
 	Next string `json:"next,omitempty"`
+
+	// loaded is what AUM showed once the session was open.
+	loaded *ipad.AUMLoaded
 }
 
 func (r *loadReport) add(step string, ok bool, since time.Time, format string, a ...any) {
@@ -352,6 +356,7 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 		return done("look at the iPad (ipad_screenshot); AUM must be running and its mixer reachable, then load_song again")
 	}
 	loaded, _ := res.Data.(ipad.AUMLoaded)
+	rep.loaded = &loaded
 	if !res.Verified {
 		rep.add("load", false, start, "%s", res.Message)
 		return done("look at the iPad (ipad_screenshot), then load_song again")
@@ -658,12 +663,32 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong) ([]trackCheck
 		return nil, err
 	}
 
+	// A track's check note is the first one it plays; of several that start
+	// together the lowest, which on a drum track is the kick and not a hat.
 	first := map[string]song.Event{}
 	for _, e := range cs.timeline.Events {
-		if e.Kind == song.NoteOn {
-			if _, seen := first[e.Track]; !seen {
-				first[e.Track] = e
-			}
+		if e.Kind != song.NoteOn {
+			continue
+		}
+		if have, seen := first[e.Track]; !seen || (e.Tick == have.Tick && e.Data1 < have.Data1) {
+			first[e.Track] = e
+		}
+	}
+	// Every strip is muted but the one being checked: what an earlier track
+	// left ringing in its delay or reverb is then not taken for an answer,
+	// nor does it drown a quiet one. The song's own mutes come back at the
+	// end, whatever happens on the way.
+	mute := func(tp *song.TrackPlan, on bool) error { return s.sendBrain(ctx, songCommand(tp.MuteEvent(on))) }
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		for _, tp := range cs.plan.Tracks {
+			_ = s.sendBrain(rctx, songCommand(tp.MuteEvent(tp.HomeMute())))
+		}
+	}()
+	for _, tp := range cs.plan.Tracks {
+		if err := mute(tp, true); err != nil {
+			return nil, err
 		}
 	}
 	var out []trackCheck
@@ -676,14 +701,12 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong) ([]trackCheck
 			continue
 		}
 		row.Note = e.Data1
-		if tp.HomeMute() {
-			if err := s.sendBrain(ctx, songCommand(tp.MuteEvent(false))); err != nil {
-				return out, err
-			}
+		if err := mute(tp, false); err != nil {
+			return out, err
 		}
 		h, err := s.hearNote(ctx, tap, e.Channel, e.Data1, 100, songNoteHold, songNoteTail)
-		if tp.HomeMute() {
-			_ = s.sendBrain(ctx, songCommand(tp.MuteEvent(true)))
+		if merr := mute(tp, true); err == nil {
+			err = merr
 		}
 		if err != nil {
 			return out, err

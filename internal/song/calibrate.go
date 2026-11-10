@@ -22,8 +22,9 @@ import (
 // Voicing is what the sound catalogue knows of one preset of an instrument.
 type Voicing struct {
 	// Transpose is the semitones to add to a written note so it sounds as
-	// written.
+	// written. Pinned says it was set by hand rather than measured.
 	Transpose int
+	Pinned    bool
 	// LevelDB is the rms of the preset's reference note at unity, in dBFS.
 	LevelDB float64
 	// Lanes is a kit's drum map (lane -> note); nil for a melodic preset.
@@ -119,9 +120,18 @@ func (p *Plan) sectionPreset(sec Section, n *NodePlan) string {
 	return preset
 }
 
-// pitchShift is the shift of a melodic track's notes while it has a preset.
+// pitchShift is the shift of a melodic track's notes while it has a preset:
+// the preset's measured transposition when that is whole octaves. A
+// measurement that is not is more often a sound with no single pitch (a
+// bell's partials, a chord, a texture) than a patch tuned a fourth up, so it
+// is noted and not applied, unless it was set by hand.
 func (p *Plan) pitchShift(tp *TrackPlan, preset string) int {
 	v, _ := p.voicing(tp, preset)
+	if v.Transpose%12 != 0 && !v.Pinned {
+		p.note("%s: %s of %s measures %+d semitone(s) from the written note, which is not an octave, so the notes are not shifted; if that is the patch's tuning, set_sound with that transpose makes it apply",
+			tp.ID, presetLabel(preset), tp.Nodes[0].Name, -v.Transpose)
+		return 0
+	}
 	return v.Transpose
 }
 
@@ -200,7 +210,7 @@ func (p *Plan) Calibration() []TrackVoicing {
 				if tp.Drums {
 					row.Pads = len(v.Lanes)
 				} else {
-					row.Transpose = v.Transpose
+					row.Transpose = p.pitchShift(tp, preset)
 				}
 			}
 			out = append(out, row)

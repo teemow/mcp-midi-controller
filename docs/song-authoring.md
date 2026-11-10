@@ -49,11 +49,17 @@ knowledge and no longer from the last download.
 
 `check_song` answers "will this song sound if I play it now": the brain is
 connected, the tap is streaming, AUM shows the song's session and no alert, the
-mixer has the song's strips, and **every track answers a note**. For the last
-one the daemon sets the song's opening sound, plays each track's own first note
-alone and measures the tap. A track that stays silent is named, with its
+mixer has the song's strips, no node is drawn as failed, and **every track
+answers a note**. For the last one the daemon sets each track's own sound,
+mutes every strip, and then plays each track's own first note with only that
+strip open, measuring the tap. A track that stays silent is named, with its
 plugin: that is what a failed or crashed plugin and a missing route look like
 from outside.
+
+The first run on a device added two things to this. AUM tells that a plugin
+did not load only through the colour of its node, so the check reads the
+nodes' rings off a screenshot. And a track must be checked behind the others'
+mutes: a delay that was still ringing made a quiet hat look like no answer.
 
 `load_song` ends with this check. It can be called on its own at any time, for
 instance when a playback sounded wrong.

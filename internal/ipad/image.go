@@ -186,6 +186,38 @@ func Luma(src image.Image, pngScale float64, r Rect) (float64, error) {
 	return sum / float64(px.Dx()*px.Dy()), nil
 }
 
+// RingRedness is the share of a ring around the centre of r that is drawn
+// red: the ring runs from the fractions from to to of half of r's width. AUM
+// draws the ring of a node whose plugin failed to load in red stripes, and
+// every other node's in grey.
+func RingRedness(src image.Image, pngScale float64, r Rect, from, to float64) float64 {
+	if pngScale <= 0 {
+		pngScale = 1
+	}
+	b := src.Bounds()
+	cx, cy := r.Center()
+	half := r.Width / 2
+	total, red := 0, 0
+	for a := 0.0; a < 360; a += 3 {
+		sin, cos := math.Sincos(a * math.Pi / 180)
+		for _, f := range []float64{from, (from + to) / 2, to} {
+			p := image.Pt(b.Min.X+int((cx+half*f*cos)*pngScale), b.Min.Y+int((cy+half*f*sin)*pngScale))
+			if !p.In(b) {
+				continue
+			}
+			total++
+			cr, cg, cb, _ := src.At(p.X, p.Y).RGBA()
+			if cr>>8 > 110 && 2*cr > 5*cg && 2*cr > 5*cb {
+				red++
+			}
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(red) / float64(total)
+}
+
 // DecodePNG decodes a device screenshot.
 func DecodePNG(data []byte) (image.Image, error) {
 	img, err := png.Decode(bytes.NewReader(data))

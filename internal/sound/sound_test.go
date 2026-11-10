@@ -230,8 +230,13 @@ func TestMeasureNoteLayerAndSilence(t *testing.T) {
 	}
 
 	silent := MeasureNote(Clip{Samples: make([]float32, 96000), Channels: 2, SampleRate: testRate, HoldMS: 700}, 57, 100)
-	if !silent.Silent() || !silent.Unpitched || !hasRemark(silent, "silent") {
+	if !silent.Silent() || !silent.Unpitched || !hasRemark(silent, "silent") || silent.PeakDB != SilenceDB || silent.LevelDB != SilenceDB {
 		t.Errorf("silence = %+v", silent)
+	}
+	// A preset that reaches full scale at unity is said to clip.
+	hot := MeasureNote(tone(1300, 20, 700, sine(hz(57)), organ(1.0)), 57, 100)
+	if !hasRemark(hot, "peaks at full scale") {
+		t.Errorf("a sound at full scale: peak %.1f, remarks %v", hot.PeakDB, hot.Remarks)
 	}
 	noise := rand.New(rand.NewSource(1))
 	s = MeasureNote(tone(1300, 20, 700, func(float64) float64 { return noise.Float64()*2 - 1 }, organ(0.2)), 57, 100)
