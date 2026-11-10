@@ -40,6 +40,59 @@ Nothing is contacted at startup; an unplugged iPad only shows up when a tool is
 called. `ipad_status` then names the missing layer and the command that brings it
 up.
 
+### Daemon on a Mac, iPad on another host
+
+macOS 15's Local Network privacy stops a launchd-started, unsigned program from
+connecting to LAN addresses: the daemon gets `no route to host` for the iPad
+host's WDA even though `curl` in a shell reaches it. A grant in System Settings
+would not last, because every update replaces the binary. Keep the daemon on
+loopback (the default `ipad_wda_url`), which needs no permission, and let a
+launchd socket forward it with Apple's `nc`, which is exempt. Save this as
+`~/Library/LaunchAgents/com.teemow.ipad-wda-proxy.plist`, with `<ipad-host>`
+being the machine running `scripts/ipad wda`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.teemow.ipad-wda-proxy</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/nc</string>
+		<string><ipad-host></string>
+		<string>8100</string>
+	</array>
+	<key>inetdCompatibility</key>
+	<dict>
+		<key>Wait</key>
+		<false/>
+	</dict>
+	<key>Sockets</key>
+	<dict>
+		<key>Listeners</key>
+		<dict>
+			<key>SockNodeName</key>
+			<string>127.0.0.1</string>
+			<key>SockServiceName</key>
+			<string>8100</string>
+		</dict>
+	</dict>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.teemow.ipad-wda-proxy.plist
+curl -s http://127.0.0.1:8100/status    # WDA's status, through the proxy
+```
+
+launchd hands each connection to its own `nc`. A read of AUM takes about twice
+as long this way (around 4 s). WDA has no authentication, and `ios forward`
+listens on every interface of the iPad host, so anyone on that LAN can drive
+the iPad.
+
 ## Tools
 
 | Tool | What it does |
