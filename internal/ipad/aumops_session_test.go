@@ -116,3 +116,84 @@ func TestAUMSession(t *testing.T) {
 		t.Errorf("gestures = %v, want the menu opened and closed", g)
 	}
 }
+
+// TestAUMSessionSeesAFailedNode checks a node AUM draws as failed is found:
+// AUM says it only in the node's colour, a ring of red stripes.
+// TestAUMMixer reads the strips and a failed node without the session's name:
+// AUM's menu stays shut.
+func TestAUMMixer(t *testing.T) {
+	bare := mixer()
+	w, c := opFake(t, bare, ipadtest.DefaultAUM(), bare)
+	st := ParseAUM(mustParse(t, bare.Source()), Size{Width: 1210, Height: 834})
+	var source Rect
+	for _, n := range st.Channels[3].Nodes {
+		if n.Role == "source" {
+			source = n.Frame
+		}
+	}
+	w.RedRings = [][4]float64{{source.X, source.Y, source.Width, source.Height}}
+	res, err := c.AUMMixer(context.Background())
+	if err != nil {
+		t.Fatalf("mixer: %v", err)
+	}
+	got := res.Data.(AUMLoaded)
+	if got.Session != "" || len(got.Strips) != 6 {
+		t.Errorf("mixer = %+v, want the six strips and no session name", got)
+	}
+	if len(got.Failed) != 1 || got.Failed[0] != "4: Synth Two" || len(got.Problems) != 1 {
+		t.Errorf("failed = %v, problems = %v, want the fourth strip's node", got.Failed, got.Problems)
+	}
+	if g := w.GestureLog(); len(g) != 0 {
+		t.Errorf("gestures = %v, want none: the menu is not opened", g)
+	}
+}
+
+func TestAUMSessionSeesAFailedNode(t *testing.T) {
+	menu := ipadtest.DefaultAUM()
+	bare := mixer()
+	w, c := opFake(t, bare, menu, bare)
+	st := ParseAUM(mustParse(t, bare.Source()), Size{Width: 1210, Height: 834})
+	// The fourth strip's source node failed.
+	var source Rect
+	for _, n := range st.Channels[3].Nodes {
+		if n.Role == "source" {
+			source = n.Frame
+		}
+	}
+	if source.Empty() {
+		t.Fatalf("no source node on strip 4: %+v", st.Channels[3].Nodes)
+	}
+	w.RedRings = [][4]float64{{source.X, source.Y, source.Width, source.Height}}
+	res, err := c.AUMSession(context.Background())
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	got := res.Data.(AUMLoaded)
+	if len(got.Failed) != 1 || got.Failed[0] != "4: Synth Two" {
+		t.Fatalf("failed strips = %v, want the fourth", got.Failed)
+	}
+	if len(got.Problems) != 1 || !strings.Contains(got.Problems[0], `AUM draws a node of "4: Synth Two" as failed`) {
+		t.Errorf("problems = %v", got.Problems)
+	}
+
+	// The stand-in's screenshot is red in its top-left quarter, where the
+	// first strips' nodes are: a screen red all over is no failed node.
+	w.RedRings = nil
+	w.SetScreens(bare.Source(), menu.Source(), bare.Source())
+	res, err = c.AUMSession(context.Background())
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if got := res.Data.(AUMLoaded); len(got.Failed) != 0 || len(got.Problems) != 0 {
+		t.Errorf("without a failed node: %+v", got)
+	}
+}
+
+func mustParse(t *testing.T, src json.RawMessage) *Element {
+	t.Helper()
+	root, err := ParseSource(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}

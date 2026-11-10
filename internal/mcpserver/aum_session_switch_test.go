@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -226,31 +227,30 @@ func TestOnBrainSessionSwitchSyncsDaemon(t *testing.T) {
 		t.Fatalf("register failed: %s", resultText(res))
 	}
 
+	// The switch runs in a goroutine (the receiver callback must not block), so
+	// each step waits for it to be over before looking. Polling for "the
+	// device exists" is not enough: the import still persists devices.yaml
+	// after binding it, and a test that returned in between had its temp dir
+	// removed under that write ("TempDir RemoveAll cleanup: directory not
+	// empty").
+
 	// An unpinned program is ignored (logged, no state change).
 	s.OnBrainSessionSwitch(42)
-	time.Sleep(100 * time.Millisecond) // let the async resolver run
+	s.waitBackground()
 	if id := s.currentAUMSessionID(); id != "" {
 		t.Fatalf("unpinned program set current session %q", id)
 	}
 
 	s.OnBrainSessionSwitch(0)
-	waitFor(t, 2*time.Second, func() bool {
-		_, ok := s.eng.DeviceFor("gitarre")
-		return ok && s.currentAUMSessionID() == "song_a"
-	})
-}
-
-// waitFor polls cond until it holds, failing the test when the timeout
-// elapses first (the OnBrainSessionSwitch work runs async because the
-// receiver callback must not block).
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	s.waitBackground()
+	if id := s.currentAUMSessionID(); id != "song_a" {
+		t.Fatalf("current session = %q, want song_a", id)
 	}
-	t.Fatal("condition never held within the timeout")
+	if _, ok := s.eng.DeviceFor("gitarre"); !ok {
+		t.Fatal("brain switch did not import the target session's rig")
+	}
+	// The import ran to its end: the rig is persisted.
+	if _, err := os.Stat(config.DevicesPath()); err != nil {
+		t.Fatalf("brain switch did not persist the rig: %v", err)
+	}
 }

@@ -6,6 +6,7 @@ require (
 	github.com/beevik/etree v1.8.1
 	github.com/coder/websocket v1.8.15
 	github.com/godbus/dbus/v5 v5.2.4
+	github.com/mewkiz/flac v1.0.14
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/teemow/aum-session-go v0.3.2
 	github.com/teemow/midi-device v0.2.1
@@ -19,6 +20,9 @@ require (
 
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/icza/bitio v1.1.0 // indirect
+	github.com/mewkiz/pkg v0.0.0-20250417130911-3f050ff8c56d // indirect
+	github.com/mewpkg/term v0.0.0-20241026122259-37a80af23985 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

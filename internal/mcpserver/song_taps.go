@@ -74,6 +74,17 @@ func (s *Server) songTap(session string) (tap *audiotap.Store, named bool) {
 	return nil, false
 }
 
+// songRecordingTap names the tap a song is recorded at: its session's master
+// tap where that dialled in under its name. "" leaves the choice to the
+// recorder, which takes the most recently connected tap; in a session with a
+// tap on every track that may be one track's.
+func (s *Server) songRecordingTap(rec songSessionRecord) string {
+	if st, ok := s.sessionTap(rec.Session, song.MasterTap); ok {
+		return st.Name()
+	}
+	return ""
+}
+
 // trackTaps are the connected taps of a session's tracks, by track id, and
 // the tracks that have none.
 func (s *Server) trackTaps(cs *compiledSong, session string) (taps map[string]*audiotap.Store, missing []string) {

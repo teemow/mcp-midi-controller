@@ -111,10 +111,11 @@ func main() {
 		}
 	}
 
-	// The audio tap registry holds the live ProbeAudioTap streams in memory (RAM
-	// only — audio is a private, volatile rig signal): one named per-tap store
-	// per concurrently-connected insert. It backs the read-only get_audio_tap
-	// MCP tool and is fed by the LAN receiver below.
+	// The audio tap registry holds the live ProbeAudioTap streams in memory
+	// (audio is a private, volatile rig signal): one named per-tap store per
+	// concurrently-connected insert. It backs the read-only get_audio_tap MCP
+	// tool and the recording tools, which write a tap's stream to a file under
+	// the state dir when asked, and is fed by the LAN receiver below.
 	audioRegistry := audiotap.NewRegistry()
 
 	// The host-diagnostics store holds the latest snapshot an auv3-probe

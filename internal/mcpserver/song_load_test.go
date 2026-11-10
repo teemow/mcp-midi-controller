@@ -1,10 +1,12 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
 	"github.com/teemow/midi-transport/midicontrol"
 )
@@ -238,6 +240,16 @@ func TestCheckSong(t *testing.T) {
 	}
 }
 
+// mustParseSource parses the source of one of the stand-in's screens.
+func mustParseSource(t *testing.T, src json.RawMessage) *ipad.Element {
+	t.Helper()
+	root, err := ipad.ParseSource(src)
+	if err != nil {
+		t.Fatalf("parse the screen's source: %v", err)
+	}
+	return root
+}
+
 // TestLoadSongNamedTaps is a rig whose taps dial in under the names the
 // session gives them, a tap on every track: the load knows its session from
 // the master's tap, the notes are heard there and not at a track's tap, the
@@ -280,13 +292,36 @@ func TestLoadSongNamedTaps(t *testing.T) {
 	r.wda.SetScreens(bare.Source(), menu.Source(), bare.Source())
 	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive"})
 	text = resultText(res)
-	if res.IsError || !strings.Contains(text, `aum     ok    AUM has "Songs/Night Drive" open: its ProbeAudioTap dialled in under that name`) {
+	if res.IsError || !strings.Contains(text, `aum     ok    AUM has "Songs/Night Drive" (its ProbeAudioTap dialled in under that name) open with the song's 5 strip(s)`) {
 		t.Fatalf("check: %s", text)
 	}
 	if n := r.wda.Gestures(); n != 0 {
 		t.Errorf("the check made %d gesture(s) in AUM although the tap names the session", n)
 	}
-	// Asked for, the look is taken all the same.
+	// The mixer is still looked at: a node AUM draws as failed is seen
+	// without the menu.
+	st := ipad.ParseAUM(mustParseSource(t, bare.Source()), ipad.Size{Width: 1210, Height: 834})
+	var source ipad.Rect
+	for _, n := range st.Channels[2].Nodes {
+		if n.Role == "source" {
+			source = n.Frame
+		}
+	}
+	if source.Empty() {
+		t.Fatalf("no source node on the pad's strip: %+v", st.Channels[2].Nodes)
+	}
+	r.wda.RedRings = [][4]float64{{source.X, source.Y, source.Width, source.Height}}
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "sound": false})
+	if text := resultText(res); !res.IsError || r.wda.Gestures() != 0 || !strings.Contains(text, "plugins FAIL  AUM reports: AUM draws a node of") {
+		t.Fatalf("check with a failed node (%d gestures): %s", r.wda.Gestures(), text)
+	}
+	r.wda.RedRings = nil
+	// ui: false leaves AUM's screen alone; the tap still names the session.
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false, "sound": false})
+	if text := resultText(res); res.IsError || !strings.Contains(text, `aum     ok    AUM has "Songs/Night Drive" open: its ProbeAudioTap dialled in under that name`) {
+		t.Fatalf("check with ui false: %s", text)
+	}
+	// Asked for, the menu is read all the same.
 	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": true, "sound": false})
 	if text := resultText(res); res.IsError || r.wda.Gestures() == 0 || !strings.Contains(text, `aum     ok    AUM has "Night Drive" open with the song's 5 strip(s)`) {
 		t.Fatalf("check with ui true (%d gestures): %s", r.wda.Gestures(), text)
@@ -332,6 +367,34 @@ func TestLoadSongNamedTaps(t *testing.T) {
 	other.Disconnect()
 	if got := s.loadedSessionID(); got != "Songs/Night Drive" {
 		t.Errorf("loaded session without a tap that names one = %q", got)
+	}
+}
+
+// TestPlaySongRecordsAtTheMasterTap checks a recorded playback takes the
+// session's master tap in a session with a tap on every track, where the tap
+// that connected last is a track's.
+func TestPlaySongRecordsAtTheMasterTap(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	s.rec.quietFor, s.rec.maxTail, s.rec.poll = 150*time.Millisecond, 2*time.Second, 5*time.Millisecond
+	r.Session = "Songs/Night Drive"
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong + "session: {track_taps: true}\n"}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	if st, ok := r.reg.Active(); !ok || st.Name() == "Songs/Night Drive/master" {
+		t.Fatalf("the most recent tap is %q, want a track's for this test", st.Name())
+	}
+	res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "preroll_ms": 50, "sections": 1, "record": true})
+	if text := resultText(res); res.IsError || !strings.Contains(text, `from the tap "Songs/Night Drive/master"`) {
+		t.Fatalf("play: %s", text)
+	}
+	last := lastRecording(t, s)
+	if last.Error != "" || last.Meta.Tap != "Songs/Night Drive/master" {
+		t.Fatalf("the recording = %+v (error %q), want it taken at the master tap", last.Meta, last.Error)
 	}
 }
 
@@ -491,4 +554,82 @@ func TestLoadSongSequencer(t *testing.T) {
 		t.Fatalf("play: %s", resultText(res))
 	}
 	s.player.Stop()
+}
+
+// TestSoundCheckIsolatesEachTrack checks the check mutes every strip but the
+// one it plays, puts the song's own mutes back, and plays the lowest of the
+// notes a track starts with: on a device a bell's delay was still ringing
+// when the drums were checked with their hat, and the drums were called
+// silent.
+func TestSoundCheckIsolatesEachTrack(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	// The drums start with a kick and a hat together, and the pad is muted
+	// by the song itself.
+	doc := strings.Replace(toolSong, `kick: "x...x...x...x...", snare:`, `hat: "x.x.x.x.x.x.x.x.", kick: "x...x...x...x...", snare:`, 1)
+	doc = strings.Replace(doc, "  - id: pad\n", "  - id: pad\n    mute: true\n", 1)
+	doc = strings.Replace(doc, "verse: {bars: 1, play: {bass: bass, drums: beat}}", "verse: {bars: 1, play: {bass: bass, pad: chords, drums: beat}}", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "drums      DrumBox                C2 ") {
+		t.Fatalf("check: %s", text)
+	}
+
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	muteCC := map[int]string{}
+	for _, tp := range cs.plan.Tracks {
+		muteCC[tp.MuteEvent(true).Data1] = tp.ID
+	}
+	cmds := r.waitCommands(func(cmds []midicontrol.Command) bool {
+		n := 0
+		for _, c := range cmds {
+			if c.Type == "noteOff" {
+				n++
+			}
+		}
+		return n >= 3
+	})
+	// While a note sounds, its own strip is the only one not muted.
+	muted := map[string]bool{}
+	notes := 0
+	for _, c := range cmds {
+		if id, ok := muteCC[c.Controller]; ok && c.Type == "cc" && c.Channel == 15 {
+			muted[id] = c.Value >= 64
+		}
+		if c.Type != "noteOn" {
+			continue
+		}
+		notes++
+		playing := cs.plan.Tracks[c.Channel-1].ID
+		for _, tp := range cs.plan.Tracks {
+			if muted[tp.ID] != (tp.ID != playing) {
+				t.Errorf("while %s is checked, %s muted = %v", playing, tp.ID, muted[tp.ID])
+			}
+		}
+	}
+	if notes != 3 {
+		t.Fatalf("the check played %d notes, want one per track", notes)
+	}
+	// Afterwards the song's own mutes are back: only the pad.
+	time.Sleep(100 * time.Millisecond)
+	r.mu.Lock()
+	for _, c := range r.Commands {
+		if id, ok := muteCC[c.Controller]; ok && c.Type == "cc" && c.Channel == 15 {
+			muted[id] = c.Value >= 64
+		}
+	}
+	r.mu.Unlock()
+	if muted["bass"] || !muted["pad"] || muted["drums"] {
+		t.Errorf("mutes after the check = %v, want only the pad's", muted)
+	}
 }

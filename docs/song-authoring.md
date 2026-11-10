@@ -50,16 +50,22 @@ names itself (8, below), the daemon asks the tap instead.
 
 `check_song` answers "will this song sound if I play it now": the brain is
 connected, the tap is streaming, AUM shows the song's session and no alert, the
-mixer has the song's strips, and **every track answers a note**. For the last
-one the daemon sets the song's opening sound, plays each track's own first note
-alone and measures the tap. A track that stays silent is named, with its
+mixer has the song's strips, no node is drawn as failed, and **every track
+answers a note**. For the last one the daemon sets each track's own sound,
+mutes every strip, and then plays each track's own first note with only that
+strip open, measuring the tap. A track that stays silent is named, with its
 plugin: that is what a failed or crashed plugin and a missing route look like
 from outside.
 
+The first run on a device added two things to this. AUM tells that a plugin
+did not load only through the colour of its node, so the check reads the
+nodes' rings off a screenshot. And a track must be checked behind the others'
+mutes: a delay that was still ringing made a quiet hat look like no answer.
+
 `load_song` ends with this check. It can be called on its own at any time, for
 instance when a playback sounded wrong. Where the session's tap names itself
-(8, below), the check learns the open session from it and leaves AUM's screen
-alone.
+(8, below), the check learns the open session from it and leaves AUM's menu
+shut; it still reads the strips and the nodes' rings off the mixer.
 
 ### 3. A sound catalogue the daemon fills by measuring
 
@@ -158,7 +164,9 @@ the session's id and the strip, `<session id>/master` and
 
 - the song tools listen at the session's master tap, by name;
 - the connected master tap says which session AUM has open. `check_song`
-  asks it and looks at AUM's screen only when no tap answers;
+  asks it, and opens AUM's menu for the session's name only when no tap
+  answers. The mixer is read either way, for the strips and for a node drawn
+  as failed;
 - `mix_song` reads every track's tap out during the pass through the song,
   so the table of tracks and sections costs no pass of its own;
 - a tap that dials again under its name (a reconnect, the same session loaded

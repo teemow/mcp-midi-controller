@@ -76,15 +76,16 @@ func (s *Server) registerSongLoadTools(songArg string) {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "check_song",
-		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM has the song's session open, and every track answers a note. " +
-			"Which session is open is read from the session's master tap, which dials in under the session's id. AUM's screen (the session's name, its strips, a failed plugin's alert) is looked at when no tap names the session, or with ui: true; the look opens and closes AUM's menu. " +
-			"For the notes, the song's own sound is set (each track's declaration, no scene), every track's first note is played alone and the master tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. " +
-			"Not while a song plays.",
+		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM has the song's session open with its strips and reports no failed plugin, and every track answers a note. " +
+			"Which session is open is read from the session's master tap, which dials in under the session's id; AUM's menu is opened for the name only when no tap names the session, or with ui: true. " +
+			"The mixer is looked at either way: its strips, and a plugin that did not load, which is read off a screenshot: AUM draws its node with a ring of red stripes and says so nowhere else. " +
+			"For the notes, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted and the lowest of its first notes played, and the master tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
+			"Not while a song plays. ui: false leaves AUM's screen alone.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				` + songArg + `,
-				"ui": {"type": "boolean", "description": "Read the session name, strips and alerts from AUM's screen. Default: only when the session's tap does not name it (and the iPad UI tools are configured). true always looks, false never."},
+				"ui": {"type": "boolean", "description": "Look at AUM's screen (when the iPad UI tools are configured). Default: the mixer's strips, alerts and failed plugins are read, and AUM's menu is opened for the session's name only when no tap names the session. true opens the menu in any case, false leaves the screen alone."},
 				"sound": {"type": "boolean", "description": "Play every track's first note and listen (default true)."}
 			},
 			"required": ["song"]
@@ -177,6 +178,9 @@ type loadReport struct {
 	OK      bool         `json:"ok"`
 	// Next says what to do when a step failed.
 	Next string `json:"next,omitempty"`
+
+	// loaded is what AUM showed once the session was open.
+	loaded *ipad.AUMLoaded
 }
 
 func (r *loadReport) add(step string, ok bool, since time.Time, format string, a ...any) {
@@ -354,6 +358,7 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 		return done("look at the iPad (ipad_screenshot); AUM must be running and its mixer reachable, then load_song again")
 	}
 	loaded, _ := res.Data.(ipad.AUMLoaded)
+	rep.loaded = &loaded
 	if !res.Verified {
 		rep.add("load", false, start, "%s", res.Message)
 		return done("look at the iPad (ipad_screenshot), then load_song again")
@@ -427,13 +432,16 @@ func (s *Server) waitRig(ctx context.Context, gen uint64, session string, d time
 
 // --- check_song -----------------------------------------------------------------
 
-// look says when check_song reads AUM's screen.
+// look says how much of AUM's screen check_song reads.
 type look int
 
 const (
-	// lookAuto reads the screen only when no tap names the open session.
+	// lookAuto reads the mixer, and opens AUM's menu for the session's name
+	// only when no tap names the open session.
 	lookAuto look = iota
+	// lookAlways opens the menu as well, whatever the taps say.
 	lookAlways
+	// lookNever leaves AUM's screen alone.
 	lookNever
 )
 
@@ -562,11 +570,16 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		return c
 	}
 
-	// What AUM shows. The look opens AUM's menu, so it is left out when the
-	// tap has named the session, unless it was asked for.
+	// What AUM shows: its strips, what it reports or draws as failed, and in
+	// its menu the session's name. The menu is opened only when no tap has
+	// named the session, or when that was asked for.
 	loaded := o.Loaded
-	if loaded == nil && s.ipad != nil && (o.UI == lookAlways || (o.UI == lookAuto && named == "")) {
-		res, err := s.ipad.AUMSession(ctx)
+	if loaded == nil && s.ipad != nil && o.UI != lookNever {
+		read := s.ipad.AUMSession
+		if named != "" && o.UI == lookAuto {
+			read = s.ipad.AUMMixer
+		}
+		res, err := read(ctx)
 		if err != nil {
 			c.find("aum", false, "AUM's screen could not be read: %v", err)
 		} else if l, ok := res.Data.(ipad.AUMLoaded); ok {
@@ -574,17 +587,21 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		}
 	}
 	if loaded != nil {
-		want := path.Base(rec.Session)
-		if !strings.EqualFold(loaded.Session, want) {
+		// The session as the findings name it: by AUM's menu when that was
+		// read, else by the tap.
+		open := fmt.Sprintf("%q", loaded.Session)
+		if loaded.Session == "" && named != "" {
+			open = fmt.Sprintf("%q (its ProbeAudioTap dialled in under that name)", named)
+		} else if want := path.Base(rec.Session); !strings.EqualFold(loaded.Session, want) {
 			c.find("aum", false, "AUM has %q open, not the song's session %q", loaded.Session, want)
 			c.Next = "load_song"
 			return c
 		}
 		s.loaded.set(rec.Session)
 		if missing := missingStrips(cs, loaded.Strips); len(missing) > 0 {
-			c.find("aum", false, "AUM has %q open but no strip for: %s (strips: %s)", loaded.Session, strings.Join(missing, ", "), strings.Join(loaded.Strips, ", "))
+			c.find("aum", false, "AUM has %s open but no strip for: %s (strips: %s)", open, strings.Join(missing, ", "), strings.Join(loaded.Strips, ", "))
 		} else {
-			c.find("aum", true, "AUM has %q open with the song's %d strip(s)", loaded.Session, len(loaded.Strips))
+			c.find("aum", true, "AUM has %s open with the song's %d strip(s)", open, len(loaded.Strips))
 		}
 		if len(loaded.Problems) > 0 {
 			c.find("plugins", false, "AUM reports: %s", strings.Join(loaded.Problems, "; "))
@@ -700,12 +717,32 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 		return nil, err
 	}
 
+	// A track's check note is the first one it plays; of several that start
+	// together the lowest, which on a drum track is the kick and not a hat.
 	first := map[string]song.Event{}
 	for _, e := range cs.timeline.Events {
-		if e.Kind == song.NoteOn {
-			if _, seen := first[e.Track]; !seen {
-				first[e.Track] = e
-			}
+		if e.Kind != song.NoteOn {
+			continue
+		}
+		if have, seen := first[e.Track]; !seen || (e.Tick == have.Tick && e.Data1 < have.Data1) {
+			first[e.Track] = e
+		}
+	}
+	// Every strip is muted but the one being checked: what an earlier track
+	// left ringing in its delay or reverb is then not taken for an answer,
+	// nor does it drown a quiet one. The song's own mutes come back at the
+	// end, whatever happens on the way.
+	mute := func(tp *song.TrackPlan, on bool) error { return s.sendBrain(ctx, songCommand(tp.MuteEvent(on))) }
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		for _, tp := range cs.plan.Tracks {
+			_ = s.sendBrain(rctx, songCommand(tp.MuteEvent(tp.HomeMute())))
+		}
+	}()
+	for _, tp := range cs.plan.Tracks {
+		if err := mute(tp, true); err != nil {
+			return nil, err
 		}
 	}
 	var out []trackCheck
@@ -718,14 +755,12 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 			continue
 		}
 		row.Note = e.Data1
-		if tp.HomeMute() {
-			if err := s.sendBrain(ctx, songCommand(tp.MuteEvent(false))); err != nil {
-				return out, err
-			}
+		if err := mute(tp, false); err != nil {
+			return out, err
 		}
 		h, err := s.hearNote(ctx, tap, e.Channel, e.Data1, 100, songNoteHold, songNoteTail)
-		if tp.HomeMute() {
-			_ = s.sendBrain(ctx, songCommand(tp.MuteEvent(true)))
+		if merr := mute(tp, true); err == nil {
+			err = merr
 		}
 		if err != nil {
 			return out, err

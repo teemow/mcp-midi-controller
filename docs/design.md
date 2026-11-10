@@ -297,6 +297,13 @@ Global tools:
   and `export_song_midi` writes it as a Standard MIDI File. See
   `docs/songs.md`; `docs/song-authoring.md` is the design of the tools around
   writing a song.
+- Recordings (`internal/recording`, `internal/drive`): `play_song` with
+  `record`, or `start_recording` / `stop_recording`, write what an audio tap
+  streams into a seamless FLAC or WAV file under the state dir;
+  `list_recordings` shows them; `connect_google_drive` / `get_google_drive`
+  sign the daemon in to the user's Google Drive with the user's own OAuth
+  client, and `upload_recording` puts a recording there and returns its link.
+  See `docs/recording.md`.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
   BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
   per-device settle baked into the event order) and optionally HTTP-POST it to

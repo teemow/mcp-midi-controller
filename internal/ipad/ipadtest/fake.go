@@ -11,6 +11,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,6 +59,9 @@ type WDA struct {
 	// Bright lists screenshot regions (x, y, w, h in points) drawn light
 	// grey, e.g. lit MIDI routing cells.
 	Bright [][4]float64
+	// RedRings lists node frames (x, y, w, h in points) whose ring is drawn
+	// red in the screenshot, the way AUM draws a node whose plugin failed.
+	RedRings [][4]float64
 	// BrightScreens, when set, replaces Bright after each gesture like
 	// Screens: BrightScreens[n] after n gestures.
 	BrightScreens [][][4]float64
@@ -325,6 +329,18 @@ func (w *WDA) png() []byte {
 	for _, b := range bright {
 		px := func(v float64) int { return int(v * w.Scale) }
 		fill(image.Rect(px(b[0]), px(b[1]), px(b[0]+b[2]), px(b[1]+b[3])), color.RGBA{90, 90, 90, 255})
+	}
+	for _, r := range w.RedRings {
+		cx, cy, half := (r[0]+r[2]/2)*w.Scale, (r[1]+r[3]/2)*w.Scale, r[2]/2*w.Scale
+		// The node sits on the dark mixer, whatever the test put there.
+		fill(image.Rect(int(cx-1.4*half), int(cy-1.4*half), int(cx+1.4*half), int(cy+1.4*half)), color.RGBA{30, 30, 30, 255})
+		for y := int(cy - half); y <= int(cy+half); y++ {
+			for x := int(cx - half); x <= int(cx+half); x++ {
+				if d := math.Hypot(float64(x)-cx, float64(y)-cy) / half; d >= 0.72 && d <= 0.97 {
+					img.SetRGBA(x, y, color.RGBA{150, 33, 33, 255})
+				}
+			}
+		}
 	}
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)
