@@ -766,7 +766,12 @@ the iPad over the LAN and its UI over WebDriverAgent):
   second of them left the last track's strip muted: the check had muted the
   first strip and opened it in the same moment, and muted the last one and
   put its own mute back in the same moment. That is the pair of mutes
-  measured above.
+  measured above. With the two kept 150 ms apart, six checks in a row on two
+  songs heard every track at its first note, and the mixer read after each
+  showed no strip muted. A check takes about 18 s.
+- **Another session in AUM.** With another song's session loaded,
+  `check_song` named the session AUM had open, said it was not the song's
+  and played nothing.
 - **A failed plugin, seen by the tools.** A lab with the instrument that does
   not load was reported as loaded "but not every instrument came up", with
   that instrument marked as failed, read off the screenshot. Its auditions
@@ -877,8 +882,8 @@ tools of a daemon that has the mode:
 
 Not yet measured:
 
-- `check_song` with a strip's mute and its unmute kept 150 ms apart, and its
-  second try of a silent track;
+- the second try `check_song` gives a silent track (no track has needed one
+  since);
 - a kit's level taken from its kick, and a preset measured off the octave
   that `calibrate` therefore leaves as written;
 - `audition_sound` in a song's own session with `presets: all`, `set_sound`,
