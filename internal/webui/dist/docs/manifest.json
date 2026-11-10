@@ -21,6 +21,10 @@
       "title": "songs"
     },
     {
+      "path": "song-authoring.md",
+      "title": "song-authoring"
+    },
+    {
       "path": "recording.md",
       "title": "recording"
     },

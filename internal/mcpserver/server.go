@@ -22,6 +22,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/song"
+	"github.com/teemow/mcp-midi-controller/internal/sound"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
@@ -107,6 +108,15 @@ type Server struct {
 	songs  *song.Store
 	player song.Player
 
+	// mix is the mix measurement that runs or ran last (mix_song), guarded
+	// by mixMu. See song_mix.go.
+	mixMu sync.Mutex
+	mix   *mixJob
+
+	// sounds is the rig's sound catalogue: what the presets of its plugins
+	// were measured to sound like. See sound_tools.go.
+	sounds *sound.Catalog
+
 	// holdAwake keeps the daemon's host awake until the release it returns is
 	// called. play_song holds it for as long as a song plays, because the
 	// player keeps the time with the host's timers and a dozing host fires
@@ -121,6 +131,12 @@ type Server struct {
 	// and drv its Google Drive client and sign-in (drive_tools.go).
 	rec recorderState
 	drv driveState
+
+	// pulls signals the iPad's downloads of staged sessions to whoever waits
+	// for one, and loaded is the session the daemon itself loaded into AUM.
+	// See song_session.go.
+	pulls  sessionPulls
+	loaded loadedSession
 
 	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
 	// so two probes never overlap on the shared audio tap. This is what makes
@@ -186,6 +202,7 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		mcp:        mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
 		scenes:     scene.NewStore(config.ScenesDir()),
 		songs:      song.NewStore(config.SongsDir()),
+		sounds:     sound.NewCatalog(config.SoundsDir()),
 		holdAwake:  hostawake.Hold,
 		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},
@@ -315,6 +332,11 @@ func (s *Server) NotifyHostDiagnostics(connected bool, remote string) {
 // counterpart of NotifyAudioTap. Like notifyInbound, clients receive it only
 // after setting a logging level.
 func (s *Server) NotifyMidiControl(connected bool, remote string) {
+	if connected {
+		// A new brain: the session it belongs to may not be the one last
+		// loaded through load_song.
+		s.loaded.brainConnected()
+	}
 	s.broadcastConnState("midi-control", connected, remote,
 		"drive the rig with play_notes / send_midi / set_transport",
 		"no brain channel; play_notes/send_midi need a hardware endpoint")

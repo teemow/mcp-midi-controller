@@ -38,6 +38,10 @@ type Song struct {
 	// Swing delays every second grid step by this fraction of a step (0 is
 	// straight, 0.33 a triplet feel). A pattern may set its own.
 	Swing float64 `yaml:"swing,omitempty" json:"swing,omitempty"`
+	// Calibrate compiles the song against the rig's sound catalogue: notes
+	// are sounding pitch, levels are loudness, and a drum track's lanes are
+	// its kit's pads. See calibrate.go.
+	Calibrate bool `yaml:"calibrate,omitempty" json:"calibrate,omitempty"`
 
 	Tracks []Track `yaml:"tracks" json:"tracks"`
 	// Master is the effect chain on the master strip, after the fader.
@@ -48,7 +52,46 @@ type Song struct {
 	Sections map[string]Section `yaml:"sections" json:"sections"`
 	// Arrangement is the order the sections play in; a section may repeat.
 	Arrangement []string `yaml:"arrangement" json:"arrangement"`
+
+	// Session holds how the song's AUM session is built, beyond what the
+	// tracks say. nil is the plain session.
+	Session *SessionSpec `yaml:"session,omitempty" json:"session,omitempty"`
 }
+
+// SessionSpec is the song's own choice of session options. They are part of
+// the document so a song carries how its session is built; the tools that
+// author a session take them from here unless told otherwise.
+type SessionSpec struct {
+	// TrackTaps puts a ProbeAudioTap after every track's fader.
+	TrackTaps bool `yaml:"track_taps,omitempty" json:"track_taps,omitempty"`
+	// FullControl maps every other parameter of every plugin as well.
+	FullControl bool `yaml:"full_control,omitempty" json:"full_control,omitempty"`
+	// Hardware is the hardware-I/O profile of the master's output: "builtin"
+	// (the default) or "x32".
+	Hardware string `yaml:"hardware,omitempty" json:"hardware,omitempty"`
+	// Presets says which factory presets the session can load: "song" (the
+	// default) maps the ones the song names, "all" every preset of every
+	// plugin, so any of them can be auditioned in the loaded session and a
+	// song can change to another without a new session.
+	Presets string `yaml:"presets,omitempty" json:"presets,omitempty"`
+}
+
+// AllPresets reports whether the session maps every factory preset.
+func (o SessionSpec) AllPresets() bool {
+	return strings.EqualFold(strings.TrimSpace(o.Presets), "all")
+}
+
+// SessionOptions returns the song's session options, the zero value when it
+// names none.
+func (s *Song) SessionOptions() SessionSpec {
+	if s.Session == nil {
+		return SessionSpec{}
+	}
+	return *s.Session
+}
+
+// sessionHardware lists the hardware profiles a session can be authored for.
+var sessionHardware = map[string]bool{"": true, "builtin": true, "x32": true}
 
 // Track is one instrument with its effect chain on its own mixer strip and
 // MIDI channel.
@@ -75,6 +118,17 @@ type Track struct {
 	// DrumMap names the notes of a drum track's lanes (lane -> note name or
 	// number), on top of the General MIDI names every drum track knows.
 	DrumMap map[string]string `yaml:"drum_map,omitempty" json:"drum_map,omitempty"`
+
+	// kit is the measured drum map of the kit the track plays in the section
+	// being compiled (lane -> note) and kitName its preset; set only while a
+	// calibrated song compiles. With a kit, a lane is one of its pads, not a
+	// General MIDI note.
+	kit     map[string]int
+	kitName string
+	// anyLane lets a lane nothing knows compile to a silent placeholder: a
+	// calibrated song's lanes are checked against its kit, which needs the
+	// catalogue, so a compile without one must not reject them.
+	anyLane bool
 }
 
 // Plugin is one hosted audio unit — a track's instrument, one of its effects or
@@ -357,6 +411,17 @@ func (s *Song) Validate() error {
 		e.addf("/swing: %g is not within 0..1", s.Swing)
 	}
 
+	if s.Session != nil && !sessionHardware[strings.ToLower(strings.TrimSpace(s.Session.Hardware))] {
+		e.addf("/session/hardware: %q is not builtin or x32", s.Session.Hardware)
+	}
+	if s.Session != nil {
+		switch strings.ToLower(strings.TrimSpace(s.Session.Presets)) {
+		case "", "song", "all":
+		default:
+			e.addf("/session/presets: %q is not song or all", s.Session.Presets)
+		}
+	}
+
 	if len(s.Tracks) == 0 {
 		e.addf("/tracks: a song needs at least one track")
 	}
@@ -497,7 +562,7 @@ func (s *Song) Validate() error {
 					e.addf("%s/play/%s/%d: pattern %q has drum lanes but %q is not a drum track (set kind: drums)", at, tid, i, pid, tid)
 				}
 				if err == nil && !broken[pid] {
-					if _, perr := compilePattern(pid, p, meter, s.Swing, t); perr != nil {
+					if _, perr := compilePattern(pid, p, meter, s.Swing, s.laneTrack(t)); perr != nil {
 						e.addf("%s/play/%s/%d: %v", at, tid, i, perr)
 					}
 				}
@@ -589,6 +654,18 @@ func effectIDs(effects []Plugin) string {
 		ids[i] = fx.EffectID()
 	}
 	return strings.Join(ids, ", ")
+}
+
+// laneTrack returns the track a pattern is checked against where no kit is
+// known: a calibrated song's drum lanes are its kit's pads, which only the
+// plan can tell, so they pass here and are checked when the song is planned.
+func (s *Song) laneTrack(t *Track) *Track {
+	if !s.Calibrate || t == nil || t.Kind != "drums" {
+		return t
+	}
+	open := *t
+	open.anyLane = true
+	return &open
 }
 
 // TrackChannel returns the MIDI channel (1-based) track i plays on.

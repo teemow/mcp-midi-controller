@@ -47,6 +47,11 @@ type WDA struct {
 	// long-presses, touch actions, element clicks, keys) so far; the last
 	// one repeats. A test lists the screen after each gesture.
 	Screens []json.RawMessage
+	// SourceFunc, when set, replaces Sources and Screens: GET …/source
+	// serves what it returns for the number of gestures so far and the
+	// number of reads since the last gesture. It models a screen that also
+	// changes by itself, such as a session that finishes loading.
+	SourceFunc func(gestures, reads int) json.RawMessage
 	// Fields are the values of the text fields on screen; typing into one
 	// replaces its value.
 	Fields []string
@@ -62,6 +67,7 @@ type WDA struct {
 	sourceIdx int
 	sessions  int
 	gestures  int
+	reads     int // source reads since the last gesture
 	open      map[string]bool
 }
 
@@ -214,12 +220,16 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 		reply(rw, 200, nil, sid)
 	case sub == "wda/tap", sub == "wda/doubleTap", sub == "wda/touchAndHold", sub == "actions", sub == "wda/keys":
 		w.gestures++
+		w.reads = 0
 		reply(rw, 200, nil, sid)
 	case sub == "window/size":
 		reply(rw, 200, map[string]any{"width": w.Window[0], "height": w.Window[1]}, sid)
 	case sub == "source":
 		var src json.RawMessage
-		if len(w.Screens) > 0 {
+		if w.SourceFunc != nil {
+			src = w.SourceFunc(w.gestures, w.reads)
+			w.reads++
+		} else if len(w.Screens) > 0 {
 			src = w.Screens[min(w.gestures, len(w.Screens)-1)]
 		} else {
 			src = w.Sources[min(w.sourceIdx, len(w.Sources)-1)]
@@ -272,6 +282,7 @@ func (w *WDA) element(rw http.ResponseWriter, method, sid, rest string, body map
 	switch {
 	case op == "click":
 		w.gestures++
+		w.reads = 0
 		reply(rw, 200, nil, sid)
 	case op == "clear" && field >= 0:
 		w.Fields[field] = ""

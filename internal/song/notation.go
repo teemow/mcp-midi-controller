@@ -96,6 +96,10 @@ func parseStep(step string) (int64, error) {
 // semitone is the pitch class of each note letter.
 var semitone = map[byte]int{'c': 0, 'd': 2, 'e': 4, 'f': 5, 'g': 7, 'a': 9, 'b': 11}
 
+// ParseNote reads a note as a song writes it: a name ("A2", "C#4", "Eb3"; C4
+// is middle C) or a MIDI note number.
+func ParseNote(s string) (int, error) { return parseNote(s) }
+
 // parseNote parses a note name ("A2", "C#4", "Eb3"; C4 is MIDI 60) or a plain
 // MIDI note number.
 func parseNote(s string) (int, error) {
@@ -161,7 +165,9 @@ var gmDrums = map[string]int{
 }
 
 // drumNote resolves a lane name to its note: the track's own drum map first,
-// then the General MIDI names, then a note name or number.
+// then the General MIDI names, then a note name or number. A track whose kit
+// was measured resolves a lane to that kit's pad instead of a General MIDI
+// note, and a lane the kit does not have is an error.
 func drumNote(t *Track, lane string) (int, error) {
 	key := strings.ToLower(strings.TrimSpace(lane))
 	if t != nil {
@@ -170,12 +176,25 @@ func drumNote(t *Track, lane string) (int, error) {
 				return parseNote(note)
 			}
 		}
+		if t.kit != nil {
+			if n, ok := t.kit[key]; ok {
+				return n, nil
+			}
+			if n, err := parseNote(lane); err == nil {
+				return n, nil
+			}
+			return 0, fmt.Errorf("the kit %q has no pad for lane %q (it has: %s); use one of those, or put the lane into the track's drum_map",
+				t.kitName, lane, strings.Join(sortedKeys(t.kit), ", "))
+		}
 	}
 	if n, ok := gmDrums[key]; ok {
 		return n, nil
 	}
 	if n, err := parseNote(lane); err == nil {
 		return n, nil
+	}
+	if t != nil && t.anyLane {
+		return 0, nil
 	}
 	known := sortedKeys(gmDrums)
 	if t != nil {

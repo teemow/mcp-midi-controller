@@ -82,7 +82,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 	}
 	route := aum.MIDIRoute{From: aum.MIDIEndpoint{Channel: BrainStrip, Slot: 0}}
 	for _, tp := range p.Tracks {
-		gain := LevelGain(tp.homeLevel)
+		gain := LevelGain(p.homeFader(tp))
 		ch := aum.ChannelSpec{
 			Kind: aum.KindAudio, Title: tp.Name, Fader: &gain, Muted: tp.homeMute,
 			Output: &aum.ChannelOutput{Kind: aum.OutputBus, BusIndex: 0},
@@ -204,7 +204,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		}
 		for _, pr := range n.Presets {
 			if err := sess.AddPresetLoad(n.Strip, n.Slot, aum.PresetLoad{
-				Name: pr.Name, Number: pr.Number, Program: pr.Program, Channel: GlobalChannel - 1,
+				Name: pr.Name, Number: pr.Number, Program: pr.Program, Channel: pr.Channel - 1,
 			}); err != nil {
 				return nil, rep, err
 			}

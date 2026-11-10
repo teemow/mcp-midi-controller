@@ -217,6 +217,11 @@ func (d *AUMDriver) listFiles(view string, path []string) (AUMResult, error) {
 	return d.result(strings.ToLower(view), true, fmt.Sprintf("%s: %d entries: %s", p.Title, len(es), entryNames(p)), es), nil
 }
 
+// AUMLoadPause is how long AUM is given to close FILES after a session row
+// was tapped, before its menu is asked for the session's name. It is a
+// variable so tests against a stand-in need not sit it out.
+var AUMLoadPause = 2 * time.Second
+
 // loadSession taps a session row in FILES → Sessions: AUM loads it at once.
 func (d *AUMDriver) loadSession(path []string, name string) (AUMResult, error) {
 	p, err := d.openFiles("Sessions", path)
@@ -234,7 +239,7 @@ func (d *AUMDriver) loadSession(path []string, name string) (AUMResult, error) {
 		return AUMResult{}, err
 	}
 	// Loading takes a moment and closes FILES; the menu then shows the name.
-	if err := d.pause(2 * time.Second); err != nil {
+	if err := d.pause(AUMLoadPause); err != nil {
 		return AUMResult{}, err
 	}
 	if err := d.Read(); err != nil {

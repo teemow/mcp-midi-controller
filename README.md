@@ -47,8 +47,8 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
   partial and layerable.
 - **Songs**: write a multi-track song as one YAML document — tracks with
   their instrument and effect chain, patterns, sections with their own sound,
-  an arrangement — and the daemon authors the AUM session that hosts it and
-  plays it through the brain (`save_song`, `author_song_session`,
+  an arrangement — and the daemon authors the AUM session that hosts it,
+  loads it into AUM and plays it through the brain (`save_song`, `load_song`,
   `play_song`). See [`docs/songs.md`](docs/songs.md).
 - **Recordings**: record a song while it plays, or whatever an audio tap
   hears, into a seamless FLAC or WAV file, and upload it to your own Google

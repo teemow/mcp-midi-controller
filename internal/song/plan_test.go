@@ -1,6 +1,7 @@
 package song
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -102,11 +103,16 @@ func TestPlanResolvesNames(t *testing.T) {
 	ok("preset: Deep Bass", "preset: deep bass")          // case
 	ok("params: {Cutoff: 0.25}", "params: {cutoff: 25%}") // identifier, percentage
 	ok("params: {Cutoff: 0.25}", "params: {Cutoff: 0.25, Waveform: Sine}")
+	// A plugin is named by its id, by its name or by a part that fits only it.
+	ok("instrument: {plugin: drums}", "instrument: {plugin: Test Drums}")
+	ok("instrument: {plugin: drums}", "instrument: {plugin: drum}")
+	ok("- {plugin: delay}", "- {plugin: test delay}")
 	// A plugin whose identifiers are numbers is addressed by display name.
 	ok("- {id: glue, plugin: reverb, bypass: true}", "- {id: glue, plugin: reverb, bypass: true, params: {mix: 0.5}}")
 
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"plugin":       {"instrument: {plugin: drums}", "instrument: {plugin: drum}", `no staged AUv3 probe "drum" (did you mean: drums (Test Drums)?)`},
+		"plugin":       {"instrument: {plugin: drums}", "instrument: {plugin: drum machine}", `no staged AUv3 probe "drum machine" (did you mean: drums (Test Drums)?)`},
+		"two plugins":  {"instrument: {plugin: drums}", "instrument: {plugin: test}", `"test" fits 4 plugins: delay (Test Delay), drums (Test Drums), reverb (Test Reverb), synth (Test Synth); use the id`},
 		"preset":       {"preset: Deep Bass", "preset: Deep Base", `Test Synth has no factory preset "Deep Base" (did you mean: Deep Bass?)`},
 		"param":        {"params: {Cutoff: 0.25}", "params: {Cutof: 0.25, Resonanz: 0.1}", `has no writable parameter "Resonanz"`},
 		"read-only":    {"params: {Cutoff: 0.25}", "params: {Meter: 0.25}", `has no writable parameter "Meter"`},
@@ -364,5 +370,184 @@ func TestBuildSessionOptions(t *testing.T) {
 	}
 	if len(sess.Mappings(false)) <= plainRep.Mappings {
 		t.Errorf("full control has %d mappings, no more than the song's own %d", len(sess.Mappings(false)), plainRep.Mappings)
+	}
+}
+
+// TestPlanAllPresets checks a session that maps every factory preset: each
+// preset has a Program Change of its own, the instruments' first, at an
+// address that does not depend on which presets the song names.
+func TestPlanAllPresets(t *testing.T) {
+	all := testSong + "session: {presets: all}\n"
+	p := mustPlan(t, mustParse(t, all))
+
+	// bass and lead host the synth (4 presets each), drums 2, lead's reverb
+	// and the master's 2 each: 14 Program Changes on the global channel.
+	seen := map[[2]int]string{}
+	total := 0
+	for _, n := range p.allNodes() {
+		if got, want := len(n.Presets), len(n.dump.FactoryPresets); got != want {
+			t.Errorf("%s maps %d of its %d presets", nodeLabel(n), got, want)
+		}
+		for _, pr := range n.Presets {
+			key := [2]int{pr.Channel, pr.Program}
+			if other, taken := seen[key]; taken {
+				t.Errorf("%s %q and %s share PC %d ch%d", nodeLabel(n), pr.Name, other, pr.Program, pr.Channel)
+			}
+			seen[key] = nodeLabel(n) + " " + pr.Name
+			total++
+		}
+	}
+	if total != 14 || p.PresetsUnmapped != 0 {
+		t.Errorf("%d presets mapped, %d unmapped; want 14 and 0", total, p.PresetsUnmapped)
+	}
+	// Instruments come first: bass 0-3, lead 4-7, drums 8-9, then effects.
+	if pr, ok := p.Node("lead", "").Preset("bright lead"); !ok || pr.Program != 6 || pr.Channel != GlobalChannel {
+		t.Errorf("lead's Bright Lead = %+v (%v), want PC 6 on the global channel", pr, ok)
+	}
+	if pr, ok := p.Node("lead", "space").Preset("Large Hall"); !ok || pr.Program != 11 {
+		t.Errorf("the reverb's Large Hall = %+v (%v), want PC 11", pr, ok)
+	}
+	if _, ok := p.Node("lead", "").PresetEvent("No Such Preset"); ok {
+		t.Error("a preset the plugin does not have got a Program Change")
+	}
+
+	// Naming another preset changes the notes' sound, not the session.
+	other := strings.Replace(all, "preset: Deep Bass", "preset: Init", 1)
+	if a, b := p.Fingerprint(), mustPlan(t, mustParse(t, other)).Fingerprint(); a != b {
+		t.Error("with presets: all, the session's fingerprint changed with the preset a track names")
+	}
+	// Without the option it does, and the option itself makes another session.
+	plain := mustPlan(t, mustParse(t, testSong))
+	if plain.Fingerprint() == p.Fingerprint() {
+		t.Error("presets: all did not change the fingerprint")
+	}
+	if a, b := plain.Fingerprint(), mustPlan(t, mustParse(t, strings.Replace(testSong, "preset: Deep Bass", "preset: Init", 1))).Fingerprint(); a == b {
+		t.Error("without presets: all, naming another preset left the fingerprint alone")
+	}
+	for _, n := range plain.allNodes() {
+		for _, pr := range n.Presets {
+			if pr.Channel != GlobalChannel {
+				t.Errorf("%s %q is on channel %d without presets: all", nodeLabel(n), pr.Name, pr.Channel)
+			}
+		}
+	}
+
+	// The song plays its own presets at their new addresses.
+	s := mustParse(t, all)
+	tl, err := Compile(s, p)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	want, _ := p.Node("bass", "").PresetEvent("Deep Bass")
+	found := false
+	for _, e := range tl.Sections[0].State {
+		found = found || (e.Kind == Program && e.Channel == want.Channel && e.Data1 == want.Data1)
+	}
+	if !found || want.Data1 != 3 {
+		t.Errorf("the opening state does not load Deep Bass at %+v", want)
+	}
+
+	// The authored session holds every Preset Load.
+	sess, rep, err := p.BuildSession(SessionOptions{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if rep.Presets != 14 || len(sess.PresetLoads(2, 0)) != 4 {
+		t.Errorf("session has %d preset loads (%d on the lead), want 14 and 4", rep.Presets, len(sess.PresetLoads(2, 0)))
+	}
+}
+
+// TestPlanAllPresetsOverflow checks presets spill over into the control
+// channels below the global one, that what does not fit is counted, and that
+// a preset the song names must fit.
+func TestPlanAllPresetsOverflow(t *testing.T) {
+	cat := testCatalog()
+	big := cat["synth"]
+	big.FactoryPresets = nil
+	for i := 0; i < 900; i++ {
+		big.FactoryPresets = append(big.FactoryPresets, device.ProbePreset{Number: i, Name: "P" + strconv.Itoa(i)})
+	}
+	cat["synth"] = big
+	doc := `
+title: Lab
+tempo: 120
+session: {presets: all}
+tracks:
+  - {id: a, instrument: {plugin: synth, preset: P5}}
+  - {id: b, instrument: {plugin: synth, preset: PRESET}}
+patterns: {rest: {bars: 1, notes: "."}}
+sections: {idle: {bars: 1}}
+arrangement: [idle]
+`
+	s := mustParse(t, strings.Replace(doc, "PRESET", "P100", 1))
+	p, err := NewPlan(s, cat)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	// Two tracks leave the channels 3..15 for Program Changes: 13 x 128.
+	room := 13 * 128
+	if got := len(p.Node("a", "").Presets) + len(p.Node("b", "").Presets); got != room || p.PresetsUnmapped != 1800-room {
+		t.Errorf("%d presets mapped, %d unmapped; want %d and %d", got, p.PresetsUnmapped, room, 1800-room)
+	}
+	// Track a's presets fill channel 15 and go on below it.
+	if pr, _ := p.Node("a", "").Preset("P128"); pr.Channel != 14 || pr.Program != 0 {
+		t.Errorf("a's P128 = PC %d ch%d, want PC 0 on channel 14", pr.Program, pr.Channel)
+	}
+	if pr, _ := p.Node("b", "").Preset("P100"); pr.Channel != 8 || pr.Program != (900+100)%128 {
+		t.Errorf("b's P100 = PC %d ch%d, want PC %d on channel 8", pr.Program, pr.Channel, (900+100)%128)
+	}
+	// A preset the song names beyond the room is an error, not a silent gap.
+	_, err = NewPlan(mustParse(t, strings.Replace(doc, "PRESET", "P899", 1)), cat)
+	if err == nil || !strings.Contains(err.Error(), `b's instrument loads "P899"`) || !strings.Contains(err.Error(), "room for 1664") {
+		t.Errorf("a named preset beyond the room: %v", err)
+	}
+	if _, err := Parse([]byte(strings.Replace(doc, "presets: all", "presets: most", 1))); err == nil {
+		t.Error("an unknown presets option was accepted")
+	}
+}
+
+// TestPlanAllPresetsSameName checks a plugin that lists two presets under one
+// name gets one Preset Load for it: a session holds one per name.
+func TestPlanAllPresetsSameName(t *testing.T) {
+	cat := testCatalog()
+	twice := cat["drums"]
+	twice.FactoryPresets = append(twice.FactoryPresets, device.ProbePreset{Number: 2, Name: "Kit 808"}, device.ProbePreset{Number: 3, Name: "Kit Lo-Fi"})
+	cat["drums"] = twice
+	p, err := NewPlan(mustParse(t, testSong+"session: {presets: all}\n"), cat)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	n := p.Node("drums", "")
+	if got := n.FactoryPresets(); len(got) != 3 || len(n.Presets) != 3 || p.PresetsUnmapped != 0 {
+		t.Fatalf("drums: presets %v, %d mapped, %d unmapped; want three names, each mapped once", got, len(n.Presets), p.PresetsUnmapped)
+	}
+	if pr, _ := n.Preset("Kit 808"); pr.Number != 0 {
+		t.Errorf("Kit 808 loads preset number %d, want the first of the two (0)", pr.Number)
+	}
+	if _, _, err := p.BuildSession(SessionOptions{}); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+}
+
+// TestTrackHomeState checks one track's own sound is its strip and its
+// plugins, and nothing of another track.
+func TestTrackHomeState(t *testing.T) {
+	p := mustPlan(t, mustParse(t, testSong))
+	evs, err := p.TrackHomeState("bass")
+	if err != nil {
+		t.Fatalf("track home state: %v", err)
+	}
+	// Deep Bass, then the instrument's bypass and Cutoff, the echo's bypass
+	// and Mix, and the strip's level and mute.
+	if len(evs) != 7 || evs[0].Kind != Program {
+		t.Fatalf("bass home state = %v", controls(evs))
+	}
+	lead, _ := p.TrackHomeState("lead")
+	for _, e := range lead {
+		for _, b := range evs {
+			if e == b {
+				t.Errorf("lead's and bass's home state share %s", describe(e))
+			}
+		}
 	}
 }
