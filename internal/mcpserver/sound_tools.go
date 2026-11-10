@@ -482,15 +482,19 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 				return err
 			}
 		}
+		// The strip's own mute is left out: a track that declares itself
+		// muted would get its mute and, in the same moment, the unmute
+		// below, and AUM can keep the first of the two (see stripMutes).
+		open := tp.MuteEvent(false)
 		for _, e := range home {
-			if e.Kind == song.Program {
+			if e.Kind == song.Program || (e.Kind == open.Kind && e.Channel == open.Channel && e.Data1 == open.Data1) {
 				continue
 			}
 			if err := s.sendBrain(ctx, songCommand(e)); err != nil {
 				return err
 			}
 		}
-		if err := s.sendBrain(ctx, songCommand(tp.MuteEvent(false))); err != nil {
+		if err := s.sendBrain(ctx, songCommand(open)); err != nil {
 			return err
 		}
 		return sleepContext(ctx, songSettleWait)
