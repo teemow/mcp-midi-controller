@@ -37,8 +37,8 @@ minutes at most. `tap` picks a tap by name when several are streaming. One
 recording runs at a time.
 
 A recording is finished by the daemon that began it. A daemon restarted while
-it records leaves no file, only a capture that is cleared away when the next
-recording starts.
+it records leaves no recording, only its raw capture (a `.f32.part` file in
+the recordings dir), which is deleted when the next recording starts.
 
 ### The cut
 
@@ -270,9 +270,9 @@ Checked on a rig (the daemon on a Mac, AUM on an iPad): a five-track song of
 - Each recording began before the opening sound was set, ended by itself
   after the tail, and was cut at the first note, 1.28 s in. The takes are
   2:06.4 and 2:06.7 long.
-- Their levels (peak -2.3 and -1.5 dBFS, mean -18.7 and -18.2 dB) lie on both
-  sides of a take of the same song joined by hand from `get_audio_clip`
-  earlier (-1.75 dBFS, -18.4 dB).
+- Their levels (peak -2.3 and -1.5 dBFS, mean -18.7 and -18.2 dBFS) lie on
+  both sides of a take of the same song joined by hand from `get_audio_clip`
+  earlier (-1.75 dBFS peak, -18.4 dBFS mean).
 - In the first take the tap's stream arrived late four times, by 0.3 to 0.8
   seconds. No audio was missing (128.21 s of it arrived in 128.20 s), and the
   record says both. The second take has no stall.
