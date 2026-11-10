@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,6 +249,150 @@ func keysOf(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
+	}
+	return out
+}
+
+// stageProbeFor writes a minimal probe dump for component c into the staging
+// dir under its probe id, and returns that id.
+func stageProbeFor(t *testing.T, c device.ProbeComponent, name string) string {
+	t.Helper()
+	dump := device.ProbeDump{
+		Component: c,
+		Name:      name,
+		Parameters: []device.ProbeParam{
+			{Address: 0, Identifier: "cutoff", DisplayName: "Cutoff", Min: 0, Max: 1, Value: 0.5, Writable: true, Readable: true},
+		},
+	}
+	b, err := json.Marshal(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := config.AUv3ProbesDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := device.ProbeID(dump)
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// TestCaptureAUv3DefaultStateKeepsUnitsSharingASubtypeApart captures two
+// audio units that share a subtype (an instrument and an effect of one
+// vendor). Each gets its own file under its component id, and authoring
+// applies each one's state to its own node; under the old subtype-only key the
+// second capture replaced the first.
+func TestCaptureAUv3DefaultStateKeepsUnitsSharingASubtypeApart(t *testing.T) {
+	s := newAUMServer(t)
+	synth := device.ProbeComponent{Type: "aumu", Subtype: "Ab12", Manufacturer: "XyZw"}
+	fx := device.ProbeComponent{Type: "aufx", Subtype: "Ab12", Manufacturer: "XyZw"}
+	synthProbe := stageProbeFor(t, synth, "Shared Synth")
+	fxProbe := stageProbeFor(t, fx, "Shared FX")
+
+	res := call(t, s.handleAuthorAUMSession, map[string]any{
+		"title": "Capture Source",
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Synth", "nodes": []any{
+				map[string]any{"probe_id": synthProbe, "state": map[string]any{"cfg": "synth-state"}},
+				map[string]any{"probe_id": fxProbe, "state": map[string]any{"cfg": "fx-state"}},
+			}},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("author source failed: %s", resultText(res))
+	}
+
+	for _, n := range authoredHostedNodes(t, "capture_source") {
+		res := call(t, s.handleCaptureAUv3DefaultState, map[string]any{
+			"session_id": "capture_source", "channel": n.channel, "slot": n.slot,
+		})
+		if res.IsError {
+			t.Fatalf("capture %s failed: %s", n.component.Type, resultText(res))
+		}
+	}
+
+	dir := config.AUv3DefaultStatesDir()
+	for _, tc := range []struct {
+		c    device.ProbeComponent
+		file string
+		want string
+	}{
+		{synth, "aumu-_ab12-_xy_zw.yaml", "synth-state"},
+		{fx, "aufx-_ab12-_xy_zw.yaml", "fx-state"},
+	} {
+		def, err := loadAUv3DefaultState(filepath.Join(dir, tc.file))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.file, err)
+		}
+		if def.Component != tc.c {
+			t.Errorf("%s holds %+v, want %+v", tc.file, def.Component, tc.c)
+		}
+		if got := def.State["cfg"].Text; got != tc.want {
+			t.Errorf("%s cfg = %q, want %q", tc.file, got, tc.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ab12.yaml")); !os.IsNotExist(err) {
+		t.Errorf("capture still wrote the subtype-only file: %v", err)
+	}
+
+	res = call(t, s.handleAuthorAUMSession, map[string]any{
+		"title": "Capture Target",
+		"channels": []any{
+			map[string]any{"kind": "audio", "title": "Synth", "nodes": []any{
+				map[string]any{"probe_id": synthProbe},
+				map[string]any{"probe_id": fxProbe},
+			}},
+			map[string]any{"kind": "audio", "title": "Master"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("author target failed: %s", resultText(res))
+	}
+	want := map[string]string{"aumu": "synth-state", "aufx": "fx-state"}
+	nodes := authoredHostedNodes(t, "capture_target")
+	if len(nodes) != len(want) {
+		t.Fatalf("authored %d hosted nodes, want %d", len(nodes), len(want))
+	}
+	for _, n := range nodes {
+		if got := string(n.doc["cfg"]); got != want[n.component.Type] {
+			t.Errorf("%s node cfg = %q, want its own default %q", n.component.Type, got, want[n.component.Type])
+		}
+	}
+}
+
+type hostedNode struct {
+	channel, slot int
+	component     device.ProbeComponent
+	doc           map[string][]byte
+}
+
+// authoredHostedNodes opens a staged session and returns its hosted AUv3
+// nodes with their position and AuStateDoc.
+func authoredHostedNodes(t *testing.T, sessionID string) []hostedNode {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(config.AUMSessionsDir(), sessionID+".aumproj"))
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	sess, err := aum.Open(data)
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	var out []hostedNode
+	for _, ch := range sess.Channels() {
+		for _, n := range ch.Nodes {
+			if n.Component == nil {
+				continue
+			}
+			doc, derr := sess.NodeAuStateDoc(ch.Index, n.Slot)
+			if derr != nil {
+				t.Fatalf("node state doc: %v", derr)
+			}
+			out = append(out, hostedNode{channel: ch.Index, slot: n.Slot, component: *n.Component, doc: doc})
+		}
 	}
 	return out
 }

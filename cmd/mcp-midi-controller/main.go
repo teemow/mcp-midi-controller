@@ -20,6 +20,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
 	"github.com/teemow/mcp-midi-controller/internal/config"
+	"github.com/teemow/mcp-midi-controller/internal/defaultstate"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
@@ -139,6 +140,9 @@ func main() {
 	// Dumps staged by an older receiver are named by their subtype alone; move
 	// them to their current id before any tool or the receiver reads the dir.
 	migrateStagedProbes(config.AUv3ProbesDir())
+	// Default states captured before the component id are named by their
+	// subtype alone; move them before the AUM author or a capture reads the dir.
+	migrateDefaultStates(config.AUv3DefaultStatesDir())
 
 	srv := mcpserver.New(eng, opts...)
 
@@ -226,6 +230,19 @@ func migrateStagedProbes(dir string) {
 	}
 	if err != nil {
 		log.Printf("auv3 probes: migrate staged ids in %s: %v", dir, err)
+	}
+}
+
+// migrateDefaultStates renames user-defined AUv3 default states named by their
+// subtype to their component id and logs what changed. A failure is logged,
+// not fatal: a file left under its old name still applies to its audio unit.
+func migrateDefaultStates(dir string) {
+	res, err := defaultstate.Migrate(dir)
+	if res.Renamed+res.Removed > 0 {
+		log.Printf("auv3 default states: renamed %d file(s) to their component id, removed %d older duplicate(s) in %s", res.Renamed, res.Removed, dir)
+	}
+	if err != nil {
+		log.Printf("auv3 default states: migrate ids in %s: %v", dir, err)
 	}
 }
 
