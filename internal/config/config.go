@@ -104,6 +104,11 @@ func SongsDir() string { return filepath.Join(ConfigDir(), "songs") }
 // sending a song at a session that no longer matches it. Volatile (state dir).
 func SongSessionsPath() string { return filepath.Join(StateDir(), "song-sessions.json") }
 
+// IPadAppsPath is where the daemon remembers the bundle ids of sideloaded iPad
+// apps it has seen (state dir): a sideloaded app's id carries a signing-team
+// prefix, which only the host the iPad is plugged into can look up.
+func IPadAppsPath() string { return filepath.Join(StateDir(), "ipad-apps.json") }
+
 // SongExportsDir is where export_song_midi writes Standard MIDI Files.
 // Volatile (state dir): an export is derived from its song.
 func SongExportsDir() string { return filepath.Join(StateDir(), "song-exports") }

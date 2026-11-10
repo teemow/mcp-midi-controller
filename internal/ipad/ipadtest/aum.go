@@ -88,6 +88,10 @@ type AUM struct {
 	MeterSource string
 	// Keyboard opens the built-in keyboard with its HIDE↓ toolbar button.
 	Keyboard bool
+	// Notices are texts shown over the mixer that belong to no panel: the
+	// "LOADING STATE" overlay of a session being restored, a line naming a
+	// plugin that failed.
+	Notices []string
 }
 
 // Routing is the MIDI routing matrix of a synthetic AUM screen.
@@ -224,6 +228,9 @@ func (a AUM) Source() json.RawMessage {
 	}
 	for _, o := range a.Overlays {
 		main = append(main, overlay(o)...)
+	}
+	for i, n := range a.Notices {
+		main = append(main, el("StaticText", n, 405, 380+float64(i)*30, 400, 24))
 	}
 	root := el("Application", "AUM", 0, 0, W, H,
 		el("Window", "", 0, 0, W, H, el("Other", "", 0, 0, W, H, main...)))
@@ -435,4 +442,61 @@ func MixerAUM() AUM {
 	a := DefaultAUM()
 	a.Session = ""
 	return a
+}
+
+// LoadingNotice is the text AUM shows over the mixer while it restores a
+// session's plugins.
+const LoadingNotice = "LOADING STATE"
+
+// OpenSessionScreens is AUM while a session is opened from FILES → Sessions →
+// folder, for WDA.SourceFunc: one screen per gesture. A plugin window is open
+// at first; the session's row loads strips, which show LoadingNotice for the
+// first loadingReads reads once the menu is asked for the session's name, and
+// notices once the menu is closed again.
+func OpenSessionScreens(folder, name string, strips []Strip, loadingReads int, notices ...string) func(gestures, reads int) json.RawMessage {
+	old := MixerAUM()
+	window := old
+	window.PluginWindow = "Synth @A1"
+	menu := DefaultAUM()
+	files := MixerAUM()
+	files.Overlays = []Overlay{{Kind: "panel", Title: "FILES", Rows: [][2]string{{"Sessions", ""}, {"Recordings", ""}}}}
+	sessions := MixerAUM()
+	sessions.Overlays = []Overlay{{Kind: "panel", Title: "Sessions", Cells: [][2]string{{folder, ""}, {"other", "yesterday"}}}}
+	inFolder := MixerAUM()
+	inFolder.Overlays = []Overlay{{Kind: "panel", Title: folder, Cells: [][2]string{{name, "today"}}}}
+	fresh := AUM{Tempo: "104", Position: "001:1  00:00.0", Strips: strips}
+	loading := fresh
+	loading.Notices = []string{LoadingNotice}
+	freshMenu := fresh
+	freshMenu.Session = name
+	loadingMenu := freshMenu
+	loadingMenu.Notices = []string{LoadingNotice}
+	done := fresh
+	done.Notices = notices
+
+	return func(gestures, reads int) json.RawMessage {
+		switch gestures {
+		case 0:
+			return window.Source()
+		case 1: // the window's ✕
+			return old.Source()
+		case 2: // ☰
+			return menu.Source()
+		case 3: // FILES
+			return files.Source()
+		case 4: // Sessions
+			return sessions.Source()
+		case 5: // the folder
+			return inFolder.Source()
+		case 6: // the session's row: AUM loads it
+			return loading.Source()
+		case 7: // ☰ again, for the name
+			if reads < loadingReads {
+				return loadingMenu.Source()
+			}
+			return freshMenu.Source()
+		default: // the menu's close icon
+			return done.Source()
+		}
+	}
 }

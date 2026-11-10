@@ -16,11 +16,14 @@ that plays inside AUM.
 |------|------|-|
 | 1. Look | `list_song_plugins`, `get_song_plugin` | Which instruments and effects are installed (the staged AUv3 probes), their factory presets and parameters. |
 | 2. Write | `save_song` | Store the document. It is checked first; see [What is checked](#what-is-checked). |
-| 3. Author | `author_song_session` | Build the song's `.aumproj` and stage it. The iPad's auv3-probe app pulls it into AUM's folder. |
-| 4. Load | in AUM | Open the session. Its brain and tap dial the daemon. |
-| 5. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song, or from a section, or only some tracks. |
-| 6. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
-| 7. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once. A change to what the song hosts or controls, or to its tempo, needs step 3 and 4 again; `get_song` and `play_song` say when. |
+| 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
+| 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song, or from a section, or only some tracks. |
+| 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
+| 6. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 again; `get_song` and `play_song` say when. |
+
+`check_song` tells at any time whether the loaded session will sound.
+`author_song_session` does only the first part of step 3: it builds the
+session file and stages it.
 
 `export_song_midi` writes the song as a Standard MIDI File for a sequencer or a
 DAW.
@@ -99,6 +102,8 @@ arrangement: [verse, chorus, verse, chorus]
   the section ends and are cut there; a track left out is silent.
 - **arrangement** — the sections in playing order. A section may appear more
   than once.
+- **session** — optional: how the song's session is built beyond what the
+  tracks say. See [The session](#the-session).
 
 Unknown keys are errors, so a misspelled field is reported rather than ignored.
 
@@ -245,6 +250,57 @@ again, and until it is `get_song` and `play_song` say so.
 The session is staged under `Songs/<title>` by default (`out_id` chooses
 another place), which is also where it lands in AUM's folder on the iPad.
 
+**Options.** A song can say how its session is built:
+
+```yaml
+session:
+  track_taps: true      # a ProbeAudioTap after every track's fader
+  full_control: true    # map every other parameter of every plugin as well
+  hardware: x32         # the master's output profile; builtin is the default
+```
+
+They are part of the document, so changing one makes the session out of date
+like a new plugin does. The same options as arguments of `load_song` or
+`author_song_session` override the document for that call.
+
+## Loading
+
+`load_song` takes a saved song to a session that plays. It reports every step
+and stops at the first one that fails, with what it saw and what to do:
+
+| Step | What happens |
+|------|--------------|
+| author | The session is built and staged. Skipped when the staged file is already this song's session. |
+| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward and starts its sync. Skipped when the iPad already has this very file. |
+| load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM has finished restoring the plugins. |
+| connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. |
+| check | `check_song`, below. |
+
+Loading replaces the session open in AUM, so `load_song` needs
+`confirm: true`. Without the iPad UI tools (`ipad_wda_url` empty) it stops
+after the pull and names the session to load by hand.
+
+Bringing the probe app forward needs its bundle id, which carries a signing
+prefix. A daemon on the host the iPad is plugged into looks it up. Any other
+daemon remembers it from the first `ipad_launch` with the full id.
+
+`check_song` answers whether the song will sound if it is played now:
+
+- the brain is connected and the tap is streaming;
+- AUM shows the song's session (the name in its menu), a strip for the brain,
+  every track and the master, and no line that reports a failed plugin;
+- every track answers a note. The daemon sets each track's own sound (its
+  declaration, no scene), plays the track's first note of the song alone and
+  measures the tap. A track that stays silent is named with its plugin.
+
+It does not run while a song plays. `ui: false` leaves AUM's screen alone
+(reading the session name opens and closes AUM's menu).
+
+The daemon knows which session AUM has open only from what it loaded or saw
+there itself, and only until a new brain connects, which is what a session
+load in AUM looks like from outside. `play_song` warns when that session is
+not the song's. It says nothing when it does not know.
+
 ## Playing
 
 `play_song` first sets the session to the opening section's whole sound —
@@ -338,6 +394,8 @@ a device, in sessions authored from a song:
 
 Not yet measured:
 
+- `load_song` and `check_song` themselves: the test suite runs them against a
+  stand-in for the iPad;
 - `transport: true` through a whole song;
 - a ramp on a plugin parameter (the song played ramps on levels only);
 - sessions authored with `track_taps` or `full_control`.

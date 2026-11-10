@@ -758,6 +758,11 @@ func (p *Plan) Fingerprint() string {
 	var b strings.Builder
 	// The tempo is the session's clock, which tempo-synced effects follow.
 	fmt.Fprintf(&b, "tempo:%g|", p.song.Tempo)
+	// The session options, when the song sets any (a song without them keeps
+	// the fingerprint it had before they existed).
+	if o := p.song.SessionOptions(); o != (SessionSpec{}) {
+		fmt.Fprintf(&b, "S%v:%v:%s|", o.TrackTaps, o.FullControl, strings.ToLower(strings.TrimSpace(o.Hardware)))
+	}
 	for _, tp := range p.Tracks {
 		fmt.Fprintf(&b, "T%s:%d:%d:%s:%s|", tp.ID, tp.Channel, tp.Strip, tp.Level, tp.Mute)
 	}

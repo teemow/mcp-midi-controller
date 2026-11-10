@@ -22,6 +22,7 @@ const files = [
   { src: join(docsDir, "usb-tools.md"), dest: "usb-tools.md" },
   { src: join(docsDir, "ipad-control.md"), dest: "ipad-control.md" },
   { src: join(docsDir, "songs.md"), dest: "songs.md" },
+  { src: join(docsDir, "song-authoring.md"), dest: "song-authoring.md" },
 ];
 
 const manifest = { docs: [] };

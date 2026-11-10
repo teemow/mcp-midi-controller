@@ -47,6 +47,7 @@ patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), 
 scenes: {id: {track: {level?, mute?, preset?, params?, effects: {effect id: {bypass?, preset?, params?}}}}} - "master" addresses the master effects.
 sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]}, automation?: [{track, effect?, param ("level" for the fader), from, to, bar?, bars?}]}} - patterns repeat until the section ends; a track left out is silent.
 arrangement: [section ids in playing order].
+session: {track_taps?, full_control?, hardware? (builtin|x32)} - how the song's AUM session is built (see author_song_session); optional.
 A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).`
 
 func (s *Server) registerSongTools() {
@@ -68,7 +69,7 @@ func (s *Server) registerSongTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "save_song",
 		Description: "Create or replace a song. The document is checked before it is stored: every reference, every pattern (a miscounted bar is an error), and — against the staged AUv3 probes — every plugin, preset and parameter it names; problems come back with their place in the document and what would have matched. " +
-			"Then author its session with author_song_session and play it with play_song.\n\n" + songFormat,
+			"Then load_song puts its session into AUM and play_song plays it.\n\n" + songFormat,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -132,10 +133,12 @@ func (s *Server) registerSongTools() {
 		}`),
 	}, s.handleAuthorSongSession)
 
+	s.registerSongLoadTools(songArg)
+
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "play_song",
 		Description: "Play a song through the ProbeMidiBrain: set the session to the opening section's sound, then send every note and control change when it is due. Returns at once; the song plays on (get_song_playback, stop_song) — listen with get_audio_tap meanwhile. " +
-			"Play the whole song, or from a section, for a number of sections, or only some tracks. The song's session must be the one loaded in AUM.",
+			"Play the whole song, or from a section, for a number of sections, or only some tracks. The song's session must be the one loaded in AUM (load_song; check_song tells whether every track answers).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -488,10 +491,10 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		if current {
 			fmt.Fprintf(&b, "session: %s\n", rec.Session)
 		} else {
-			fmt.Fprintf(&b, "session: %s is out of date (the song's tempo, plugins or controls changed): run author_song_session and load it again\n", rec.Session)
+			fmt.Fprintf(&b, "session: %s is out of date (the song's tempo, plugins, controls or session options changed): run load_song\n", rec.Session)
 		}
 	} else {
-		b.WriteString("session: not authored yet (author_song_session)\n")
+		b.WriteString("session: not authored yet (load_song)\n")
 	}
 	return b.String(), sum
 }
@@ -632,147 +635,6 @@ func (s *Server) handleDeleteSong(_ context.Context, req *mcp.CallToolRequest) (
 	return textResult(fmt.Sprintf("deleted song %q", song.ID(args.Song)), false), nil
 }
 
-// --- session ----------------------------------------------------------------
-
-// songSessionRecord is the session a song was last authored into.
-type songSessionRecord struct {
-	Session     string `json:"session"`
-	Fingerprint string `json:"fingerprint"`
-}
-
-// loadSongSessions reads the record of authored song sessions (empty when
-// there is none yet).
-func loadSongSessions() map[string]songSessionRecord {
-	out := map[string]songSessionRecord{}
-	data, err := os.ReadFile(config.SongSessionsPath())
-	if err != nil {
-		return out
-	}
-	_ = json.Unmarshal(data, &out)
-	return out
-}
-
-func (s *Server) recordSongSession(id string, rec songSessionRecord) error {
-	s.songSessionsMu.Lock()
-	defer s.songSessionsMu.Unlock()
-	all := loadSongSessions()
-	all[id] = rec
-	data, err := json.MarshalIndent(all, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := config.SongSessionsPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return lanhttp.WriteFileAtomic(path, data, 0o644)
-}
-
-// sessionFileName turns a song title into a file name AUM shows as the
-// session's name: the title as written, minus what a path cannot hold.
-func sessionFileName(title string) string {
-	var b strings.Builder
-	for _, r := range title {
-		switch {
-		case r == '/' || r == '\\' || r == ':' || r < ' ':
-			b.WriteRune(' ')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return strings.Trim(strings.Join(strings.Fields(b.String()), " "), ". ")
-}
-
-func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args struct {
-		Song        string `json:"song"`
-		OutID       string `json:"out_id"`
-		TrackTaps   bool   `json:"track_taps"`
-		FullControl bool   `json:"full_control"`
-		Hardware    string `json:"hardware"`
-	}
-	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-		return textResult("invalid arguments: "+err.Error(), true), nil
-	}
-	cs, fail := s.loadSong(args.Song)
-	if fail != nil {
-		return fail, nil
-	}
-	hardware, err := parseHardwareProfile(args.Hardware)
-	if err != nil {
-		return textResult(err.Error(), true), nil
-	}
-
-	outID := strings.TrimSpace(args.OutID)
-	if outID == "" {
-		outID = "Songs/" + device.FirstNonEmpty(sessionFileName(cs.song.Title), cs.id)
-	}
-	rel, ok := aum.SafeRelPath(outID + ".aumproj")
-	if !ok {
-		return textResult(fmt.Sprintf("/out_id: %q is not a relative path inside the staging dir", args.OutID), true), nil
-	}
-	outID = aum.StripExt(rel)
-
-	cat := songCatalog()
-	opts := song.SessionOptions{
-		Hardware: hardware, TrackTaps: args.TrackTaps, FullControl: args.FullControl,
-		Brain: rigProbe(cat, aum.ProbeBrainNode()), Tap: rigProbe(cat, aum.ProbeTapNode()),
-	}
-	defaults := loadAUv3DefaultStates()
-	opts.Prepare = func(ns *aum.NodeSpec) error { return applyDefaultState(ns, defaults) }
-
-	sess, rep, err := cs.plan.BuildSession(opts)
-	if err != nil {
-		return textResult("author session: "+err.Error(), true), nil
-	}
-	data, err := sess.Archive().Encode()
-	if err != nil {
-		return textResult("encode session: "+err.Error(), true), nil
-	}
-	if _, err := aum.Open(data); err != nil {
-		return textResult("authored session failed re-decode: "+err.Error(), true), nil
-	}
-	path, file, err := stageAUMFile(outID, ".aumproj", data)
-	if err != nil {
-		return textResult("stage session: "+err.Error(), true), nil
-	}
-	if err := s.recordSongSession(cs.id, songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint}); err != nil {
-		return textResult("record song session: "+err.Error(), true), nil
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "authored the session of %q -> %s\n", cs.song.Title, path)
-	fmt.Fprintf(&b, "  %d strip(s), %d plugin node(s), %d mapping(s), %d preset load(s)", rep.Strips, rep.Nodes, rep.Mappings, rep.Presets)
-	if args.FullControl {
-		fmt.Fprintf(&b, ", %d further target(s) mapped (%d did not fit)", rep.Banked, rep.Overflow)
-	}
-	b.WriteByte('\n')
-	fmt.Fprintf(&b, "  strip 1: Brain (ProbeMidiBrain), which plays every track and drives MIDI Control on channels %d-16\n", cs.plan.ControlChannels[0])
-	for _, tp := range cs.plan.Tracks {
-		names := make([]string, len(tp.Nodes))
-		for i, n := range tp.Nodes {
-			names[i] = n.Name
-		}
-		fmt.Fprintf(&b, "  strip %d: %s on MIDI channel %d: %s\n", tp.Strip+1, tp.Name, tp.Channel, strings.Join(names, " > "))
-	}
-	fmt.Fprintf(&b, "  strip %d: Master", cs.plan.MasterStrip+1)
-	for _, n := range cs.plan.Master {
-		fmt.Fprintf(&b, " > %s", n.Name)
-	}
-	b.WriteString(" > ProbeAudioTap\n")
-	fmt.Fprintf(&b, "next: the iPad's auv3-probe app pulls it into AUM's folder (%s); open it in AUM, then play_song\n", file)
-
-	return structResult(b.String(), map[string]any{
-		"song":     cs.id,
-		"id":       outID,
-		"file":     file,
-		"path":     path,
-		"download": "/aum-session/" + file,
-		"report":   rep,
-		"layout":   cs.plan,
-	}), nil
-}
-
 // --- playback ---------------------------------------------------------------
 
 // songCommand renders a song event as the brain command that plays it.
@@ -832,7 +694,7 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		return fail, nil
 	}
 	if s.midi == nil || !s.midi.Connected() {
-		return textResult("play_song: "+midicontrol.ErrNoBrain.Error()+" — load the song's session in AUM (author_song_session stages it) so its brain dials in", true), nil
+		return textResult("play_song: "+midicontrol.ErrNoBrain.Error()+" — load_song puts the song's session into AUM so its brain dials in", true), nil
 	}
 	from, err := songStart(cs.timeline, args.From)
 	if err != nil {
@@ -853,19 +715,20 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		opts.After = []song.Event{{Kind: song.Control, Channel: stop.Channel, Data1: stop.Number, Data2: 127}}
 	}
 
-	// The song must be playing into its own session. Both checks are
-	// warnings: the daemon only knows what the iPad last downloaded, not what
-	// AUM has open.
+	// The song must be playing into its own session. The daemon knows which
+	// session AUM has open only when it loaded it itself (load_song) and the
+	// brain has not reconnected since; what the iPad last downloaded says
+	// nothing about what is open, so it is not consulted.
 	warnings := []string{}
 	rec, authored := loadSongSessions()[cs.id]
 	switch {
 	case !authored:
-		warnings = append(warnings, "this song has no authored session yet (author_song_session); its control changes will not reach anything")
+		warnings = append(warnings, "this song has no authored session yet (load_song authors and loads it); its control changes will not reach anything")
 	case rec.Fingerprint != cs.timeline.Fingerprint:
-		warnings = append(warnings, fmt.Sprintf("the song's tempo, plugins or controls changed since %q was authored: run author_song_session and load it again, or some sounds will be wrong", rec.Session))
+		warnings = append(warnings, fmt.Sprintf("the song's tempo, plugins or controls changed since %q was authored: run load_song, or some sounds will be wrong", rec.Session))
 	default:
-		if cur := s.currentAUMSessionID(); cur != "" && cur != rec.Session {
-			warnings = append(warnings, fmt.Sprintf("the iPad last loaded %q, not this song's session %q", cur, rec.Session))
+		if cur := s.loadedSessionID(); cur != "" && cur != rec.Session {
+			warnings = append(warnings, fmt.Sprintf("AUM has %q open, not this song's session %q (load_song loads it)", cur, rec.Session))
 		}
 	}
 

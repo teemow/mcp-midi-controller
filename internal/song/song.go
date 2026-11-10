@@ -48,7 +48,36 @@ type Song struct {
 	Sections map[string]Section `yaml:"sections" json:"sections"`
 	// Arrangement is the order the sections play in; a section may repeat.
 	Arrangement []string `yaml:"arrangement" json:"arrangement"`
+
+	// Session holds how the song's AUM session is built, beyond what the
+	// tracks say. nil is the plain session.
+	Session *SessionSpec `yaml:"session,omitempty" json:"session,omitempty"`
 }
+
+// SessionSpec is the song's own choice of session options. They are part of
+// the document so a song carries how its session is built; the tools that
+// author a session take them from here unless told otherwise.
+type SessionSpec struct {
+	// TrackTaps puts a ProbeAudioTap after every track's fader.
+	TrackTaps bool `yaml:"track_taps,omitempty" json:"track_taps,omitempty"`
+	// FullControl maps every other parameter of every plugin as well.
+	FullControl bool `yaml:"full_control,omitempty" json:"full_control,omitempty"`
+	// Hardware is the hardware-I/O profile of the master's output: "builtin"
+	// (the default) or "x32".
+	Hardware string `yaml:"hardware,omitempty" json:"hardware,omitempty"`
+}
+
+// SessionOptions returns the song's session options, the zero value when it
+// names none.
+func (s *Song) SessionOptions() SessionSpec {
+	if s.Session == nil {
+		return SessionSpec{}
+	}
+	return *s.Session
+}
+
+// sessionHardware lists the hardware profiles a session can be authored for.
+var sessionHardware = map[string]bool{"": true, "builtin": true, "x32": true}
 
 // Track is one instrument with its effect chain on its own mixer strip and
 // MIDI channel.
@@ -355,6 +384,10 @@ func (s *Song) Validate() error {
 	}
 	if s.Swing < 0 || s.Swing >= 1 {
 		e.addf("/swing: %g is not within 0..1", s.Swing)
+	}
+
+	if s.Session != nil && !sessionHardware[strings.ToLower(strings.TrimSpace(s.Session.Hardware))] {
+		e.addf("/session/hardware: %q is not builtin or x32", s.Session.Hardware)
 	}
 
 	if len(s.Tracks) == 0 {
