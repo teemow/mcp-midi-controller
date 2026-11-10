@@ -321,9 +321,19 @@ it. Playing a song on stage belongs to the brain itself, locked to AUM's
 transport, which is not built yet.
 
 Because the daemon keeps the time, its host has to stay awake while a song
-plays. A laptop left alone dozes: the system keeps trying to sleep, timers
-fire up to a second late and the notes with them. Hold it awake for the
-session (on macOS `caffeinate -i -s`).
+plays. A laptop left alone dozes: the system keeps trying to sleep, and each
+attempt stalls the daemon for a second or more, the notes with it. On macOS
+the daemon holds its host awake itself: `play_song` starts `caffeinate -i -s`
+before it sets the opening sound and ends it when the song has finished, was
+stopped or failed, so the host is held for the length of the playback and no
+longer. The display may still sleep, and `-s` only counts on mains power.
+
+That covers `play_song` and nothing else the daemon times: a `play_notes`
+sequence, for one, is still only as punctual as its host, so hold the host
+awake by hand for those (`caffeinate -i -s`). Nor can the daemon call back a
+sleep the host had already begun when `play_song` arrived. That one runs its
+course, a gap of a few seconds right at the start of the song, and none
+follows it.
 
 ## Status
 
