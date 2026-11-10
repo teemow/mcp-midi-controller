@@ -206,7 +206,7 @@ func (s *Server) broadcast(logger string, data map[string]any) {
 // body of the symmetric NotifyAudioTap / NotifyHostDiagnostics / NotifyMidiControl
 // notifiers.
 func (s *Server) broadcastConnState(logger string, connected bool, remote, connHint, goneHint string) {
-	state, hint := "connected", connHint
+	state, hint := stateConnected, connHint
 	if !connected {
 		state, hint = "disconnected", goneHint
 	}
@@ -264,7 +264,7 @@ func (s *Server) NotifyAUMSession(id, title string, version, channels, mappings 
 // intentionally NOT broadcast (they arrive ~10 Hz) — poll get_audio_tap for
 // live levels instead.
 func (s *Server) NotifyAudioTap(connected bool, name, remote string) {
-	state, hint := "connected", "read live levels + waveform with get_audio_tap (pass name to pick a tap)"
+	state, hint := stateConnected, "read live levels + waveform with get_audio_tap (pass name to pick a tap)"
 	if !connected {
 		state, hint = "disconnected", "no audio tap is streaming"
 	}

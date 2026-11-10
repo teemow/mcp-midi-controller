@@ -22,6 +22,8 @@ import (
 // probe_sound writes (wav_path), not this base64 view.
 const maxClipFrames = 1 << 15 // 32768 frames
 
+const stateConnected = "connected"
+
 // registerAudioTools wires the read-only get_audio_tap tool, the agent's "ears":
 // the latest levels (RMS/peak), a short peak-envelope waveform, and connection
 // metadata for the ProbeAudioTap stream terminated by internal/audiotap. It is
@@ -172,7 +174,7 @@ func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest)
 		if args.Name != "" {
 			msg = fmt.Sprintf("no audio tap named %q; known taps: %s", args.Name, tapNamesText(s.audio.Names()))
 		}
-		return structResult(msg, map[string]any{"connected": false, "samples": 0}), nil
+		return structResult(msg, map[string]any{stateConnected: false, "samples": 0}), nil
 	}
 
 	// Peek at the current sample rate to translate duration_ms into frames
@@ -189,8 +191,8 @@ func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest)
 	clip := st.Clip(maxFrames)
 	if len(clip.Samples) == 0 {
 		return structResult("no audio captured yet; insert ProbeAudioTap and enable streaming", map[string]any{
-			"connected": clip.Connected,
-			"samples":   0,
+			stateConnected: clip.Connected,
+			"samples":      0,
 		}), nil
 	}
 
@@ -216,12 +218,12 @@ func (s *Server) handleGetAudioClip(_ context.Context, req *mcp.CallToolRequest)
 	// No-embed: pcm_base64 is large binary the model cannot use in its text
 	// context; keep it in structuredContent for UI/programmatic clients only.
 	return structResultNoEmbed(msg, map[string]any{
-		"connected":   clip.Connected,
-		"encoding":    clip.Encoding,
-		"sample_rate": clip.SampleRate,
-		"channels":    ch,
-		"samples":     frames,
-		"duration_ms": durMS,
-		"pcm_base64":  encoded,
+		stateConnected: clip.Connected,
+		"encoding":     clip.Encoding,
+		"sample_rate":  clip.SampleRate,
+		"channels":     ch,
+		"samples":      frames,
+		"duration_ms":  durMS,
+		"pcm_base64":   encoded,
 	}), nil
 }

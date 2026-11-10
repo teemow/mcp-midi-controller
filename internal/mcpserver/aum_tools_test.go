@@ -39,8 +39,13 @@ func newAUMServerWithBrain(t *testing.T) *Server {
 	return New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}))
 }
 
-// stageProbe writes a minimal AUv3 probe dump into the staging dir so the
-// author/import tools can source/match a node from it.
+// gtr1ProbeID is the staged id of stageProbe's dump: device.ProbeID of its
+// component aumu/gtr1/Acme, the name the receiver stages it under.
+const gtr1ProbeID = "aumu-gtr1-_acme"
+
+// stageProbe writes a minimal AUv3 probe dump into the staging dir, named as
+// the receiver names it, so the author/import tools can source/match a node
+// from it.
 func stageProbe(t *testing.T) {
 	t.Helper()
 	dir := config.AUv3ProbesDir()
@@ -54,7 +59,7 @@ func stageProbe(t *testing.T) {
 			{"address": 0, "identifier": "cutoff", "displayName": "Cutoff", "min": 0, "max": 1, "value": 0.5, "writable": true, "readable": true}
 		]
 	}`
-	if err := os.WriteFile(filepath.Join(dir, "gtr1.json"), []byte(dump), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, gtr1ProbeID+".json"), []byte(dump), 0o644); err != nil {
 		t.Fatalf("write probe: %v", err)
 	}
 }
@@ -77,7 +82,7 @@ func TestAUMToolsAuthorListGetDiff(t *testing.T) {
 		"channels": []any{
 			map[string]any{
 				"kind": "audio", "title": "Gitarre",
-				"nodes": []any{map[string]any{"probe_id": "gtr1"}},
+				"nodes": []any{map[string]any{"probe_id": gtr1ProbeID}},
 			},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
@@ -202,7 +207,7 @@ func TestSessionCandidatesWalkNestedSessions(t *testing.T) {
 		"channels": []any{
 			map[string]any{
 				"kind": "audio", "title": "Gitarre",
-				"nodes": []any{map[string]any{"probe_id": "gtr1"}},
+				"nodes": []any{map[string]any{"probe_id": gtr1ProbeID}},
 			},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
@@ -248,7 +253,7 @@ func TestAUMAuthorRoutedTappedSession(t *testing.T) {
 		"channels": []any{
 			map[string]any{
 				"kind": "audio", "title": "Synth",
-				"nodes":     []any{map[string]any{"probe_id": "gtr1"}},
+				"nodes":     []any{map[string]any{"probe_id": gtr1ProbeID}},
 				"output":    map[string]any{"kind": "bus", "bus_index": 0},
 				"aux_sends": []any{map[string]any{"bus_index": 4, "amount": 0.5}},
 				"tap":       true,
@@ -381,7 +386,7 @@ func TestAUMImportProposesBindings(t *testing.T) {
 	if res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"out_id": "rig",
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 		"convention": map[string]any{"channel": 3, "start_cc": 30},
@@ -397,7 +402,7 @@ func TestAUMImportProposesBindings(t *testing.T) {
 	// The hosted node matched the staged probe and proposed a binding whose
 	// device id derives from the probe; the channel was inferred from the
 	// convention (authored send ch 3 → stored 0-based 2 → suggested send ch 3).
-	if !strings.Contains(text, "probe=gtr1") {
+	if !strings.Contains(text, "probe="+gtr1ProbeID) {
 		t.Fatalf("import did not match the probe:\n%s", text)
 	}
 	if !strings.Contains(text, "channel=3") {
@@ -414,7 +419,7 @@ func TestAUMImportAutoCreatesDevices(t *testing.T) {
 		"out_id": "rig2",
 		"title":  "Rig Two",
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 		"convention": map[string]any{"channel": 3, "start_cc": 30},
@@ -518,7 +523,7 @@ func TestAUMImportReplacesPreviousSessionRig(t *testing.T) {
 		if res := call(t, s.handleAuthorAUMSession, map[string]any{
 			"out_id": outID,
 			"channels": []any{
-				map[string]any{"kind": "audio", "title": strip, "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+				map[string]any{"kind": "audio", "title": strip, "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 				map[string]any{"kind": "audio", "title": "Master"},
 			},
 			"convention": map[string]any{"channel": 1, "start_cc": 30},
@@ -585,7 +590,7 @@ func TestAUMImportOfUnmappedSessionKeepsPreviousRig(t *testing.T) {
 	if res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"out_id": "mapped",
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 		"convention": map[string]any{"channel": 1, "start_cc": 30},
@@ -635,7 +640,7 @@ func TestAUMImportProposeOnlyDoesNotCreate(t *testing.T) {
 	if res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"out_id": "rig3",
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 		"convention": map[string]any{"channel": 3, "start_cc": 30},
@@ -649,7 +654,7 @@ func TestAUMImportProposeOnlyDoesNotCreate(t *testing.T) {
 		t.Fatalf("import failed: %s", resultText(res))
 	}
 	text := resultText(res)
-	if !strings.Contains(text, "probe=gtr1") || !strings.Contains(text, "channel=3") {
+	if !strings.Contains(text, "probe="+gtr1ProbeID) || !strings.Contains(text, "channel=3") {
 		t.Fatalf("propose_only output missing proposal:\n%s", text)
 	}
 	if len(s.eng.Devices()) != 0 {

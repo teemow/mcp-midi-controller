@@ -39,6 +39,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
+	"github.com/teemow/mcp-midi-controller/internal/probestaging"
 	"github.com/teemow/midi-transport/auv3"
 )
 
@@ -56,6 +57,16 @@ func main() {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			log.Fatalf("auv3-probe: create dir %s: %v", d, err)
 		}
+	}
+
+	// Dumps staged by an older receiver are named by their subtype alone; move
+	// them to their current id so the daemon's tools resolve them.
+	res, err := probestaging.Migrate(*probes)
+	if res.Renamed+res.Removed > 0 {
+		log.Printf("auv3-probe: renamed %d staged dump(s) to their component id, removed %d older duplicate(s)", res.Renamed, res.Removed)
+	}
+	if err != nil {
+		log.Printf("auv3-probe: migrate staged ids: %v (continuing)", err)
 	}
 
 	if *seed {
