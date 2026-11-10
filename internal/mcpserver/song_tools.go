@@ -822,10 +822,16 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
+	// The player keeps the time with the host's timers, and a host that dozes
+	// fires them late. Hold it awake from before the opening sound goes out
+	// until the playback is over, however it ends.
+	release := s.holdAwake()
+	opts.OnEnd = func(song.Status) { release() }
 	st, err := s.player.Start(cs.id, cs.timeline, opts, func(ctx context.Context, e song.Event) error {
 		return s.sendBrain(ctx, songCommand(e))
 	})
 	if err != nil {
+		release() // no playback began, so nothing will end
 		return textResult("play_song: "+err.Error(), true), nil
 	}
 

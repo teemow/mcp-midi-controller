@@ -18,6 +18,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/hostawake"
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/song"
@@ -116,6 +117,12 @@ type Server struct {
 	// were measured to sound like. See sound_tools.go.
 	sounds *sound.Catalog
 
+	// holdAwake keeps the daemon's host awake until the release it returns is
+	// called. play_song holds it for as long as a song plays, because the
+	// player keeps the time with the host's timers and a dozing host fires
+	// them late. hostawake.Hold unless WithHostAwake replaces it.
+	holdAwake func() (release func())
+
 	// songSessionsMu serializes the load-change-save cycle of the record of
 	// which session each song was authored into.
 	songSessionsMu sync.Mutex
@@ -174,6 +181,14 @@ func WithMidiControl(hub *midicontrol.Hub) Option {
 	return func(s *Server) { s.midi = hub }
 }
 
+// WithHostAwake replaces how the server keeps its host awake while a song
+// plays (default hostawake.Hold, which starts the host's own tool): hold is
+// called before a playback starts and the release it returns once the playback
+// is over. Tests pass a stand-in so no process is started.
+func WithHostAwake(hold func() (release func())) Option {
+	return func(s *Server) { s.holdAwake = hold }
+}
+
 // New builds the MCP server, registers global tools, and generates a tool for
 // each currently bound device.
 func New(eng *engine.Engine, opts ...Option) *Server {
@@ -183,6 +198,7 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		scenes:     scene.NewStore(config.ScenesDir()),
 		songs:      song.NewStore(config.SongsDir()),
 		sounds:     sound.NewCatalog(config.SoundsDir()),
+		holdAwake:  hostawake.Hold,
 		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},
 	}
