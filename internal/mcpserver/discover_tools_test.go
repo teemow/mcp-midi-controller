@@ -53,7 +53,7 @@ func TestDiscoverDevicesAggregatesAllSources(t *testing.T) {
 	if res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"out_id": "rig",
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 		"convention": map[string]any{"channel": 3, "start_cc": 30},
@@ -113,7 +113,7 @@ func TestDiscoverDevicesAggregatesAllSources(t *testing.T) {
 	if len(catalog) != 1 {
 		t.Fatalf("got %d catalog candidates, want 1", len(catalog))
 	}
-	if catalog[0].SuggestedType != "gtr1" || catalog[0].TypeKnown {
+	if catalog[0].SuggestedType != gtr1ProbeID || catalog[0].TypeKnown {
 		t.Fatalf("catalog candidate wrong: %+v", catalog[0])
 	}
 	if catalog[0].Transport != "auv3midi" || catalog[0].Endpoint != "brain" {
@@ -124,7 +124,7 @@ func TestDiscoverDevicesAggregatesAllSources(t *testing.T) {
 	if len(session) != 1 {
 		t.Fatalf("got %d session candidates, want 1", len(session))
 	}
-	if session[0].SuggestedType != "gtr1" || session[0].Channel != 3 || session[0].SessionID != "rig" {
+	if session[0].SuggestedType != gtr1ProbeID || session[0].Channel != 3 || session[0].SessionID != "rig" {
 		t.Fatalf("session candidate wrong: %+v", session[0])
 	}
 

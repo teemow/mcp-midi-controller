@@ -94,7 +94,7 @@ func (s *Server) registerAuthoringTools() {
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"device_id": {"type": "string", "description": "Staged dump id (its filename without .json), e.g. \"dist\". See list_auv3_probes."},
+				"device_id": {"type": "string", "description": "Staged dump id (its filename without .json): the unit's type-subtype-manufacturer, capitals written as _ plus the letter, e.g. \"aufx-dist-_acme\". See list_auv3_probes."},
 				"file": {"type": "string", "description": "Explicit path to a dump JSON (overrides device_id)."},
 				"writable_only": {"type": "boolean", "description": "List only writable (configurable / AUM-mappable) params. Default false."}
 			}

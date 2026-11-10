@@ -29,7 +29,7 @@ func authorConventionSession(t *testing.T, s *Server, outID, strip string) {
 		"out_id": outID,
 		"title":  outID,
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": strip, "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": strip, "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 		"convention": map[string]any{"channel": 3, "start_cc": 30},
