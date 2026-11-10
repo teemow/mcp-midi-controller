@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
 )
@@ -154,6 +155,7 @@ func TestLoadSongSilentTrack(t *testing.T) {
 func TestLoadSongNotPulled(t *testing.T) {
 	r := newSongRig(t)
 	s := r.s
+	songPullTimeout = 300 * time.Millisecond // restored by the rig's cleanup
 	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
 		t.Fatalf("save: %s", resultText(res))
 	}

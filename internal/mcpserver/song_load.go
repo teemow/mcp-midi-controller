@@ -397,7 +397,8 @@ func (s *Server) waitRig(ctx context.Context, gen uint64, d time.Duration) (brai
 }
 
 // tapStreaming reports whether the active tap delivers audio right now: it is
-// connected and its sample count moves.
+// connected and its sample count moves. A stream that hiccups is given a few
+// tenths of a second.
 func (s *Server) tapStreaming(ctx context.Context) bool {
 	if s.audio == nil {
 		return false
@@ -407,12 +408,17 @@ func (s *Server) tapStreaming(ctx context.Context) bool {
 		return false
 	}
 	before := st.MarkEpoch()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(120 * time.Millisecond):
+	for i := 0; i < 8; i++ {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(80 * time.Millisecond):
+		}
+		if st.MarkEpoch() > before {
+			return true
+		}
 	}
-	return st.MarkEpoch() > before
+	return false
 }
 
 // --- check_song -----------------------------------------------------------------
