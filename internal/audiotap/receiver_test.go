@@ -185,6 +185,80 @@ func TestReceiverConcurrentNamedTaps(t *testing.T) {
 	}
 }
 
+// TestReceiverNamedTapDialsAgain is a tap that names itself the way the
+// plugin sends it (percent-encoded, with the session's path in it) and dials
+// again before its first connection ended: the name is the tap's key, the tap
+// stays connected, and only the end of the newer connection is a disconnect.
+func TestReceiverNamedTapDialsAgain(t *testing.T) {
+	reg := NewRegistry()
+	var connects, disconnects atomic.Int32
+	mux := http.NewServeMux()
+	Register(mux, reg,
+		func(string, string) { connects.Add(1) },
+		func(string, string) { disconnects.Add(1) },
+	)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const name = "Songs/Night Drive+1;x/master"
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/audio-stream?name=Songs%2FNight%20Drive%2B1%3Bx%2Fmaster"
+	dial := func(sample float32) *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		format := `{"type":"format","encoding":"f32le","channels":1,"sampleRate":48000,"source":"` + name + `"}`
+		if err := c.Write(ctx, websocket.MessageText, []byte(format)); err != nil {
+			t.Fatalf("write format: %v", err)
+		}
+		buf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(buf, math.Float32bits(sample))
+		if err := c.Write(ctx, websocket.MessageBinary, buf); err != nil {
+			t.Fatalf("write audio: %v", err)
+		}
+		return c
+	}
+	wait := func(what string, done func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(2 * time.Second); !done(); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+	peak := func() float32 {
+		st, ok := reg.Get(name)
+		if !ok {
+			return 0
+		}
+		return st.Snapshot().WindowPeak
+	}
+
+	first := dial(0.5)
+	wait("the first connection's audio", func() bool { return peak() == 0.5 })
+	if names := reg.Names(); len(names) != 1 || names[0] != name {
+		t.Fatalf("taps = %q, want the one name the tap sent", names)
+	}
+	second := dial(0.25)
+	wait("the second connection's audio", func() bool { return connects.Load() == 2 && peak() == 0.25 })
+
+	// The first connection ends late: the tap is still there.
+	_ = first.Close(websocket.StatusNormalClosure, "replaced")
+	time.Sleep(100 * time.Millisecond)
+	st, _ := reg.Get(name)
+	if !st.Connected() || disconnects.Load() != 0 {
+		t.Fatalf("after the replaced connection ended: connected %v, %d disconnect(s); want the tap still there", st.Connected(), disconnects.Load())
+	}
+	if got := st.Snapshot().WindowSamples; got != 1 {
+		t.Fatalf("the window holds %d sample(s), want only the newer connection's", got)
+	}
+
+	_ = second.Close(websocket.StatusNormalClosure, "done")
+	wait("the disconnect", func() bool { return disconnects.Load() == 1 && !st.Connected() })
+}
+
 // itoa renders a whole-number float for the JSON format message above.
 func itoa(f float64) string {
 	return strconv.FormatInt(int64(f), 10)

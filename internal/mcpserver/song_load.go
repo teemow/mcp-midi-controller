@@ -76,14 +76,15 @@ func (s *Server) registerSongLoadTools(songArg string) {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "check_song",
-		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM shows the song's session with its strips and reports no failed plugin, and every track answers a note. " +
-			"For the last, the song's own sound is set (each track's declaration, no scene), every track's first note is played alone and the tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. " +
-			"Not while a song plays. ui: false skips the look at AUM (which opens and closes its menu).",
+		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM has the song's session open, and every track answers a note. " +
+			"Which session is open is read from the session's master tap, which dials in under the session's id. AUM's screen (the session's name, its strips, a failed plugin's alert) is looked at when no tap names the session, or with ui: true; the look opens and closes AUM's menu. " +
+			"For the notes, the song's own sound is set (each track's declaration, no scene), every track's first note is played alone and the master tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. " +
+			"Not while a song plays.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				` + songArg + `,
-				"ui": {"type": "boolean", "description": "Read the session name, strips and alerts from AUM's screen (default true when the iPad UI tools are configured)."},
+				"ui": {"type": "boolean", "description": "Read the session name, strips and alerts from AUM's screen. Default: only when the session's tap does not name it (and the iPad UI tools are configured). true always looks, false never."},
 				"sound": {"type": "boolean", "description": "Play every track's first note and listen (default true)."}
 			},
 			"required": ["song"]
@@ -297,8 +298,9 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	start := time.Now()
 	want := songSessionOptions(cs.song, author)
 	seq, seqErr := songSequencerFor(cs, songCatalog(), author.Sequencer)
+	// A session staged before taps had names is authored again, with them.
 	current := authored && rec.Session == outID && rec.Fingerprint == cs.timeline.Fingerprint && rec.Options == want &&
-		seqErr == nil && rec.Sequence == seq.fingerprint() &&
+		seqErr == nil && rec.Sequence == seq.fingerprint() && rec.TapNames &&
 		rec.SHA256 != "" && fileSHA256(stagedSessionPath(outID)) == rec.SHA256
 	if current && !args.Reauthor {
 		rep.skip("author", "the staged %s is the song's session", outID)
@@ -360,20 +362,24 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 
 	// 4. The new session's brain and tap dial in.
 	start = time.Now()
-	brain, tap := s.waitRig(ctx, gen, songDialTimeout)
-	if !brain || !tap {
+	brain, tap, named := s.waitRig(ctx, gen, outID, songDialTimeout)
+	if !brain || tap == nil {
 		var missing []string
 		if !brain {
 			missing = append(missing, "the ProbeMidiBrain did not connect")
 		}
-		if !tap {
+		if tap == nil {
 			missing = append(missing, "the ProbeAudioTap is not streaming")
 		}
 		rep.add("connect", false, start, "%s", strings.Join(missing, "; "))
 		return done("open the plugin's window in AUM and read its status line: it names the daemon it dials. A plugin AUM shows as failed needs the session loaded again (load_song)")
 	}
 	s.loaded.set(outID)
-	rep.add("connect", true, start, "brain and tap connected")
+	if named {
+		rep.add("connect", true, start, "brain and tap connected; the tap dialled in as %q", tap.Name())
+	} else {
+		rep.add("connect", true, start, "brain and tap connected; the tap gave no name (a ProbeAudioTap from before taps had names), so the session is known from AUM's screen only")
+	}
 
 	// 5. Does it sound?
 	check := s.checkSong(ctx, cs, checkOptions{Sound: args.Check, Loaded: &loaded})
@@ -385,15 +391,32 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	return done("")
 }
 
-// waitRig waits for a brain connection made after generation gen and for a
-// tap whose stream advances.
-func (s *Server) waitRig(ctx context.Context, gen uint64, d time.Duration) (brain, tap bool) {
+// waitRig waits for a brain connection made after generation gen and for the
+// tap of the session just loaded to stream: its master tap, which dials in
+// under the session's id (named). A tap that gives no name is taken once the
+// brain is there and none came under the name within songTapNameGrace. tap
+// is nil when none streams.
+func (s *Server) waitRig(ctx context.Context, gen uint64, session string, d time.Duration) (brain bool, tap *audiotap.Store, named bool) {
 	deadline := time.Now().Add(d)
+	var unnamedSince time.Time
 	for {
 		brain = s.midi != nil && s.midi.Connected() && s.loaded.generation() > gen
-		tap = s.tapStreaming(ctx)
-		if (brain && tap) || time.Now().After(deadline) || ctx.Err() != nil {
-			return brain, tap
+		tap, named = s.songTap(session)
+		if !s.streaming(ctx, tap) {
+			tap = nil
+		}
+		switch {
+		case !brain || tap == nil:
+			unnamedSince = time.Time{}
+		case named:
+			return brain, tap, named
+		case unnamedSince.IsZero():
+			unnamedSince = time.Now()
+		case time.Since(unnamedSince) >= songTapNameGrace:
+			return brain, tap, named
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return brain, tap, named
 		}
 		select {
 		case <-ctx.Done():
@@ -402,38 +425,23 @@ func (s *Server) waitRig(ctx context.Context, gen uint64, d time.Duration) (brai
 	}
 }
 
-// tapStreaming reports whether the active tap delivers audio right now: it is
-// connected and its sample count moves. A stream that hiccups is given a few
-// tenths of a second.
-func (s *Server) tapStreaming(ctx context.Context) bool {
-	if s.audio == nil {
-		return false
-	}
-	st, ok := s.audio.Active()
-	if !ok || !st.Connected() {
-		return false
-	}
-	before := st.MarkEpoch()
-	for i := 0; i < 8; i++ {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(80 * time.Millisecond):
-		}
-		if st.MarkEpoch() > before {
-			return true
-		}
-	}
-	return false
-}
-
 // --- check_song -----------------------------------------------------------------
+
+// look says when check_song reads AUM's screen.
+type look int
+
+const (
+	// lookAuto reads the screen only when no tap names the open session.
+	lookAuto look = iota
+	lookAlways
+	lookNever
+)
 
 // checkOptions selects what check_song looks at.
 type checkOptions struct {
 	// UI reads AUM's screen; Loaded is that reading when the caller has it
 	// already.
-	UI     bool
+	UI     look
 	Loaded *ipad.AUMLoaded
 	// Sound plays every track's first note and listens.
 	Sound bool
@@ -507,10 +515,14 @@ func (s *Server) handleCheckSong(ctx context.Context, req *mcp.CallToolRequest) 
 	if st := s.player.Status(); st.Playing {
 		return textResult(fmt.Sprintf("check_song: %q is playing; stop_song first (the check plays notes of its own)", st.Song), true), nil
 	}
-	check := s.checkSong(ctx, cs, checkOptions{
-		UI:    s.ipad != nil && (args.UI == nil || *args.UI),
-		Sound: args.Sound == nil || *args.Sound,
-	})
+	ui := lookAuto
+	if args.UI != nil {
+		ui = lookNever
+		if *args.UI {
+			ui = lookAlways
+		}
+	}
+	check := s.checkSong(ctx, cs, checkOptions{UI: ui, Sound: args.Sound == nil || *args.Sound})
 	title := fmt.Sprintf("%q is ready to play", cs.song.Title)
 	if !check.OK {
 		title = fmt.Sprintf("%q is NOT ready to play", cs.song.Title)
@@ -541,9 +553,19 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		return c
 	}
 
-	// What AUM shows.
+	// What the open session's master tap says: it dials in under the id of
+	// the session it was authored into.
+	named := s.tapSession()
+	if named != "" && named != rec.Session {
+		c.find("aum", false, "AUM has %q open (its ProbeAudioTap dialled in under that name), not the song's session %q", named, rec.Session)
+		c.Next = "load_song"
+		return c
+	}
+
+	// What AUM shows. The look opens AUM's menu, so it is left out when the
+	// tap has named the session, unless it was asked for.
 	loaded := o.Loaded
-	if loaded == nil && o.UI && s.ipad != nil {
+	if loaded == nil && s.ipad != nil && (o.UI == lookAlways || (o.UI == lookAuto && named == "")) {
 		res, err := s.ipad.AUMSession(ctx)
 		if err != nil {
 			c.find("aum", false, "AUM's screen could not be read: %v", err)
@@ -567,6 +589,9 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		if len(loaded.Problems) > 0 {
 			c.find("plugins", false, "AUM reports: %s", strings.Join(loaded.Problems, "; "))
 		}
+	} else if named != "" {
+		s.loaded.set(rec.Session)
+		c.find("aum", true, "AUM has %q open: its ProbeAudioTap dialled in under that name", named)
 	} else if cur := s.loadedSessionID(); cur != "" && cur != rec.Session {
 		c.find("aum", false, "AUM has %q open (loaded by load_song), not the song's session %q", cur, rec.Session)
 		c.Next = "load_song"
@@ -580,19 +605,23 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 	} else {
 		c.find("brain", false, "%s", midicontrol.ErrNoBrain.Error())
 	}
-	tap := s.tapStreaming(ctx)
-	if tap {
-		c.find("tap", true, "ProbeAudioTap streaming")
-	} else {
+	tap, tapNamed := s.songTap(rec.Session)
+	switch {
+	case !s.streaming(ctx, tap):
+		tap = nil
 		c.find("tap", false, "no ProbeAudioTap is streaming")
+	case tapNamed:
+		c.find("tap", true, "ProbeAudioTap %q streaming%s", tap.Name(), s.trackTapsNote(cs, rec))
+	default:
+		c.find("tap", true, "ProbeAudioTap streaming")
 	}
-	if !brain || !tap {
+	if !brain || tap == nil {
 		c.Next = "load_song loads the session again; if the plugins are there but do not connect, open one's window in AUM and read its status line"
 		return c
 	}
 
 	if o.Sound {
-		tracks, err := s.soundCheck(ctx, cs)
+		tracks, err := s.soundCheck(ctx, cs, tap)
 		c.Tracks = tracks
 		var silent []string
 		for _, t := range tracks {
@@ -639,15 +668,28 @@ next:
 	return missing
 }
 
+// trackTapsNote says, for a session authored with a tap on every track, how
+// many of those are connected, and names the tracks whose tap is not: mix_song
+// then measures the tracks by solo passes. "" for a session without them.
+func (s *Server) trackTapsNote(cs *compiledSong, rec songSessionRecord) string {
+	if !rec.Options.TrackTaps {
+		return ""
+	}
+	taps, missing := s.trackTaps(cs, rec.Session)
+	if len(missing) == 0 {
+		return fmt.Sprintf(", and the taps of its %d track(s)", len(taps))
+	}
+	return fmt.Sprintf("; no tap is connected for: %s", strings.Join(missing, ", "))
+}
+
 // soundCheck sets the song's own sound and plays every track's first note
-// alone, measuring the tap after each.
-func (s *Server) soundCheck(ctx context.Context, cs *compiledSong) ([]trackCheck, error) {
+// alone, measuring the tap (the master's) after each.
+func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap.Store) ([]trackCheck, error) {
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	// A dozing host stalls the tap's stream and the waits between the notes.
 	defer s.holdAwake()()
-	tap, ok := s.audio.Active()
-	if !ok {
+	if tap == nil {
 		return nil, errors.New("no audio tap")
 	}
 	home, err := cs.plan.HomeState()

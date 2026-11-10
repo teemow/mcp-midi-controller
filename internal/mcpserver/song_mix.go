@@ -2,10 +2,12 @@ package mcpserver
 
 // This file measures a song's mix (mix_song): it plays the song and reads the
 // master tap out for its whole length, so the levels of every bar and every
-// section are known, and on request plays every section once per track for
-// the level of each track in it.
+// section are known, and on request gives the level of each track in every
+// section. A session with a tap on every track has those read out in the same
+// pass, each telling its track by the name it dialled in under; without them
+// every section is played once per track and measured at the master.
 //
-// The tap keeps only its last seconds, so the stream is read out as it
+// A tap keeps only its last seconds, so the stream is read out as it
 // arrives and reduced on the way: nothing of the audio is kept but the mean
 // square and the sample peak of every hundredth of a second.
 
@@ -53,7 +55,7 @@ func (s *Server) registerSongMixTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "mix_song",
 		Description: "Measure a song's mix: play it (the whole song, or from a section for a number of sections) and read the master tap out for its whole length. The report is rms and sample peak per bar and per section, the loudest and the clipped bars, how much headroom is left, and where the tap's stream stalled. " +
-			"per_track: true then plays each section once per track (the first bars of it, solo) and adds the level of every track in every section — the table a balance is made from — and names a track that is silent where it has notes. " +
+			"per_track: true adds the level of every track in every section — the table a balance is made from — and names a track that is silent where it has notes. A session with a tap on every track (session: {track_taps: true}) has them read out in the same pass: each track at its own tap, after its fader and before the master's effects, over the whole section. Without those taps each section is played once per track (the first bars of it, solo) and measured at the master; solo: true asks for that although the taps are there. " +
 			"Returns at once; get_song_mix gives the progress and the report (stop_song ends the measurement). The song's session must be loaded (load_song).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -61,9 +63,10 @@ func (s *Server) registerSongMixTools(songArg string) {
 				` + songArg + `,
 				"from": {"type": "string", "description": "Where to start: a section id or a 1-based position in the arrangement (default: the top)."},
 				"sections": {"type": "integer", "minimum": 1, "description": "How many arrangement entries to play (default: to the end)."},
-				"per_track": {"type": "boolean", "description": "Also measure every track alone in every section."},
+				"per_track": {"type": "boolean", "description": "Also measure every track in every section: at its own tap in the same pass when the session has track taps, else alone in a pass of its own."},
+				"solo": {"type": "boolean", "description": "With per_track: measure the tracks by solo passes at the master even when the session has track taps (the level then includes the master's effects)."},
 				"solo_bars": {"type": "integer", "minimum": 1, "maximum": 32, "description": "How many bars of a section a solo pass plays (default 4)."},
-				"whole": {"type": "boolean", "description": "Play the whole range through (default true). false with per_track measures only the tracks."}
+				"whole": {"type": "boolean", "description": "Report the whole range's bars and sections at the master (default true). false with per_track measures only the tracks."}
 			},
 			"required": ["song"]
 		}`),
@@ -105,6 +108,11 @@ type tapMeter struct {
 	// stalls counts stretches the stream did not deliver in time, or that
 	// had scrolled out of the tap's window before they were read.
 	stalls int
+
+	// zero is the position of the present playback's first note. Every tap
+	// has a stream of its own, so each meter keeps its own; only the
+	// measuring goroutine touches it.
+	zero float64
 }
 
 // newTapMeter starts metering at the tap's present position.
@@ -195,6 +203,15 @@ func (m *tapMeter) position() float64 {
 	return float64(m.tap.MarkEpoch()-first) / float64(ch) / rate
 }
 
+// since is the stream's present position in seconds since the playback's
+// first note.
+func (m *tapMeter) since() float64 { return m.position() - m.zero }
+
+// levelSince is level for a stretch counted from the playback's first note.
+func (m *tapMeter) levelSince(from, to float64) (rmsDB, peakDB float64, ok bool) {
+	return m.level(m.zero+from, m.zero+to)
+}
+
 // level is the rms and the sample peak, in dBFS, of the stretch from..to
 // (seconds since the meter began). ok is false when nothing was metered
 // there.
@@ -237,7 +254,8 @@ type mixSection struct {
 	PeakDB   float64 `json:"peak_db"`
 }
 
-// mixSolo is one track alone in one section.
+// mixSolo is one track in one section: alone in a pass of its own, or at its
+// own tap while the song played.
 type mixSolo struct {
 	Section string  `json:"section"`
 	Track   string  `json:"track"`
@@ -258,18 +276,35 @@ type mixReport struct {
 	TailDB   float64      `json:"tail_peak_db,omitempty"`
 	Sections []mixSection `json:"sections,omitempty"`
 	Bars     []mixBar     `json:"bars,omitempty"`
-	// Tracks are the solo passes.
-	Tracks []mixSolo `json:"tracks,omitempty"`
-	// Stalls counts stretches the tap's stream did not deliver.
+	// Tracks are the tracks' levels per section, and TracksAt where they were
+	// measured: tracksAtTaps or tracksAtMaster.
+	Tracks   []mixSolo `json:"tracks,omitempty"`
+	TracksAt string    `json:"tracks_at,omitempty"`
+	// Stalls counts stretches a tap's stream did not deliver.
 	Stalls int `json:"stalls,omitempty"`
 	// Findings say what stands out.
 	Findings []string `json:"findings,omitempty"`
 	Seconds  float64  `json:"seconds"`
 }
 
+// Where the tracks of a mix were measured.
+const (
+	// tracksAtTaps: each at its own tap, while the song played.
+	tracksAtTaps = "taps"
+	// tracksAtMaster: at the master tap, each in a solo pass.
+	tracksAtMaster = "master"
+)
+
 func (r *mixReport) text() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "mix of %q (%s) at %g BPM, measured at the master tap in %.0f s\n", r.Title, r.Song, r.Tempo, r.Seconds)
+	where := "the master tap"
+	if r.TracksAt == tracksAtTaps {
+		where = "the master tap and every track's own"
+		if len(r.Bars) == 0 {
+			where = "every track's own tap"
+		}
+	}
+	fmt.Fprintf(&b, "mix of %q (%s) at %g BPM, measured at %s in %.0f s\n", r.Title, r.Song, r.Tempo, where, r.Seconds)
 	if len(r.Bars) > 0 {
 		fmt.Fprintf(&b, "whole: rms %.1f dBFS, peak %.1f dBFS, %d bar(s)\n", r.RMSDB, r.PeakDB, len(r.Bars))
 		b.WriteString("sections:\n")
@@ -286,7 +321,11 @@ func (r *mixReport) text() string {
 		}
 	}
 	if len(r.Tracks) > 0 {
-		b.WriteString("tracks alone (rms / peak dBFS):\n")
+		if r.TracksAt == tracksAtTaps {
+			b.WriteString("tracks at their own taps, in the same pass (rms / peak dBFS):\n")
+		} else {
+			b.WriteString("tracks alone (rms / peak dBFS):\n")
+		}
 		// One row per track, one column per section, in the order measured.
 		var sections, tracks []string
 		cell := map[[2]string]mixSolo{}
@@ -364,6 +403,10 @@ type mixArgs struct {
 	Whole       bool
 	PerTrack    bool
 	SoloBars    int
+	// TrackTaps are the tracks' own taps, by track id, when every track has
+	// one and the tracks are to be measured there; nil measures them by solo
+	// passes.
+	TrackTaps map[string]*audiotap.Store
 }
 
 func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -372,6 +415,7 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 		From     string `json:"from"`
 		Sections int    `json:"sections"`
 		PerTrack bool   `json:"per_track"`
+		Solo     bool   `json:"solo"`
 		SoloBars int    `json:"solo_bars"`
 		Whole    *bool  `json:"whole"`
 	}
@@ -399,16 +443,29 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 	if s.audio == nil {
 		return textResult("mix_song: no audio tap is configured", true), nil
 	}
-	tap, ok := s.audio.Active()
-	if !ok || !tap.Connected() {
+	rec, authored := loadSongSessions()[cs.id]
+	// The session's master tap when it names itself, else the latest tap.
+	tap, _ := s.songTap(rec.Session)
+	if tap == nil {
 		return textResult("mix_song: no ProbeAudioTap is streaming — load_song puts the song's session into AUM", true), nil
 	}
-	rec, authored := loadSongSessions()[cs.id]
 	switch cur := s.loadedSessionID(); {
 	case !authored || rec.Fingerprint != cs.timeline.Fingerprint:
 		return textResult(fmt.Sprintf("mix_song: the session of %q is not authored for the song as it is now; load_song first", cs.id), true), nil
 	case cur != "" && cur != rec.Session:
 		return textResult(fmt.Sprintf("mix_song: AUM has %q open, not this song's session %q; load_song first", cur, rec.Session), true), nil
+	}
+	// The tracks' own taps, when every track has one: they are read out
+	// while the song plays, and no track needs a pass of its own.
+	tapNote := ""
+	if ma.PerTrack && !args.Solo {
+		taps, missing := s.trackTaps(cs, rec.Session)
+		switch {
+		case len(missing) == 0:
+			ma.TrackTaps = taps
+		case len(taps) > 0 || rec.Options.TrackTaps:
+			tapNote = fmt.Sprintf("\nno tap is connected for %s, so the tracks are measured by solo passes at the master", strings.Join(missing, ", "))
+		}
 	}
 
 	s.mixMu.Lock()
@@ -441,21 +498,29 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	whole := cs.timeline.TickTime(cs.timeline.Sections[last].Tick + int64(cs.timeline.Sections[last].Bars)*cs.timeline.BarTicks - cs.timeline.Sections[from].Tick)
 	est := time.Duration(0)
-	if ma.Whole {
+	if ma.Whole || ma.TrackTaps != nil {
 		est += whole + mixTail + 2*time.Second
 	}
-	solos := s.mixSolos(cs, from, last, ma.SoloBars)
-	if ma.PerTrack {
+	var solos []soloPass
+	if ma.PerTrack && ma.TrackTaps == nil {
+		solos = s.mixSolos(cs, from, last, ma.SoloBars)
 		for _, so := range solos {
 			est += cs.timeline.TickTime(int64(so.bars)*cs.timeline.BarTicks) + mixBetween + 2*time.Second
 		}
 	}
 	text := fmt.Sprintf("measuring the mix of %q: about %s", cs.song.Title, clock(est))
-	if ma.PerTrack {
+	out := map[string]any{"song": cs.id, "estimate_seconds": est.Seconds(), "solo_passes": len(solos)}
+	switch {
+	case ma.TrackTaps != nil:
+		text += fmt.Sprintf(" (the %d track(s) at their own taps, in the same pass)", len(ma.TrackTaps))
+		out["tracks_at"] = tracksAtTaps
+	case ma.PerTrack:
 		text += fmt.Sprintf(" (%d solo pass(es))", len(solos))
+		out["tracks_at"] = tracksAtMaster
 	}
+	text += tapNote
 	text += "\nget_song_mix gives the progress and the report (wait_ms waits for it); stop_song ends it"
-	return structResult(text, map[string]any{"song": cs.id, "estimate_seconds": est.Seconds(), "solo_passes": len(solos)}), nil
+	return structResult(text, out), nil
 }
 
 func (s *Server) handleGetSongMix(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -496,7 +561,7 @@ func (s *Server) handleGetSongMix(ctx context.Context, req *mcp.CallToolRequest)
 	return structResult(text, map[string]any{"song": job.song, "done": true, "report": job.report, "error": job.err}), nil
 }
 
-// soloPass is one track alone in one section.
+// soloPass is one track in one section.
 type soloPass struct {
 	index         int // the arrangement entry
 	section       string
@@ -507,7 +572,8 @@ type soloPass struct {
 }
 
 // mixSolos lists the solo passes of a range: every distinct section once, at
-// its first occurrence, with every track that plays notes in it.
+// its first occurrence, with every track that plays notes in it, for at most
+// bars bars of it.
 func (s *Server) mixSolos(cs *compiledSong, from, last, bars int) []soloPass {
 	tl := cs.timeline
 	var out []soloPass
@@ -546,47 +612,76 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 	began := time.Now()
 	defer func() { rep.Seconds = math.Round(time.Since(began).Seconds()) }()
 
+	// The master's meter, and one for every track that has a tap of its own.
 	meter := newTapMeter(tap)
+	meters := []*tapMeter{meter}
+	meterOf := []string{song.MasterTap}
+	trackMeters := map[string]*tapMeter{}
+	for _, tp := range cs.plan.Tracks {
+		if st := a.TrackTaps[tp.ID]; st != nil {
+			trackMeters[tp.ID] = newTapMeter(st)
+			meters, meterOf = append(meters, trackMeters[tp.ID]), append(meterOf, tp.ID)
+		}
+	}
 	mctx, stopMeter := context.WithCancel(context.Background())
-	meterDone := make(chan struct{})
-	go func() { meter.run(mctx); close(meterDone) }()
+	var metering sync.WaitGroup
+	for _, m := range meters {
+		metering.Add(1)
+		go func() { defer metering.Done(); m.run(mctx) }()
+	}
 	defer func() {
 		stopMeter()
-		<-meterDone
-		rep.Stalls = meter.stalls
-		if rep.Stalls > 0 {
+		metering.Wait()
+		var stalled []string
+		for i, m := range meters {
+			if rep.Stalls += m.stalls; m.stalls > 0 {
+				stalled = append(stalled, fmt.Sprintf("%s %d", meterOf[i], m.stalls))
+			}
+		}
+		switch {
+		case rep.Stalls > 0 && len(meters) == 1:
 			rep.Findings = append(rep.Findings, fmt.Sprintf("the tap's stream stalled %d time(s) while measuring: the levels around a stall read low", rep.Stalls))
+		case rep.Stalls > 0:
+			rep.Findings = append(rep.Findings, fmt.Sprintf("the taps' streams stalled %d time(s) while measuring (%s): the levels around a stall read low", rep.Stalls, strings.Join(stalled, ", ")))
 		}
 	}()
 	send := func(sctx context.Context, e song.Event) error { return s.sendBrain(sctx, songCommand(e)) }
 
-	// play starts a playback and returns the meter position of its first
-	// note, once that note is due.
-	play := func(opts song.PlayOptions) (float64, error) {
+	// play starts a playback and, once its first note is due, notes on every
+	// meter where in its stream that note is: the zero the levels of the
+	// playback are counted from.
+	play := func(opts song.PlayOptions) error {
 		if _, err := s.player.Start(cs.id, tl, opts, send); err != nil {
-			return 0, err
+			return err
+		}
+		zero := func(playedMS int64) {
+			for _, m := range meters {
+				m.zero = m.position() - float64(playedMS)/1000
+			}
 		}
 		for {
 			st := s.player.Status()
 			switch {
 			case st.Playing && st.PositionMS > 0:
-				return meter.position() - float64(st.PositionMS)/1000, nil
+				zero(st.PositionMS)
+				return nil
 			case !st.Playing && st.Outcome != "":
 				if st.Outcome == "finished" {
-					return meter.position() - float64(st.DurationMS)/1000, nil
+					zero(st.DurationMS)
+					return nil
 				}
-				return 0, fmt.Errorf("the playback ended: %s", st.Outcome)
+				return fmt.Errorf("the playback ended: %s", st.Outcome)
 			}
 			if err := sleepContext(ctx, 5*time.Millisecond); err != nil {
 				s.player.Stop()
-				return 0, err
+				return err
 			}
 		}
 	}
-	// until waits for the meter to reach a position; it ends early when the
-	// playback was stopped from outside.
+	// until waits for the master's meter to reach a position of the
+	// playback; it ends early when the playback was stopped from outside.
 	until := func(pos float64, playing bool) error {
-		for meter.position() < pos {
+		for meter.since() < pos {
 			if playing {
 				if st := s.player.Status(); !st.Playing && st.Outcome != "finished" {
 					return fmt.Errorf("the playback ended: %s", st.Outcome)
@@ -608,30 +703,44 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 	startTick := tl.Sections[a.From].Tick
 	endTick := tl.Sections[last].Tick + int64(tl.Sections[last].Bars)*tl.BarTicks
 
-	if a.Whole {
+	// plugin names a track's instrument, for a finding about the track.
+	plugin := func(track string) string {
+		if tp := cs.plan.Track(track); tp != nil {
+			return " (" + tp.Nodes[0].Name + ")"
+		}
+		return ""
+	}
+
+	// The range played through: the master's levels and, where the tracks
+	// have taps of their own, every track's.
+	atTaps := a.PerTrack && len(trackMeters) > 0
+	length := secs(endTick - startTick)
+	if a.Whole || atTaps {
 		job.setPhase("playing %s to %s", tl.Sections[a.From].Name, tl.Sections[last].Name)
-		t0, err := play(song.PlayOptions{From: a.From, Count: last - a.From + 1})
-		if err != nil {
+		if err := play(song.PlayOptions{From: a.From, Count: last - a.From + 1}); err != nil {
 			return rep, err
 		}
-		length := secs(endTick - startTick)
-		if err := until(t0+length, true); err != nil {
+		if err := until(length, true); err != nil {
 			return rep, err
 		}
-		if err := until(t0+length+mixTail.Seconds(), false); err != nil {
+		if err := until(length+mixTail.Seconds(), false); err != nil {
 			return rep, err
 		}
-		meter.pull()
-		rep.RMSDB, rep.PeakDB, _ = meter.level(t0, t0+length)
-		_, rep.TailDB, _ = meter.level(t0+length, t0+length+mixTail.Seconds())
+		for _, m := range meters {
+			m.pull()
+		}
+	}
+	if a.Whole {
+		rep.RMSDB, rep.PeakDB, _ = meter.levelSince(0, length)
+		_, rep.TailDB, _ = meter.levelSince(length, length+mixTail.Seconds())
 		for idx := a.From; idx <= last; idx++ {
 			sec := tl.Sections[idx]
-			at := t0 + secs(sec.Tick-startTick)
-			rms, peak, _ := meter.level(at, at+secs(int64(sec.Bars)*tl.BarTicks))
+			at := secs(sec.Tick - startTick)
+			rms, peak, _ := meter.levelSince(at, at+secs(int64(sec.Bars)*tl.BarTicks))
 			rep.Sections = append(rep.Sections, mixSection{Position: idx + 1, Name: sec.Name, Bar: sec.Bar, Bars: sec.Bars, RMSDB: rms, PeakDB: peak})
 			for b := 0; b < sec.Bars; b++ {
 				from := at + secs(int64(b)*tl.BarTicks)
-				rms, peak, ok := meter.level(from, from+secs(tl.BarTicks))
+				rms, peak, ok := meter.levelSince(from, from+secs(tl.BarTicks))
 				if !ok {
 					continue
 				}
@@ -641,33 +750,49 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 		rep.Findings = append(rep.Findings, wholeFindings(rep)...)
 	}
 
-	if a.PerTrack {
+	switch {
+	case atTaps:
+		// Every track at its own tap, out of the pass just played: each
+		// distinct section at its first occurrence, the whole of it.
+		rep.TracksAt = tracksAtTaps
+		for _, so := range s.mixSolos(cs, a.From, last, math.MaxInt) {
+			at := secs(so.startTick - startTick)
+			rms, peak, ok := trackMeters[so.track].levelSince(at, at+secs(int64(so.bars)*tl.BarTicks))
+			if !ok {
+				rep.Findings = append(rep.Findings, fmt.Sprintf("the tap of %s delivered no audio in %s: its level there is not known", so.track, so.section))
+				continue
+			}
+			row := mixSolo{Section: so.section, Track: so.track, Bars: so.bars, Notes: so.notes, RMSDB: rms, PeakDB: peak, Silent: peak <= silentDB}
+			rep.Tracks = append(rep.Tracks, row)
+			if row.Silent {
+				rep.Findings = append(rep.Findings, fmt.Sprintf("%s%s is silent at its tap in %s although it plays %d note(s) there: check_song tells whether its plugin still answers", so.track, plugin(so.track), so.section, so.notes))
+			}
+		}
+		rep.Findings = append(rep.Findings, soloFindings(rep)...)
+	case a.PerTrack:
+		// No taps on the tracks: every track alone, at the master.
+		rep.TracksAt = tracksAtMaster
 		solos := s.mixSolos(cs, a.From, last, a.SoloBars)
 		for i, so := range solos {
 			job.setPhase("track %s alone in %s (%d of %d)", so.track, so.section, i+1, len(solos))
 			if err := sleepContext(ctx, mixBetween); err != nil {
 				return rep, err
 			}
-			t0, err := play(song.PlayOptions{From: so.index, Count: 1, Tracks: []string{so.track}})
-			if err != nil {
+			if err := play(song.PlayOptions{From: so.index, Count: 1, Tracks: []string{so.track}}); err != nil {
 				return rep, err
 			}
-			length := secs(int64(so.bars) * tl.BarTicks)
-			err = until(t0+length, true)
+			played := secs(int64(so.bars) * tl.BarTicks)
+			err := until(played, true)
 			s.player.Stop()
 			if err != nil {
 				return rep, err
 			}
 			meter.pull()
-			rms, peak, _ := meter.level(t0, t0+length)
+			rms, peak, _ := meter.levelSince(0, played)
 			row := mixSolo{Section: so.section, Track: so.track, Bars: so.bars, Notes: so.notes, RMSDB: rms, PeakDB: peak, Silent: peak <= silentDB}
 			rep.Tracks = append(rep.Tracks, row)
 			if row.Silent {
-				plugin := ""
-				if tp := cs.plan.Track(so.track); tp != nil {
-					plugin = " (" + tp.Nodes[0].Name + ")"
-				}
-				rep.Findings = append(rep.Findings, fmt.Sprintf("%s%s is silent in %s although it plays %d note(s) there: check_song tells whether its plugin still answers", so.track, plugin, so.section, so.notes))
+				rep.Findings = append(rep.Findings, fmt.Sprintf("%s%s is silent in %s although it plays %d note(s) there: check_song tells whether its plugin still answers", so.track, plugin(so.track), so.section, so.notes))
 			}
 		}
 		rep.Findings = append(rep.Findings, soloFindings(rep)...)

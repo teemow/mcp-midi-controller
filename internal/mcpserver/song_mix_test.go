@@ -169,6 +169,148 @@ func TestMixSongSilentTrackAndStop(t *testing.T) {
 	}
 }
 
+// TestMixSongTrackTaps measures the tracks of a session that has a tap on
+// every track: each at its own tap while the song plays once, with no solo
+// pass, and by solo passes again when a tap is missing or they are asked for.
+func TestMixSongTrackTaps(t *testing.T) {
+	r := mixRig(t)
+	s := r.s
+	r.Session = "Songs/Night Drive"
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong + "session: {track_taps: true}\n"}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError ||
+		!strings.Contains(resultText(res), `"Songs/Night Drive/bass" "Songs/Night Drive/pad" "Songs/Night Drive/drums" "Songs/Night Drive/master"`) {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	bassNotes := func() (n int) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, cmd := range r.Commands {
+			if cmd.Type == "noteOn" && cmd.Channel == 1 {
+				n++
+			}
+		}
+		return n
+	}
+
+	res := call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "(the 3 track(s) at their own taps, in the same pass)") || strings.Contains(text, "solo pass") {
+		t.Fatalf("mix: %s", text)
+	}
+	if sc := res.StructuredContent.(map[string]any); sc["solo_passes"] != 0 || sc["tracks_at"] != "taps" {
+		t.Errorf("mix = %v, want no solo pass and the tracks at their taps", sc)
+	}
+	res = call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("report: %s", text)
+	}
+	s.mixMu.Lock()
+	rep := s.mix.report
+	s.mixMu.Unlock()
+	if rep == nil || len(rep.Bars) != 2 || len(rep.Sections) != 2 || len(rep.Tracks) != 5 || rep.TracksAt != "taps" {
+		t.Fatalf("report = %+v\n%s", rep, text)
+	}
+	for _, want := range []string{
+		"measured at the master tap and every track's own",
+		"whole: rms", "tracks at their own taps, in the same pass (rms / peak dBFS):",
+		"in chorus, bass (", "dB over pad",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report lacks %q:\n%s", want, text)
+		}
+	}
+	// The song was played once: four bass notes a bar, two bars.
+	if n := bassNotes(); n != 8 {
+		t.Errorf("the bass played %d note(s), want the 8 of one pass through the song", n)
+	}
+	// Each tap carries its own track: the bass as in a solo pass (a sine of
+	// 0.25, half of the time: about -19.5 dBFS rms, peak -12), the pad far
+	// under it, and no row for a track that plays nothing in a section.
+	cell := map[string]mixSolo{}
+	for _, tr := range rep.Tracks {
+		cell[tr.Section+"/"+tr.Track] = tr
+	}
+	for _, sec := range []string{"verse", "chorus"} {
+		bass := cell[sec+"/bass"]
+		if math.Abs(bass.PeakDB+12) > 1 || math.Abs(bass.RMSDB+19.5) > 2 || bass.Bars != 1 || bass.Notes != 4 {
+			t.Errorf("bass at its tap in %s = %+v, want about -19.5 rms and -12 peak over the bar", sec, bass)
+		}
+	}
+	// The pad's chord: three sines of 0.01, at most -30.5 dBFS together.
+	pad := cell["chorus/pad"]
+	if pad.Notes != 3 || pad.Silent || cell["chorus/bass"].RMSDB-pad.RMSDB < 12 || pad.PeakDB > -29 {
+		t.Errorf("pad at its tap = %+v (bass %+v): want it far under the bass, and not the bass's level", pad, cell["chorus/bass"])
+	}
+	if _, ok := cell["verse/pad"]; ok {
+		t.Errorf("a level for a track that plays nothing in the section: %+v", cell["verse/pad"])
+	}
+	// The master carries all of them.
+	for _, sec := range rep.Sections {
+		if sec.RMSDB < cell[sec.Name+"/bass"].RMSDB-0.5 {
+			t.Errorf("the master in %s (%.1f) is under the bass alone (%.1f)", sec.Name, sec.RMSDB, cell[sec.Name+"/bass"].RMSDB)
+		}
+	}
+
+	// Only the tracks: still one pass, and nothing of the master.
+	res = call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "whole": false, "from": "chorus"})
+	if res.IsError {
+		t.Fatalf("mix of the tracks only: %s", resultText(res))
+	}
+	res = call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "measured at every track's own tap") || strings.Contains(text, "whole:") ||
+		!strings.Contains(text, "tracks at their own taps") || strings.Contains(text, "verse") {
+		t.Fatalf("report of the tracks only: %s", text)
+	}
+
+	// A dead instrument is silent at its own tap.
+	r.mu.Lock()
+	r.Voice = func(ch, note int) (float64, float64) {
+		if ch == 3 {
+			return 0, 0
+		}
+		return 440 * math.Pow(2, float64(note-69)/12), 0.2
+	}
+	r.mu.Unlock()
+	if res := call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "sections": 1}); res.IsError {
+		t.Fatalf("mix with a dead drum machine: %s", resultText(res))
+	}
+	res = call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "drums (DrumBox) is silent at its tap in verse although it plays 6 note(s) there") {
+		t.Fatalf("report with a dead drum machine: %s", text)
+	}
+
+	// Solo passes on request: the tracks at the master, as without the taps.
+	before := bassNotes()
+	res = call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "solo": true, "solo_bars": 1, "whole": false, "sections": 1})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "(2 solo pass(es))") {
+		t.Fatalf("mix with solo passes asked for: %s", text)
+	}
+	res = call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "tracks alone (rms / peak dBFS):") || !strings.Contains(text, "measured at the master tap in") {
+		t.Fatalf("report of the solo passes: %s", text)
+	}
+	if n := bassNotes() - before; n != 4 {
+		t.Errorf("the bass played %d note(s) in the solo passes of one section, want its 4", n)
+	}
+
+	// A track's tap is gone: the tracks are measured by solo passes, and the
+	// answer says why.
+	r.mu.Lock()
+	r.trackTaps[2].Disconnect()
+	r.mu.Unlock()
+	res = call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "solo_bars": 1, "whole": false, "sections": 1})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "(2 solo pass(es))") ||
+		!strings.Contains(text, "no tap is connected for pad, so the tracks are measured by solo passes at the master") {
+		t.Fatalf("mix with a track's tap gone: %s", text)
+	}
+	if res := call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000}); res.IsError {
+		t.Fatalf("report with a track's tap gone: %s", resultText(res))
+	}
+}
+
 // TestTapMeter checks the meter's arithmetic: levels of stretches of a
 // stream read out in pieces.
 func TestTapMeter(t *testing.T) {

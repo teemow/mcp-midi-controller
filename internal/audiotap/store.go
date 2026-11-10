@@ -64,7 +64,13 @@ type Store struct {
 	// distinct from the format's Source (a human label the producer may send).
 	name string
 
-	connected     bool
+	connected bool
+	// conn numbers the tap's connections, the present one last. A tap that
+	// dials again under its name (the plugin reconnected, the host loaded
+	// the session anew) starts a new one before the daemon has seen the old
+	// one end, so what a connection delivers and its end count only while
+	// it is the present one. See Conn.
+	conn          uint64
 	remote        string
 	connectedAt   time.Time
 	lastMessageAt time.Time
@@ -133,10 +139,14 @@ func (s *Store) Source() string {
 
 // Connect marks a tap as connected from remote and clears the previous window so
 // stale audio from an earlier session is not mixed into the new one.
-func (s *Store) Connect(remote string) {
+func (s *Store) Connect(remote string) { s.open(remote) }
+
+// open is Connect, and returns the number of the connection it began.
+func (s *Store) open(remote string) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	s.conn++
 	s.connected = true
 	s.remote = remote
 	s.connectedAt = now
@@ -149,20 +159,35 @@ func (s *Store) Connect(remote string) {
 	s.channels = 1
 	s.gaps = nil
 	s.lastAppendAt = time.Time{}
+	return s.conn
 }
 
 // Disconnect marks the tap as gone but keeps the last levels/window so a poll
 // right after a drop still reports the final state (with a growing age).
-func (s *Store) Disconnect() {
+func (s *Store) Disconnect() { s.close(0) }
+
+// close is Disconnect for one connection (0: whichever is the present one).
+// It reports whether the tap was marked gone: the end of a connection that a
+// newer one replaced changes nothing.
+func (s *Store) close(conn uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn != 0 && conn != s.conn {
+		return false
+	}
 	s.connected = false
+	return true
 }
 
 // SetFormat records the on-connect format message and the interleave stride.
-func (s *Store) SetFormat(f Format) {
+func (s *Store) SetFormat(f Format) { s.setFormat(0, f) }
+
+func (s *Store) setFormat(conn uint64, f Format) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn != 0 && conn != s.conn {
+		return
+	}
 	s.format = f
 	s.channels = f.Channels
 	if s.channels < 1 {
@@ -172,9 +197,14 @@ func (s *Store) SetFormat(f Format) {
 }
 
 // SetFeatures records a ~10 Hz features message.
-func (s *Store) SetFeatures(rms, peak float32) {
+func (s *Store) SetFeatures(rms, peak float32) { s.setFeatures(0, rms, peak) }
+
+func (s *Store) setFeatures(conn uint64, rms, peak float32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn != 0 && conn != s.conn {
+		return
+	}
 	s.rms = rms
 	s.peak = peak
 	now := time.Now()
@@ -204,12 +234,17 @@ func (s *Store) SampleRate() float64 {
 // AppendAudio writes interleaved float32 samples into the rolling window,
 // dropping the oldest as needed, and records a discontinuity boundary when the
 // stream stalled since the previous batch.
-func (s *Store) AppendAudio(samples []float32) {
+func (s *Store) AppendAudio(samples []float32) { s.appendAudio(0, samples) }
+
+func (s *Store) appendAudio(conn uint64, samples []float32) {
 	if len(samples) == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn != 0 && conn != s.conn {
+		return
+	}
 
 	now := time.Now()
 	if !s.lastAppendAt.IsZero() && now.Sub(s.lastAppendAt) > maxInterArrivalGap {

@@ -1,6 +1,7 @@
 package song
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -370,6 +371,111 @@ func TestBuildSessionOptions(t *testing.T) {
 	}
 	if len(sess.Mappings(false)) <= plainRep.Mappings {
 		t.Errorf("full control has %d mappings, no more than the song's own %d", len(sess.Mappings(false)), plainRep.Mappings)
+	}
+}
+
+// TestBuildSessionTapNames checks every tap of a session says which session
+// and which strip it sits on, in the state the plugin restores, and that a
+// session without an id is authored with the taps it always had.
+func TestBuildSessionTapNames(t *testing.T) {
+	p := mustPlan(t, mustParse(t, testSong))
+	tapState := func(sess *aum.Session, strip, slot int) string {
+		t.Helper()
+		data, err := sess.Archive().Encode()
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		re, err := aum.Open(data)
+		if err != nil {
+			t.Fatalf("re-open: %v", err)
+		}
+		doc, err := re.NodeAuStateDoc(strip, slot)
+		if err != nil {
+			t.Fatalf("strip %d slot %d: %v", strip, slot, err)
+		}
+		return string(doc["probeAudioTapConfig"])
+	}
+	nameOf := func(state string) string {
+		t.Helper()
+		var cfg struct {
+			Streaming bool   `json:"streaming"`
+			Name      string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(state), &cfg); err != nil || !cfg.Streaming {
+			t.Fatalf("tap state %q: %v, want a streaming tap", state, err)
+		}
+		return cfg.Name
+	}
+
+	sess, _, err := p.BuildSession(SessionOptions{TrackTaps: true, Session: "Songs/Test Song"})
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, tp := range p.Tracks {
+		// A track's tap follows its effects.
+		got := nameOf(tapState(sess, tp.Strip, firstInsertSlot+len(tp.Nodes)-1))
+		if want := "Songs/Test Song/" + tp.ID; got != want {
+			t.Errorf("the tap of %s is named %q, want %q", tp.ID, got, want)
+		}
+		seen[got] = true
+	}
+	master := nameOf(tapState(sess, p.MasterStrip, firstInsertSlot+len(p.Master)))
+	if master != "Songs/Test Song/master" || master != TapName("Songs/Test Song", MasterTap) {
+		t.Errorf("the master's tap is named %q, want Songs/Test Song/master", master)
+	}
+	seen[master] = true
+	if len(seen) != len(p.Tracks)+1 {
+		t.Errorf("the session's taps share names: %v", seen)
+	}
+
+	// Without track taps only the master's is there, named the same.
+	sess, _, err = p.BuildSession(SessionOptions{Session: "Songs/Test Song"})
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	if got := nameOf(tapState(sess, p.MasterStrip, firstInsertSlot+len(p.Master))); got != master {
+		t.Errorf("the master's tap without track taps is named %q, want %q", got, master)
+	}
+
+	// No session id, no name: the state a build of the plugin from before
+	// taps had names was authored.
+	sess, _, err = p.BuildSession(SessionOptions{TrackTaps: true})
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	for _, at := range [][2]int{{p.Tracks[0].Strip, firstInsertSlot + len(p.Tracks[0].Nodes) - 1}, {p.MasterStrip, firstInsertSlot + len(p.Master)}} {
+		if got := tapState(sess, at[0], at[1]); got != `{"streaming":true}` {
+			t.Errorf("a tap of a session without an id has the state %s, want only the streaming flag", got)
+		}
+	}
+}
+
+// TestTapName checks a tap's name splits back into its session and strip,
+// whatever the two hold, and that other names are not taken for one.
+func TestTapName(t *testing.T) {
+	for _, c := range []struct{ session, strip, name string }{
+		{"Songs/Night Drive", "master", "Songs/Night Drive/master"},
+		{"Night Drive", "bass", "Night Drive/bass"},
+		{"Live sets/2026/Opener", "lead 2", "Live sets/2026/Opener/lead 2"},
+		// A slash in a track's id does not move the split.
+		{"Songs/A", "fx/return", "Songs/A/fx%2Freturn"},
+		{"Songs/A", "100%/master", "Songs/A/100%25%2Fmaster"},
+	} {
+		name := TapName(c.session, c.strip)
+		if name != c.name {
+			t.Errorf("TapName(%q, %q) = %q, want %q", c.session, c.strip, name, c.name)
+		}
+		session, strip, ok := ParseTapName(name)
+		if !ok || session != c.session || strip != c.strip {
+			t.Errorf("ParseTapName(%q) = %q, %q, %v; want %q, %q", name, session, strip, ok, c.session, c.strip)
+		}
+	}
+	// What a tap without a name is known by, and names that lack a part.
+	for _, name := range []string{"", "192.0.2.10:51234", "[2001:db8::10]:51234", "tap-1", "ProbeAudioTap", "/master", "Songs/A/"} {
+		if session, strip, ok := ParseTapName(name); ok {
+			t.Errorf("ParseTapName(%q) = %q, %q: not a session's tap", name, session, strip)
+		}
 	}
 }
 

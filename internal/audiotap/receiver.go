@@ -49,7 +49,9 @@ func tapName(r *http.Request) string {
 // one TEXT "format" message, BINARY little-endian Float32 PCM (interleaved
 // across channels at the host rate), and ~10 Hz TEXT "features" messages. The
 // connection is routed to its named Store in the registry (by the "name" query
-// param, else the remote address) so concurrent taps stay separate. The channel
+// param, else the remote address) so concurrent taps stay separate. A tap that
+// names itself may dial again before its earlier connection is seen to end:
+// the newer connection is the tap then (see Conn). The channel
 // count comes from the format message; the binary frames are stored as-is and
 // indexed by stride. Anything malformed is logged and skipped; a read error
 // (client gone / shutdown) ends the session.
@@ -79,16 +81,21 @@ func handleStream(reg *Registry, onConnect, onDisconnect func(name, remote strin
 
 		remote := r.RemoteAddr
 		name := tapName(r)
-		store := reg.Connect(name, remote)
+		conn := reg.Open(name, remote)
 		log.Printf("audio-tap %q connected from %s", name, remote)
 		if onConnect != nil {
 			onConnect(name, remote)
 		}
 		defer func() {
-			reg.Disconnect(name)
-			log.Printf("audio-tap %q disconnected from %s", name, remote)
-			if onDisconnect != nil {
-				onDisconnect(name, remote)
+			// A tap that dialled again under its name is still there: only
+			// the end of its present connection is the tap going away.
+			if conn.Close() {
+				log.Printf("audio-tap %q disconnected from %s", name, remote)
+				if onDisconnect != nil {
+					onDisconnect(name, remote)
+				}
+			} else {
+				log.Printf("audio-tap %q: the connection from %s ended, replaced by a newer one", name, remote)
 			}
 			_ = c.CloseNow()
 		}()
@@ -106,9 +113,9 @@ func handleStream(reg *Registry, onConnect, onDisconnect func(name, remote strin
 			}
 			switch typ {
 			case websocket.MessageText:
-				handleText(store, data)
+				handleText(conn, data)
 			case websocket.MessageBinary:
-				store.AppendAudio(decodeFloat32LE(data))
+				conn.AppendAudio(decodeFloat32LE(data))
 			}
 		}
 	}
@@ -128,7 +135,7 @@ type wireMessage struct {
 	Peak float32 `json:"peak"`
 }
 
-func handleText(store *Store, data []byte) {
+func handleText(conn *Conn, data []byte) {
 	var msg wireMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("audio-tap receiver: bad text message: %v", err)
@@ -136,14 +143,14 @@ func handleText(store *Store, data []byte) {
 	}
 	switch msg.Type {
 	case "format":
-		store.SetFormat(Format{
+		conn.SetFormat(Format{
 			Encoding:   msg.Encoding,
 			Channels:   msg.Channels,
 			SampleRate: msg.SampleRate,
 			Source:     msg.Source,
 		})
 	case "features":
-		store.SetFeatures(msg.RMS, msg.Peak)
+		conn.SetFeatures(msg.RMS, msg.Peak)
 	}
 }
 

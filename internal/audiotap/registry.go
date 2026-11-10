@@ -28,6 +28,24 @@ func NewRegistry() *Registry {
 // connected from remote (recording it as the most recent). Re-connecting an
 // existing name starts a fresh session on its Store (the window is cleared).
 func (r *Registry) Connect(name, remote string) *Store {
+	return r.Open(name, remote).Store()
+}
+
+// Conn is one producer connection that feeds a named tap. A tap that names
+// itself keeps its name across connections: when the plugin dials again, or
+// the host loads the session anew, the new connection can be there before the
+// daemon has seen the old one end. The newer connection is the tap from then
+// on. What the older one still delivers is dropped, and its end does not mark
+// the tap as gone.
+type Conn struct {
+	store *Store
+	id    uint64
+}
+
+// Open is Connect for a producer's connection: what arrives on it goes to the
+// named tap's Store through the returned Conn, for as long as no newer
+// connection of that name took over.
+func (r *Registry) Open(name, remote string) *Conn {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.taps[name]
@@ -37,9 +55,22 @@ func (r *Registry) Connect(name, remote string) *Store {
 		r.taps[name] = st
 	}
 	r.touchLocked(name)
-	st.Connect(remote)
-	return st
+	return &Conn{store: st, id: st.open(remote)}
 }
+
+// Store is the tap the connection feeds.
+func (c *Conn) Store() *Store { return c.store }
+
+// SetFormat, SetFeatures and AppendAudio are the Store's, for this connection.
+func (c *Conn) SetFormat(f Format) { c.store.setFormat(c.id, f) }
+
+func (c *Conn) SetFeatures(rms, peak float32) { c.store.setFeatures(c.id, rms, peak) }
+
+func (c *Conn) AppendAudio(samples []float32) { c.store.appendAudio(c.id, samples) }
+
+// Close ends the connection. It reports whether that marked the tap as gone,
+// which it does not when a newer connection has taken the tap over.
+func (c *Conn) Close() bool { return c.store.close(c.id) }
 
 // Disconnect marks the named tap gone (its last window/levels are kept so a
 // poll right after a drop still reports the final state). Unknown names are a
@@ -98,6 +129,20 @@ func (r *Registry) Active() (*Store, bool) {
 		return r.taps[r.order[n-1]], true
 	}
 	return nil, false
+}
+
+// Connected returns the taps that are streaming now, the most recently
+// connected first.
+func (r *Registry) Connected() []*Store {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*Store
+	for i := len(r.order) - 1; i >= 0; i-- {
+		if st := r.taps[r.order[i]]; st != nil && st.Connected() {
+			out = append(out, st)
+		}
+	}
+	return out
 }
 
 // Names returns the known tap names, most-recently connected last.

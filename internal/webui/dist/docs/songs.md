@@ -21,7 +21,7 @@ that plays inside AUM.
 | 2. Write | `save_song` | Store the document. It is checked first; see [What is checked](#what-is-checked). |
 | 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
-| 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
+| 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap, known to the daemon as `<session id>/master`. See [Taps](#taps). |
 | | `mix_song`, `get_song_mix` | The level of every bar, every section and every track. See [The mix](#the-mix). |
 | 6. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
 
@@ -362,6 +362,40 @@ must then be authored and loaded again, and until it is `get_song` and
 The session is staged under `Songs/<title>` by default (`out_id` chooses
 another place), which is also where it lands in AUM's folder on the iPad.
 
+### Taps
+
+The master's ProbeAudioTap streams what the song sounds like to the daemon.
+With `track_taps: true` every track has one of its own after its fader, which
+carries that track alone.
+
+Every tap of the session is given a name, written into the plugin's saved
+state: the session's id and the strip the tap sits on.
+
+```
+Songs/Night Drive/master     the master's tap
+Songs/Night Drive/bass       the tap of the track "bass"
+```
+
+The plugin dials the daemon under that name, so the daemon can tell the
+streams apart. `get_audio_tap` and `get_audio_clip` take it as `name`,
+`probe_sound` as `tap`, and `author_song_session` lists the names. Two things
+follow from them:
+
+- **The daemon knows which session AUM has open**, for as long as that
+  session's master tap is connected, without a look at AUM's screen. See
+  [Loading](#loading).
+- **`mix_song` hears every track at once.** See [The mix](#the-mix).
+
+The name is the one the session was authored under. A copy of the session
+saved under another name in AUM keeps it.
+
+This needs a ProbeAudioTap that sends its name. An older build of the plugin
+ignores the name and dials in without one; the daemon then knows such a tap
+only by the address it dials from, takes the most recently connected one for
+the song's, and reads the open session from AUM's screen, as it did before
+taps had names. A session staged before taps had names is authored again by
+the next `load_song`.
+
 **Options.** A song can say how its session is built:
 
 ```yaml
@@ -394,7 +428,7 @@ and stops at the first one that fails, with what it saw and what to do:
 | author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
 | pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward and starts its sync. Skipped when the iPad already has this very file. |
 | load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM has finished restoring the plugins. |
-| connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. |
+| connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. |
 | check | `check_song`, below. |
 
 Loading replaces the session open in AUM, so `load_song` needs
@@ -407,20 +441,31 @@ daemon remembers it from the first `ipad_launch` with the full id.
 
 `check_song` answers whether the song will sound if it is played now:
 
-- the brain is connected and the tap is streaming;
-- AUM shows the song's session (the name in its menu), a strip for the brain,
-  every track and the master, and no line that reports a failed plugin;
+- AUM has the song's session open. The session's master tap says so: it is
+  connected under the session's id. When another session's master tap is
+  connected instead, the check ends there and plays nothing;
+- the brain is connected and the master tap is streaming. For a session with
+  `track_taps` the check also says which tracks' taps are connected;
 - every track answers a note. The daemon sets each track's own sound (its
   declaration, no scene), plays the track's first note of the song alone and
-  measures the tap. A track that stays silent is named with its plugin.
+  measures the master tap. A track that stays silent is named with its
+  plugin.
 
-It does not run while a song plays. `ui: false` leaves AUM's screen alone
-(reading the session name opens and closes AUM's menu).
+AUM's screen is read only when no tap names the open session: the session's
+name in AUM's menu, a strip for the brain, every track and the master, and
+any line that reports a failed plugin. Reading the name opens and closes
+AUM's menu and closes open plugin windows, which is why the tap is asked
+first. `ui: true` reads the screen in any case, `ui: false` never.
 
-The daemon knows which session AUM has open only from what it loaded or saw
-there itself, and only until a new brain connects, which is what a session
-load in AUM looks like from outside. `play_song` warns when that session is
-not the song's. It says nothing when it does not know.
+The check does not run while a song plays.
+
+**Which session is open.** The daemon takes it from the connected master tap
+that names a session, the most recently connected one when there are several.
+Without such a tap it knows only what it loaded or saw on AUM's screen
+itself, and only until a new brain connects, which is what a session load in
+AUM looks like from outside. `play_song`, `mix_song` and `audition_sound`
+compare that session with the song's: `play_song` warns, the other two
+refuse. None of them says anything when the daemon does not know.
 
 ## Playing
 
@@ -515,20 +560,31 @@ reads the master tap out for its whole length:
 - **stalls**: how often the tap's stream did not deliver, since the levels
   around a stall read low.
 
-With `per_track: true` it then plays every distinct section once per track
-that has notes in it — the section's first bars, that track alone — and adds
-the table a balance is made from: the level of every track in every section.
-A track more than 12 dB over another in the same section is pointed out, and
-a track that is silent where it plays notes is named. The passes use
-`play_song`'s own player, so each starts from the section's whole sound.
+With `per_track: true` it adds the table a balance is made from: the level of
+every track in every distinct section, where the track has notes in it. A
+track more than 12 dB over another in the same section is pointed out, and a
+track that is silent where it plays notes is named. Where the tracks are
+measured depends on the session:
+
+| The session has | The tracks are measured | Passes |
+|-----------------|-------------------------|--------|
+| a tap on every track (`track_taps: true`), each connected under its name | each at its own tap while the song plays: after the track's fader, before the master's effects, over the whole section | the one through the song |
+| no track taps, or one that is not connected | each alone at the master tap, after the master's effects, over the section's first bars (`solo_bars`) | one more per track and section |
+
+`solo: true` asks for the solo passes although the track taps are there, for
+the level a track has after the master's effects. The answer of `mix_song`
+says which of the two it does, and names a track whose tap is missing. The
+solo passes use `play_song`'s own player, so each starts from the section's
+whole sound.
 
 The measurement runs in the background: `mix_song` returns with an estimate,
 `get_song_mix` gives the progress or the finished report (`wait_ms` waits for
 it), and `stop_song` ends it. `from` and `sections` limit it to a part of the
-song, `whole: false` to the solo passes.
+song, `whole: false` to the tracks.
 
-The levels are what the master tap carries: after the master's effects, a
-limiter included. A peak is the highest sample, not an inter-sample estimate.
+The bars' and sections' levels are what the master tap carries: after the
+master's effects, a limiter included. A peak is the highest sample, not an
+inter-sample estimate.
 
 ## The sequencer's state
 
@@ -723,7 +779,12 @@ Not yet measured:
 - `transport: true` through a whole live song with the daemon's own bypass of
   the sequencer (the take above sent the bypass by hand);
 - a ramp on a plugin parameter (the song played ramps on levels only);
-- sessions authored with `track_taps` or `full_control`.
+- sessions authored with `track_taps` or `full_control`;
+- taps that dial in under their names: that needs the ProbeAudioTap build
+  that sends them on the iPad. Until then every tap comes without a name and
+  the tools work as described under [Taps](#taps). The test suite runs both
+  cases against a stand-in whose taps take their names from the staged
+  session file.
 
 Not every plugin behaves when a session hosts it from scratch. One synth came
 up as "invalidated" on every load, and one drum machine loaded and took its
