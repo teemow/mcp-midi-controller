@@ -21,3 +21,41 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+  packaging:
+    # Exercise the actual release hooks and both CGO builds on every PR,
+    # including changes to the dependency installer and release configuration.
+    # Match auto-release.yml: moving the release image requires this proof.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Package both release architectures without publishing
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --snapshot --clean
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/mcp-midi-controller_Linux_x86_64.tar.gz
+          test -s dist/mcp-midi-controller_Linux_arm64.tar.gz
+          test -s dist/mcp-midi-controller_checksums.txt
+          for arch in amd64 arm64; do
+            binaries=(dist/mcp-midi-controller_linux_${arch}*/mcp-midi-controller)
+            test "${#binaries[@]}" -eq 1
+            test -s "${binaries[0]}"
+          done
+          (cd dist && sha256sum --check mcp-midi-controller_checksums.txt)
