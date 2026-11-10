@@ -17,6 +17,14 @@ Process details: `docs/aum-brain-control.md` ("Testing process — iterate on
 copies"). The rig-specific list of sessions and copy ids is private:
 `docs/private/aum-projects.md`.
 
+## Private docs live in their own repository
+
+`docs/private/` is gitignored here because this repository is public. It is a
+clone of the private repository `teemow/mcp-midi-controller-private`: clone it
+there, and commit rig snapshots, captures and inspection data to it (through a
+PR), never to this repository. Work left only in a local `docs/private/` is lost
+with the machine.
+
 ## The Mac follows main by itself
 
 The rig's macOS host runs the daemon under launchd and updates itself from

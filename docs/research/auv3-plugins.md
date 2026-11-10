@@ -3,7 +3,9 @@
 Research note for the AUv3 instruments/effects hosted in **AUM** on the iPad and
 controlled by this server over **BLE-MIDI**. It covers how AUv3 + AUM MIDI
 mapping actually works, the per-plugin convention CC maps we ship, which plugins
-support native MIDI control, and the source URLs used.
+support native MIDI control, and the source URLs used. What an inspection of
+every AUv3 in AUM showed (parameter exposure, MIDI ports, presets, latency) is in
+[aum-plugin-inspection.md](aum-plugin-inspection.md).
 
 ## How AUv3 + AUM MIDI control mapping works
 
