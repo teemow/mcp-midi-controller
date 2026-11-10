@@ -127,6 +127,13 @@ var appSuffixes = map[string]string{
 	"probe": "com.teemow.auv3probe",
 }
 
+// IsApp reports whether bundleID is the sideloaded app known by alias
+// ("probe"): its id as built, or that id behind a signing-team prefix.
+func IsApp(alias, bundleID string) bool {
+	suffix, ok := appSuffixes[strings.ToLower(strings.TrimSpace(alias))]
+	return ok && (bundleID == suffix || strings.HasSuffix(bundleID, "."+suffix))
+}
+
 // ResolveApp turns an app argument into a bundle ID: "aum" (the default when
 // empty), "probe" (AUv3 Probe, resolved on the device), or a bundle ID as is.
 func (c *Client) ResolveApp(ctx context.Context, app string) (string, error) {

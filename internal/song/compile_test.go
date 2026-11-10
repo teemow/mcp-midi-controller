@@ -375,3 +375,58 @@ func TestFingerprintCoversTempo(t *testing.T) {
 		t.Error("the fingerprint changed with a note")
 	}
 }
+
+// TestFingerprintCoversSessionOptions checks the song's own session options
+// are part of what makes a session the song's, and that a song without any
+// keeps the fingerprint it always had.
+func TestFingerprintCoversSessionOptions(t *testing.T) {
+	plain := mustPlan(t, mustParse(t, testSong)).Fingerprint()
+	if empty := mustPlan(t, mustParse(t, testSong+"session: {}\n")).Fingerprint(); empty != plain {
+		t.Error("an empty session block changed the fingerprint")
+	}
+	taps := mustPlan(t, mustParse(t, testSong+"session: {track_taps: true}\n")).Fingerprint()
+	full := mustPlan(t, mustParse(t, testSong+"session: {track_taps: true, full_control: true}\n")).Fingerprint()
+	if taps == plain || full == taps {
+		t.Errorf("fingerprints plain %s, track taps %s, full control %s: want three different ones", plain, taps, full)
+	}
+	if _, err := Parse([]byte(testSong + "session: {hardware: mixer}\n")); err == nil || !strings.Contains(err.Error(), "/session/hardware") {
+		t.Errorf("an unknown hardware profile: %v", err)
+	}
+	if _, err := Parse([]byte(testSong + "session: {taps: true}\n")); err == nil {
+		t.Error("an unknown session option was accepted")
+	}
+}
+
+// TestHomeState checks the sound a track is checked with: every control's own
+// declaration, whatever the sections do, presets first.
+func TestHomeState(t *testing.T) {
+	p := mustPlan(t, mustParse(t, testSong))
+	home, err := p.HomeState()
+	if err != nil {
+		t.Fatalf("home state: %v", err)
+	}
+	programs := 0
+	for i, e := range home {
+		if e.Kind == Program {
+			programs++
+			if i >= 3 {
+				t.Errorf("preset load at position %d, after other controls", i)
+			}
+		}
+	}
+	// Deep Bass, Warm Pad and the lead's Small Room: the chorus presets are
+	// not part of it.
+	if programs != 3 {
+		t.Errorf("home state loads %d presets, want the three the tracks declare", programs)
+	}
+	lead := p.Track("lead")
+	if !lead.HomeMute() || p.Track("bass").HomeMute() {
+		t.Error("HomeMute does not follow the tracks' declarations")
+	}
+	if !contains(controls(home), describe(lead.MuteEvent(true))) {
+		t.Errorf("home state does not mute the lead: %v", controls(home))
+	}
+	if on := lead.MuteEvent(false); on.Data2 != 0 || on.Channel != GlobalChannel {
+		t.Errorf("unmute = %+v", on)
+	}
+}

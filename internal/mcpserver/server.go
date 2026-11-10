@@ -110,6 +110,12 @@ type Server struct {
 	// which session each song was authored into.
 	songSessionsMu sync.Mutex
 
+	// pulls signals the iPad's downloads of staged sessions to whoever waits
+	// for one, and loaded is the session the daemon itself loaded into AUM.
+	// See song_session.go.
+	pulls  sessionPulls
+	loaded loadedSession
+
 	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
 	// so two probes never overlap on the shared audio tap. This is what makes
 	// each probe analyse a clean, isolated segment (and replaces the harness's
@@ -294,6 +300,11 @@ func (s *Server) NotifyHostDiagnostics(connected bool, remote string) {
 // counterpart of NotifyAudioTap. Like notifyInbound, clients receive it only
 // after setting a logging level.
 func (s *Server) NotifyMidiControl(connected bool, remote string) {
+	if connected {
+		// A new brain: the session it belongs to may not be the one last
+		// loaded through load_song.
+		s.loaded.brainConnected()
+	}
 	s.broadcastConnState("midi-control", connected, remote,
 		"drive the rig with play_notes / send_midi / set_transport",
 		"no brain channel; play_notes/send_midi need a hardware endpoint")
