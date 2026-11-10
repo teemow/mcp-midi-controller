@@ -294,6 +294,11 @@ Global tools:
   `save_device_type`.
 - MIDI-learn: `learn_start` / `learn_capture` (reads the inbound notify channel
   to capture the CC/NRPN the user moves).
+- iPad UI over USB (`internal/ipad`, WebDriverAgent): `ipad_status`,
+  `ipad_screenshot`, `ipad_ui_tree`, `ipad_tap` / `ipad_hold` / `ipad_swipe`,
+  `ipad_launch`, and the AUM verification pair `get_aum_ui` / `wait_for_aum_ui`,
+  which read tempo, session, transport and fader levels from AUM's own display —
+  an oracle independent of the MIDI path. See `docs/ipad-control.md`.
 
 ### State & scenes
 

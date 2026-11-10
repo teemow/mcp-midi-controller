@@ -10,6 +10,14 @@ export function resultText(res: CallToolResult): string {
     .join("\n");
 }
 
+// resultImages returns every image content block of a tool result as a data
+// URL (ipad_screenshot returns the iPad screen this way).
+export function resultImages(res: CallToolResult): string[] {
+  return (res.content ?? [])
+    .filter((c): c is { type: "image"; data: string; mimeType: string } => c.type === "image")
+    .map((c) => `data:${c.mimeType};base64,${c.data}`);
+}
+
 // structured returns the machine-readable structuredContent of a result, typed
 // as the caller expects. The read tools (list_devices, describe_device,
 // discover_endpoints, list_scenes, read_state, ...) emit it.

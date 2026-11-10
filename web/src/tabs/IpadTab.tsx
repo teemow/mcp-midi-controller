@@ -29,6 +29,27 @@ export function IpadTab() {
         />
       </Panel>
 
+      <Panel title="AUM over USB">
+        <p className="mb-3 text-xs leading-relaxed text-cyan-100/50">
+          Look at and touch the iPad through WebDriverAgent: screenshot, read AUM's state (tempo,
+          session, fader levels) from its own display, tap by label, point or named control, and wait
+          for AUM to show what a MIDI message should have changed.
+        </p>
+        <ToolList
+          names={[
+            "ipad_status",
+            "ipad_screenshot",
+            "get_aum_ui",
+            "wait_for_aum_ui",
+            "ipad_ui_tree",
+            "ipad_tap",
+            "ipad_hold",
+            "ipad_swipe",
+            "ipad_launch",
+          ]}
+        />
+      </Panel>
+
       <Panel title="AUv3 probes">
         <p className="mb-3 text-xs leading-relaxed text-cyan-100/50">
           List staged plugin parameter-tree dumps, inspect one, and scaffold a device definition from it.

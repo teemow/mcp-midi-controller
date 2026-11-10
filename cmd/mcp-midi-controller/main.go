@@ -22,6 +22,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/mcpserver"
 	"github.com/teemow/mcp-midi-controller/internal/mdns"
@@ -120,13 +121,21 @@ func main() {
 	// by the LAN receiver below (RAM only — a volatile rig signal).
 	diagStore := diagnostics.NewStore()
 
-	srv := mcpserver.New(eng,
+	opts := []mcpserver.Option{
 		mcpserver.WithUSBAllowWrites(cfg.USBAllowWrites),
 		mcpserver.WithAudioTap(audioRegistry),
 		mcpserver.WithDiagnostics(diagStore),
 		mcpserver.WithMidiControl(midiHub),
 		mcpserver.WithAUMAutoImport(cfg.AUMAutoImport),
-	)
+	}
+	// The iPad UI tools talk to WebDriverAgent over the go-ios USB stack (run by
+	// auv3-probe's scripts/ipad). Nothing is contacted until a tool is called,
+	// so an unplugged iPad never gates startup.
+	if cfg.IPadWDAURL != "" {
+		opts = append(opts, mcpserver.WithIPad(ipad.New(cfg.IPadWDAURL, ipad.WithGoIOS(ipad.NewGoIOS(cfg.IPadGoIOS)))))
+		log.Printf("iPad UI tools: WebDriverAgent at %s", cfg.IPadWDAURL)
+	}
+	srv := mcpserver.New(eng, opts...)
 
 	// Run the iPad receiver as a SINGLE SEPARATE LAN listener (the loopback-only
 	// MCP endpoint above is unreachable from the iPad). One listener carries the

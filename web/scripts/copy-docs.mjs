@@ -20,6 +20,7 @@ const files = [
   { src: resolve(repoRoot, "README.md"), dest: "README.md" },
   { src: join(docsDir, "design.md"), dest: "design.md" },
   { src: join(docsDir, "usb-tools.md"), dest: "usb-tools.md" },
+  { src: join(docsDir, "ipad-control.md"), dest: "ipad-control.md" },
 ];
 
 const manifest = { docs: [] };

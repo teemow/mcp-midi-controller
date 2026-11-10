@@ -18,6 +18,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 	"github.com/teemow/midi-device/device"
@@ -49,6 +50,13 @@ type Server struct {
 	// receiver is wired (the tools then have no LAN target and fall back to a
 	// hardware transport only).
 	midi *midicontrol.Hub
+
+	// ipad is the WebDriverAgent client behind the ipad_* / get_aum_ui /
+	// wait_for_aum_ui tools: the USB channel into the iPad's UI, used to
+	// operate AUM by touch and to verify MIDI against AUM's own display. nil
+	// when disabled (config ipad_wda_url ""); the tools are then not
+	// registered. See ipad_tools.go.
+	ipad *ipad.Client
 
 	// aumAutoImport enables the automatic session-rig import (config
 	// aum_auto_import): OnAUMSessionDownloaded / OnMidiControlConnected re-run

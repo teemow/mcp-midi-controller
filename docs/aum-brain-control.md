@@ -143,6 +143,7 @@ further out, the north-star scriptable on-device host.
 | PC authoring (preset recall) | **done** — `specState` type 2 mapped and importable |
 | Pitch Bend / Channel Pressure | **read-only** — parsed (`specState` type 3) but no control type in the device model or brain protocol; `DeriveRig` reports them as skipped |
 | Live brain-driven scene-change loop on-device | **not yet** — the next end-to-end goal |
+| Verifying MIDI against AUM's own UI | **done** — `get_aum_ui` / `wait_for_aum_ui` read session, tempo, transport and fader levels over USB (WebDriverAgent); mute/solo/rec via `ipad_screenshot` |
 
 ### How a session becomes a control surface (implemented)
 
@@ -243,7 +244,9 @@ private: `docs/private/aum-projects.md`.
 2. **Close the remaining session model gaps** — confirm the packed-`spec`
    codes for PC/PBEND/CHPRS.
 3. **Prove the live loop** — brain (or footswitch) → standard mapping → scene /
-   session change, verified on-device via the audio tap.
+   session change, verified on-device via the audio tap and AUM's own display
+   (`get_aum_ui` / `wait_for_aum_ui` over USB, `docs/ipad-control.md`: session
+   name, tempo, transport, fader levels).
 
 ## References
 
