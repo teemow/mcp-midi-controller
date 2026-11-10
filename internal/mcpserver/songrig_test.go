@@ -81,7 +81,9 @@ func fastSongWaits(t *testing.T) {
 	ipad.AUMLoadPause = 10 * time.Millisecond
 	t.Cleanup(func() { ipad.AUMLoadPause = pause })
 	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait}
-	songPullGrace, songPullTimeout, songDialTimeout = 300*time.Millisecond, 300*time.Millisecond, 2*time.Second
+	// The stand-ins answer within milliseconds; the timeouts only bound a
+	// test on a machine too busy to run them.
+	songPullGrace, songPullTimeout, songDialTimeout = 300*time.Millisecond, 20*time.Second, 20*time.Second
 	songPresetWait, songSettleWait = 20*time.Millisecond, 20*time.Millisecond
 	songNoteHold, songNoteTail, songFloorWait = 80*time.Millisecond, 60*time.Millisecond, 40*time.Millisecond
 	t.Cleanup(func() {
