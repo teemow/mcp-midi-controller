@@ -102,6 +102,12 @@ func (s *Sound) Silent() bool { return s.PeakDB <= silentDB }
 // silentDB is the peak below which a capture counts as silence.
 const silentDB = -60.0
 
+// SilenceDB is the level a silent measurement is given.
+const SilenceDB = -120.0
+
+// clipDB is the sample peak from which a sound counts as clipping.
+const clipDB = -0.3
+
 // Levels of the analysis, relative to a sound's own peak.
 const (
 	onsetBelowPeak   = 30.0 // the sound starts where it comes within this of its peak
@@ -173,11 +179,15 @@ func rmsDB(m []float64) float64 {
 func MeasureNote(c Clip, note, velocity int) Sound {
 	s := Sound{Note: note, Velocity: velocity, LevelDB: -180, PeakDB: -180}
 	m, peak := mono(c)
-	s.PeakDB = round1(dbfs(peak))
+	s.PeakDB = round1(math.Max(dbfs(peak), SilenceDB))
 	if c.SampleRate <= 0 || len(m) == 0 || s.Silent() {
 		s.Unpitched = true
+		s.LevelDB = SilenceDB
 		s.Remarks = append(s.Remarks, "silent: nothing sounded for this note")
 		return s
+	}
+	if s.PeakDB >= clipDB {
+		s.Remarks = append(s.Remarks, fmt.Sprintf("peaks at full scale (%.1f dBFS) with the fader at unity: it clips unless its own volume comes down", s.PeakDB))
 	}
 	sr := c.SampleRate
 	hop := int(sr * envHopMS / 1000)

@@ -25,6 +25,10 @@
       "title": "song-authoring"
     },
     {
+      "path": "recording.md",
+      "title": "recording"
+    },
+    {
       "path": "research/agent-loop.md",
       "title": "research/agent-loop"
     },

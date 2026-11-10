@@ -213,20 +213,37 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 		return textResult(err.Error(), true), nil
 	}
 
+	// The lab is there once AUM has it and brain and tap are connected. An
+	// instrument that failed to load is named; the others can be auditioned.
+	loaded := rep.Check != nil
+	failed := map[string]bool{}
+	if rep.loaded != nil {
+		for _, title := range rep.loaded.Failed {
+			failed[strings.ToLower(title)] = true
+		}
+	}
 	var b strings.Builder
 	title := "the sound lab is loaded in AUM"
-	if !rep.OK {
+	switch {
+	case !loaded:
 		title = "the sound lab is NOT loaded"
+	case len(failed) > 0:
+		title = "the sound lab is loaded in AUM, but not every instrument came up"
 	}
 	b.WriteString(rep.text(title))
 	rows := []map[string]any{}
-	if rep.OK {
+	if loaded {
 		b.WriteString("instruments (audition_sound track=… or plugin=…):\n")
 	}
 	for _, tp := range cs.plan.Tracks {
 		n := tp.Nodes[0]
-		rows = append(rows, map[string]any{"track": tp.ID, "plugin": n.Plugin, "name": n.Name, "channel": tp.Channel, "presets": len(n.Presets), "factory_presets": len(n.FactoryPresets())})
-		if rep.OK {
+		down := failed[strings.ToLower(tp.Name)]
+		rows = append(rows, map[string]any{"track": tp.ID, "plugin": n.Plugin, "name": n.Name, "channel": tp.Channel, "presets": len(n.Presets), "factory_presets": len(n.FactoryPresets()), "failed": down})
+		switch {
+		case !loaded:
+		case down:
+			fmt.Fprintf(&b, "  %-16s %s: FAILED to load (AUM draws its node as failed); loading the lab again may bring it up, some plugins never do when a session hosts them from scratch\n", tp.ID, n.Name)
+		default:
 			fmt.Fprintf(&b, "  %-16s %s: %d of %d preset(s) mapped\n", tp.ID, n.Name, len(n.Presets), len(n.FactoryPresets()))
 		}
 	}
@@ -234,7 +251,7 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 		fmt.Fprintf(&b, "%d preset(s) found no Program Change: a lab with fewer instruments reaches them\n", cs.plan.PresetsUnmapped)
 	}
 	res := structResult(b.String(), map[string]any{"song": soundLabID, "load": rep, "instruments": rows, "presets_unmapped": cs.plan.PresetsUnmapped})
-	res.IsError = !rep.OK
+	res.IsError = !loaded
 	return res, nil
 }
 
@@ -502,6 +519,7 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	var rows []auditionRow
+	stored, silent := 0, 0
 	for _, name := range play {
 		if err := set(name); err != nil {
 			return textResult("audition_sound: "+err.Error(), true), nil
@@ -525,7 +543,16 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 			}
 			m.Lanes = sound.NameLanes(m.Pads)
 			m.Unpitched = true
+			// A kit's level is its kick's when it has one: the loudest pad is
+			// often a snare far above the rest, and a kit trimmed by that
+			// plays too quiet as a whole.
+			for _, pad := range m.Pads {
+				if pad.Lane == "kick" {
+					m.LevelDB = pad.LevelDB
+				}
+			}
 			if len(m.Pads) == 0 {
+				m.PeakDB, m.LevelDB = sound.SilenceDB, sound.SilenceDB
 				m.Remarks = append(m.Remarks, fmt.Sprintf("silent: no note from %d to %d made a sound", from, to))
 			}
 		} else {
@@ -543,13 +570,20 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 		if key == "" {
 			key = node.HomePreset()
 		}
-		if save {
+		// Silence says nothing of the preset: the plugin did not load, or the
+		// note is none of its notes. It is reported and not kept.
+		if save && !m.Silent() {
 			kept, err := s.sounds.Put(node.Plugin, node.Name, key, m)
 			if err != nil {
 				warnings = append(warnings, "the catalogue was not written: "+err.Error())
 			} else {
 				row.Sound, row.Stored = kept, true
 			}
+		}
+		if m.Silent() {
+			silent++
+		} else if save {
+			stored++
 		}
 		if row.Preset == "" {
 			row.Preset = key
@@ -568,10 +602,13 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 		b.WriteString(describeSound(row.Preset, row.Sound, args.Kit))
 	}
 	switch {
-	case save:
-		fmt.Fprintf(&b, "stored in the sound catalogue (%d)\n", len(rows))
+	case save && stored > 0:
+		fmt.Fprintf(&b, "stored in the sound catalogue (%d)\n", stored)
 	case !clean:
 		fmt.Fprintf(&b, "not stored: %s, so this is the chain's sound, not the preset's\n", why)
+	}
+	if silent > 0 {
+		fmt.Fprintf(&b, "%d silent and not stored: a plugin that makes no sound for any preset did not load (AUM draws its node with a red ring; check_song says so), and loading the session again may bring it back\n", silent)
 	}
 	if more > 0 {
 		fmt.Fprintf(&b, "%d more preset(s) match %q (raise limit, or narrow the query)\n", more, args.Query)
@@ -646,6 +683,9 @@ func describeSound(preset string, m *sound.Sound, kit bool) string {
 			sort.Strings(lanes)
 			fmt.Fprintf(&b, "    drum map (guessed from the sound; set_sound corrects it): {%s}\n", strings.Join(lanes, ", "))
 		}
+	} else if m.Silent() {
+		fmt.Fprintf(&b, "  %s: silent\n", name)
+		return b.String()
 	} else {
 		pitch := "no pitch"
 		if !m.Unpitched {

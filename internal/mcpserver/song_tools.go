@@ -157,7 +157,9 @@ func (s *Server) registerSongTools() {
 				"sections": {"type": "integer", "minimum": 1, "description": "Live: how many arrangement entries to play (default: to the end)."},
 				"tracks": {"type": "array", "items": {"type": "string"}, "description": "Live: play only these tracks' notes (default: all)."},
 				"transport": {"type": "boolean", "description": "Live: also start AUM's transport with the first note and stop it at the end, for plugins that follow the host clock. Sequenced playing always runs the transport."},
-				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Live: wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."}
+				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Live: wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."},
+				"record": {"type": "boolean", "description": "Record the song at the audio tap while it plays, into a file (list_recordings). The recording ends by itself once the song is over and its tail has rung out, with the silence before the first note cut."},
+				"upload": {"type": "boolean", "description": "Record the song and upload the recording to Google Drive when it is finished (see upload_recording)."}
 			},
 			"required": ["song"]
 		}`),
@@ -460,7 +462,11 @@ func (s *Server) voicing(plugin, preset string) (song.Voicing, bool) {
 	if m == nil || m.Silent() {
 		return song.Voicing{}, false
 	}
-	return song.Voicing{Transpose: m.Transpose, LevelDB: m.LevelDB, Lanes: m.Lanes}, true
+	pinned := false
+	for _, field := range m.Pinned {
+		pinned = pinned || field == "transpose"
+	}
+	return song.Voicing{Transpose: m.Transpose, Pinned: pinned, LevelDB: m.LevelDB, Lanes: m.Lanes}, true
 }
 
 // loadSong loads and compiles a stored song, returning a tool error on failure.
@@ -795,6 +801,8 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		Tracks    []string `json:"tracks"`
 		Transport bool     `json:"transport"`
 		PrerollMS int      `json:"preroll_ms"`
+		Record    bool     `json:"record"`
+		Upload    bool     `json:"upload"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -832,9 +840,19 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if err != nil {
 		return textResult("/mode: "+err.Error(), true), nil
 	}
-	send := func(ctx context.Context, e song.Event) error {
-		return s.sendBrain(ctx, songCommand(e))
+	// A recording starts before the first message goes out and follows the
+	// song to its end (recording_tools.go). Played live, the first note the
+	// daemon sends marks where the music starts in it; sequenced, no note
+	// passes through here and the recording goes by the playback's clock.
+	var take *activeRecording
+	if args.Record || args.Upload {
+		if take, err = s.beginRecording(recordOptions{Song: cs.id, Title: cs.song.Title, Upload: args.Upload}); err != nil {
+			return textResult("play_song: cannot record: "+err.Error(), true), nil
+		}
 	}
+	send := take.sender(func(ctx context.Context, e song.Event) error {
+		return s.sendBrain(ctx, songCommand(e))
+	})
 	cc := func(at song.Assignment, value int) song.Event {
 		return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
 	}
@@ -887,7 +905,11 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	}
 	if err != nil {
 		release() // no playback began, so nothing will end
+		s.abortRecording(take)
 		return textResult("play_song: "+err.Error(), true), nil
+	}
+	if take != nil {
+		go s.runRecording(take)
 	}
 
 	var b strings.Builder
@@ -904,10 +926,20 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if note != "" {
 		fmt.Fprintf(&b, "note: %s\n", note)
 	}
+	out := map[string]any{"playback": st, "mode": mode, "warnings": warnings}
+	if take != nil {
+		rs := take.status()
+		out["recording"] = rs
+		fmt.Fprintf(&b, "recording it as %q from the tap %q: the file is written once the song and its tail have ended (list_recordings)", rs.Name, rs.Tap)
+		if rs.Upload {
+			b.WriteString(", and then uploaded to Google Drive")
+		}
+		b.WriteByte('\n')
+	}
 	for _, w := range warnings {
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
-	return structResult(b.String(), map[string]any{"playback": st, "mode": mode, "warnings": warnings}), nil
+	return structResult(b.String(), out), nil
 }
 
 // songPlayMode decides how a song is played. want is the mode asked for ("" to

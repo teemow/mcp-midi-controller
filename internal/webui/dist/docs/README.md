@@ -51,6 +51,10 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
   loads it into AUM and plays it: from a sequencer in the session that holds
   the whole song, or live through the brain (`save_song`, `load_song`,
   `play_song`). See [`docs/songs.md`](docs/songs.md).
+- **Recordings**: record a song while it plays, or whatever an audio tap
+  hears, into a seamless FLAC or WAV file, and upload it to your own Google
+  Drive (`play_song` with `record`, `start_recording`, `upload_recording`).
+  See [`docs/recording.md`](docs/recording.md).
 - **Rig-as-code**: your device types, devices and scenes live in one
   git-trackable directory.
 
@@ -123,7 +127,9 @@ $XDG_CONFIG_HOME/mcp-midi-controller/   # git init this
   devices.yaml                          # your devices (type + where it is) → the rig
   scenes/*.yaml
   songs/*.yaml                          # your songs (docs/songs.md)
-$XDG_STATE_HOME/mcp-midi-controller/    # volatile (desired-state cache, logs)
+  google-drive-client.json              # your Google OAuth client, to upload recordings
+                                        # (docs/recording.md); a secret: keep it out of git
+$XDG_STATE_HOME/mcp-midi-controller/    # volatile (desired-state cache, logs, recordings)
 ```
 
 ## Running as a daemon (systemd user service)
@@ -175,8 +181,10 @@ listener carries three surfaces, none of which touch hardware:
 - **AUM sessions** ferried in/out for the `aum` tools.
 - **Audio tap** — a `GET /audio-stream` **WebSocket** that terminates the
   ProbeAudioTap AUv3's stream (decimated mono PCM + RMS/peak features). It keeps
-  the latest levels and a short rolling window **in memory only** (audio is a
-  private rig signal, never written to disk) and exposes them read-only through
+  the latest levels and a short rolling window **in memory** (audio is a
+  private rig signal: it reaches the disk only when a tool asks for it — a
+  probe's segment, a recording — and then under the state dir) and exposes
+  them read-only through
   the `get_audio_tap` / `get_audio_clip` MCP tools — the agent's "ears". A tap
   connecting or dropping is broadcast as an `audio-tap` log notification.
 - **MIDI control** — a `GET /midi-control` **WebSocket** the ProbeMidiBrain AUv3

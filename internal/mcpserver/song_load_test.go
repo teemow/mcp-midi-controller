@@ -353,3 +353,81 @@ func TestLoadSongSequencer(t *testing.T) {
 	}
 	s.player.Stop()
 }
+
+// TestSoundCheckIsolatesEachTrack checks the check mutes every strip but the
+// one it plays, puts the song's own mutes back, and plays the lowest of the
+// notes a track starts with: on a device a bell's delay was still ringing
+// when the drums were checked with their hat, and the drums were called
+// silent.
+func TestSoundCheckIsolatesEachTrack(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	// The drums start with a kick and a hat together, and the pad is muted
+	// by the song itself.
+	doc := strings.Replace(toolSong, `kick: "x...x...x...x...", snare:`, `hat: "x.x.x.x.x.x.x.x.", kick: "x...x...x...x...", snare:`, 1)
+	doc = strings.Replace(doc, "  - id: pad\n", "  - id: pad\n    mute: true\n", 1)
+	doc = strings.Replace(doc, "verse: {bars: 1, play: {bass: bass, drums: beat}}", "verse: {bars: 1, play: {bass: bass, pad: chords, drums: beat}}", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "drums      DrumBox                C2 ") {
+		t.Fatalf("check: %s", text)
+	}
+
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	muteCC := map[int]string{}
+	for _, tp := range cs.plan.Tracks {
+		muteCC[tp.MuteEvent(true).Data1] = tp.ID
+	}
+	cmds := r.waitCommands(func(cmds []midicontrol.Command) bool {
+		n := 0
+		for _, c := range cmds {
+			if c.Type == "noteOff" {
+				n++
+			}
+		}
+		return n >= 3
+	})
+	// While a note sounds, its own strip is the only one not muted.
+	muted := map[string]bool{}
+	notes := 0
+	for _, c := range cmds {
+		if id, ok := muteCC[c.Controller]; ok && c.Type == "cc" && c.Channel == 15 {
+			muted[id] = c.Value >= 64
+		}
+		if c.Type != "noteOn" {
+			continue
+		}
+		notes++
+		playing := cs.plan.Tracks[c.Channel-1].ID
+		for _, tp := range cs.plan.Tracks {
+			if muted[tp.ID] != (tp.ID != playing) {
+				t.Errorf("while %s is checked, %s muted = %v", playing, tp.ID, muted[tp.ID])
+			}
+		}
+	}
+	if notes != 3 {
+		t.Fatalf("the check played %d notes, want one per track", notes)
+	}
+	// Afterwards the song's own mutes are back: only the pad.
+	time.Sleep(100 * time.Millisecond)
+	r.mu.Lock()
+	for _, c := range r.Commands {
+		if id, ok := muteCC[c.Controller]; ok && c.Type == "cc" && c.Channel == 15 {
+			muted[id] = c.Value >= 64
+		}
+	}
+	r.mu.Unlock()
+	if muted["bass"] || !muted["pad"] || muted["drums"] {
+		t.Errorf("mutes after the check = %v, want only the pad's", muted)
+	}
+}

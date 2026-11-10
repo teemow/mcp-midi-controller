@@ -32,6 +32,10 @@ session file and stages it.
 `export_song_midi` writes the song as a Standard MIDI File for a sequencer or a
 DAW.
 
+`play_song` with `record: true` also records the song at the master's tap into
+a file, and `upload_recording` puts that file into Google Drive: see
+[Recording and Google Drive](recording.md).
+
 ## The document
 
 ```yaml
@@ -234,6 +238,8 @@ session that maps it:
   is the song `sound_lab` and is loaded like one. Any preset of those
   instruments is then one `audition_sound` away, a second or two each, several
   per call (`presets`, or `query` for every preset with a word in its name).
+  An instrument that did not load is named when the lab opens, and the lab
+  stays usable for the others.
 - **A song's own session**, when its `session:` block says `presets: all`. The
   candidate is then heard through the track's own effect chain.
 
@@ -243,7 +249,12 @@ the config dir. `list_sounds` reads it. A measurement through an effect chain,
 with parameters set on the instrument or with the fader moved is reported but
 not stored: it is the chain's sound, not the preset's. What `set_sound`
 corrects (a transposition, a drum map, a comment) is kept when the preset is
-measured again.
+measured again. A measurement of silence is not stored either: it says that
+the plugin did not load or that the note is none of its notes, and nothing
+about the preset.
+
+A kit's level is its kick's when it has one. The loudest pad is often a snare
+far above the rest, and a kit trimmed by that plays too quiet as a whole.
 
 ## Calibration
 
@@ -274,7 +285,10 @@ scenes:
   `transpose` of the preset it has in each section. A scene that changes the
   preset changes the shift with it, so no `transpose` on tracks or patterns is
   needed to undo a preset's octave. A track's or pattern's own `transpose`
-  still applies on top.
+  still applies on top. Only whole octaves are applied: a measurement of 16
+  or 38 semitones is a bell's or a texture's strongest partial far more often
+  than a tuning, so it is listed and the notes stay as written. `set_sound`
+  with that transposition says it is the patch's tuning, and then it applies.
 - **Levels are loudness.** A track's `level` is added to what brings its
   preset's reference note to -20 dBFS rms, per section. Level 0 is therefore
   the same loudness for every preset, before the effects. The fader ends at
@@ -409,10 +423,16 @@ daemon remembers it from the first `ipad_launch` with the full id.
 
 - the brain is connected and the tap is streaming;
 - AUM shows the song's session (the name in its menu), a strip for the brain,
-  every track and the master, and no line that reports a failed plugin;
+  every track and the master, and no failed plugin. AUM says that a plugin
+  did not load only by drawing its node with a ring of red stripes, so the
+  check takes a screenshot and looks at the ring of every node on screen;
 - every track answers a note. The daemon sets each track's own sound (its
-  declaration, no scene), plays the track's first note of the song alone and
-  measures the tap. A track that stays silent is named with its plugin.
+  declaration, no scene) and mutes every strip. Then, one track at a time, it
+  unmutes the strip, plays the lowest of the notes the track starts the song
+  with (on a drum track the kick rather than a hat) and measures the tap. A
+  track that stays silent is named with its plugin. What another track left
+  ringing in a delay or reverb is behind its mute and counts for nothing. The
+  song's own mutes are put back at the end.
 
 It does not run while a song plays. `ui: false` leaves AUM's screen alone
 (reading the session name opens and closes AUM's menu).
@@ -643,6 +663,49 @@ a device, in sessions authored from a song:
   left to doze, timers fired up to 1.2 s late and the hits around such a stall
   were about 50 ms off the grid.
 
+Measured on a device with the tools around writing a song (the daemon reached
+the iPad over the LAN and its UI over WebDriverAgent):
+
+- **Loading.** `load_song` took a saved song of five tracks and fifteen
+  plugins to a session that played in 62 s: authored in 0.1 s, pulled by the
+  iPad within 9 s (the daemon had brought the probe app to the front), 46 s
+  until AUM had it open with its plugins restored, brain and tap connected at
+  once. `open_sound_lab` took 57 and 55 s for two labs.
+- **Every preset mapped.** AUM loaded sessions with 601 and with 748 Preset
+  Loads, spread over the Program Changes of channel 15 and the control
+  channels below it. Presets on channel 15 and on channels below it loaded
+  when their Program Change was sent.
+- **Auditioning.** 31 presets of four synths were played and measured in four
+  calls, about 2.5 s a preset, and two kits of twenty notes each in 30 s. Of
+  ten bass presets of one synth, six sounded two octaves below the written
+  note, three had no steady pitch and one measured 25 semitones off. Of ten
+  pads of another, five sounded at pitch, one an octave and two two octaves
+  below, and two were textures with no note of their own. Three of six bell
+  presets of an FM synth measured 7, 16 and 36 semitones off: their strongest
+  partial, not their note.
+- **A plugin that did not load.** One instrument came up as a failed node in
+  a lab. Nothing in AUM's accessibility tree said so; the node's ring was
+  drawn in red stripes where every other node's is grey. Every audition of it
+  measured digital silence.
+- **A calibrated song.** A second song, twenty bars and five tracks, was
+  written in sounding pitch with no transposition anywhere and played from
+  start to finish. Its bass, on a preset that sounds two octaves low,
+  measured D2 at the tap (73.6 Hz, 4 cents sharp) for a written D2. With the
+  levels from the catalogue four tracks came out within 7 dB of each other;
+  the drum kit, trimmed by its loudest pad, the snare, was 13 dB under.
+- **The check, and what it got wrong.** `check_song` at the end of that load
+  called the drums silent. They were not: it had played their hat while the
+  bell's delay was still ringing, and the hat was not 6 dB over that. The
+  check now mutes the other strips and plays the lowest first note.
+- **The mix.** `mix_song` measured the song's twenty bars and thirteen solo
+  passes in 233 s: the fade-in and the fade-out bar by bar, each section, and
+  every track alone in every section. After one change of levels, saved
+  without a new session, the two full sections measured -20.0 dBFS rms with
+  peaks at -5.1, and no track more than 7 dB from another.
+- **A restart of the daemon** in the middle of a measurement (its own update
+  after a merge) ended the measurement. The session stayed loaded, brain and
+  tap dialled the new daemon within seconds, and the next call worked.
+
 - **Measuring a preset.** The analysis behind `audition_sound` was run over
   notes captured on a device with `probe_sound`, in a song's session. For
   seven presets of four synths it gave the transposition found by hand
@@ -740,10 +803,12 @@ tools of a daemon that has the mode:
 
 Not yet measured:
 
-- `check_song` on its own, `open_sound_lab`, `audition_sound` and `mix_song`
-  themselves, a session with `presets: all` and a song with `calibrate`: the
-  test suite runs them against a stand-in for the iPad (`load_song` and the
-  check at its end ran once, above);
+- what the first device run of the song tools led to: the check with the
+  other strips muted, a failed node read off a screenshot inside the tools
+  (the rule comes from a device's screenshot), a kit's level taken from its
+  kick, only whole octaves applied by `calibrate`;
+- `audition_sound` in a song's own session with `presets: all`, `set_sound`,
+  and `load_song` on a daemon that cannot bring the probe app to the front;
 - `play_song` with its 200 ms between rewind and start, from a transport that
   does not stand at the top (the gap was measured with messages sent by hand);
 - `get_song_playback` against AUM's own position display (it was measured
@@ -786,6 +851,7 @@ preset at a time.
 | Authored sessions | the AUM staging dir (state dir), like every authored session |
 | Which session a song was authored into | `song-sessions.json` in the state dir |
 | MIDI exports | `song-exports/` in the state dir |
+| Recordings | `recordings/` in the state dir ([recording.md](recording.md)) |
 
 A song names the plugins of one rig. Keep the songs directory out of a public
 repository if that is private.
