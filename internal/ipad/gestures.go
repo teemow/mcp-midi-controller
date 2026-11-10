@@ -179,6 +179,17 @@ var ErrNoTextField = fmt.Errorf("no such text field on screen")
 // TypeText focuses text field index (in TextFields' order), clears it, types
 // text and reads the field's value back. It does not press Return.
 func (s *Session) TypeText(ctx context.Context, index int, text string) (string, error) {
+	return s.typeInto(ctx, index, text, true)
+}
+
+// FillText clears text field index and types text like TypeText, without
+// tapping the field first. AUM's number alerts (Set level, Edit Value) are
+// filled this way: after a tap on their field they ignored their Set button.
+func (s *Session) FillText(ctx context.Context, index int, text string) (string, error) {
+	return s.typeInto(ctx, index, text, false)
+}
+
+func (s *Session) typeInto(ctx context.Context, index int, text string, focus bool) (string, error) {
 	fields, err := s.TextFields(ctx)
 	if err != nil {
 		return "", err
@@ -187,11 +198,13 @@ func (s *Session) TypeText(ctx context.Context, index int, text string) (string,
 		return "", fmt.Errorf("%w: field %d of %d", ErrNoTextField, index, len(fields))
 	}
 	id := fields[index].id
-	if err := s.c.call(ctx, http.MethodPost, s.path("/element/"+id+"/click"), map[string]any{}, nil); err != nil {
-		return "", err
-	}
-	if err := sleepCtx(ctx, 400*time.Millisecond); err != nil {
-		return "", err
+	if focus {
+		if err := s.c.call(ctx, http.MethodPost, s.path("/element/"+id+"/click"), map[string]any{}, nil); err != nil {
+			return "", err
+		}
+		if err := sleepCtx(ctx, 400*time.Millisecond); err != nil {
+			return "", err
+		}
 	}
 	if err := s.c.call(ctx, http.MethodPost, s.path("/element/"+id+"/clear"), map[string]any{}, nil); err != nil {
 		return "", err

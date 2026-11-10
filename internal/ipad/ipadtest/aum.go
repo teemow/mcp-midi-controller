@@ -374,7 +374,9 @@ func body(o Overlay, x, y, w float64) []node {
 		y += 50
 	}
 	for _, f := range o.Fields {
-		out = append(out, el("TextField", "", x+16, y+5, w-32, 36).with("value", f))
+		// iOS lists the field's clear button as a button of the dialog.
+		out = append(out, el("TextField", "", x+16, y+5, w-32, 36,
+			el("Button", "Clear text", x+w-40, y+15, 16, 16)).with("value", f))
 		y += 50
 	}
 	for _, b := range o.Buttons {

@@ -411,6 +411,9 @@ func parseNodes(s *Element, ch AUMChannel) []AUMNode {
 			return true
 		}
 		n := AUMNode{Label: cleanLabel(el.Label), Frame: r, OnScreen: !el.Hidden}
+		if n.Label == "-∞" { // a silent meter's reading, not a name
+			n.Label = ""
+		}
 		switch {
 		case ch.Kind == "midi":
 			n.Role = "midi"
@@ -545,7 +548,7 @@ func newOverlay(kind, title string, el *Element) AUMOverlay {
 		}
 		switch e.Type {
 		case "Button":
-			if l := cleanLabel(e.Label); l != "" && l != "chevron" && !seen[l] {
+			if l := cleanLabel(e.Label); l != "" && l != "chevron" && l != "Clear text" && !seen[l] {
 				seen[l] = true
 				o.Buttons = append(o.Buttons, l)
 			}

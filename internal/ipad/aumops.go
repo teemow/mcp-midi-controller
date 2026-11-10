@@ -176,6 +176,22 @@ func (d *AUMDriver) typeText(index int, text string) (string, error) {
 	return d.s.TypeText(d.ctx, index, text)
 }
 
+// fillText types into an alert's field without tapping it (Session.FillText).
+func (d *AUMDriver) fillText(index int, text string) (string, error) {
+	d.step("fill text field %d with %q", index, text)
+	return d.s.FillText(d.ctx, index, text)
+}
+
+// press clicks the one button labelled label as an element, else taps r.
+func (d *AUMDriver) press(r Rect, label string) error {
+	ok, err := d.s.ClickButton(d.ctx, label)
+	if err != nil || ok {
+		d.step("press %s", label)
+		return err
+	}
+	return d.tapRect(r, label)
+}
+
 func (d *AUMDriver) pressReturn() error {
 	d.step("press Return")
 	return d.s.PressReturn(d.ctx)

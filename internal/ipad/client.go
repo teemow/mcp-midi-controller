@@ -382,6 +382,23 @@ func (s *Session) TapLabel(ctx context.Context, label string, wait time.Duration
 	return n, nil
 }
 
+// ClickButton clicks the one button labelled label as an element (an
+// accessibility press, not a tap at its position). It clicks nothing and
+// returns false when no button or more than one carries the label.
+func (s *Session) ClickButton(ctx context.Context, label string) (bool, error) {
+	var found []map[string]string
+	pred := "type == 'XCUIElementTypeButton' AND label ==[c] " + strconv.Quote(label)
+	if err := s.c.call(ctx, http.MethodPost, s.path("/elements"),
+		map[string]any{"using": "predicate string", "value": pred}, &found); err != nil {
+		return false, err
+	}
+	if len(found) != 1 || elementID(found[0]) == "" {
+		return false, nil
+	}
+	err := s.c.call(ctx, http.MethodPost, s.path("/element/"+elementID(found[0])+"/click"), map[string]any{}, nil)
+	return err == nil, err
+}
+
 // findLabel returns the first element labelled label (buttons first) and
 // how many matched, retrying for up to wait.
 func (s *Session) findLabel(ctx context.Context, label string, wait time.Duration) (string, int, error) {

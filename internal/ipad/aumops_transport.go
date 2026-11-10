@@ -195,7 +195,7 @@ func (d *AUMDriver) setTempo(bpm float64) (AUMResult, error) {
 	if dlg == nil {
 		return d.result("set_tempo", false, "the Edit Value dialog did not open", nil), nil
 	}
-	if _, err := d.typeText(0, strconv.FormatFloat(bpm, 'f', -1, 64)); err != nil {
+	if _, err := d.fillText(0, strconv.FormatFloat(bpm, 'f', -1, 64)); err != nil {
 		return AUMResult{}, err
 	}
 	if err := d.confirmDialog(dlg); err != nil {

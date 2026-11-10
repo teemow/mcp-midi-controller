@@ -159,7 +159,9 @@ How AUM shows state in its tree (AUM 1.4.8):
   closed by the icon at its top right. The Navigator has a navigation bar
   instead, and its top-right icon is the bookmark filter: it closes on a tap
   on the mixer, which AUM swallows. The Set level and Edit Value dialogs are
-  alerts with a text field and Cancel / Set.
+  alerts with a text field and Cancel / Set. Their field is filled without
+  a tap and Set is pressed as an element: after a tap on the field (which
+  brings up the on-screen keyboard), AUM ignored a tap on Set.
 - **Under a side panel or the routing matrix** AUM marks the whole mixer
   invisible; its states still read.
 - **Unlabelled controls** carry labels iOS glues from the texts around them

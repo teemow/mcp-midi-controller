@@ -327,7 +327,7 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	if dlg == nil {
 		return d.result("rename", false, "the RENAME dialog did not open", nil), nil
 	}
-	if _, err := d.typeText(0, newName); err != nil {
+	if _, err := d.fillText(0, newName); err != nil {
 		return AUMResult{}, err
 	}
 	if err := d.confirmDialog(dlg); err != nil {

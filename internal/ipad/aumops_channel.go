@@ -414,7 +414,7 @@ func (d *AUMDriver) setLevel(sel string, db float64) (AUMResult, error) {
 		return d.result("set_level", false, "the Set level dialog did not open", nil), nil
 	}
 	text := strconv.FormatFloat(db, 'f', -1, 64)
-	if _, err := d.typeText(0, text); err != nil {
+	if _, err := d.fillText(0, text); err != nil {
 		return AUMResult{}, err
 	}
 	if err := d.confirmDialog(dlg); err != nil {
@@ -429,13 +429,14 @@ func (d *AUMDriver) setLevel(sel string, db float64) (AUMResult, error) {
 	return d.result("set_level", ok, fmt.Sprintf("strip %d %q fader %s -> %s", strip, ch.Title, ch.LevelLabel, now), nil), err
 }
 
-// confirmDialog taps the confirming button of a number dialog (Set, OK,
-// Done), falling back to Return.
+// confirmDialog presses the confirming button of a dialog (Set, OK, Done)
+// as an element: AUM's alerts ignored a tap at its position. It falls back
+// to Return.
 func (d *AUMDriver) confirmDialog(dlg *AUMOverlay) error {
 	area := dlg.Frame
 	for _, label := range []string{"Set", "OK", "Done", "Save", "Sichern", "Fertig"} {
 		if b := d.findText(label, &area); b != nil {
-			return d.tapRect(b.Rect, label)
+			return d.press(b.Rect, label)
 		}
 	}
 	// The dialog moves up while the keyboard shows: re-read before giving up.
@@ -444,7 +445,7 @@ func (d *AUMDriver) confirmDialog(dlg *AUMOverlay) error {
 	}
 	for _, label := range []string{"Set", "OK", "Done"} {
 		if b := d.findText(label, nil); b != nil {
-			return d.tapRect(b.Rect, label)
+			return d.press(b.Rect, label)
 		}
 	}
 	return d.pressReturn()

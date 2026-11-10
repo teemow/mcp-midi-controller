@@ -171,12 +171,17 @@ func TestAUMChannelRenameAndLevel(t *testing.T) {
 	dlg.Overlays = []ipadtest.Overlay{{Kind: "alert", Title: "Set level", Fields: []string{"-1.0"}, Buttons: []string{"Cancel", "Set"}}}
 	set := mixer()
 	set.Strips[1].Level = "-6.5 dB"
-	w.SetScreens(mixer().Source(), dlg.Source(), dlg.Source(), set.Source())
+	// The field is filled without a tap, and Set pressed as an element.
+	w.SetScreens(mixer().Source(), dlg.Source(), set.Source())
 	w.Fields = []string{"-1.0"}
+	w.Labels = map[string]int{`button:"Set"`: 1}
 	level := -6.5
 	res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "set_level", Channel: "2", LevelDB: &level})
 	if err != nil || !res.Verified || !strings.Contains(res.Message, "-1.0 dB -> -6.5 dB") || w.Fields[0] != "-6.5" {
 		t.Fatalf("set_level: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 446,213" || g[1] != "click" {
+		t.Fatalf("set_level gestures = %v", g)
 	}
 }
 
@@ -229,15 +234,16 @@ func TestAUMTransportSetTempo(t *testing.T) {
 	done.Tempo = "128"
 	closed := mixer()
 	closed.Tempo = "128"
-	w, c := opFake(t, mixer(), bar, dlg, dlg, done, closed)
+	w, c := opFake(t, mixer(), bar, dlg, done, closed)
 	w.Fields = []string{"120"}
 	bpm := 128.0
 	res, err := c.AUMTransport(context.Background(), AUMRequest{Action: "set_tempo", BPM: &bpm})
 	if err != nil || !res.Verified || !strings.Contains(res.Message, "120 BPM -> 128 BPM") {
 		t.Fatalf("set_tempo: %+v, %v", res, err)
 	}
+	// No Set button among the fake's labels: Set is tapped at its place.
 	g := w.GestureLog()
-	if len(g) != 5 || g[0] != "tap 30,30" || g[1] != "doubleTap 168,33" || g[4] != "tap 30,32" {
+	if len(g) != 4 || g[0] != "tap 30,30" || g[1] != "doubleTap 168,33" || g[2] != "tap 605,475" || g[3] != "tap 30,32" {
 		t.Fatalf("gestures = %v", g)
 	}
 	if _, err := c.AUMTransport(context.Background(), AUMRequest{Action: "record"}); !errors.Is(err, ErrNeedsConfirm) {
@@ -500,6 +506,19 @@ func TestParseAUMLiveShapes(t *testing.T) {
 	}
 	if o := st.Overlay("popover"); o == nil || o.Title != "" || len(o.Buttons) != 2 {
 		t.Fatalf("bare menu = %+v", o)
+	}
+
+	// A silent source node is labelled "-∞"; a dialog's field brings a
+	// "Clear text" button.
+	silent := mixer()
+	silent.Strips[1].Source = "-∞"
+	silent.Overlays = []ipadtest.Overlay{{Kind: "alert", Title: "Set level", Fields: []string{"-6"}, Buttons: []string{"Cancel", "Set"}}}
+	st = parse(silent)
+	if l := st.Channels[1].Nodes[0].Label; l != "" {
+		t.Fatalf("silent source label = %q", l)
+	}
+	if o := st.Overlay("alert"); o == nil || strings.Join(o.Buttons, "|") != "Cancel|Set" {
+		t.Fatalf("Set level = %+v", o)
 	}
 }
 

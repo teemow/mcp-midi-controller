@@ -498,7 +498,7 @@ func (d *AUMDriver) midiMenu(r AUMRequest) (AUMResult, error) {
 			}
 			return d.result("menu", false, fmt.Sprintf("%s asks for a value (%q); pass it as name", item, dlg.Title), dlg), nil
 		}
-		if _, err := d.typeText(0, r.Name); err != nil {
+		if _, err := d.fillText(0, r.Name); err != nil {
 			return AUMResult{}, err
 		}
 		if err := d.confirmDialog(dlg); err != nil {
