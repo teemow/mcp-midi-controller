@@ -9,7 +9,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/teemow/aum-session-go v0.3.2
 	github.com/teemow/midi-device v0.2.1
-	github.com/teemow/midi-transport v0.2.0
+	github.com/teemow/midi-transport v0.2.1
 	github.com/tidwall/gjson v1.20.2
 	github.com/tidwall/sjson v1.2.9
 	gitlab.com/gomidi/midi/v2 v2.3.24
