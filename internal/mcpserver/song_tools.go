@@ -47,7 +47,7 @@ patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), 
 scenes: {id: {track: {level?, mute?, preset?, params?, effects: {effect id: {bypass?, preset?, params?}}}}} - "master" addresses the master effects.
 sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]}, automation?: [{track, effect?, param ("level" for the fader), from, to, bar?, bars?}]}} - patterns repeat until the section ends; a track left out is silent.
 arrangement: [section ids in playing order].
-session: {track_taps?, full_control?, hardware? (builtin|x32)} - how the song's AUM session is built (see author_song_session); optional.
+session: {track_taps?, full_control?, hardware? (builtin|x32), presets? (song|all)} - how the song's AUM session is built (see author_song_session); optional. presets: all maps every factory preset, so audition_sound can play any of them in the song's session and the song can change presets without a new one.
 A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).`
 
 func (s *Server) registerSongTools() {
@@ -134,6 +134,7 @@ func (s *Server) registerSongTools() {
 	}, s.handleAuthorSongSession)
 
 	s.registerSongLoadTools(songArg)
+	s.registerSoundTools()
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "play_song",

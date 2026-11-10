@@ -216,6 +216,14 @@ func (r *loadReport) text(title string) string {
 	return b.String()
 }
 
+// loadSongArgs is what load_song was asked for.
+type loadSongArgs struct {
+	Author   songAuthorArgs
+	Reauthor bool
+	// Check plays every track's first note once the session is loaded.
+	Check bool
+}
+
 func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Song        string `json:"song"`
@@ -237,26 +245,44 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 	if s.ipad != nil && !args.Confirm {
 		return textResult("load_song needs confirm: true: loading replaces the session open in AUM, and unsaved changes there are lost", true), nil
 	}
+	rep, err := s.runLoadSong(ctx, cs, loadSongArgs{
+		Author:   songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware},
+		Reauthor: args.Reauthor,
+		Check:    args.Check == nil || *args.Check,
+	})
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	return loadResult(cs, rep), nil
+}
 
-	author := songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware}
+// loadResult renders a load's report as a tool result.
+func loadResult(cs *compiledSong, rep *loadReport) *mcp.CallToolResult {
+	title := fmt.Sprintf("%q is loaded in AUM as %s and ready to play", cs.song.Title, rep.Session)
+	if !rep.OK {
+		title = fmt.Sprintf("%q is NOT ready to play", cs.song.Title)
+	}
+	res := structResult(rep.text(title), rep)
+	res.IsError = !rep.OK
+	return res
+}
+
+// runLoadSong takes a compiled song to a loaded session, step by step. The
+// report says how far it got; an error is only what keeps it from starting.
+func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSongArgs) (*loadReport, error) {
+	author := args.Author
 	rec, authored := loadSongSessions()[cs.id]
 	if author.OutID == "" && authored {
 		author.OutID = rec.Session
 	}
 	outID, err := songSessionID(cs, author.OutID)
 	if err != nil {
-		return textResult(err.Error(), true), nil
+		return nil, err
 	}
 	rep := &loadReport{Song: cs.id, Session: outID}
-	done := func(next string) (*mcp.CallToolResult, error) {
+	done := func(next string) (*loadReport, error) {
 		rep.Next = next
-		title := fmt.Sprintf("%q is loaded in AUM as %s and ready to play", cs.song.Title, outID)
-		if !rep.OK {
-			title = fmt.Sprintf("%q is NOT ready to play", cs.song.Title)
-		}
-		res := structResult(rep.text(title), rep)
-		res.IsError = !rep.OK
-		return res, nil
+		return rep, nil
 	}
 
 	if st := s.player.Status(); st.Playing {
@@ -344,7 +370,7 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 	rep.add("connect", true, start, "brain and tap connected")
 
 	// 5. Does it sound?
-	check := s.checkSong(ctx, cs, checkOptions{Sound: args.Check == nil || *args.Check, Loaded: &loaded})
+	check := s.checkSong(ctx, cs, checkOptions{Sound: args.Check, Loaded: &loaded})
 	rep.Check = &check
 	rep.OK = check.OK
 	if !check.OK {

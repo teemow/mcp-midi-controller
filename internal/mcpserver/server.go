@@ -22,6 +22,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
 	"github.com/teemow/mcp-midi-controller/internal/song"
+	"github.com/teemow/mcp-midi-controller/internal/sound"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
@@ -107,6 +108,10 @@ type Server struct {
 	songs  *song.Store
 	player song.Player
 
+	// sounds is the rig's sound catalogue: what the presets of its plugins
+	// were measured to sound like. See sound_tools.go.
+	sounds *sound.Catalog
+
 	// holdAwake keeps the daemon's host awake until the release it returns is
 	// called. play_song holds it for as long as a song plays, because the
 	// player keeps the time with the host's timers and a dozing host fires
@@ -187,6 +192,7 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		mcp:        mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
 		scenes:     scene.NewStore(config.ScenesDir()),
 		songs:      song.NewStore(config.SongsDir()),
+		sounds:     sound.NewCatalog(config.SoundsDir()),
 		holdAwake:  hostawake.Hold,
 		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},

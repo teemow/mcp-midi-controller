@@ -99,6 +99,11 @@ func ScenesDir() string { return filepath.Join(ConfigDir(), "scenes") }
 // private keeps the directory out of a public repository.
 func SongsDir() string { return filepath.Join(ConfigDir(), "songs") }
 
+// SoundsDir holds the rig's sound catalogue: one YAML file per plugin with
+// what its presets were measured to sound like. Part of the rig's
+// configuration, like scenes and songs.
+func SoundsDir() string { return filepath.Join(ConfigDir(), "sounds") }
+
 // SongSessionsPath records which staged AUM session each song was last
 // authored into, and for which control layout — what play_song checks before
 // sending a song at a session that no longer matches it. Volatile (state dir).

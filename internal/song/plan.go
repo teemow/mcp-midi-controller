@@ -30,6 +30,44 @@ import (
 // Catalog is the plugins a song may host: staged AUv3 probe dumps by probe id.
 type Catalog map[string]device.ProbeDump
 
+// Resolve finds the plugin a name stands for: a probe id as it is, else the
+// one plugin whose display name is the name, else the one whose name or id
+// contains it (ignoring case). A name that fits several plugins is an error
+// that lists them.
+func (c Catalog) Resolve(name string) (string, error) {
+	if _, ok := c[name]; ok {
+		return name, nil
+	}
+	want := strings.ToLower(strings.TrimSpace(name))
+	if want == "" {
+		return "", fmt.Errorf("name the plugin")
+	}
+	var exact, partial []string
+	for id, d := range c {
+		switch dn := strings.ToLower(d.Name); {
+		case dn == want || strings.ToLower(id) == want:
+			exact = append(exact, id)
+		case strings.Contains(dn, want) || strings.Contains(strings.ToLower(id), want):
+			partial = append(partial, id)
+		}
+	}
+	hits := exact
+	if len(hits) == 0 {
+		hits = partial
+	}
+	switch len(hits) {
+	case 1:
+		return hits[0], nil
+	case 0:
+		return "", fmt.Errorf("no staged AUv3 probe %q%s", name, suggestPlugins(c, name))
+	}
+	sort.Strings(hits)
+	for i, id := range hits {
+		hits[i] = id + " (" + c[id].Name + ")"
+	}
+	return "", fmt.Errorf("%q fits %d plugins: %s; use the id", name, len(hits), strings.Join(hits, ", "))
+}
+
 const (
 	// GlobalChannel carries the mixer strips, the transport and the preset
 	// loads. It is not 16: the rig's session-switch Program Changes live there
@@ -125,11 +163,18 @@ type NodePlan struct {
 	home NodeState // the plugin's own declaration
 }
 
-// PresetPlan is one factory preset the song loads into a node.
+// PresetPlan is one factory preset the session can load into a node: the
+// Program Change that loads it, on Channel (1-based).
 type PresetPlan struct {
 	Name    string `json:"name"`
 	Number  int    `json:"number"`
 	Program int    `json:"program"`
+	Channel int    `json:"channel"`
+}
+
+// event is the message that loads the preset.
+func (pr PresetPlan) event() Event {
+	return Event{Kind: Program, Channel: pr.Channel, Data1: pr.Program}
 }
 
 // ParamPlan is one parameter the song sets on a node.
@@ -170,6 +215,9 @@ type Plan struct {
 	ControlChannels []int `json:"control_channels"`
 	// Transport is the transport actions the session maps, by AUM target.
 	Transport map[string]Assignment `json:"-"`
+	// PresetsUnmapped is how many factory presets a session that maps them
+	// all (session presets: all) had no Program Change left for.
+	PresetsUnmapped int `json:"presets_unmapped,omitempty"`
 
 	song  *Song
 	nodes map[string]*NodePlan // "track/effect" -> node
@@ -356,21 +404,29 @@ func NewPlan(s *Song, cat Catalog) (*Plan, error) {
 		tp.Level, tp.Mute = takeGlobal(), takeGlobal()
 	}
 
-	program := 0
 	for _, n := range p.allNodes() {
 		var err error
 		if n.Bypass, err = pool.take(); err != nil {
 			return nil, err
 		}
 	}
-	for _, n := range p.allNodes() {
-		for i := range n.Presets {
-			if program > 127 {
-				return nil, fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them")
-			}
-			n.Presets[i].Program = program
-			program++
+	if s.SessionOptions().AllPresets() {
+		if err := p.mapAllPresets(lowest); err != nil {
+			return nil, err
 		}
+	} else {
+		program := 0
+		for _, n := range p.allNodes() {
+			for i := range n.Presets {
+				if program > 127 {
+					return nil, fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them (session presets: all spreads them over every control channel)")
+				}
+				n.Presets[i].Program, n.Presets[i].Channel = program, GlobalChannel
+				program++
+			}
+		}
+	}
+	for _, n := range p.allNodes() {
 		for i := range n.Params {
 			var err error
 			if n.Params[i].At, err = pool.take(); err != nil {
@@ -384,6 +440,109 @@ func NewPlan(s *Song, cat Catalog) (*Plan, error) {
 	}
 	return p, nil
 }
+
+// mapAllPresets gives every factory preset of every node a Program Change:
+// the instruments' first, then the effects', each node's in the plugin's own
+// order, filling the global channel and then the control channels below it
+// down to lowest. A preset's address therefore depends only on the session's
+// layout, not on which presets the song names: a song can change to any of
+// them, and any can be auditioned, without a new session.
+//
+// Presets beyond the room there is are left unmapped and counted; one the
+// song names must fit.
+func (p *Plan) mapAllPresets(lowest int) error {
+	channel, program := GlobalChannel, 0
+	take := func() (PresetPlan, bool) {
+		if program > 127 {
+			channel, program = channel-1, 0
+		}
+		if channel < lowest {
+			return PresetPlan{}, false
+		}
+		pr := PresetPlan{Channel: channel, Program: program}
+		program++
+		return pr, true
+	}
+	var nodes []*NodePlan
+	for _, tp := range p.Tracks {
+		nodes = append(nodes, tp.Nodes[0])
+	}
+	for _, tp := range p.Tracks {
+		nodes = append(nodes, tp.Nodes[1:]...)
+	}
+	nodes = append(nodes, p.Master...)
+	for _, n := range nodes {
+		named := n.Presets
+		n.Presets = nil
+		seen := map[string]bool{}
+		for _, fp := range n.dump.FactoryPresets {
+			// A plugin may list two presets under one name. A name can load
+			// only one of them, and a session holds one Preset Load per name:
+			// the first is the one.
+			if key := strings.ToLower(fp.Name); seen[key] {
+				continue
+			} else {
+				seen[key] = true
+			}
+			pr, ok := take()
+			if !ok {
+				p.PresetsUnmapped++
+				continue
+			}
+			pr.Name, pr.Number = fp.Name, fp.Number
+			n.Presets = append(n.Presets, pr)
+		}
+		for _, want := range named {
+			if _, ok := n.Preset(want.Name); !ok {
+				room := (GlobalChannel - lowest + 1) * 128
+				return fmt.Errorf("%s loads %q, but a session that maps every preset (session presets: all) has room for %d and this preset lies beyond it; use fewer plugins, or drop presets: all",
+					nodeLabel(n), want.Name, room)
+			}
+		}
+	}
+	return nil
+}
+
+// Preset returns the Program Change that loads one of the node's presets, by
+// name (exactly, then ignoring case). ok is false when the session does not
+// map that preset.
+func (n *NodePlan) Preset(name string) (PresetPlan, bool) {
+	for _, pr := range n.Presets {
+		if pr.Name == name {
+			return pr, true
+		}
+	}
+	for _, pr := range n.Presets {
+		if strings.EqualFold(pr.Name, name) {
+			return pr, true
+		}
+	}
+	return PresetPlan{}, false
+}
+
+// PresetEvent is the message that loads one of the node's presets; ok is
+// false when the session does not map it.
+func (n *NodePlan) PresetEvent(name string) (Event, bool) {
+	pr, ok := n.Preset(name)
+	return pr.event(), ok
+}
+
+// FactoryPresets lists the names of the node's plugin's factory presets, each
+// name once.
+func (n *NodePlan) FactoryPresets() []string {
+	out := make([]string, 0, len(n.dump.FactoryPresets))
+	seen := map[string]bool{}
+	for _, fp := range n.dump.FactoryPresets {
+		if key := strings.ToLower(fp.Name); !seen[key] {
+			seen[key] = true
+			out = append(out, fp.Name)
+		}
+	}
+	return out
+}
+
+// HomePreset is the preset the node's plugin declares for itself, "" for none.
+func (n *NodePlan) HomePreset() string { return n.home.Preset }
 
 // allNodes lists every node in plan order: each track's instrument and
 // effects, then the master's effects.
@@ -762,6 +921,9 @@ func (p *Plan) Fingerprint() string {
 	// the fingerprint it had before they existed).
 	if o := p.song.SessionOptions(); o != (SessionSpec{}) {
 		fmt.Fprintf(&b, "S%v:%v:%s|", o.TrackTaps, o.FullControl, strings.ToLower(strings.TrimSpace(o.Hardware)))
+		if o.AllPresets() {
+			b.WriteString("Sall|")
+		}
 	}
 	for _, tp := range p.Tracks {
 		fmt.Fprintf(&b, "T%s:%d:%d:%s:%s|", tp.ID, tp.Channel, tp.Strip, tp.Level, tp.Mute)
@@ -770,6 +932,9 @@ func (p *Plan) Fingerprint() string {
 		fmt.Fprintf(&b, "N%s/%s:%s:%d:%d:%v:%s|", n.Track, n.Effect, n.Plugin, n.Strip, n.Slot, n.MIDI, n.Bypass)
 		for _, pr := range n.Presets {
 			fmt.Fprintf(&b, "P%s:%d:%d|", pr.Name, pr.Number, pr.Program)
+			if pr.Channel != GlobalChannel {
+				fmt.Fprintf(&b, "c%d|", pr.Channel)
+			}
 		}
 		for _, pa := range n.Params {
 			fmt.Fprintf(&b, "A%s:%s|", pa.Key, pa.At)

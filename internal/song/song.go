@@ -65,6 +65,16 @@ type SessionSpec struct {
 	// Hardware is the hardware-I/O profile of the master's output: "builtin"
 	// (the default) or "x32".
 	Hardware string `yaml:"hardware,omitempty" json:"hardware,omitempty"`
+	// Presets says which factory presets the session can load: "song" (the
+	// default) maps the ones the song names, "all" every preset of every
+	// plugin, so any of them can be auditioned in the loaded session and a
+	// song can change to another without a new session.
+	Presets string `yaml:"presets,omitempty" json:"presets,omitempty"`
+}
+
+// AllPresets reports whether the session maps every factory preset.
+func (o SessionSpec) AllPresets() bool {
+	return strings.EqualFold(strings.TrimSpace(o.Presets), "all")
 }
 
 // SessionOptions returns the song's session options, the zero value when it
@@ -388,6 +398,13 @@ func (s *Song) Validate() error {
 
 	if s.Session != nil && !sessionHardware[strings.ToLower(strings.TrimSpace(s.Session.Hardware))] {
 		e.addf("/session/hardware: %q is not builtin or x32", s.Session.Hardware)
+	}
+	if s.Session != nil {
+		switch strings.ToLower(strings.TrimSpace(s.Session.Presets)) {
+		case "", "song", "all":
+		default:
+			e.addf("/session/presets: %q is not song or all", s.Session.Presets)
+		}
 	}
 
 	if len(s.Tracks) == 0 {
