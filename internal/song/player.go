@@ -32,6 +32,12 @@ type PlayOptions struct {
 	// Before and After are sent as the first note is due and once the last has
 	// ended — the session's transport start and stop, when wanted.
 	Before, After []Event
+	// OnEnd, when set, is called once with the playback's final status when it
+	// is over, however it ended: finished, stopped or failed. It runs on the
+	// playback's goroutine after the last event went out, and Stop (and so the
+	// next Start) waits for it: it must not block or start another playback.
+	// A Start that returns an error began no playback and does not call it.
+	OnEnd func(Status)
 }
 
 // Status is where a playback stands.
@@ -125,9 +131,13 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 		endTick:   tl.Sections[last].Tick + int64(tl.Sections[last].Bars)*tl.BarTicks,
 	}
 
-	// The opening state replaces every control change up to the start; after
-	// it, the timeline's own changes apply. A change that leads into the
-	// section after the last one played (a preset sent early) is left out.
+	// The opening state replaces the starting section's own control changes
+	// up to the start; after it, the timeline's own changes apply. A preset
+	// that leads into a later section is kept even when it is due at or
+	// before the start (the sections between are shorter than the lead): it
+	// goes out as the playback starts, or that section would play with the
+	// wrong preset. A change that leads into the section after the last one
+	// played (a preset sent early) is left out.
 	var events []Event
 	for _, e := range tl.Events {
 		if e.Section < opts.From || e.Section > last {
@@ -139,7 +149,7 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 				continue
 			}
 		default:
-			if e.Tick <= pb.startTick {
+			if e.Section == opts.From && e.Tick <= pb.startTick {
 				continue
 			}
 		}
@@ -157,12 +167,16 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 		pb.mu.Lock()
 		pb.outcome = outcome
 		pb.mu.Unlock()
+		final := pb.status()
 		p.mu.Lock()
 		if p.cur == pb {
-			p.last = pb.status()
+			p.last = final
 			p.cur = nil
 		}
 		p.mu.Unlock()
+		if opts.OnEnd != nil {
+			opts.OnEnd(final)
+		}
 	}()
 	return pb.status(), nil
 }
