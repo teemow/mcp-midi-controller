@@ -103,11 +103,16 @@ func TestPlanResolvesNames(t *testing.T) {
 	ok("preset: Deep Bass", "preset: deep bass")          // case
 	ok("params: {Cutoff: 0.25}", "params: {cutoff: 25%}") // identifier, percentage
 	ok("params: {Cutoff: 0.25}", "params: {Cutoff: 0.25, Waveform: Sine}")
+	// A plugin is named by its id, by its name or by a part that fits only it.
+	ok("instrument: {plugin: drums}", "instrument: {plugin: Test Drums}")
+	ok("instrument: {plugin: drums}", "instrument: {plugin: drum}")
+	ok("- {plugin: delay}", "- {plugin: test delay}")
 	// A plugin whose identifiers are numbers is addressed by display name.
 	ok("- {id: glue, plugin: reverb, bypass: true}", "- {id: glue, plugin: reverb, bypass: true, params: {mix: 0.5}}")
 
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"plugin":       {"instrument: {plugin: drums}", "instrument: {plugin: drum}", `no staged AUv3 probe "drum" (did you mean: drums (Test Drums)?)`},
+		"plugin":       {"instrument: {plugin: drums}", "instrument: {plugin: drum machine}", `no staged AUv3 probe "drum machine" (did you mean: drums (Test Drums)?)`},
+		"two plugins":  {"instrument: {plugin: drums}", "instrument: {plugin: test}", `"test" fits 4 plugins: delay (Test Delay), drums (Test Drums), reverb (Test Reverb), synth (Test Synth); use the id`},
 		"preset":       {"preset: Deep Bass", "preset: Deep Base", `Test Synth has no factory preset "Deep Base" (did you mean: Deep Bass?)`},
 		"param":        {"params: {Cutoff: 0.25}", "params: {Cutof: 0.25, Resonanz: 0.1}", `has no writable parameter "Resonanz"`},
 		"read-only":    {"params: {Cutoff: 0.25}", "params: {Meter: 0.25}", `has no writable parameter "Meter"`},

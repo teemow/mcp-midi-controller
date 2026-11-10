@@ -221,6 +221,11 @@ type Plan struct {
 
 	song  *Song
 	nodes map[string]*NodePlan // "track/effect" -> node
+
+	// sounds is the catalogue a calibrated song is compiled against and
+	// notes what compiling it found worth saying. See calibrate.go.
+	sounds Sounds
+	notes  map[string]bool
 }
 
 // BrainStrip is the strip the brain sits on; the tracks follow it.
@@ -263,23 +268,38 @@ func (p *ccPool) take() (Assignment, error) {
 	return Assignment{}, fmt.Errorf("the song sets more controls than the session's control channels hold; use fewer tracks or set fewer parameters")
 }
 
+// PlanOptions is what a plan is made with beyond the song and the plugins.
+type PlanOptions struct {
+	// Sounds is the rig's sound catalogue, which a song with calibrate: true
+	// is compiled against. nil knows no preset.
+	Sounds Sounds
+}
+
 // NewPlan lays a song out against the plugins in cat. It resolves every
 // plugin, preset and parameter the song names and gives every control its
 // MIDI address; a name that does not resolve is reported with what would.
 func NewPlan(s *Song, cat Catalog) (*Plan, error) {
+	return NewPlanWith(s, cat, PlanOptions{})
+}
+
+// NewPlanWith is NewPlan with options.
+func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 	var e errs
-	p := &Plan{song: s, nodes: map[string]*NodePlan{}, Transport: map[string]Assignment{}}
+	p := &Plan{song: s, nodes: map[string]*NodePlan{}, Transport: map[string]Assignment{}, sounds: o.Sounds, notes: map[string]bool{}}
 
 	newNode := func(at, track string, strip, slot int, pl Plugin, effect string) *NodePlan {
-		dump, ok := cat[pl.Plugin]
-		if !ok {
-			e.addf("%s/plugin: no staged AUv3 probe %q%s", at, pl.Plugin, suggestPlugins(cat, pl.Plugin))
+		// A plugin is named by its probe id or by any name that fits one.
+		id, err := cat.Resolve(pl.Plugin)
+		if err != nil {
+			e.addf("%s/plugin: %v", at, err)
+			id = pl.Plugin
 		}
+		dump := cat[id]
 		n := &NodePlan{
-			Track: track, Effect: effect, Plugin: pl.Plugin, Name: dump.Name,
+			Track: track, Effect: effect, Plugin: id, Name: dump.Name,
 			Strip: strip, Slot: slot,
 			// An instrument always hears its track; an effect only when asked.
 			// The master strip has no track of its own to hear.
@@ -437,6 +457,9 @@ func NewPlan(s *Song, cat Catalog) (*Plan, error) {
 
 	for ch := lowest; ch <= 16; ch++ {
 		p.ControlChannels = append(p.ControlChannels, ch)
+	}
+	if err := p.calibrate(); err != nil {
+		return nil, err
 	}
 	return p, nil
 }
