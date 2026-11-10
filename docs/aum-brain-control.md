@@ -143,6 +143,7 @@ further out, the north-star scriptable on-device host.
 | PC authoring (preset recall) | **done** — `specState` type 2 mapped and importable |
 | Pitch Bend / Channel Pressure | **read-only** — parsed (`specState` type 3) but no control type in the device model or brain protocol; `DeriveRig` reports them as skipped |
 | Live brain-driven scene-change loop on-device | **not yet** — the next end-to-end goal |
+| Songs: a multi-track arrangement authored into a session and played by the brain | **done, daemon-timed** — one brain plays every track on its own channel (per-destination matrix filters), section sounds are sent as the session's own mapped CCs and preset-load PCs (`docs/songs.md`). The daemon keeps the time; a brain that plays the song itself, locked to AUM's transport, is open |
 | Verifying MIDI against AUM's own UI | **done** — `get_aum_ui` / `wait_for_aum_ui` read session, tempo, transport and fader levels over USB (WebDriverAgent); mute/solo/rec via `ipad_screenshot` |
 
 ### How a session becomes a control surface (implemented)

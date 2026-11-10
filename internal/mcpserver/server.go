@@ -20,6 +20,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/engine"
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/scene"
+	"github.com/teemow/mcp-midi-controller/internal/song"
 	"github.com/teemow/mcp-midi-controller/internal/webui"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
@@ -99,6 +100,16 @@ type Server struct {
 	audioSnaps   map[string]audiotap.Snapshot
 	lastProbe    *audiotap.Snapshot
 
+	// songs is the song store behind the song tools and player the one song
+	// playback the daemon runs at a time (play_song / stop_song). See
+	// song_tools.go.
+	songs  *song.Store
+	player song.Player
+
+	// songSessionsMu serializes the load-change-save cycle of the record of
+	// which session each song was authored into.
+	songSessionsMu sync.Mutex
+
 	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
 	// so two probes never overlap on the shared audio tap. This is what makes
 	// each probe analyse a clean, isolated segment (and replaces the harness's
@@ -154,6 +165,7 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		eng:        eng,
 		mcp:        mcp.NewServer(&mcp.Implementation{Name: "mcp-midi-controller", Version: Version}, nil),
 		scenes:     scene.NewStore(config.ScenesDir()),
+		songs:      song.NewStore(config.SongsDir()),
 		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},
 	}

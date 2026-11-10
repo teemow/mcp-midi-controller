@@ -1,0 +1,777 @@
+package song
+
+// This file plans a song's AUM session: which strip and slot every plugin
+// lands on, which MIDI channel every track plays on, and which MIDI message
+// sets every control the song uses. The plan is the one place those numbers
+// are decided, so the session authored from it (session.go) and the MIDI
+// compiled against it (compile.go) agree by construction.
+//
+// Channel layout. Tracks play on the low MIDI channels, one each. Everything
+// above them is control, which the session's MIDI matrix keeps apart: an
+// instrument only hears its own channel and AUM's MIDI Control only hears the
+// control channels, so a note never fires a mapping and a control message never
+// reaches a synth.
+//
+//	1..N    one per track (notes)
+//	N+1..14 node bypasses and parameters, filled from 14 downwards
+//	15      mixer strips and transport (the convention's CCs), preset loads (PC)
+//	16      left to the rig: tap toggles and session switching
+
+import (
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/teemow/midi-device/device"
+)
+
+// Catalog is the plugins a song may host: staged AUv3 probe dumps by probe id.
+type Catalog map[string]device.ProbeDump
+
+const (
+	// GlobalChannel carries the mixer strips, the transport and the preset
+	// loads. It is not 16: the rig's session-switch Program Changes live there
+	// and AUM fires them whatever session is loaded.
+	GlobalChannel = 15
+	// poolTopChannel is where bypass and parameter mappings start; they fill
+	// downwards towards the tracks.
+	poolTopChannel = 14
+)
+
+// MsgKind is the kind of MIDI message a control is set with.
+type MsgKind int
+
+const (
+	MsgCC MsgKind = iota
+	MsgPC
+)
+
+// Assignment is the MIDI address of one control: a CC or a Program Change on a
+// channel (1-based).
+type Assignment struct {
+	Kind    MsgKind `json:"-"`
+	Channel int     `json:"channel"`
+	Number  int     `json:"number"`
+}
+
+// String renders the address for reports ("CC 22 ch15").
+func (a Assignment) String() string {
+	kind := "CC"
+	if a.Kind == MsgPC {
+		kind = "PC"
+	}
+	return fmt.Sprintf("%s %d ch%d", kind, a.Number, a.Channel)
+}
+
+// ControlKind is what a control sets.
+type ControlKind int
+
+const (
+	ControlPreset ControlKind = iota // a node's preset
+	ControlBypass                    // a node's bypass
+	ControlParam                     // a node parameter
+	ControlLevel                     // a strip's fader
+	ControlMute                      // a strip's mute
+)
+
+// Target names one control of the song: a strip control of a track, or a
+// control of a node (Effect "" is the track's instrument).
+type Target struct {
+	Track  string
+	Effect string
+	Kind   ControlKind
+	Param  string // the parameter's key (ControlParam only)
+}
+
+// String renders the target the way a song addresses it.
+func (t Target) String() string {
+	node := t.Track
+	if t.Effect != "" {
+		node += "/" + t.Effect
+	}
+	switch t.Kind {
+	case ControlPreset:
+		return node + " preset"
+	case ControlBypass:
+		return node + " bypass"
+	case ControlLevel:
+		return node + " level"
+	case ControlMute:
+		return node + " mute"
+	default:
+		return node + " " + t.Param
+	}
+}
+
+// NodePlan is one hosted plugin: where it sits and how it is controlled.
+type NodePlan struct {
+	Track  string `json:"track"`
+	Effect string `json:"effect,omitempty"`
+	Plugin string `json:"plugin"`
+	Name   string `json:"name"`
+	// Strip and Slot are AUM's 0-based channel index and chain slot.
+	Strip int `json:"strip"`
+	Slot  int `json:"slot"`
+	// MIDI routes the track's notes to the node.
+	MIDI bool `json:"midi,omitempty"`
+
+	Bypass  Assignment   `json:"-"`
+	Presets []PresetPlan `json:"presets,omitempty"`
+	Params  []ParamPlan  `json:"params,omitempty"`
+
+	dump device.ProbeDump
+	home NodeState // the plugin's own declaration
+}
+
+// PresetPlan is one factory preset the song loads into a node.
+type PresetPlan struct {
+	Name    string `json:"name"`
+	Number  int    `json:"number"`
+	Program int    `json:"program"`
+}
+
+// ParamPlan is one parameter the song sets on a node.
+type ParamPlan struct {
+	// Key is the session's mapping target (the parameter's identifier) and
+	// Name what the plugin calls it.
+	Key  string     `json:"key"`
+	Name string     `json:"name"`
+	At   Assignment `json:"-"`
+
+	param device.ProbeParam
+}
+
+// TrackPlan is one track's strip.
+type TrackPlan struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Channel int    `json:"channel"`
+	Strip   int    `json:"strip"`
+	Drums   bool   `json:"drums,omitempty"`
+
+	Level Assignment `json:"-"`
+	Mute  Assignment `json:"-"`
+	// Nodes is the instrument followed by the effects.
+	Nodes []*NodePlan `json:"nodes"`
+
+	homeLevel float64
+	homeMute  bool
+}
+
+// Plan is a song's session layout and control map.
+type Plan struct {
+	Tracks []*TrackPlan `json:"tracks"`
+	// Master is the master strip's effects.
+	Master      []*NodePlan `json:"master,omitempty"`
+	MasterStrip int         `json:"master_strip"`
+	// ControlChannels are the MIDI channels AUM's MIDI Control listens on.
+	ControlChannels []int `json:"control_channels"`
+	// Transport is the transport actions the session maps, by AUM target.
+	Transport map[string]Assignment `json:"-"`
+
+	song  *Song
+	nodes map[string]*NodePlan // "track/effect" -> node
+}
+
+// BrainStrip is the strip the brain sits on; the tracks follow it.
+const BrainStrip = 0
+
+// midiReservedCC reports the controllers MIDI itself gives a meaning the pool
+// must not borrow: bank select, data entry, the (N)RPN selectors and the
+// channel-mode messages.
+func midiReservedCC(cc int) bool {
+	switch cc {
+	case 0, 6, 32, 38, 96, 97, 98, 99, 100, 101:
+		return true
+	}
+	return cc >= 120
+}
+
+// ccPool hands out free controllers, channel by channel, downwards from
+// poolTopChannel to just above the tracks.
+type ccPool struct {
+	channel, lowest int
+	next            int
+}
+
+func (p *ccPool) take() (Assignment, error) {
+	for p.channel >= p.lowest {
+		for p.next <= 127 {
+			cc := p.next
+			p.next++
+			if !midiReservedCC(cc) {
+				return Assignment{Kind: MsgCC, Channel: p.channel, Number: cc}, nil
+			}
+		}
+		p.channel--
+		p.next = 0
+	}
+	return Assignment{}, fmt.Errorf("the song sets more controls than the session's control channels hold; use fewer tracks or set fewer parameters")
+}
+
+// NewPlan lays a song out against the plugins in cat. It resolves every
+// plugin, preset and parameter the song names and gives every control its
+// MIDI address; a name that does not resolve is reported with what would.
+func NewPlan(s *Song, cat Catalog) (*Plan, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	var e errs
+	p := &Plan{song: s, nodes: map[string]*NodePlan{}, Transport: map[string]Assignment{}}
+
+	newNode := func(at, track string, strip, slot int, pl Plugin, effect string) *NodePlan {
+		dump, ok := cat[pl.Plugin]
+		if !ok {
+			e.addf("%s/plugin: no staged AUv3 probe %q%s", at, pl.Plugin, suggestPlugins(cat, pl.Plugin))
+		}
+		n := &NodePlan{
+			Track: track, Effect: effect, Plugin: pl.Plugin, Name: dump.Name,
+			Strip: strip, Slot: slot,
+			// An instrument always hears its track; an effect only when asked.
+			// The master strip has no track of its own to hear.
+			MIDI: track != MasterTrack && (pl.MIDI || effect == ""),
+			dump: dump, home: pl.NodeState,
+		}
+		p.nodes[track+"/"+effect] = n
+		return n
+	}
+
+	for i := range s.Tracks {
+		t := &s.Tracks[i]
+		at := fmt.Sprintf("/tracks/%d", i)
+		tp := &TrackPlan{
+			ID: t.ID, Name: t.TrackName(), Channel: s.TrackChannel(i), Strip: BrainStrip + 1 + i,
+			Drums: t.Kind == "drums", homeMute: t.Mute,
+		}
+		if t.Level != nil {
+			tp.homeLevel = *t.Level
+		}
+		tp.Nodes = append(tp.Nodes, newNode(at+"/instrument", t.ID, tp.Strip, 0, t.Instrument, ""))
+		for j, fx := range t.Effects {
+			tp.Nodes = append(tp.Nodes, newNode(fmt.Sprintf("%s/effects/%d", at, j), t.ID, tp.Strip, 1+j, fx, fx.EffectID()))
+		}
+		p.Tracks = append(p.Tracks, tp)
+	}
+	// The master strip is [bus source, hardware output, effects…]: its
+	// effects sit after the fader, from slot 2.
+	p.MasterStrip = BrainStrip + 1 + len(s.Tracks)
+	for j, fx := range s.Master {
+		p.Master = append(p.Master, newNode(fmt.Sprintf("/master/%d", j), MasterTrack, p.MasterStrip, 2+j, fx, fx.EffectID()))
+	}
+	if err := e.err(); err != nil {
+		return nil, err
+	}
+
+	// Collect what the song sets on each node, in a stable order: the
+	// plugin's own declaration first, then scenes and ramps by name.
+	for _, n := range p.allNodes() {
+		p.collect(&e, n, n.home, "the track's declaration")
+	}
+	for _, name := range sortedKeys(s.Scenes) {
+		for _, tid := range sortedKeys(s.Scenes[name]) {
+			st := s.Scenes[name][tid]
+			where := fmt.Sprintf("/scenes/%s/%s", name, tid)
+			if n := p.nodes[tid+"/"]; n != nil {
+				p.collect(&e, n, st.NodeState, where)
+			}
+			for _, fx := range sortedKeys(st.Effects) {
+				if n := p.nodes[tid+"/"+fx]; n != nil {
+					p.collect(&e, n, st.Effects[fx], where+"/effects/"+fx)
+				}
+			}
+		}
+	}
+	for _, name := range sortedKeys(s.Sections) {
+		for i, r := range s.Sections[name].Automation {
+			if r.Effect == "" && strings.EqualFold(r.Param, "level") {
+				continue
+			}
+			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
+				where := fmt.Sprintf("/sections/%s/automation/%d", name, i)
+				if _, err := n.param(r.Param); err != nil {
+					e.addf("%s/param: %v", where, err)
+				}
+			}
+		}
+	}
+	if err := e.err(); err != nil {
+		return nil, err
+	}
+
+	// A control a scene or ramp sets needs a home value on the track, so the
+	// sections that do not set it know what to return to.
+	p.checkHomes(&e)
+	if err := e.err(); err != nil {
+		return nil, err
+	}
+
+	// Addresses. Strips and transport take the convention's CCs on the global
+	// channel; presets take its Program Changes; bypasses and parameters fill
+	// the pool.
+	lowest := 1
+	for _, tp := range p.Tracks {
+		if tp.Channel >= lowest {
+			lowest = tp.Channel + 1
+		}
+	}
+	pool := &ccPool{channel: poolTopChannel, lowest: lowest}
+	globalUsed := map[int]bool{}
+	for _, target := range []string{"Toggle Play", "Start Play", "Stop/Rewind", "Rewind", "Toggle Record", "Tap Tempo"} {
+		cc, _ := device.ConventionTransportCC(target)
+		p.Transport[target] = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: cc}
+		globalUsed[cc] = true
+	}
+	var late []*TrackPlan // strips beyond the convention's eight
+	for i, tp := range p.Tracks {
+		vol, okV := device.ConventionMixerCC(i+1, "Volume")
+		mute, okM := device.ConventionMixerCC(i+1, "Mute")
+		if !okV || !okM {
+			late = append(late, tp)
+			continue
+		}
+		tp.Level = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: vol}
+		tp.Mute = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: mute}
+		globalUsed[vol], globalUsed[mute] = true, true
+	}
+	reserved := device.ConventionReservedCCs()
+	nextGlobal := 0
+	takeGlobal := func() Assignment {
+		for ; nextGlobal <= 127; nextGlobal++ {
+			if !reserved[nextGlobal] && !globalUsed[nextGlobal] {
+				globalUsed[nextGlobal] = true
+				return Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: nextGlobal}
+			}
+		}
+		return Assignment{}
+	}
+	for _, tp := range late {
+		tp.Level, tp.Mute = takeGlobal(), takeGlobal()
+	}
+
+	program := 0
+	for _, n := range p.allNodes() {
+		var err error
+		if n.Bypass, err = pool.take(); err != nil {
+			return nil, err
+		}
+	}
+	for _, n := range p.allNodes() {
+		for i := range n.Presets {
+			if program > 127 {
+				return nil, fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them")
+			}
+			n.Presets[i].Program = program
+			program++
+		}
+		for i := range n.Params {
+			var err error
+			if n.Params[i].At, err = pool.take(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for ch := lowest; ch <= 16; ch++ {
+		p.ControlChannels = append(p.ControlChannels, ch)
+	}
+	return p, nil
+}
+
+// allNodes lists every node in plan order: each track's instrument and
+// effects, then the master's effects.
+func (p *Plan) allNodes() []*NodePlan {
+	var out []*NodePlan
+	for _, tp := range p.Tracks {
+		out = append(out, tp.Nodes...)
+	}
+	return append(out, p.Master...)
+}
+
+// collect resolves the preset and parameters a node state names and adds them
+// to the node's plan.
+func (p *Plan) collect(e *errs, n *NodePlan, st NodeState, where string) {
+	if st.Preset != "" {
+		if _, err := n.preset(st.Preset); err != nil {
+			e.addf("%s/preset: %v", where, err)
+		}
+	}
+	for _, name := range sortedKeys(st.Params) {
+		pp, err := n.param(name)
+		if err != nil {
+			e.addf("%s/params/%s: %v", where, name, err)
+			continue
+		}
+		if _, err := paramWire(pp.param, st.Params[name]); err != nil {
+			e.addf("%s/params/%s: %v", where, name, err)
+		}
+	}
+}
+
+// checkHomes reports every control a scene or ramp sets that the track itself
+// does not declare.
+func (p *Plan) checkHomes(e *errs) {
+	s := p.song
+	needPreset := func(n *NodePlan, where string) {
+		if n.home.Preset == "" {
+			e.addf("%s/preset: %s has no preset of its own; give its plugin a preset so the other sections know what to return to", where, nodeLabel(n))
+		}
+	}
+	needParam := func(n *NodePlan, name, where string) {
+		pp, err := n.param(name)
+		if err != nil {
+			return // reported by collect
+		}
+		for home := range n.home.Params {
+			if hp, err := n.param(home); err == nil && hp.Key == pp.Key {
+				return
+			}
+		}
+		e.addf("%s: %s does not declare %q; add it to the plugin's params so the other sections know what to return to", where, nodeLabel(n), pp.Name)
+	}
+	for _, name := range sortedKeys(s.Scenes) {
+		for _, tid := range sortedKeys(s.Scenes[name]) {
+			st := s.Scenes[name][tid]
+			where := fmt.Sprintf("/scenes/%s/%s", name, tid)
+			check := func(n *NodePlan, ns NodeState, where string) {
+				if n == nil {
+					return
+				}
+				if ns.Preset != "" {
+					needPreset(n, where)
+				}
+				for _, pn := range sortedKeys(ns.Params) {
+					needParam(n, pn, where+"/params/"+pn)
+				}
+			}
+			check(p.nodes[tid+"/"], st.NodeState, where)
+			for _, fx := range sortedKeys(st.Effects) {
+				check(p.nodes[tid+"/"+fx], st.Effects[fx], where+"/effects/"+fx)
+			}
+		}
+	}
+	for _, name := range sortedKeys(s.Sections) {
+		for i, r := range s.Sections[name].Automation {
+			if r.Effect == "" && strings.EqualFold(r.Param, "level") {
+				continue
+			}
+			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
+				needParam(n, r.Param, fmt.Sprintf("/sections/%s/automation/%d", name, i))
+			}
+		}
+	}
+}
+
+// nodeLabel names a node for a message.
+func nodeLabel(n *NodePlan) string {
+	if n.Effect == "" {
+		return fmt.Sprintf("%s's instrument", n.Track)
+	}
+	return fmt.Sprintf("%s's effect %s", n.Track, n.Effect)
+}
+
+// preset resolves a factory preset by name (exactly, then ignoring case) and
+// adds it to the node's plan.
+func (n *NodePlan) preset(name string) (*PresetPlan, error) {
+	for i := range n.Presets {
+		if strings.EqualFold(n.Presets[i].Name, name) {
+			return &n.Presets[i], nil
+		}
+	}
+	var found *device.ProbePreset
+	for i := range n.dump.FactoryPresets {
+		fp := &n.dump.FactoryPresets[i]
+		if fp.Name == name {
+			found = fp
+			break
+		}
+		if found == nil && strings.EqualFold(fp.Name, name) {
+			found = fp
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("%s has no factory preset %q%s", n.Name, name, suggestPresets(n.dump, name))
+	}
+	n.Presets = append(n.Presets, PresetPlan{Name: found.Name, Number: found.Number})
+	return &n.Presets[len(n.Presets)-1], nil
+}
+
+// param resolves a writable parameter by identifier, display name or key path
+// (ignoring case) and adds it to the node's plan.
+func (n *NodePlan) param(name string) (*ParamPlan, error) {
+	key, pr, err := findParam(n.dump, name)
+	if err != nil {
+		return nil, fmt.Errorf("%s %w", n.Name, err)
+	}
+	for i := range n.Params {
+		if n.Params[i].Key == key {
+			return &n.Params[i], nil
+		}
+	}
+	n.Params = append(n.Params, ParamPlan{Key: key, Name: device.FirstNonEmpty(pr.DisplayName, pr.Identifier, key), param: pr})
+	return &n.Params[len(n.Params)-1], nil
+}
+
+// paramKeys returns the session mapping key of every writable parameter of a
+// dump, in the dump's order. It is the key the session library gives the
+// parameter's placeholder (identifier, then display name, then key path, made
+// unique), so a key found here is a mapping target that exists.
+func paramKeys(dump device.ProbeDump) []string {
+	used := map[string]bool{}
+	keys := make([]string, len(dump.Parameters))
+	for i, p := range dump.Parameters {
+		if !p.Writable {
+			continue
+		}
+		keys[i] = device.UniqueName(device.FirstNonEmpty(p.Identifier, p.DisplayName, p.KeyPath, "param_"+strconv.FormatUint(p.Address, 10)), used)
+	}
+	return keys
+}
+
+// findParam finds a writable parameter by name, returning its mapping key.
+func findParam(dump device.ProbeDump, name string) (string, device.ProbeParam, error) {
+	keys := paramKeys(dump)
+	want := strings.ToLower(strings.TrimSpace(name))
+	match := func(pick func(device.ProbeParam) string) (int, int) {
+		first, count := -1, 0
+		for i, p := range dump.Parameters {
+			if keys[i] != "" && strings.ToLower(pick(p)) == want {
+				if first < 0 {
+					first = i
+				}
+				count++
+			}
+		}
+		return first, count
+	}
+	for _, pick := range []func(device.ProbeParam) string{
+		func(p device.ProbeParam) string { return p.Identifier },
+		func(p device.ProbeParam) string { return p.DisplayName },
+		func(p device.ProbeParam) string { return p.KeyPath },
+	} {
+		switch i, count := match(pick); {
+		case count == 1:
+			return keys[i], dump.Parameters[i], nil
+		case count > 1:
+			return "", device.ProbeParam{}, fmt.Errorf("has %d parameters called %q; use the identifier (%s)", count, name, sameNamed(dump, keys, want))
+		}
+	}
+	return "", device.ProbeParam{}, fmt.Errorf("has no writable parameter %q%s", name, suggestParams(dump, keys, want))
+}
+
+// sameNamed lists the identifiers of the writable parameters sharing a name.
+func sameNamed(dump device.ProbeDump, keys []string, want string) string {
+	var ids []string
+	for i, p := range dump.Parameters {
+		if keys[i] != "" && (strings.ToLower(p.DisplayName) == want || strings.ToLower(p.KeyPath) == want) {
+			ids = append(ids, keys[i])
+		}
+	}
+	return strings.Join(ids, ", ")
+}
+
+// maxSuggestions bounds the "did you mean" lists.
+const maxSuggestions = 8
+
+// suggest returns the candidates containing any word of want, shortest first.
+func suggest(candidates []string, want string) []string {
+	words := strings.Fields(strings.ToLower(want))
+	var hits []string
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		lc := strings.ToLower(c)
+		if c == "" || seen[lc] {
+			continue
+		}
+		for _, w := range words {
+			if len(w) >= 3 && strings.Contains(lc, w) {
+				hits = append(hits, c)
+				seen[lc] = true
+				break
+			}
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return len(hits[i]) < len(hits[j]) })
+	if len(hits) > maxSuggestions {
+		hits = hits[:maxSuggestions]
+	}
+	return hits
+}
+
+func suggestParams(dump device.ProbeDump, keys []string, want string) string {
+	var names []string
+	for i, p := range dump.Parameters {
+		if keys[i] != "" {
+			names = append(names, device.FirstNonEmpty(p.DisplayName, p.Identifier))
+		}
+	}
+	if hits := suggest(names, want); len(hits) > 0 {
+		return " (did you mean: " + strings.Join(hits, ", ") + "?)"
+	}
+	return fmt.Sprintf(" (it has %d writable parameters)", len(names))
+}
+
+func suggestPresets(dump device.ProbeDump, want string) string {
+	names := make([]string, len(dump.FactoryPresets))
+	for i, p := range dump.FactoryPresets {
+		names[i] = p.Name
+	}
+	if hits := suggest(names, want); len(hits) > 0 {
+		return " (did you mean: " + strings.Join(hits, ", ") + "?)"
+	}
+	return fmt.Sprintf(" (it has %d factory presets)", len(names))
+}
+
+func suggestPlugins(cat Catalog, want string) string {
+	var names []string
+	for id, d := range cat {
+		names = append(names, id+" ("+d.Name+")")
+	}
+	sort.Strings(names)
+	if hits := suggest(names, want); len(hits) > 0 {
+		return " (did you mean: " + strings.Join(hits, ", ") + "?)"
+	}
+	return ""
+}
+
+// paramWire converts a value written in a song into the 0..127 a CC carries
+// for the parameter. AUM maps a CC's range onto the parameter's own range, so
+// the wire value is the value's position in that range.
+func paramWire(p device.ProbeParam, v Value) (int, error) {
+	span := p.Max - p.Min
+	pos := 0.0 // position in the range, 0..1
+	switch {
+	case !v.IsStr:
+		if v.Num < p.Min || v.Num > p.Max {
+			return 0, fmt.Errorf("%g is outside %s's range %g..%g", v.Num, device.FirstNonEmpty(p.DisplayName, p.Identifier), p.Min, p.Max)
+		}
+		if span > 0 {
+			pos = (v.Num - p.Min) / span
+		}
+	case strings.HasSuffix(v.Str, "%"):
+		pct, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(v.Str, "%")), 64)
+		if err != nil || pct < 0 || pct > 100 {
+			return 0, fmt.Errorf("%q is not a percentage within 0%%..100%%", v.Str)
+		}
+		pos = pct / 100
+	default:
+		label := strings.ToLower(strings.TrimSpace(v.Str))
+		idx := -1
+		for i, vs := range p.ValueStrings {
+			if strings.ToLower(strings.TrimSpace(vs)) == label {
+				idx = i
+				break
+			}
+		}
+		switch {
+		case idx >= 0 && len(p.ValueStrings) > 1:
+			pos = float64(idx) / float64(len(p.ValueStrings)-1)
+		case label == "on" || label == "true":
+			pos = 1
+		case label == "off" || label == "false":
+			pos = 0
+		default:
+			hint := "write a number or NN%"
+			if len(p.ValueStrings) > 0 && len(p.ValueStrings) <= 16 {
+				hint = "its values are: " + strings.Join(p.ValueStrings, ", ")
+			}
+			return 0, fmt.Errorf("%q is not a value of %s (%s)", v.Str, device.FirstNonEmpty(p.DisplayName, p.Identifier), hint)
+		}
+	}
+	return clamp7(int(math.Round(pos * 127))), nil
+}
+
+// The fader. A strip's level is stored as a linear gain (1 is unity) while its
+// MIDI mapping moves the fader's travel, 0..1, with unity at 1/√2 of the way
+// and +12 dB at the top: gain = 4·travel⁴.
+const (
+	// MaxLevelDB is the top of AUM's fader.
+	MaxLevelDB = 12.0
+	// minLevelDB is treated as silence.
+	minLevelDB = -90.0
+)
+
+// LevelGain converts a level in dB to the linear gain a session stores.
+func LevelGain(db float64) float64 {
+	if db <= minLevelDB {
+		return 0
+	}
+	if db > MaxLevelDB {
+		db = MaxLevelDB
+	}
+	return math.Pow(10, db/20)
+}
+
+// levelWire converts a level in dB to the CC value that moves the fader there.
+func levelWire(db float64) int {
+	travel := math.Pow(LevelGain(db)/4, 0.25)
+	return clamp7(int(math.Round(travel * 127)))
+}
+
+func clamp7(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 127 {
+		return 127
+	}
+	return v
+}
+
+// boolWire is the CC value of a switch: on latches above the middle.
+func boolWire(on bool) int {
+	if on {
+		return 127
+	}
+	return 0
+}
+
+// Track returns a track's plan by id.
+func (p *Plan) Track(id string) *TrackPlan {
+	for _, tp := range p.Tracks {
+		if tp.ID == id {
+			return tp
+		}
+	}
+	return nil
+}
+
+// Node returns the plan of a track's instrument (effect "") or one of its
+// effects; track MasterTrack addresses the master's effects.
+func (p *Plan) Node(track, effect string) *NodePlan {
+	return p.nodes[track+"/"+effect]
+}
+
+// Fingerprint identifies the plan's session: two songs with the same
+// fingerprint need the same session, so a song whose fingerprint changed must
+// be authored and loaded again before it plays right. It covers what the
+// session holds: the tempo, the strips, the plugins and every mapping.
+func (p *Plan) Fingerprint() string {
+	var b strings.Builder
+	// The tempo is the session's clock, which tempo-synced effects follow.
+	fmt.Fprintf(&b, "tempo:%g|", p.song.Tempo)
+	for _, tp := range p.Tracks {
+		fmt.Fprintf(&b, "T%s:%d:%d:%s:%s|", tp.ID, tp.Channel, tp.Strip, tp.Level, tp.Mute)
+	}
+	for _, n := range p.allNodes() {
+		fmt.Fprintf(&b, "N%s/%s:%s:%d:%d:%v:%s|", n.Track, n.Effect, n.Plugin, n.Strip, n.Slot, n.MIDI, n.Bypass)
+		for _, pr := range n.Presets {
+			fmt.Fprintf(&b, "P%s:%d:%d|", pr.Name, pr.Number, pr.Program)
+		}
+		for _, pa := range n.Params {
+			fmt.Fprintf(&b, "A%s:%s|", pa.Key, pa.At)
+		}
+	}
+	return fmt.Sprintf("%016x", fnv64(b.String()))
+}
+
+// fnv64 is the FNV-1a hash of s.
+func fnv64(s string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}

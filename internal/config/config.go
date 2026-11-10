@@ -93,6 +93,21 @@ func DeviceTypesDir() string { return filepath.Join(ConfigDir(), "device-types")
 // ScenesDir is where saved scenes live.
 func ScenesDir() string { return filepath.Join(ConfigDir(), "scenes") }
 
+// SongsDir is where songs live: one YAML document per song (tracks, patterns,
+// sections, arrangement). Like scenes they are rig-as-code under the config
+// dir. A song names the plugins of one rig, so a user who considers that
+// private keeps the directory out of a public repository.
+func SongsDir() string { return filepath.Join(ConfigDir(), "songs") }
+
+// SongSessionsPath records which staged AUM session each song was last
+// authored into, and for which control layout — what play_song checks before
+// sending a song at a session that no longer matches it. Volatile (state dir).
+func SongSessionsPath() string { return filepath.Join(StateDir(), "song-sessions.json") }
+
+// SongExportsDir is where export_song_midi writes Standard MIDI Files.
+// Volatile (state dir): an export is derived from its song.
+func SongExportsDir() string { return filepath.Join(StateDir(), "song-exports") }
+
 // AUv3DefaultStatesDir is where per-audio-unit user-defined default states live:
 // one YAML file per audio unit, applied automatically by the AUM author to any
 // node of that unit. Unlike AUv3ProbesDir / AUMSessionsDir (volatile staging

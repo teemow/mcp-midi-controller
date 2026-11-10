@@ -126,6 +126,10 @@ func (s *Server) registerGlobalTools() {
 	// MIDI into the rig through the ProbeMidiBrain LAN channel) are wired in
 	// registerMidiTools.
 	s.registerMidiTools()
+
+	// Songs: write a multi-track song, author the AUM session that hosts it,
+	// and play it through the brain. Wired in registerSongTools.
+	s.registerSongTools()
 	// ipad_* / get_aum_ui / wait_for_aum_ui (the USB channel into the iPad's
 	// UI over WebDriverAgent: operate AUM by touch, verify MIDI against AUM's
 	// own display) are wired in registerIPadTools when WithIPad attached a

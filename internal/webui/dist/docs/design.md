@@ -280,6 +280,12 @@ Global tools:
   AUM session — each annotated with where it was found and a suggested device type.
 - `discover_endpoints` / `pair_endpoint` — BLE discovery + pairing.
 - `save_scene` / `recall_scene` / `list_scenes`.
+- Songs (`internal/song`): `list_songs` / `get_song` / `save_song` /
+  `delete_song` store a multi-track song as one YAML document;
+  `list_song_plugins` / `get_song_plugin` show what it can host;
+  `author_song_session` builds the AUM session that hosts it; `play_song` /
+  `stop_song` / `get_song_playback` play it through the brain; and
+  `export_song_midi` writes it as a Standard MIDI File. See `docs/songs.md`.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
   BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
   per-device settle baked into the event order) and optionally HTTP-POST it to

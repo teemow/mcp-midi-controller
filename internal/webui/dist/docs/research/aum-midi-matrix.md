@@ -38,11 +38,11 @@ An `NSDictionary` with exactly five keys (AUM applies the whole matrix on load):
   > `ProbeMidiBrain` (visible in its host diagnostics under
   > `render.midiOutputNames`); patching the connection/sourcesInfo key to
   > `Node:Chan0:Slot0:ProbeMidiBrain` and reloading made AUM apply the route.
-  > `SetMIDIRoutes` (`internal/aum/route.go`) and `mergeMIDIControlRoute`
-  > (`internal/aum/probe_rig.go`) still hardcode `MIDI OUT` — they must use the
-  > source AU's real port name (for our plugins: `ProbeMidiBrain`; for
-  > third-party MIDI nodes, take it from the corpus/probe — see the examples
-  > above).
+  > The session library now keys a source by its port: `aum.MIDIOutPort` knows
+  > ProbeMidiBrain's, and a route from any other AU that names its output sets
+  > `MIDIEndpoint.Port` (take the name from the corpus or the plugin's host
+  > diagnostics — see the examples above). Only an AU with no named output gets
+  > `MIDI OUT`.
 - Node MIDI **input** (a destination): `Node:Chan<C>:Slot<S>` (no port suffix).
 - Built-ins: `BuiltIn:MIDI Control`, `BuiltIn:Keyboard`, `BuiltIn:IAA Port N`.
 - CoreMIDI: `CoreMIDIDest:<name>` / `CoreMIDISrc:<name>`.
@@ -87,6 +87,17 @@ filter (verified leaf values):
   "skipCC1":       0         // false
 }
 ```
+
+`channelFilter` is a bitmask of the channels that pass: bit *n*-1 is MIDI
+channel *n*. The committed auv3-probe capture `captureprobe.aumproj` filters its
+synth to channel 2 and stores `channelFilter: 2`. The filter belongs to the
+destination, not to a connection: everything arriving at that destination,
+from any source, passes through it.
+
+This is what lets one brain play a whole song (`docs/songs.md`): each
+instrument's filter passes only its track's channel, and `BuiltIn:MIDI
+Control`'s passes only the control channels. `aum.MIDIEndpoint.Filter` authors
+it (`Channels`, `Transpose`, `StartNote`/`EndNote`).
 
 ## Node AU state: `archiveNodeState["AuStateDoc"]`
 

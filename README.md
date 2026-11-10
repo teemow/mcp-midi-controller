@@ -45,6 +45,11 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
   have an agent author one via **MIDI-learn**.
 - **Scenes**: snapshot and recall sounds across the whole rig; scenes are
   partial and layerable.
+- **Songs**: write a multi-track song as one YAML document — tracks with
+  their instrument and effect chain, patterns, sections with their own sound,
+  an arrangement — and the daemon authors the AUM session that hosts it and
+  plays it through the brain (`save_song`, `author_song_session`,
+  `play_song`). See [`docs/songs.md`](docs/songs.md).
 - **Rig-as-code**: your device types, devices and scenes live in one
   git-trackable directory.
 
@@ -88,6 +93,8 @@ internal/
   transport/               Transport interface + backends (blemidi, usbmidi, usbhid, osc, auv3midi)
   engine/                  type registry, devices, desired-state, scene orchestration
   scene/                   scene model + persistence
+  song/                    song model: notation, the session plan, the compiled
+                           timeline, the player and MIDI-file export
   mcpserver/               MCP layer (official go-sdk): tool generation + handlers
 cmd/usb-probe/             read-only USB readback spike (validation oracle)
 cmd/auv3-probe/            standalone AUv3 dump receiver (same listener is now
@@ -114,6 +121,7 @@ $XDG_CONFIG_HOME/mcp-midi-controller/   # git init this
   device-types/*.yaml                   # your device types (override bundled by id)
   devices.yaml                          # your devices (type + where it is) → the rig
   scenes/*.yaml
+  songs/*.yaml                          # your songs (docs/songs.md)
 $XDG_STATE_HOME/mcp-midi-controller/    # volatile (desired-state cache, logs)
 ```
 
