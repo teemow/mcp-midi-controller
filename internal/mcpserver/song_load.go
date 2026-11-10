@@ -638,6 +638,8 @@ next:
 func (s *Server) soundCheck(ctx context.Context, cs *compiledSong) ([]trackCheck, error) {
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
+	// A dozing host stalls the tap's stream and the waits between the notes.
+	defer s.holdAwake()()
 	tap, ok := s.audio.Active()
 	if !ok {
 		return nil, errors.New("no audio tap")
