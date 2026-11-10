@@ -497,7 +497,16 @@ func (p *Plan) mapAllPresets(lowest int) error {
 	for _, n := range nodes {
 		named := n.Presets
 		n.Presets = nil
+		seen := map[string]bool{}
 		for _, fp := range n.dump.FactoryPresets {
+			// A plugin may list two presets under one name. A name can load
+			// only one of them, and a session holds one Preset Load per name:
+			// the first is the one.
+			if key := strings.ToLower(fp.Name); seen[key] {
+				continue
+			} else {
+				seen[key] = true
+			}
 			pr, ok := take()
 			if !ok {
 				p.PresetsUnmapped++
@@ -541,11 +550,16 @@ func (n *NodePlan) PresetEvent(name string) (Event, bool) {
 	return pr.event(), ok
 }
 
-// FactoryPresets lists the names of the node's plugin's factory presets.
+// FactoryPresets lists the names of the node's plugin's factory presets, each
+// name once.
 func (n *NodePlan) FactoryPresets() []string {
-	out := make([]string, len(n.dump.FactoryPresets))
-	for i, fp := range n.dump.FactoryPresets {
-		out[i] = fp.Name
+	out := make([]string, 0, len(n.dump.FactoryPresets))
+	seen := map[string]bool{}
+	for _, fp := range n.dump.FactoryPresets {
+		if key := strings.ToLower(fp.Name); !seen[key] {
+			seen[key] = true
+			out = append(out, fp.Name)
+		}
 	}
 	return out
 }
