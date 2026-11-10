@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
 	"github.com/teemow/mcp-midi-controller/internal/sound"
 )
@@ -280,5 +281,66 @@ func TestDescribeSound(t *testing.T) {
 	}
 	if text := describeSound("", &sound.Sound{Unpitched: true, Sustains: true}, false); !strings.Contains(text, "(default patch): no pitch") {
 		t.Errorf("the default patch: %q", text)
+	}
+}
+
+// TestSoundLabWithAFailedInstrument checks what a plugin that did not load
+// looks like in the lab: AUM draws its node as failed, the lab says which
+// instrument that is and stays usable for the others, and an audition of the
+// dead one is reported as silent and not kept.
+func TestSoundLabWithAFailedInstrument(t *testing.T) {
+	r := labRig(t)
+	s := r.s
+	synth := presetVoice(r)
+	r.Voice = func(ch, note int) (float64, float64) {
+		if ch == 2 { // the drum machine did not load
+			return 0, 0
+		}
+		return synth(ch, note)
+	}
+	// AUM draws the third strip's source node with a red ring.
+	done := ipadtest.AUM{Tempo: "120", Position: "001:1  00:00.0", Strips: labStrips}
+	root, err := ipad.ParseSource(done.Source())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range ipad.ParseAUM(root, ipad.Size{Width: 1210, Height: 834}).Channels[2].Nodes {
+		if n.Role == "source" {
+			r.wda.RedRings = [][4]float64{{n.Frame.X, n.Frame.Y, n.Frame.Width, n.Frame.Height}}
+		}
+	}
+	if len(r.wda.RedRings) != 1 {
+		t.Fatal("the stand-in's third strip has no source node")
+	}
+
+	r.pullStaged("Songs/Sound Lab.aumproj")
+	r.aumLoads("Songs", "Sound Lab", labStrips)
+	res := call(t, s.handleOpenSoundLab, map[string]any{"plugins": []string{"polysynth", "drm1"}, "confirm": true})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("a lab with one failed instrument is an error: %s", text)
+	}
+	for _, want := range []string{
+		"the sound lab is loaded in AUM, but not every instrument came up",
+		`plugins FAIL  AUM reports: AUM draws a node of "DrumBox" as failed`,
+		"polysynth        PolySynth: 4 of 4 preset(s) mapped",
+		"drumbox          DrumBox: FAILED to load",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("lab report lacks %q:\n%s", want, text)
+		}
+	}
+
+	res = call(t, s.handleAuditionSound, map[string]any{"track": "drumbox", "note": 60})
+	text = resultText(res)
+	if res.IsError || !strings.Contains(text, "(default patch): silent") || !strings.Contains(text, "1 silent and not stored") || strings.Contains(text, "stored in the sound catalogue") {
+		t.Fatalf("audition of a dead instrument: %s", text)
+	}
+	if got := s.sounds.Sound("drm1", ""); got != nil {
+		t.Errorf("a silent measurement was stored: %+v", got)
+	}
+	// The synth beside it is auditioned as ever.
+	if res := call(t, s.handleAuditionSound, map[string]any{"track": "polysynth", "preset": "Deep Bass"}); res.IsError || !strings.Contains(resultText(res), "stored in the sound catalogue (1)") {
+		t.Fatalf("audition of the instrument that did load: %s", resultText(res))
 	}
 }

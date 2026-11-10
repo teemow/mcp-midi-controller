@@ -297,3 +297,49 @@ func TestCalibrateUnmeasured(t *testing.T) {
 		t.Errorf("without calibrate: bass fader CC %d, want %d", got, want)
 	}
 }
+
+// TestCalibrateOnlyOctaves checks a measured transposition that is no whole
+// number of octaves is not applied by itself: on a device a bell preset
+// measured 16 semitones off and a texture 38, and neither is a tuning.
+func TestCalibrateOnlyOctaves(t *testing.T) {
+	odd := func(pinned bool) Sounds {
+		return func(plugin, preset string) (Voicing, bool) {
+			if preset == "Warm Pad" {
+				return Voicing{Transpose: -16, Pinned: pinned, LevelDB: -20}, true
+			}
+			return calSounds(plugin, preset)
+		}
+	}
+	s := mustParse(t, calSong)
+	p, err := NewPlanWith(s, testCatalog(), PlanOptions{Sounds: odd(false)})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	tl, err := Compile(s, p)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got := notesOf(tl, "lead")[0]; got != "verse:A3" {
+		t.Errorf("the lead plays %s, want the written A3", got)
+	}
+	if w := strings.Join(p.Warnings(), "\n"); !strings.Contains(w, `lead: "Warm Pad" of Test Synth measures +16 semitone(s) from the written note, which is not an octave, so the notes are not shifted`) {
+		t.Errorf("warnings = %s", w)
+	}
+	for _, row := range p.Calibration() {
+		if row.Preset == "Warm Pad" && (row.Transpose != 0 || !row.Measured) {
+			t.Errorf("calibration row = %+v, want measured and not shifted", row)
+		}
+	}
+
+	// Set by hand, it is the patch's tuning and applies.
+	p, err = NewPlanWith(s, testCatalog(), PlanOptions{Sounds: odd(true)})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if tl, err = Compile(s, p); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got := notesOf(tl, "lead")[0]; got != "verse:F2" || len(p.Warnings()) != 0 {
+		t.Errorf("with the transposition pinned the lead plays %s (warnings %v), want F2", got, p.Warnings())
+	}
+}

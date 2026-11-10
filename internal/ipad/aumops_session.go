@@ -13,9 +13,12 @@ type AUMLoaded struct {
 	Session string `json:"session"`
 	// Strips are the mixer's strip titles, left to right.
 	Strips []string `json:"strips"`
-	// Problems are texts on screen that report a fault: an alert's title, a
-	// label that says a plugin failed or was invalidated.
+	// Problems are what on screen reports a fault: an alert's title, a label
+	// that says a plugin failed or was invalidated, a node drawn as failed.
 	Problems []string `json:"problems,omitempty"`
+	// Failed are the titles of the strips with a node AUM draws as failed:
+	// its plugin did not load, or crashed.
+	Failed []string `json:"failed,omitempty"`
 	// LoadMS is how long AUM showed that it was loading.
 	LoadMS int64 `json:"load_ms,omitempty"`
 }
@@ -58,6 +61,10 @@ func (c *Client) AUMOpenSession(ctx context.Context, path []string, name string)
 			return err
 		}
 		out.Strips, out.Problems = d.stripTitles(), d.problems()
+		out.Failed = d.failedStrips()
+		for _, title := range out.Failed {
+			out.Problems = append(out.Problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
+		}
 		ok := loaded.Verified && done
 		msg := fmt.Sprintf("AUM has %q open: %d strip(s)", out.Session, len(out.Strips))
 		switch {
@@ -87,13 +94,17 @@ func (c *Client) AUMSession(ctx context.Context) (AUMResult, error) {
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
+		failed := d.failedStrips()
+		for _, title := range failed {
+			problems = append(problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
+		}
 		if ok, err := d.ensureMenu(); err != nil || !ok {
 			if err != nil {
 				return err
 			}
 			return fmt.Errorf("AUM's main menu did not open (%s)", d.St.overlaySummary())
 		}
-		out := AUMLoaded{Session: d.St.Session, Problems: problems}
+		out := AUMLoaded{Session: d.St.Session, Problems: problems, Failed: failed}
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
@@ -139,6 +150,47 @@ func (d *AUMDriver) stripTitles() []string {
 	out := make([]string, len(d.St.Channels))
 	for i, ch := range d.St.Channels {
 		out[i] = ch.Title
+	}
+	return out
+}
+
+// A node counts as failed when most of its ring is red and what lies around
+// the node is not (a screen that is red all over says nothing about a node).
+const (
+	failedRingFrom, failedRingTo = 0.80, 0.90
+	aroundRingFrom, aroundRingTo = 1.15, 1.30
+	failedRingShare              = 0.6
+)
+
+// failedStrips returns the titles of the strips that have a node AUM draws
+// as failed. AUM says so only in the node's colour, a ring of red stripes,
+// so this takes a screenshot; it reports nothing when that cannot be had.
+// Strips scrolled out of the window are not seen.
+func (d *AUMDriver) failedStrips() []string {
+	raw, err := d.s.c.screenshot(d.ctx)
+	if err != nil {
+		return nil
+	}
+	scr, err := d.s.c.ScreenInfo(d.ctx)
+	if err != nil {
+		return nil
+	}
+	img, err := DecodePNG(raw)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, ch := range d.St.Channels {
+		for _, n := range ch.Nodes {
+			if n.Empty || !n.OnScreen || !ch.OnScreen || n.Role == "output" {
+				continue
+			}
+			if RingRedness(img, scr.Scale, n.Frame, failedRingFrom, failedRingTo) >= failedRingShare &&
+				RingRedness(img, scr.Scale, n.Frame, aroundRingFrom, aroundRingTo) < failedRingShare/2 {
+				out = append(out, ch.Title)
+				break
+			}
+		}
 	}
 	return out
 }

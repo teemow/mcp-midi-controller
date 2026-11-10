@@ -460,7 +460,11 @@ func (s *Server) voicing(plugin, preset string) (song.Voicing, bool) {
 	if m == nil || m.Silent() {
 		return song.Voicing{}, false
 	}
-	return song.Voicing{Transpose: m.Transpose, LevelDB: m.LevelDB, Lanes: m.Lanes}, true
+	pinned := false
+	for _, field := range m.Pinned {
+		pinned = pinned || field == "transpose"
+	}
+	return song.Voicing{Transpose: m.Transpose, Pinned: pinned, LevelDB: m.LevelDB, Lanes: m.Lanes}, true
 }
 
 // loadSong loads and compiles a stored song, returning a tool error on failure.
