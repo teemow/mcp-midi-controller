@@ -172,8 +172,10 @@ A scene addresses the master's effects as the track `master`.
 Loading a preset resets a plugin's parameters, so after a preset change every
 parameter the song sets on that plugin is sent again. The load itself is sent
 400 ms before its section, because a plugin is deaf while it loads (see
-[Status](#status)). What that track plays in the last 400 ms of the section
-before is cut, lost or already played with the new preset.
+[Status](#status)); where its section begins sooner than that after the
+playback starts, it is sent as the playback starts. What that track plays in
+the 400 ms before the section is cut, lost or already played with the new
+preset.
 
 **Automation** moves a control within a section:
 
@@ -265,7 +267,7 @@ transport, which is not built yet.
 Because the daemon keeps the time, its host has to stay awake while a song
 plays. A laptop left alone dozes: the system keeps trying to sleep, timers
 fire up to a second late and the notes with them. Hold it awake for the
-session (on macOS `caffeinate -s`, on mains power).
+session (on macOS `caffeinate -i -s`).
 
 ## Status
 
@@ -309,20 +311,20 @@ a device, in sessions authored from a song:
   400 ms none in thirty-two. A third lost a note at 50 ms and played at
   150 ms. The other two, and a reverb, answered at once. A note that is
   sounding when the load ends is cut. With preset changes sent 250 ms ahead,
-  the downbeat of every section that changed a preset on one of the slow two
-  was silent on that track, so they are sent 400 ms ahead now.
+  a song lost the downbeat of every chorus on the tracks of the slow two,
+  which both change preset there, so they are sent 400 ms ahead now.
 - **A whole song.** A song of five tracks and 56 bars (five instruments,
   twelve effects, 14 preset loads, 53 mappings) played from start to finish
   through `play_song`, and `get_song_playback` followed it through its nine
   sections. Recorded at the master tap, every section sounded: the fade-in,
   the verse without the lead, the chorus with the lead, the bridge without the
-  drum pattern. What was missing was the pad's first chord of each chorus,
-  lost to the preset load above; the same timeline sent with the 400 ms lead
-  had it every time.
+  drum pattern. What was missing was the downbeat of each chorus on two
+  tracks, the pad's first chord and the arp's first note, lost to the preset
+  load above; the same timeline sent with the 400 ms lead had both.
 - **Timing.** With the host held awake, drum hits recorded at the tap sat on
   the sixteenth-note grid within 9 ms, 2 ms on average over 63 hits. On a host
   left to doze, timers fired up to 1.2 s late and the hits around such a stall
-  were up to 57 ms off the grid.
+  were about 50 ms off the grid.
 
 Not yet measured:
 
@@ -339,8 +341,8 @@ the written note and another of the same plugin one or two octaves below it;
 one sounded an octave above with a fifth layered under every note. The track's
 `transpose` corrects its own preset, and a pattern's `transpose` the preset
 that pattern is played with. Other things only listening showed: a tape
-effect's preset bent a held note by more than a semitone either way until one
-of its parameters was turned down, a drum machine's snare clipped inside the
+effect's preset bent a held note by more than a semitone either way until two
+of its parameters were turned down, a drum machine's snare clipped inside the
 plugin at any velocity until its own level parameter was. One synth crashed
 once in over a hundred preset loads; AUM marks its node as failed, and loading
 the session again brings it back.
