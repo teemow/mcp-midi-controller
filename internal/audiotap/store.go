@@ -7,9 +7,10 @@
 // from the loopback-only MCP endpoint (the iPad cannot reach loopback). Its
 // surface is intentionally tiny: a single WebSocket endpoint that only ingests
 // audio + features into an in-memory store. It never touches the engine,
-// transports, or hardware, and nothing is written to disk — audio is a private,
-// volatile rig signal (see the public-vs-private rule), so it lives only in RAM
-// and is exposed read-only through MCP.
+// transports, or hardware. Audio is a private, volatile rig signal (see the
+// public-vs-private rule): it lives in RAM and is exposed read-only through
+// MCP, and reaches the disk only where a tool asks for it — a probe's segment
+// (wav.go) or a recording (capture.go), both under the state dir.
 //
 // The stream is full-fidelity: interleaved native float32 at the host sample
 // rate, every channel. The window therefore stores interleaved samples and most
@@ -93,6 +94,10 @@ type Store struct {
 	// the previous batch. Positions that scroll out of the window are pruned.
 	gaps         []int64
 	lastAppendAt time.Time
+
+	// captures are the running recordings of this tap (see capture.go): each
+	// receives every batch, in order, as it is appended.
+	captures []*Capture
 }
 
 // NewStore returns an empty store with a preallocated rolling window.
@@ -149,6 +154,9 @@ func (s *Store) Connect(remote string) {
 	s.channels = 1
 	s.gaps = nil
 	s.lastAppendAt = time.Time{}
+	for _, c := range s.captures {
+		c.noteReconnect()
+	}
 }
 
 // Disconnect marks the tap as gone but keeps the last levels/window so a poll
@@ -169,6 +177,9 @@ func (s *Store) SetFormat(f Format) {
 		s.channels = 1
 	}
 	s.lastMessageAt = time.Now()
+	for _, c := range s.captures {
+		c.noteFormat(s.channels, f.SampleRate)
+	}
 }
 
 // SetFeatures records a ~10 Hz features message.
@@ -231,6 +242,9 @@ func (s *Store) AppendAudio(samples []float32) {
 	s.audioSamples += int64(len(samples))
 	s.lastMessageAt = now
 	s.pruneGapsLocked()
+	for _, c := range s.captures {
+		c.write(samples, now)
+	}
 }
 
 // pruneGapsLocked drops discontinuity boundaries that have scrolled out of the

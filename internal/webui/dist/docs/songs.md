@@ -32,6 +32,10 @@ session file and stages it.
 `export_song_midi` writes the song as a Standard MIDI File for a sequencer or a
 DAW.
 
+`play_song` with `record: true` also records the song at the master's tap into
+a file, and `upload_recording` puts that file into Google Drive: see
+[Recording and Google Drive](recording.md).
+
 ## The document
 
 ```yaml
@@ -752,6 +756,7 @@ preset at a time.
 | Authored sessions | the AUM staging dir (state dir), like every authored session |
 | Which session a song was authored into | `song-sessions.json` in the state dir |
 | MIDI exports | `song-exports/` in the state dir |
+| Recordings | `recordings/` in the state dir ([recording.md](recording.md)) |
 
 A song names the plugins of one rig. Keep the songs directory out of a public
 repository if that is private.

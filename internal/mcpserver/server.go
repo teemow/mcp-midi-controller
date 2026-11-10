@@ -127,6 +127,11 @@ type Server struct {
 	// which session each song was authored into.
 	songSessionsMu sync.Mutex
 
+	// rec is the one recording the daemon makes at a time (recording_tools.go)
+	// and drv its Google Drive client and sign-in (drive_tools.go).
+	rec recorderState
+	drv driveState
+
 	// pulls signals the iPad's downloads of staged sessions to whoever waits
 	// for one, and loaded is the session the daemon itself loaded into AUM.
 	// See song_session.go.
