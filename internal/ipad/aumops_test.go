@@ -414,3 +414,33 @@ func TestAUMFilePlayerSet(t *testing.T) {
 		t.Fatalf("set loop: %+v, %v", res, err)
 	}
 }
+
+func TestAUMPanelSetAndNodeName(t *testing.T) {
+	clock := mixer()
+	clock.TempoBar = true
+	clock.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "CLOCK OPTIONS", Rows: [][2]string{{"Time Signature", "4 / 4"}, {"Pre-roll", "OFF"}}}}
+	one := clock
+	one.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "CLOCK OPTIONS", Rows: [][2]string{{"Time Signature", "4 / 4"}, {"Pre-roll", "1 bar"}}}}
+	_, c := opFake(t, clock, one)
+	res, err := c.AUMPanel(context.Background(), AUMRequest{Action: "set", Setting: "Pre-roll", Value: "1 bar"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "Pre-roll OFF -> 1 bar") {
+		t.Fatalf("set pre-roll: %+v, %v", res, err)
+	}
+	_, bare := opFake(t, mixer())
+	if _, err := bare.AUMPanel(context.Background(), AUMRequest{Action: "set", Setting: "x", Value: "y"}); err == nil {
+		t.Fatal("set with nothing open accepted")
+	}
+
+	bus := mixer()
+	bus.Strips[3].Inserts = []ipadtest.Node{{Label: "BUS A"}}
+	pop := bus
+	pop.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "MIX BUS A NAME & COLOR", Fields: []string{""}, Buttons: []string{"CUSTOMIZE NODE COLOR", "SAVE"}}}
+	named := bus
+	named.Strips[3].Inserts = []ipadtest.Node{{Label: "FX"}}
+	w, c := opFake(t, bus, pop, pop, named)
+	w.Fields = []string{""}
+	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "name", Channel: "4", Node: "1", Name: "FX"})
+	if err != nil || !res.Verified || w.Fields[0] != "FX" {
+		t.Fatalf("name: %+v, %v", res, err)
+	}
+}

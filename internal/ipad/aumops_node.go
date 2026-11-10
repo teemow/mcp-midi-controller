@@ -13,7 +13,7 @@ import (
 var AUMNodeActions = []string{
 	"open", "menu", "select", "replace", "reload", "pre_fader", "post_fader", "swap",
 	"copy_here", "move_here", "add_slot", "remove_slot", "bypass", "unbypass", "eject",
-	"move", "meter", "window_close", "window_mode",
+	"move", "meter", "name", "window_close", "window_mode",
 }
 
 // nodeMenuItems maps actions to the long-press menu items they tap.
@@ -61,6 +61,8 @@ func (c *Client) AUMNode(ctx context.Context, r AUMRequest) (AUMResult, error) {
 			res, err = d.moveNode(ch, n, r.Steps)
 		case "meter":
 			res, err = d.meterNode(ch, n)
+		case "name":
+			res, err = d.nameNode(ch, n, r.Name)
 		default:
 			err = fmt.Errorf("unknown aum_node action %q (%s)", r.Action, strings.Join(AUMNodeActions, ", "))
 		}
@@ -478,4 +480,52 @@ func (d *AUMDriver) pluginWindow(r AUMRequest) (AUMResult, error) {
 	}
 	ok, err = d.until(aumWait, func(st AUMState) bool { return d.findText(mode, nil) == nil })
 	return d.result("window_mode", ok, verdict(ok, fmt.Sprintf("%q set to %s", w.Title, mode), "the menu did not close"), nil), err
+}
+
+// nameNode sets the custom short name of a bus or MIDI-bus node: its
+// popover (MIX BUS A NAME & COLOR, MIDI BUS NAME & COLOR) has a name field
+// and SAVE. The name applies to every node of that bus.
+func (d *AUMDriver) nameNode(ch AUMChannel, n AUMNode, name string) (AUMResult, error) {
+	if name == "" {
+		return AUMResult{}, fmt.Errorf("name needs name: the bus's short name")
+	}
+	if err := d.tapRect(n.Frame, nodeName(n)+" of "+strconv.Quote(ch.Title)); err != nil {
+		return AUMResult{}, err
+	}
+	pop, err := d.waitOverlay("", aumWait)
+	if err != nil {
+		return AUMResult{}, err
+	}
+	if pop == nil || len(pop.Fields) == 0 || !strings.Contains(strings.ToUpper(pop.Title), "NAME") {
+		if pop != nil {
+			if _, err := d.closeTop(); err != nil {
+				return AUMResult{}, err
+			}
+		}
+		return d.result("name", false, fmt.Sprintf("%s opened no NAME & COLOR popover (only bus and MIDI-bus nodes have one)", nodeName(n)), pop), nil
+	}
+	if _, err := d.typeText(0, name); err != nil {
+		return AUMResult{}, err
+	}
+	if b := d.findText("SAVE", &pop.Frame); b != nil {
+		if err := d.tapRect(b.Rect, "SAVE"); err != nil {
+			return AUMResult{}, err
+		}
+	} else if err := d.pressReturn(); err != nil {
+		return AUMResult{}, err
+	}
+	strip := ch.Strip
+	ok, err := d.until(aumWait, func(st AUMState) bool {
+		m, found := sameNode(st, strip, n)
+		return found && strings.EqualFold(m.Label, name)
+	})
+	if err != nil {
+		return AUMResult{}, err
+	}
+	if d.St.Overlay("popover") != nil {
+		if _, err := d.closeTop(); err != nil {
+			return AUMResult{}, err
+		}
+	}
+	return d.result("name", ok, verdict(ok, fmt.Sprintf("%s of %q now %q", n.Role, ch.Title, name), "the node's label did not change to "+name), nil), nil
 }

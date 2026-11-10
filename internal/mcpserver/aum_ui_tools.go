@@ -82,12 +82,16 @@ func (s *Server) registerAUMUITools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_panel",
 		Description: "Open, close or read AUM's screens. open panel: " + strings.Join(panelDocs, "; ") + ". " +
-			"close closes the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the tempo bar, the keyboard). read lists every open popover, side panel and alert with its title, rows (text → value) and buttons." + aumVerifyNote,
+			"path taps rows in turn after opening (or before reading), e.g. open settings, or a destination's filter sections. close closes the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the tempo bar, the keyboard). read lists every open popover, side panel and alert with its title, rows (text → value) and buttons. " +
+			"set steps a row's value button in the front-most panel or popover until it reads value, or picks value from the list it opens: Clock Options' Pre-roll and Sync Quantum, a MIDI mapping editor's fields, Engine Info." + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"action": {"type": "string", "enum": ["open", "close", "read"]},
-				"panel": {"type": "string", "enum": ` + enumJSON(panels) + `, "description": "The screen to open."}
+				"action": {"type": "string", "enum": ["open", "close", "read", "set"]},
+				"panel": {"type": "string", "enum": ` + enumJSON(panels) + `, "description": "The screen to open."},
+				` + pathProp + `,
+				"setting": {"type": "string", "description": "Row label (set)."},
+				"value": {"type": "string", "description": "Wanted value as AUM prints it (set)."}
 			},
 			"required": ["action"]
 		}`),
@@ -115,7 +119,7 @@ func (s *Server) registerAUMUITools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_node",
 		Description: "AUM nodes and slots of a strip: open (tap: plugin window, built-in popover, Destinations, or the node picker for an empty slot), menu (long-press: lists POST FADER, PRE FADER, SELECT, REPLACE, RELOAD, SWAP, REMOVE SLOT, COPY HERE, MOVE HERE), select, replace (opens the picker), reload, pre_fader, post_fader, swap (onto the selected node), " +
-			"copy_here / move_here (an empty slot, after select), add_slot (+1 or double-tap below the last insert), remove_slot (an empty slot), bypass / unbypass (swipe left/right; read back from the node's place off the wire), eject (confirm; bypass then ⏏, answering Confirm Eject's OK), move (steps: slots, negative = up), meter (main meter shows this point), " +
+			"copy_here / move_here (an empty slot, after select), add_slot (+1 or double-tap below the last insert), remove_slot (an empty slot), bypass / unbypass (swipe left/right; read back from the node's place off the wire), eject (confirm; bypass then ⏏, answering Confirm Eject's OK), move (steps: slots, negative = up), meter (main meter shows this point), name (name: a bus or MIDI-bus node's short name, for every node of that bus), " +
 			"window_close / window_mode (value DEFAULT, CUSTOM, MAXIMIZED, FULLSCREEN) on the front plugin window. node: \"source\", \"output\", an insert slot number, or a node label (\"LP\"); get_aum_ui lists each strip's nodes." + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -124,6 +128,7 @@ func (s *Server) registerAUMUITools() {
 				` + channelProp + `,
 				"node": {"type": "string", "description": "Node selector: source, output, an insert slot number, or a node label."},
 				"steps": {"type": "integer", "description": "Slots to move (move); negative = up."},
+				"name": {"type": "string", "description": "Bus name (name)."},
 				"value": {"type": "string", "description": "Window mode (window_mode)."},
 				` + confirmProp + `
 			},

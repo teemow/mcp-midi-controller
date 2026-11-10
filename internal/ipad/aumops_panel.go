@@ -42,13 +42,34 @@ func (c *Client) AUMPanel(ctx context.Context, r AUMRequest) (AUMResult, error) 
 		var err error
 		switch r.Action {
 		case "read", "":
+			if len(r.Path) > 0 {
+				if ok, err := d.tapPath(r.Path); err != nil || !ok {
+					res = d.result("read", false, fmt.Sprintf("could not follow path %q (%s)", r.Path, d.St.overlaySummary()), d.St.Overlays)
+					return err
+				}
+			}
 			res = d.result("read", true, d.St.overlaySummary(), d.St.Overlays)
 		case "open":
 			res, err = d.openPanel(r.Panel)
+			if err == nil && res.Verified && len(r.Path) > 0 {
+				if ok, err2 := d.tapPath(r.Path); err2 != nil || !ok {
+					res = d.result("open", false, fmt.Sprintf("opened %s but could not follow path %q (%s)", r.Panel, r.Path, d.St.overlaySummary()), d.St.Overlays)
+					return err2
+				}
+				res = d.result("open", true, "opened "+r.Panel+" → "+strings.Join(r.Path, " → ")+": "+d.St.overlaySummary(), d.St.Overlays)
+			}
+		case "set":
+			if r.Setting == "" || r.Value == "" {
+				return fmt.Errorf("set needs setting (a row label in the open panel or popover) and value")
+			}
+			if len(d.St.Overlays) == 0 {
+				return fmt.Errorf("nothing open: open the panel first (e.g. aum_panel open clock_options)")
+			}
+			res, err = d.setRow(r.Setting, r.Value, true)
 		case "close":
 			res, err = d.closeTop()
 		default:
-			err = fmt.Errorf("unknown aum_panel action %q (open, close, read)", r.Action)
+			err = fmt.Errorf("unknown aum_panel action %q (open, close, read, set)", r.Action)
 		}
 		return err
 	})
