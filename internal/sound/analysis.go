@@ -47,13 +47,18 @@ type Sound struct {
 	// Transpose is the semitones to add to a written note so it sounds as
 	// written: 12 for a preset that sounds an octave low.
 	Transpose int `yaml:"transpose" json:"transpose"`
-	// Sounds is the note that sounded, Hz its frequency and Cents how far it
-	// is from that note. WobbleCents is how far the pitch of the held note
-	// wandered. Unpitched is set when no pitch was found.
+	// Sounds is the note the held note settled on, Hz its frequency and Cents
+	// how far it is from that note. WobbleCents is how far the pitch wandered
+	// once it had settled. GlideCents is where the note started relative to
+	// that (negative: from below) and GlideMS how long it took to arrive; both
+	// are 0 for a note that starts on its pitch. Unpitched is set when no
+	// pitch was found.
 	Sounds      string  `yaml:"sounds,omitempty" json:"sounds,omitempty"`
 	Hz          float64 `yaml:"hz,omitempty" json:"hz,omitempty"`
 	Cents       float64 `yaml:"cents,omitempty" json:"cents,omitempty"`
 	WobbleCents float64 `yaml:"wobble_cents,omitempty" json:"wobble_cents,omitempty"`
+	GlideCents  float64 `yaml:"glide_cents,omitempty" json:"glide_cents,omitempty"`
+	GlideMS     float64 `yaml:"glide_ms,omitempty" json:"glide_ms,omitempty"`
 	Unpitched   bool    `yaml:"unpitched,omitempty" json:"unpitched,omitempty"`
 
 	// LevelDB is the rms of the held note and PeakDB its sample peak, in
@@ -249,22 +254,35 @@ func MeasureNote(c Clip, note, velocity int) Sound {
 
 	// Pitch, over the held note once it has arrived.
 	pitchFrom := min(arrived*hop+int(0.03*sr), to)
-	track := pitchTrack(m[pitchFrom:to], sr)
+	track := foldOctaves(pitchTrack(m[pitchFrom:to], sr))
 	if len(track) == 0 {
 		s.Unpitched = true
 		s.Remarks = append(s.Remarks, "no steady pitch: noise, a chord or a sound that changes too fast to name a note")
 	} else {
-		sorted := append([]float64(nil), track...)
+		// The note's pitch is where it settles: the second half of what was
+		// held. What happens before that is how it gets there.
+		settled := track[len(track)/2:]
+		sorted := make([]float64, len(settled))
+		for i, f := range settled {
+			sorted[i] = f.hz
+		}
 		sort.Float64s(sorted)
 		hz := sorted[len(sorted)/2]
-		midi := 69 + 12*math.Log2(hz/440)
-		nearest := math.Round(midi)
-		s.Hz = math.Round(hz*100) / 100
-		s.Sounds = NoteName(int(nearest))
-		s.Cents = math.Round((midi-nearest)*100) + 0 // + 0 turns a negative zero positive
-		s.Transpose = note - int(nearest)
+		setPitch(&s, hz)
 		lo, hi := sorted[len(sorted)/20], sorted[len(sorted)-1-len(sorted)/20]
 		s.WobbleCents = math.Round(1200 * math.Log2(hi/lo))
+		if off := 1200 * math.Log2(track[0].hz/hz); math.Abs(off) >= glideFromCents && len(track) > 2 {
+			s.GlideCents = math.Round(off)
+			s.GlideMS = track[len(track)-1].ms
+			for _, f := range track {
+				if math.Abs(1200*math.Log2(f.hz/hz)) <= glideArrivedCents {
+					s.GlideMS = f.ms
+					break
+				}
+			}
+			// Times are from where the sound starts.
+			s.GlideMS = math.Round(s.GlideMS + float64(pitchFrom)/sr*1000 - s.LatencyMS)
+		}
 	}
 
 	s.Partials = partials(m[pitchFrom:to], sr)
@@ -276,23 +294,36 @@ func MeasureNote(c Clip, note, velocity int) Sound {
 	return s
 }
 
+// setPitch records the pitch a note settled on.
+func setPitch(s *Sound, hz float64) {
+	midi := 69 + 12*math.Log2(hz/440)
+	nearest := math.Round(midi)
+	s.Hz = math.Round(hz*100) / 100
+	s.Sounds = NoteName(int(nearest))
+	s.Cents = math.Round((midi-nearest)*100) + 0 // + 0 turns a negative zero positive
+	s.Transpose = s.Note - int(nearest)
+}
+
+// partialAtPitch is how close a partial must lie to the period found to be
+// that period's fundamental: a detuned oscillator may sit a good part of a
+// semitone off.
+const partialAtPitch = 0.06
+
 // settlePitch corrects a pitch that is only the common period of several
 // notes sounding at once: when nothing sounds at the pitch found, the
-// strongest partial is the note.
+// strongest partial is the note. (A fundamental that is merely weaker than
+// its harmonics is still the pitch.)
 func settlePitch(s *Sound) {
 	if len(s.Partials) == 0 {
 		return
 	}
 	for _, p := range s.Partials {
-		if math.Abs(p.Hz-s.Hz) <= 0.03*s.Hz {
+		if math.Abs(p.Hz-s.Hz) <= partialAtPitch*s.Hz {
 			return
 		}
 	}
-	hz := s.Partials[0].Hz
-	midi := 69 + 12*math.Log2(hz/440)
-	nearest := math.Round(midi)
-	s.Hz, s.Sounds, s.Cents = hz, NoteName(int(nearest)), math.Round((midi-nearest)*100)+0
-	s.Transpose = s.Note - int(nearest)
+	setPitch(s, s.Partials[0].Hz)
+	s.GlideCents, s.GlideMS = 0, 0
 	s.Remarks = append(s.Remarks, "several notes sound at once; the pitch given is the strongest one's")
 }
 
@@ -309,6 +340,13 @@ func describePitch(s *Sound) {
 	}
 	if math.Abs(s.Cents) >= 20 {
 		s.Remarks = append(s.Remarks, fmt.Sprintf("out of tune by %+.0f cents", s.Cents))
+	}
+	if s.GlideCents != 0 {
+		from := "flat"
+		if s.GlideCents > 0 {
+			from = "sharp"
+		}
+		s.Remarks = append(s.Remarks, fmt.Sprintf("starts %.0f cents %s and reaches the note after %.0f ms", math.Abs(s.GlideCents), from, s.GlideMS))
 	}
 	if s.WobbleCents >= 40 {
 		s.Remarks = append(s.Remarks, fmt.Sprintf("the held note wanders over %.0f cents", s.WobbleCents))
@@ -330,10 +368,16 @@ func describeLayers(s *Sound) {
 	}
 	for _, p := range s.Partials {
 		ratio := p.Hz / s.Hz
-		if ratio < 0.97 {
-			// Below the pitch found: a layer under it (or a pitch read an
-			// octave high).
-			s.Remarks = append(s.Remarks, fmt.Sprintf("also sounds %s below it (%.0f dB)", p.Note, p.DB))
+		if ratio < 1-partialAtPitch {
+			// Below the pitch found: a layer under it.
+			what := fmt.Sprintf("also sounds %s below it", p.Note)
+			if math.Abs(ratio-0.5) < 0.5*partialAtPitch {
+				what = "has an octave below it"
+			}
+			s.Remarks = append(s.Remarks, fmt.Sprintf("%s (%.0f dB)", what, p.DB))
+			continue
+		}
+		if math.Abs(ratio-1) <= partialAtPitch {
 			continue
 		}
 		if h := math.Round(ratio); math.Abs(ratio-h) > 0.03*h && p.DB >= -15 {
@@ -354,8 +398,12 @@ const (
 	pitchRateGoal = 12000.0
 )
 
-// pitchTrack returns the pitch of every frame of m that has one, in Hz.
-func pitchTrack(m []float64, sr float64) []float64 {
+// pitchFrame is the pitch of one frame and when it was, from the start of
+// what was tracked.
+type pitchFrame struct{ hz, ms float64 }
+
+// pitchTrack returns the pitch of every frame of m that has one.
+func pitchTrack(m []float64, sr float64) []pitchFrame {
 	d := max(int(sr/pitchRateGoal), 1)
 	y := make([]float64, 0, len(m)/d)
 	for i := 0; i+d <= len(m); i += d {
@@ -367,16 +415,63 @@ func pitchTrack(m []float64, sr float64) []float64 {
 	}
 	rate := sr / float64(d)
 	frame, hop := int(rate*pitchFrameMS/1000), int(rate*pitchHopMS/1000)
-	var out []float64
+	var out []pitchFrame
 	for i := 0; i+frame <= len(y); i += hop {
 		if hz, clarity := framePitch(y[i:i+frame], rate); clarity >= pitchClarity {
-			out = append(out, hz)
+			out = append(out, pitchFrame{hz, float64(i) / rate * 1000})
 		}
 	}
 	if len(out) == 0 && len(y) >= frame/2 {
 		// A note shorter than a frame: take what there is.
 		if hz, clarity := framePitch(y, rate); clarity >= pitchClarity {
-			out = append(out, hz)
+			out = append(out, pitchFrame{hz, 0})
+		}
+	}
+	return out
+}
+
+// Levels of a glide: a note that starts this far from where it settles has
+// one, and has arrived once it is this close.
+const (
+	glideFromCents    = 30.0
+	glideArrivedCents = 15.0
+)
+
+// foldOctaves brings the frames of a track into one octave. A sound whose
+// second harmonic is stronger than its fundamental is read an octave high in
+// some frames and at its pitch in others; the lower reading is the period the
+// sound really has. Frames that are no octave of it are left as they are.
+func foldOctaves(track []pitchFrame) []pitchFrame {
+	if len(track) < 3 {
+		return track
+	}
+	sorted := make([]float64, len(track))
+	for i, f := range track {
+		sorted[i] = f.hz
+	}
+	sort.Float64s(sorted)
+	base := sorted[len(sorted)/8] // the low readings
+	atBase, octaves := 0, 0
+	for _, f := range track {
+		up := math.Round(math.Log2(f.hz / base))
+		if math.Abs(1200*math.Log2(f.hz/base)-1200*up) > 80 {
+			continue
+		}
+		octaves++
+		if up == 0 {
+			atBase++
+		}
+	}
+	// Only a track that is octaves of one pitch throughout, with a good part
+	// of it at the low reading, is folded: a glide or a melody is not.
+	if octaves*10 < len(track)*8 || atBase*5 < len(track) || atBase == octaves {
+		return track
+	}
+	out := make([]pitchFrame, len(track))
+	for i, f := range track {
+		out[i] = f
+		if up := math.Round(math.Log2(f.hz / base)); up > 0 && math.Abs(1200*math.Log2(f.hz/base)-1200*up) <= 80 {
+			out[i].hz = f.hz / math.Pow(2, up)
 		}
 	}
 	return out
