@@ -192,9 +192,13 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	out := &authoredSong{OutID: outID, File: file, Path: path, SHA256: bytesSHA256(data), Options: opt, Report: rep}
 	err = s.updateSongSessions(func(all map[string]songSessionRecord) bool {
 		rec := songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint, SHA256: out.SHA256, Options: opt}
-		// What the iPad holds under this name stays what it fetched.
+		// What the iPad holds under this name stays what it fetched. It may
+		// have fetched this very file already, between its staging and now.
 		if prev, ok := all[cs.id]; ok && prev.Session == outID {
 			rec.Pulled = prev.Pulled
+		}
+		if s.pulls.has(outID, out.SHA256) {
+			rec.Pulled = out.SHA256
 		}
 		all[cs.id] = rec
 		return true
@@ -266,10 +270,29 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 
 // --- what the iPad has pulled -------------------------------------------------
 
-// sessionPulls signals every download of a staged session by the iPad.
+// sessionPulls signals every download of a staged session by the iPad, and
+// remembers which file of each session it fetched last.
 type sessionPulls struct {
-	mu sync.Mutex
-	ch chan struct{}
+	mu   sync.Mutex
+	ch   chan struct{}
+	last map[string]string // session id -> the fetched file's SHA-256
+}
+
+// fetched notes that the iPad fetched a session's file.
+func (p *sessionPulls) fetched(id, sha string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.last == nil {
+		p.last = map[string]string{}
+	}
+	p.last[id] = sha
+}
+
+// has reports whether the file the iPad fetched last of a session is sha.
+func (p *sessionPulls) has(id, sha string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return sha != "" && p.last[id] == sha
 }
 
 // signal returns a channel that is closed at the next download.
@@ -296,6 +319,7 @@ func (p *sessionPulls) broadcast() {
 func (s *Server) noteSessionPulled(id string) {
 	sha := fileSHA256(stagedSessionPath(id))
 	if sha != "" {
+		s.pulls.fetched(id, sha)
 		_ = s.updateSongSessions(func(all map[string]songSessionRecord) bool {
 			changed := false
 			for song, rec := range all {
