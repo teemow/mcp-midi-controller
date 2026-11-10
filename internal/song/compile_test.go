@@ -159,8 +159,8 @@ func TestCompileSceneChanges(t *testing.T) {
 		return -1
 	}
 
-	// Into the chorus (bar 3): the lead's and the reverb's presets load a
-	// sixteenth early; at the bar the bass opens up and un-bypasses its echo,
+	// Into the chorus (bar 3): the lead's and the reverb's presets load
+	// presetLead early; at the bar the bass opens up and un-bypasses its echo,
 	// the master effect comes in, and the lead is unmuted at -6 dB.
 	early := 2*bar - tl.leadTicks()
 	wantChorus := []string{
