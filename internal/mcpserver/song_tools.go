@@ -191,6 +191,16 @@ func songCatalog() song.Catalog {
 	return cat
 }
 
+// rigProbe finds the staged probe of one of the rig's own plugins, nil when
+// it was never scanned. A probe is staged under its device.ProbeID, so the
+// lookup goes through that id rather than spelling one out.
+func rigProbe(cat song.Catalog, node aum.NodeSpec) *device.ProbeDump {
+	if d, ok := cat[device.ProbeID(device.ProbeDump{Component: node.Component})]; ok {
+		return &d
+	}
+	return nil
+}
+
 // pluginKind is the role a component type plays in a song.
 func pluginKind(componentType string) string {
 	switch componentType {
@@ -704,12 +714,9 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	outID = aum.StripExt(rel)
 
 	cat := songCatalog()
-	opts := song.SessionOptions{Hardware: hardware, TrackTaps: args.TrackTaps, FullControl: args.FullControl}
-	if d, ok := cat["pbmi"]; ok {
-		opts.Brain = &d
-	}
-	if d, ok := cat["pbau"]; ok {
-		opts.Tap = &d
+	opts := song.SessionOptions{
+		Hardware: hardware, TrackTaps: args.TrackTaps, FullControl: args.FullControl,
+		Brain: rigProbe(cat, aum.ProbeBrainNode()), Tap: rigProbe(cat, aum.ProbeTapNode()),
 	}
 	defaults := loadAUv3DefaultStates()
 	opts.Prepare = func(ns *aum.NodeSpec) error { return applyDefaultState(ns, defaults) }

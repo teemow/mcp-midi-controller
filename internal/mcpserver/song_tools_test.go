@@ -199,6 +199,33 @@ func TestSongPluginTools(t *testing.T) {
 	}
 }
 
+// TestRigProbe finds the brain and the tap among the staged probes the way
+// the receiver stores them, under their probe id, and nothing when they were
+// never scanned.
+func TestRigProbe(t *testing.T) {
+	newSongServer(t)
+	if got := rigProbe(songCatalog(), aum.ProbeBrainNode()); got != nil {
+		t.Fatalf("a brain probe was found among the song's plugins: %+v", got.Component)
+	}
+	for _, node := range []aum.NodeSpec{aum.ProbeBrainNode(), aum.ProbeTapNode()} {
+		dump := device.ProbeDump{Component: node.Component, Name: node.ComponentName}
+		data, err := json.Marshal(dump)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(config.AUv3ProbesDir(), device.ProbeID(dump)+".json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cat := songCatalog()
+	for _, node := range []aum.NodeSpec{aum.ProbeBrainNode(), aum.ProbeTapNode()} {
+		got := rigProbe(cat, node)
+		if got == nil || got.Component != node.Component {
+			t.Errorf("rigProbe(%s) = %+v, want its staged probe", node.ComponentName, got)
+		}
+	}
+}
+
 // TestAuthorSongSession authors the song's session and reads the staged file
 // back; then changes what the song controls and checks the session is
 // reported as out of date.
