@@ -26,6 +26,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/mcpserver"
 	"github.com/teemow/mcp-midi-controller/internal/mdns"
+	"github.com/teemow/mcp-midi-controller/internal/probestaging"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport"
 	"github.com/teemow/midi-transport/auv3"
@@ -135,6 +136,10 @@ func main() {
 		opts = append(opts, mcpserver.WithIPad(ipad.New(cfg.IPadWDAURL, ipad.WithGoIOS(ipad.NewGoIOS(cfg.IPadGoIOS)))))
 		log.Printf("iPad UI tools: WebDriverAgent at %s", cfg.IPadWDAURL)
 	}
+	// Dumps staged by an older receiver are named by their subtype alone; move
+	// them to their current id before any tool or the receiver reads the dir.
+	migrateStagedProbes(config.AUv3ProbesDir())
+
 	srv := mcpserver.New(eng, opts...)
 
 	// Run the iPad receiver as a SINGLE SEPARATE LAN listener (the loopback-only
@@ -208,6 +213,19 @@ func main() {
 	defer cancel()
 	if err := eng.Close(closeCtx); err != nil {
 		log.Printf("engine close: %v", err)
+	}
+}
+
+// migrateStagedProbes renames staged AUv3 probe dumps to their current
+// <ProbeID>.json and logs what changed. A failure is logged, not fatal: the
+// dumps are a throwaway authoring input, and the next scan restages them.
+func migrateStagedProbes(dir string) {
+	res, err := probestaging.Migrate(dir)
+	if res.Renamed+res.Removed > 0 {
+		log.Printf("auv3 probes: renamed %d staged dump(s) to their component id, removed %d older duplicate(s) in %s", res.Renamed, res.Removed, dir)
+	}
+	if err != nil {
+		log.Printf("auv3 probes: migrate staged ids in %s: %v", dir, err)
 	}
 }
 

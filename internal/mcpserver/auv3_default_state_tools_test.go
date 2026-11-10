@@ -163,7 +163,7 @@ func TestAuthorAppliesDefaultState(t *testing.T) {
 	res := call(t, s.handleAuthorAUMSession, map[string]any{
 		"title": "Default Test",
 		"channels": []any{
-			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": "gtr1"}}},
+			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{map[string]any{"probe_id": gtr1ProbeID}}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
 	})
@@ -198,7 +198,7 @@ func TestAuthorPerCallStateBeatsDefault(t *testing.T) {
 		"title": "Override Test",
 		"channels": []any{
 			map[string]any{"kind": "audio", "title": "Gitarre", "nodes": []any{
-				map[string]any{"probe_id": "gtr1", "state": map[string]any{"myConfig": "from-call"}},
+				map[string]any{"probe_id": gtr1ProbeID, "state": map[string]any{"myConfig": "from-call"}},
 			}},
 			map[string]any{"kind": "audio", "title": "Master"},
 		},
