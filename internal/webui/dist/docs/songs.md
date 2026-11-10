@@ -20,6 +20,7 @@ that plays inside AUM.
 | 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song, or from a section, or only some tracks. |
 | 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
+| | `mix_song`, `get_song_mix` | The level of every bar, every section and every track. See [The mix](#the-mix). |
 | 6. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 again; `get_song` and `play_song` say when. |
 
 `check_song` tells at any time whether the loaded session will sound.
@@ -426,6 +427,35 @@ Because the daemon keeps the time, its host has to stay awake while a song
 plays. A laptop left alone dozes: the system keeps trying to sleep, timers
 fire up to a second late and the notes with them. Hold it awake for the
 session (on macOS `caffeinate -i -s`).
+
+## The mix
+
+`get_audio_tap` reports the tap's last ten seconds as one figure, and its
+`peak` is the plugin's ten-times-a-second feature, which reads under the
+sample peak. A balance needs more than that. `mix_song` plays the song and
+reads the master tap out for its whole length:
+
+- **per bar and per section**: rms and sample peak in dBFS, with the bars that
+  clipped marked;
+- **the whole**: rms, the highest peak (the headroom), the loudest and the
+  quietest bar, and what rang on after the last bar;
+- **stalls**: how often the tap's stream did not deliver, since the levels
+  around a stall read low.
+
+With `per_track: true` it then plays every distinct section once per track
+that has notes in it — the section's first bars, that track alone — and adds
+the table a balance is made from: the level of every track in every section.
+A track more than 12 dB over another in the same section is pointed out, and
+a track that is silent where it plays notes is named. The passes use
+`play_song`'s own player, so each starts from the section's whole sound.
+
+The measurement runs in the background: `mix_song` returns with an estimate,
+`get_song_mix` gives the progress or the finished report (`wait_ms` waits for
+it), and `stop_song` ends it. `from` and `sections` limit it to a part of the
+song, `whole: false` to the solo passes.
+
+The levels are what the master tap carries: after the master's effects, a
+limiter included. A peak is the highest sample, not an inter-sample estimate.
 
 ## Status
 

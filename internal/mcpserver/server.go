@@ -107,6 +107,11 @@ type Server struct {
 	songs  *song.Store
 	player song.Player
 
+	// mix is the mix measurement that runs or ran last (mix_song), guarded
+	// by mixMu. See song_mix.go.
+	mixMu sync.Mutex
+	mix   *mixJob
+
 	// sounds is the rig's sound catalogue: what the presets of its plugins
 	// were measured to sound like. See sound_tools.go.
 	sounds *sound.Catalog
