@@ -53,6 +53,9 @@ type Overlay struct {
 	// an eye and a bookmark filter, no close button) instead of a 60-point
 	// header text.
 	NavBar bool
+	// Steppers puts unlabelled ‹ and › buttons beside each row value, as
+	// Clock Options has them.
+	Steppers bool
 	// Frame overrides the default frame (x, y, w, h).
 	Frame *[4]float64
 }
@@ -370,6 +373,9 @@ func body(o Overlay, x, y, w float64) []node {
 		out = append(out, el("StaticText", r[0], x+16, y+15, 120, 20))
 		if r[1] != "" {
 			out = append(out, el("Button", r[1], x+w-115, y+7, 100, 36, el("StaticText", r[1], x+w-90, y+16, 50, 17)))
+			if o.Steppers {
+				out = append(out, el("Button", "", x+w-145, y+7, 30, 36), el("Button", "", x+w-15, y+7, 30, 36))
+			}
 		}
 		y += 50
 	}

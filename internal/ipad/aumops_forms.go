@@ -3,6 +3,7 @@ package ipad
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -161,6 +162,9 @@ func (d *AUMDriver) setRow(label, value string, scroll bool) (AUMResult, error) 
 	if strings.EqualFold(was, value) {
 		return d.result("set", true, fmt.Sprintf("%s already %s", r.Label, was), r), nil
 	}
+	if r.Prev != nil || r.Next != nil {
+		return d.stepRow(r, label, value, scroll)
+	}
 	if r.ValueFrame == nil {
 		return AUMResult{}, fmt.Errorf("row %q shows no value to tap", r.Label)
 	}
@@ -220,6 +224,89 @@ func (d *AUMDriver) setRow(label, value string, scroll bool) (AUMResult, error) 
 		}
 	}
 	return d.result("set", false, fmt.Sprintf("%s cycles through %s without %q", r.Label, strings.Join(keys(seen), ", "), value), r), nil
+}
+
+// stepRow sets a stepper row (‹ value ›): it steps › until value shows,
+// then from the top end ‹, and steps back to where it was when the row does
+// not offer value.
+func (d *AUMDriver) stepRow(r AUMRow, label, value string, scroll bool) (AUMResult, error) {
+	const limit = 40
+	was := r.Value
+	seen := []string{was}
+	step := func(next bool) (bool, error) { // reports whether the value moved
+		arrow, name := r.Prev, "‹"
+		if next {
+			arrow, name = r.Next, "›"
+		}
+		if arrow == nil {
+			return false, nil
+		}
+		before := r.Value
+		if err := d.tapRect(*arrow, r.Label+" "+name); err != nil {
+			return false, err
+		}
+		if err := d.pause(300 * time.Millisecond); err != nil {
+			return false, err
+		}
+		if err := d.Read(); err != nil {
+			return false, err
+		}
+		nr, err := d.findRow(label, scroll)
+		if err != nil {
+			return false, err
+		}
+		r = nr
+		if !slices.ContainsFunc(seen, func(v string) bool { return strings.EqualFold(v, r.Value) }) {
+			seen = append(seen, r.Value)
+		}
+		return r.Value != before, nil
+	}
+	done := func() AUMResult {
+		return d.result("set", true, fmt.Sprintf("%s %s -> %s", r.Label, was, r.Value), r)
+	}
+	// Up: stop at the top end, or when it wraps round to where it was.
+	wrapped := false
+	for i := 0; i < limit; i++ {
+		moved, err := step(true)
+		if err != nil {
+			return AUMResult{}, err
+		}
+		if strings.EqualFold(r.Value, value) {
+			return done(), nil
+		}
+		if !moved {
+			break
+		}
+		if strings.EqualFold(r.Value, was) {
+			wrapped = true
+			break
+		}
+	}
+	if !wrapped {
+		// Down from the top end, past where it was, to the bottom end.
+		for i := 0; i < 2*limit; i++ {
+			moved, err := step(false)
+			if err != nil {
+				return AUMResult{}, err
+			}
+			if strings.EqualFold(r.Value, value) {
+				return done(), nil
+			}
+			if !moved {
+				break
+			}
+		}
+		// Not offered: back up to where it was.
+		for i := 0; i < 2*limit && !strings.EqualFold(r.Value, was); i++ {
+			if moved, err := step(true); err != nil || !moved {
+				if err != nil {
+					return AUMResult{}, err
+				}
+				break
+			}
+		}
+	}
+	return d.result("set", false, fmt.Sprintf("%s offers no %q (values: %s); left at %s", r.Label, value, strings.Join(seen, ", "), r.Value), r), nil
 }
 
 func keys(m map[string]bool) []string {

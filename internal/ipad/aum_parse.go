@@ -162,6 +162,11 @@ type AUMRow struct {
 	Value      string `json:"value,omitempty"`
 	Frame      Rect   `json:"frame"`
 	ValueFrame *Rect  `json:"value_frame,omitempty"`
+	// Prev and Next are a stepper's ‹ and › around the value (Clock
+	// Options' Pre-roll, Time Signature, Sync Quantum): tapping the value
+	// itself does nothing there.
+	Prev *Rect `json:"prev,omitempty"`
+	Next *Rect `json:"next,omitempty"`
 }
 
 var (
@@ -563,6 +568,23 @@ func newOverlay(kind, title string, el *Element) AUMOverlay {
 
 // formRows pairs every text of el with the nearest value right of it on the
 // same line: a button's label (or its text), or another text.
+// stepper finds the unlabelled ‹ and › buttons right beside value frame v.
+func stepper(v Rect, blanks []*Element) (prev, next *Rect) {
+	for _, b := range blanks {
+		r := b.Rect
+		if math.Abs(r.MidY()-v.MidY()) > 4 {
+			continue
+		}
+		switch {
+		case math.Abs(r.X+r.Width-v.X) <= 4:
+			prev = &r
+		case math.Abs(r.X-(v.X+v.Width)) <= 4:
+			next = &r
+		}
+	}
+	return prev, next
+}
+
 func formRows(el *Element, title string) []AUMRow {
 	type item struct {
 		e      *Element
@@ -570,6 +592,7 @@ func formRows(el *Element, title string) []AUMRow {
 		button bool
 	}
 	var texts, values []item
+	var blanks []*Element
 	var walk func(e, parent *Element)
 	walk = func(e, parent *Element) {
 		if !e.Hidden && !e.Rect.Empty() {
@@ -588,7 +611,10 @@ func formRows(el *Element, title string) []AUMRow {
 						}
 					}
 				}
-				if t != "" && t != "chevron" {
+				switch {
+				case t == "" && e.Rect.Width <= 44:
+					blanks = append(blanks, e)
+				case t != "" && t != "chevron":
 					values = append(values, item{e: e, text: t, button: true})
 				}
 			}
@@ -620,6 +646,9 @@ func formRows(el *Element, title string) []AUMRow {
 				vf := vr
 				row.ValueFrame = &vf
 			}
+		}
+		if row.ValueFrame != nil {
+			row.Prev, row.Next = stepper(*row.ValueFrame, blanks)
 		}
 		rows = append(rows, row)
 	}

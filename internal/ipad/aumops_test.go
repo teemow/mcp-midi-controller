@@ -446,6 +446,36 @@ func TestAUMPanelSetAndNodeName(t *testing.T) {
 	if err != nil || !res.Verified || !strings.Contains(res.Message, "Pre-roll OFF -> 1 bar") {
 		t.Fatalf("set pre-roll: %+v, %v", res, err)
 	}
+
+	// Live, Pre-roll is a stepper (‹ OFF ›): › steps up, and a value the
+	// row does not offer leaves it where it was.
+	steps := func(vals ...string) []json.RawMessage {
+		var out []json.RawMessage
+		for _, v := range vals {
+			a := mixer()
+			a.TempoBar = true
+			a.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "CLOCK OPTIONS", Steppers: true, Rows: [][2]string{{"Time Signature", "4 / 4"}, {"Pre-roll", v}}}}
+			out = append(out, a.Source())
+		}
+		return out
+	}
+	w, c := opFake(t, clock)
+	w.SetScreens(steps("OFF", "1 bar")...)
+	res, err = c.AUMPanel(context.Background(), AUMRequest{Action: "set", Setting: "Pre-roll", Value: "1 bar"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "Pre-roll OFF -> 1 bar") {
+		t.Fatalf("step pre-roll: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || !strings.HasPrefix(g[0], "tap 1133,") {
+		t.Fatalf("step gestures = %v", g)
+	}
+	w.SetScreens(steps("OFF", "1 bar", "2 bars", "2 bars", "1 bar", "OFF", "OFF")...)
+	res, err = c.AUMPanel(context.Background(), AUMRequest{Action: "set", Setting: "Pre-roll", Value: "4 bars"})
+	if err != nil || res.Verified || !strings.Contains(res.Message, "values: OFF, 1 bar, 2 bars); left at OFF") {
+		t.Fatalf("pre-roll 4 bars: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 6 || g[0] != g[2] || g[3] != g[5] || g[0] == g[3] {
+		t.Fatalf("up and down gestures = %v", g)
+	}
 	_, bare := opFake(t, mixer())
 	if _, err := bare.AUMPanel(context.Background(), AUMRequest{Action: "set", Setting: "x", Value: "y"}); err == nil {
 		t.Fatal("set with nothing open accepted")
@@ -457,7 +487,7 @@ func TestAUMPanelSetAndNodeName(t *testing.T) {
 	pop.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "MIX BUS A NAME & COLOR", Fields: []string{""}, Buttons: []string{"CUSTOMIZE NODE COLOR", "SAVE"}}}
 	named := bus
 	named.Strips[3].Inserts = []ipadtest.Node{{Label: "FX"}}
-	w, c := opFake(t, bus, pop, pop, named)
+	w, c = opFake(t, bus, pop, pop, named)
 	w.Fields = []string{""}
 	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "name", Channel: "4", Node: "1", Name: "FX"})
 	if err != nil || !res.Verified || w.Fields[0] != "FX" {

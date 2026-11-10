@@ -167,6 +167,10 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **Unlabelled controls** carry labels iOS glues from the texts around them
   (`-∞, DSP:  2 %, -∞, Arp, Arp` on a MIDI node; the main meter's stale
   `SESSION: …` on a panel's back button); the parser strips those texts.
+- **Steppers**: Clock Options' values (Time Signature, Pre-roll, Sync
+  Quantum, …) sit between unlabelled `‹` and `›` buttons, and tapping the
+  value itself does nothing. `set` steps `›`, then `‹`, and steps back to
+  where the row was when it does not offer the value.
 - **The add-channel tile** is an unlabelled 150-point square button right of
   the last strip; its AUDIO / MIDI / IMPORT menu stacks over it once tapped.
 - **The tempo bar** shows the tempo as a button between `‹` and `›`; **the
