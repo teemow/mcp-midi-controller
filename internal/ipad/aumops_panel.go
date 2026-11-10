@@ -237,13 +237,25 @@ func (d *AUMDriver) closeTop() (AUMResult, error) {
 	default:
 		return d.result("close", true, "nothing to close: the mixer is bare", nil), nil
 	}
-	before := d.St
-	ok, err := d.until(aumWait, func(st AUMState) bool {
-		return len(st.Overlays) < len(before.Overlays) || (before.TempoBar && !st.TempoBar) ||
-			(len(st.Overlays) == len(before.Overlays) && o != nil && st.Overlay("") != nil && st.Overlay("").Title != o.Title) ||
-			(o == nil && !before.TempoBar && d.findText("HIDE", nil) == nil)
-	})
+	before := d.topSignature()
+	ok, err := d.until(aumWait, func(AUMState) bool { return d.topSignature() != before })
 	return d.result("close", ok, verdict(ok, "closed the "+what, "the "+what+" is still open"), nil), err
+}
+
+// topSignature sums up what is open over the mixer, to tell when a close
+// took effect.
+func (d *AUMDriver) topSignature() string {
+	var b strings.Builder
+	for _, o := range d.St.Overlays {
+		b.WriteString(o.Kind + ":" + o.Title + "|")
+	}
+	if d.St.TempoBar {
+		b.WriteString("tempo|")
+	}
+	if d.findText("HIDE", nil) != nil {
+		b.WriteString("keyboard|")
+	}
+	return b.String()
 }
 
 // outside picks a point outside popover frame p, as far from it as the

@@ -167,11 +167,15 @@ func orNone(s []string) string {
 
 // lumas measures the probe patch of every cell in one screenshot.
 func (d *AUMDriver) lumas(rt AUMRouting) ([][]float64, error) {
-	png, err := d.s.c.screenshot(d.ctx)
+	raw, err := d.s.c.screenshot(d.ctx)
 	if err != nil {
 		return nil, err
 	}
 	scr, err := d.s.c.ScreenInfo(d.ctx)
+	if err != nil {
+		return nil, err
+	}
+	img, err := DecodePNG(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +184,7 @@ func (d *AUMDriver) lumas(rt AUMRouting) ([][]float64, error) {
 		out[i] = make([]float64, len(rt.Destinations))
 		for j, dst := range rt.Destinations {
 			_, _, probe := cell(s, dst)
-			if out[i][j], err = Luma(png, scr.Scale, probe); err != nil {
+			if out[i][j], err = Luma(img, scr.Scale, probe); err != nil {
 				return nil, err
 			}
 		}

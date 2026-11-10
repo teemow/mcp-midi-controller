@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
@@ -301,24 +302,18 @@ func (w *WDA) element(rw http.ResponseWriter, method, sid, rest string, body map
 func (w *WDA) png() []byte {
 	pw, ph := int(w.Window[0]*w.Scale), int(w.Window[1]*w.Scale)
 	img := image.NewRGBA(image.Rect(0, 0, pw, ph))
+	fill := func(r image.Rectangle, c color.RGBA) {
+		draw.Draw(img, r, &image.Uniform{C: c}, image.Point{}, draw.Src)
+	}
+	fill(img.Bounds(), color.RGBA{30, 30, 30, 255})
+	fill(image.Rect(0, 0, pw/2, ph/2), color.RGBA{200, 0, 0, 255})
 	bright := w.Bright
 	if len(w.BrightScreens) > 0 {
 		bright = w.BrightScreens[min(w.gestures, len(w.BrightScreens)-1)]
 	}
-	for y := 0; y < ph; y++ {
-		for x := 0; x < pw; x++ {
-			c := color.RGBA{30, 30, 30, 255}
-			if x < pw/2 && y < ph/2 {
-				c = color.RGBA{200, 0, 0, 255}
-			}
-			px, py := float64(x)/w.Scale, float64(y)/w.Scale
-			for _, b := range bright {
-				if px >= b[0] && px < b[0]+b[2] && py >= b[1] && py < b[1]+b[3] {
-					c = color.RGBA{90, 90, 90, 255}
-				}
-			}
-			img.SetRGBA(x, y, c)
-		}
+	for _, b := range bright {
+		px := func(v float64) int { return int(v * w.Scale) }
+		fill(image.Rect(px(b[0]), px(b[1]), px(b[0]+b[2]), px(b[1]+b[3])), color.RGBA{90, 90, 90, 255})
 	}
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)

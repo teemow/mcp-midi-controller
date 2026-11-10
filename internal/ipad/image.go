@@ -160,15 +160,11 @@ func resample(src image.Image, r image.Rectangle, w, h int) *image.RGBA {
 	return out
 }
 
-// Luma is the mean brightness (0–255) of region r (in points) of a device
-// PNG with pngScale pixels per point. AUM leaves many states out of its
-// tree (a MIDI routing cell, a lit toggle), so operations compare it before
-// and after a tap.
-func Luma(pngData []byte, pngScale float64, r Rect) (float64, error) {
-	src, err := png.Decode(bytes.NewReader(pngData))
-	if err != nil {
-		return 0, fmt.Errorf("decode screenshot: %w", err)
-	}
+// Luma is the mean brightness (0–255) of region r (in points) of a decoded
+// screenshot with pngScale pixels per point. AUM leaves some states out of
+// its tree (a MIDI routing cell), so operations measure them in a
+// screenshot; decode it once with DecodePNG for many regions.
+func Luma(src image.Image, pngScale float64, r Rect) (float64, error) {
 	if pngScale <= 0 {
 		pngScale = 1
 	}
@@ -188,4 +184,13 @@ func Luma(pngData []byte, pngScale float64, r Rect) (float64, error) {
 		}
 	}
 	return sum / float64(px.Dx()*px.Dy()), nil
+}
+
+// DecodePNG decodes a device screenshot.
+func DecodePNG(data []byte) (image.Image, error) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode screenshot: %w", err)
+	}
+	return img, nil
 }

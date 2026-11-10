@@ -287,6 +287,7 @@ func TestAUMMIDIRoutingConnect(t *testing.T) {
 	a := mixer()
 	a.Routing = &rt
 	w, c := opFake(t, a)
+	w.Window, w.Scale = [2]float64{800, 600}, 1 // a small screenshot keeps -race fast
 	w.BrightScreens = [][][4]float64{nil, {rt.Cell(0, 1)}}
 	res, err := c.AUMMIDIRouting(context.Background(), AUMRequest{Action: "connect", Source: "keyboard", Destination: "synth"})
 	if err != nil || !res.Verified || !strings.Contains(res.Message, "Keyboard -> Synth @A1 connected") {
@@ -349,5 +350,67 @@ func TestExpectationNewFields(t *testing.T) {
 	}
 	if err := (Expectation{Channels: []ChannelExpectation{{Channel: "2", Armed: bptr(false)}}}).Validate(); err != nil {
 		t.Fatalf("armed-only expectation: %v", err)
+	}
+}
+
+func TestAUMTransportPlay(t *testing.T) {
+	at := func(pos string) ipadtest.AUM { a := mixer(); a.Position = pos; return a }
+	// Stopped (two equal reads), then the position runs after the tap: a
+	// running transport changes per read, not per gesture.
+	w := ipadtest.New(at("001:1  00:00.0").Source())
+	t.Cleanup(w.Close)
+	w.SetSources(at("001:1  00:00.0").Source(), at("001:1  00:00.0").Source(), at("001:2  00:00.5").Source(), at("001:3  00:01.0").Source())
+	c := New(w.URL)
+	res, err := c.AUMTransport(context.Background(), AUMRequest{Action: "play"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "playing") {
+		t.Fatalf("play: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != "tap 156,33" { // play: 67 points right of the position text
+		t.Fatalf("gestures = %v", g)
+	}
+}
+
+func TestAUMNodeAddSlot(t *testing.T) {
+	more := mixer()
+	more.Strips[1].Inserts = append(more.Strips[1].Inserts, ipadtest.Node{Empty: true})
+	w, c := opFake(t, mixer(), more)
+	res, err := c.AUMNode(context.Background(), AUMRequest{Action: "add_slot", Channel: "2"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "3 insert slots") {
+		t.Fatalf("add_slot: %+v, %v", res, err)
+	}
+	// Double-tap 42 points below the last insert (slot 2 at y 305, 74 high).
+	if g := w.GestureLog(); len(g) != 1 || g[0] != "doubleTap 358,421" {
+		t.Fatalf("gestures = %v", g)
+	}
+}
+
+func TestAUMFilesList(t *testing.T) {
+	files := mixer()
+	files.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "FILES", Rows: [][2]string{{"Sessions", ""}, {"Recordings", ""}}}}
+	sessions := mixer()
+	sessions.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "Sessions", Rows: [][2]string{{"scratch (mcp test)", "today"}, {"other", "yesterday"}}}}
+	w, c := opFake(t, ipadtest.DefaultAUM(), files, sessions)
+	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "list"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "scratch (mcp test)") {
+		t.Fatalf("list: %+v, %v", res, err)
+	}
+	// The FILES icon above its caption (965,169), then the Sessions row.
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 997,137" || g[1] != "tap 1026,95" {
+		t.Fatalf("gestures = %v", g)
+	}
+}
+
+func TestAUMFilePlayerSet(t *testing.T) {
+	fp := ipadtest.Strip{Title: "4: File Player", Level: "+0.0 dB", PlayEnable: bptr(true)}
+	base := mixer()
+	base.Strips[3] = fp
+	open := base
+	open.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "FILE PLAYER", Rows: [][2]string{{"Selected file", ""}, {"Loop", "OFF"}}}}
+	on := base
+	on.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "FILE PLAYER", Rows: [][2]string{{"Selected file", ""}, {"Loop", "ON"}}}}
+	_, c := opFake(t, base, open, on)
+	res, err := c.AUMFilePlayer(context.Background(), AUMRequest{Action: "set", Channel: "4", Setting: "Loop", Value: "ON"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "Loop OFF -> ON") {
+		t.Fatalf("set loop: %+v, %v", res, err)
 	}
 }
