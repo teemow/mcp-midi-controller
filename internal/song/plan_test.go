@@ -501,6 +501,29 @@ arrangement: [idle]
 	}
 }
 
+// TestPlanAllPresetsSameName checks a plugin that lists two presets under one
+// name gets one Preset Load for it: a session holds one per name.
+func TestPlanAllPresetsSameName(t *testing.T) {
+	cat := testCatalog()
+	twice := cat["drums"]
+	twice.FactoryPresets = append(twice.FactoryPresets, device.ProbePreset{Number: 2, Name: "Kit 808"}, device.ProbePreset{Number: 3, Name: "Kit Lo-Fi"})
+	cat["drums"] = twice
+	p, err := NewPlan(mustParse(t, testSong+"session: {presets: all}\n"), cat)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	n := p.Node("drums", "")
+	if got := n.FactoryPresets(); len(got) != 3 || len(n.Presets) != 3 || p.PresetsUnmapped != 0 {
+		t.Fatalf("drums: presets %v, %d mapped, %d unmapped; want three names, each mapped once", got, len(n.Presets), p.PresetsUnmapped)
+	}
+	if pr, _ := n.Preset("Kit 808"); pr.Number != 0 {
+		t.Errorf("Kit 808 loads preset number %d, want the first of the two (0)", pr.Number)
+	}
+	if _, _, err := p.BuildSession(SessionOptions{}); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+}
+
 // TestTrackHomeState checks one track's own sound is its strip and its
 // plugins, and nothing of another track.
 func TestTrackHomeState(t *testing.T) {
