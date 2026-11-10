@@ -233,6 +233,12 @@ func (c *Client) ActiveApp(ctx context.Context) (AppInfo, error) {
 func (c *Client) Screenshot(ctx context.Context) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.screenshot(ctx)
+}
+
+// screenshot is Screenshot for callers that already hold the lock (an AUM
+// operation checking pixels inside its session).
+func (c *Client) screenshot(ctx context.Context) ([]byte, error) {
 	var b64 string
 	if err := c.call(ctx, http.MethodGet, "/screenshot", nil, &b64); err != nil {
 		return nil, err
@@ -366,6 +372,36 @@ var ErrNoSuchLabel = errors.New("no element with that label")
 // screen change still finds its target. It returns how many elements matched
 // (the first one is tapped).
 func (s *Session) TapLabel(ctx context.Context, label string, wait time.Duration) (int, error) {
+	id, n, err := s.findLabel(ctx, label, wait)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.c.call(ctx, http.MethodPost, s.path("/element/"+id+"/click"), map[string]any{}, nil); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ClickButton clicks the one button labelled label as an element (an
+// accessibility press, not a tap at its position). It clicks nothing and
+// returns false when no button or more than one carries the label.
+func (s *Session) ClickButton(ctx context.Context, label string) (bool, error) {
+	var found []map[string]string
+	pred := "type == 'XCUIElementTypeButton' AND label ==[c] " + strconv.Quote(label)
+	if err := s.c.call(ctx, http.MethodPost, s.path("/elements"),
+		map[string]any{"using": "predicate string", "value": pred}, &found); err != nil {
+		return false, err
+	}
+	if len(found) != 1 || elementID(found[0]) == "" {
+		return false, nil
+	}
+	err := s.c.call(ctx, http.MethodPost, s.path("/element/"+elementID(found[0])+"/click"), map[string]any{}, nil)
+	return err == nil, err
+}
+
+// findLabel returns the first element labelled label (buttons first) and
+// how many matched, retrying for up to wait.
+func (s *Session) findLabel(ctx context.Context, label string, wait time.Duration) (string, int, error) {
 	wanted := "label ==[c] " + strconv.Quote(label)
 	predicates := []string{"type == 'XCUIElementTypeButton' AND " + wanted, wanted}
 	deadline := time.Now().Add(wait)
@@ -374,27 +410,22 @@ func (s *Session) TapLabel(ctx context.Context, label string, wait time.Duration
 			var found []map[string]string
 			if err := s.c.call(ctx, http.MethodPost, s.path("/elements"),
 				map[string]any{"using": "predicate string", "value": p}, &found); err != nil {
-				return 0, err
+				return "", 0, err
 			}
 			if len(found) == 0 {
 				continue
 			}
 			id := elementID(found[0])
 			if id == "" {
-				return 0, &Error{Status: http.StatusOK, Message: "element reply carried no id"}
+				return "", 0, &Error{Status: http.StatusOK, Message: "element reply carried no id"}
 			}
-			if err := s.c.call(ctx, http.MethodPost, s.path("/element/"+id+"/click"), map[string]any{}, nil); err != nil {
-				return 0, err
-			}
-			return len(found), nil
+			return id, len(found), nil
 		}
 		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("%w %q", ErrNoSuchLabel, label)
+			return "", 0, fmt.Errorf("%w %q", ErrNoSuchLabel, label)
 		}
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(400 * time.Millisecond):
+		if err := sleepCtx(ctx, 400*time.Millisecond); err != nil {
+			return "", 0, err
 		}
 	}
 }

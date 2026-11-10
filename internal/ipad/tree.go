@@ -18,6 +18,14 @@ type Rect struct {
 // Center is the rect's centre point.
 func (r Rect) Center() (float64, float64) { return r.X + r.Width/2, r.Y + r.Height/2 }
 
+// Contains reports whether the point lies inside the rect.
+func (r Rect) Contains(x, y float64) bool {
+	return x >= r.X && x <= r.X+r.Width && y >= r.Y && y <= r.Y+r.Height
+}
+
+// MidY is the rect's vertical centre.
+func (r Rect) MidY() float64 { return r.Y + r.Height/2 }
+
 // Empty reports a zero-area rect (AUM keeps many zero-size text nodes).
 func (r Rect) Empty() bool { return r.Width <= 0 || r.Height <= 0 }
 
@@ -27,25 +35,56 @@ func (r Rect) String() string {
 
 // Element is one node of an app's accessibility tree.
 type Element struct {
-	Type     string     `json:"type"`
-	Label    string     `json:"label,omitempty"`
-	Value    string     `json:"value,omitempty"`
-	Rect     Rect       `json:"rect"`
-	Enabled  bool       `json:"enabled"`
+	Type  string `json:"type"`
+	Label string `json:"label,omitempty"`
+	Value string `json:"value,omitempty"`
+	// Identifier is the accessibility identifier (WDA's rawIdentifier):
+	// AUM sets it on popover parts ("PopoverDismissRegion") and navigation
+	// bars (the popover's title).
+	Identifier string `json:"identifier,omitempty"`
+	Rect       Rect   `json:"rect"`
+	Enabled    bool   `json:"enabled"`
+	// Hidden is WDA's isVisible "0": AUM keeps hidden controls in the tree
+	// (the add-channel menu, a scrolled-away "+1").
+	Hidden   bool       `json:"hidden,omitempty"`
 	Traits   string     `json:"traits,omitempty"`
 	Children []*Element `json:"children,omitempty"`
+}
+
+// Selected reports the accessibility "Selected" trait: AUM sets it on a lit
+// MUTE, SOLO or REC button and on toggles that are on.
+func (e *Element) Selected() bool { return hasTrait(e.Traits, "Selected") }
+
+func hasTrait(traits, t string) bool {
+	for _, f := range strings.Split(traits, ",") {
+		if strings.TrimSpace(f) == t {
+			return true
+		}
+	}
+	return false
+}
+
+// Text is the element's label, or its value when it has no label (AUM's
+// filter buttons carry only a value).
+func (e *Element) Text() string {
+	if e.Label != "" {
+		return e.Label
+	}
+	return e.Value
 }
 
 // rawElement is WDA's JSON source node. Booleans arrive as "0"/"1" strings and
 // value can be any JSON scalar.
 type rawElement struct {
-	Type      string          `json:"type"`
-	Label     *string         `json:"label"`
-	Value     json.RawMessage `json:"value"`
-	Rect      Rect            `json:"rect"`
-	IsEnabled json.RawMessage `json:"isEnabled"`
-	Traits    *string         `json:"traits"`
-	Children  []rawElement    `json:"children"`
+	Type       string          `json:"type"`
+	Label      *string         `json:"label"`
+	Identifier *string         `json:"rawIdentifier"`
+	Value      json.RawMessage `json:"value"`
+	Rect       Rect            `json:"rect"`
+	IsEnabled  json.RawMessage `json:"isEnabled"`
+	IsVisible  json.RawMessage `json:"isVisible"`
+	Traits     *string         `json:"traits"`
+	Children   []rawElement    `json:"children"`
 }
 
 // ParseSource decodes WDA's GET /source?format=json value.
@@ -62,12 +101,16 @@ func (r *rawElement) convert() *Element {
 		Type:    strings.TrimPrefix(r.Type, "XCUIElementType"),
 		Rect:    r.Rect,
 		Enabled: truthy(r.IsEnabled),
+		Hidden:  len(r.IsVisible) > 0 && !truthy(r.IsVisible),
 	}
 	if r.Label != nil {
 		e.Label = *r.Label
 	}
 	if r.Traits != nil {
 		e.Traits = *r.Traits
+	}
+	if r.Identifier != nil {
+		e.Identifier = *r.Identifier
 	}
 	e.Value = scalar(r.Value)
 	for i := range r.Children {
@@ -120,6 +163,23 @@ func (e *Element) Find(match func(*Element) bool) []*Element {
 		return true
 	})
 	return out
+}
+
+// First returns the first element (in tree order) for which match is true,
+// or nil.
+func (e *Element) First(match func(*Element) bool) *Element {
+	var hit *Element
+	e.Walk(func(el *Element, _ int) bool {
+		if hit != nil {
+			return false
+		}
+		if match(el) {
+			hit = el
+			return false
+		}
+		return true
+	})
+	return hit
 }
 
 // Node is one flattened, labelled element: what an agent needs to read a

@@ -159,3 +159,38 @@ func resample(src image.Image, r image.Rectangle, w, h int) *image.RGBA {
 	}
 	return out
 }
+
+// Luma is the mean brightness (0–255) of region r (in points) of a decoded
+// screenshot with pngScale pixels per point. AUM leaves some states out of
+// its tree (a MIDI routing cell), so operations measure them in a
+// screenshot; decode it once with DecodePNG for many regions.
+func Luma(src image.Image, pngScale float64, r Rect) (float64, error) {
+	if pngScale <= 0 {
+		pngScale = 1
+	}
+	b := src.Bounds()
+	px := image.Rect(
+		b.Min.X+int(math.Floor(r.X*pngScale)), b.Min.Y+int(math.Floor(r.Y*pngScale)),
+		b.Min.X+int(math.Ceil((r.X+r.Width)*pngScale)), b.Min.Y+int(math.Ceil((r.Y+r.Height)*pngScale)),
+	).Intersect(b)
+	if px.Empty() {
+		return 0, fmt.Errorf("region %s lies outside the screenshot", r)
+	}
+	var sum float64
+	for y := px.Min.Y; y < px.Max.Y; y++ {
+		for x := px.Min.X; x < px.Max.X; x++ {
+			cr, cg, cb, _ := src.At(x, y).RGBA()
+			sum += 0.299*float64(cr>>8) + 0.587*float64(cg>>8) + 0.114*float64(cb>>8)
+		}
+	}
+	return sum / float64(px.Dx()*px.Dy()), nil
+}
+
+// DecodePNG decodes a device screenshot.
+func DecodePNG(data []byte) (image.Image, error) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode screenshot: %w", err)
+	}
+	return img, nil
+}

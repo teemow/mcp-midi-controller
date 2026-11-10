@@ -32,11 +32,13 @@ ML10X) to play live; use this to *build* the sounds and scenes it recalls.
     available via the `list_auv3_probes` / `get_auv3_probe` tools and turn a dump
     into a device type with `import_auv3_probe`.
 - **Sees and touches AUM over USB**: the `ipad_*` tools drive the iPad's screen
-  through WebDriverAgent (screenshots, the accessibility tree, tap / hold /
-  swipe), and `get_aum_ui` / `wait_for_aum_ui` read AUM's tempo, session,
-  transport and fader levels back from its own display, so MIDI the daemon sends
-  is verified against what AUM actually shows. See
-  [`docs/ipad-control.md`](docs/ipad-control.md).
+  through WebDriverAgent (screenshots, the accessibility tree, tap / double-tap /
+  hold / swipe / drag, text entry), the `aum_*` tools run AUM's operations by
+  name (channels, nodes, transport, files, MIDI routing and control, settings,
+  the File Player) and verify each result, and `get_aum_ui` / `wait_for_aum_ui`
+  read AUM's tempo, session, transport, fader levels, mute / solo / arm and node
+  bypass back from its own display, so MIDI the daemon sends is verified against
+  what AUM actually shows. See [`docs/ipad-control.md`](docs/ipad-control.md).
 - **Owns BLE discovery + pairing** itself (via BlueZ over D-Bus) — no manual
   `bluetoothctl`.
 - **Extendable without writing Go**: add gear by dropping a YAML device type, or
@@ -96,7 +98,8 @@ internal/
   audiotap/                ProbeAudioTap audio-stream WebSocket receiver +
                            in-memory level/window store (feeds get_audio_tap)
   ipad/                    WebDriverAgent client: the iPad's UI over USB, AUM
-                           state parsing (feeds ipad_* / get_aum_ui / wait_for_aum_ui)
+                           state parsing and named AUM operations (feeds ipad_*,
+                           aum_*, get_aum_ui, wait_for_aum_ui)
 init/                      systemd user unit
 scripts/                   validate.sh (hardware-validation harness) + capture tooling
 .cursor/mcp.json           Cursor MCP client config (points at the loopback daemon)
