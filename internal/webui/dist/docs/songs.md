@@ -86,8 +86,10 @@ arrangement: [verse, chorus, verse, chorus]
 
 - **tracks** — each is one mixer strip: an instrument followed by its effect
   chain, on its own MIDI channel (the first track on channel 1, in order; up to
-  twelve). `plugin` is the id of a staged AUv3 probe. `kind: drums` makes it a
-  drum track. `transpose` shifts all its notes.
+  twelve). `plugin` is the id of a staged AUv3 probe as `list_song_plugins`
+  gives it: the unit's type, subtype and manufacturer, such as
+  `aumu-mono-_acme` (the example uses short ids to stay readable).
+  `kind: drums` makes it a drum track. `transpose` shifts all its notes.
 - **master** — effects on the master strip, after its fader.
 - **patterns** — the phrases; see [Notation](#notation).
 - **scenes** — named sound settings; see [Sound](#sound).
