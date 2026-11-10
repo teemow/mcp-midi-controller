@@ -233,9 +233,13 @@ func (r *songRig) pullStaged(file string) {
 	}
 	r.pulling = true
 	r.mu.Unlock()
-	stop := make(chan struct{})
-	r.t.Cleanup(func() { close(stop) })
+	// The download hook writes into the state dir, so the cleanup waits for
+	// the goroutine to be gone: stopping it without waiting would let the
+	// test's temp dir be removed under a pull that had just begun.
+	stop, done := make(chan struct{}), make(chan struct{})
+	r.t.Cleanup(func() { close(stop); <-done })
 	go func() {
+		defer close(done)
 		seen := ""
 		for {
 			select {

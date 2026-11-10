@@ -405,9 +405,9 @@ func (s *Server) handleSwitchAUMSession(ctx context.Context, req *mcp.CallToolRe
 // the registry and bring the daemon along — set the current session, re-import
 // its rig and re-push the manifest — so a brain-side switch keeps everything
 // in lockstep. The receiver requires its callbacks not to block, so the work
-// runs in a goroutine.
+// runs in a goroutine (tracked by s.bg).
 func (s *Server) OnBrainSessionSwitch(program int) {
-	go func() {
+	s.bg.Go(func() {
 		reg, err := loadSessionSwitchRegistry()
 		if err != nil {
 			log.Printf("brain session switch (pc %d): %v", program, err)
@@ -429,5 +429,5 @@ func (s *Server) OnBrainSessionSwitch(program int) {
 			"trigger": "brain",
 			"hint":    "the brain switched sessions; the rig was re-imported and the control surface re-pushed",
 		})
-	}()
+	})
 }

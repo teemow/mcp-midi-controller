@@ -64,12 +64,12 @@ func (s *Server) OnAUMSessionDownloaded(file string) {
 // OnMidiControlConnected is the brain-connect callback: re-run the import for
 // the daemon's current session and push the manifest so the freshly connected
 // brain renders the surface. The midicontrol receiver requires its callbacks
-// not to block, so the work runs in a goroutine.
+// not to block, so the work runs in a goroutine (tracked by s.bg).
 func (s *Server) OnMidiControlConnected() {
 	if !s.aumAutoImport {
 		return
 	}
-	go s.reimportCurrentAUMSession()
+	s.bg.Go(s.reimportCurrentAUMSession)
 }
 
 // reimportCurrentAUMSession is OnMidiControlConnected's body: a no-op when no

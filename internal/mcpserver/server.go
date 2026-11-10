@@ -80,6 +80,13 @@ type Server struct {
 	// lock (saves are atomic writes). See aum_session_switch.go.
 	sessionSwitchMu sync.Mutex
 
+	// bg tracks the work the receiver callbacks hand to a goroutine because
+	// the midicontrol receiver requires them not to block
+	// (OnBrainSessionSwitch, OnMidiControlConnected). That work keeps writing
+	// into the config and state dirs after the callback has returned;
+	// waitBackground waits until it is over.
+	bg sync.WaitGroup
+
 	// usbAllowWrites is the daemon's master USB write gate (config
 	// usb_allow_writes). With it off, USB write tools (set_param, write_pattern,
 	// recall_pattern, select_preset) are never registered and a real usb_write
@@ -220,6 +227,13 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 	eng.SetInboundHook(s.notifyInbound)
 	return s
 }
+
+// waitBackground blocks until the work the receiver callbacks started in
+// goroutines (see Server.bg) is over. The tests use it: an import's last write
+// (devices.yaml) lands after its devices are bound, so "the device exists" is
+// not yet "the import is done", and a test that returns in between has its
+// temp dirs removed under the import.
+func (s *Server) waitBackground() { s.bg.Wait() }
 
 // broadcast sends one info-level MCP log notification (under logger) to every
 // connected session. Clients receive it only after setting a logging level (per
