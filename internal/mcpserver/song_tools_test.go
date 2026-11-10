@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/song"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
 )
@@ -72,13 +74,49 @@ sections:
 arrangement: [verse, chorus]
 `
 
+// newSongServer builds a server over an empty config dir with the test song's
+// plugins staged. Its host-awake hook does nothing unless opts replace it, so
+// playing a song in a test never starts a process.
 func newSongServer(t *testing.T, opts ...Option) *Server {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	s := New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}), opts...)
+	noHold := WithHostAwake(func() func() { return func() {} })
+	s := New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}), append([]Option{noHold}, opts...)...)
 	stageSongPlugins(t)
 	return s
+}
+
+// dialBrain connects a stand-in ProbeMidiBrain to the hub served by srv and
+// returns the commands it is sent. The channel closes when the connection
+// ends, which hangUp forces.
+func dialBrain(t *testing.T, srv *httptest.Server, hub *midicontrol.Hub) (frames <-chan midicontrol.Command, hangUp func()) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/midi-control", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = c.CloseNow() })
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !hub.Connected(); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	ch := make(chan midicontrol.Command, 256)
+	go func() {
+		defer close(ch)
+		for {
+			_, data, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var cmd midicontrol.Command
+			if json.Unmarshal(data, &cmd) == nil {
+				ch <- cmd
+			}
+		}
+	}()
+	return ch, func() { _ = c.CloseNow() }
 }
 
 func TestSongToolsSaveGetList(t *testing.T) {
@@ -304,30 +342,7 @@ func TestPlaySong(t *testing.T) {
 		t.Fatalf("play without a brain did not fail: %s", resultText(res))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/midi-control", nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = c.CloseNow() }()
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !hub.Connected(); {
-		time.Sleep(10 * time.Millisecond)
-	}
-	frames := make(chan midicontrol.Command, 256)
-	go func() {
-		defer close(frames)
-		for {
-			_, data, err := c.Read(ctx)
-			if err != nil {
-				return
-			}
-			var cmd midicontrol.Command
-			if json.Unmarshal(data, &cmd) == nil {
-				frames <- cmd
-			}
-		}
-	}()
+	frames, _ := dialBrain(t, srv, hub)
 
 	// Not authored yet: it plays, with a warning.
 	res = call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "from": "nowhere"})
@@ -411,6 +426,156 @@ collect:
 	}
 	if res := call(t, s.handleStopSong, map[string]any{}); res.IsError {
 		t.Errorf("stop with nothing playing: %s", resultText(res))
+	}
+}
+
+// fakeHost stands in for the host-awake hook: it counts the holds taken and
+// released and notes what the player reported at each.
+type fakeHost struct {
+	status func() song.Status
+
+	mu             sync.Mutex
+	held, released int
+	atHold, atEnd  []song.Status
+}
+
+func (h *fakeHost) hold() func() {
+	st := h.status()
+	h.mu.Lock()
+	h.held++
+	h.atHold = append(h.atHold, st)
+	h.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			st := h.status()
+			h.mu.Lock()
+			h.released++
+			h.atEnd = append(h.atEnd, st)
+			h.mu.Unlock()
+		})
+	}
+}
+
+// counts reports the holds taken and released so far.
+func (h *fakeHost) counts() (held, released int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.held, h.released
+}
+
+// waitReleased waits until every hold taken has been released.
+func (h *fakeHost) waitReleased(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if held, released := h.counts(); held == released {
+			return
+		}
+	}
+	held, released := h.counts()
+	t.Fatalf("the host is still held awake: %d hold(s), %d released", held, released)
+}
+
+// lastEnd is what the player reported when the latest hold was released.
+func (h *fakeHost) lastEnd() song.Status {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.atEnd[len(h.atEnd)-1]
+}
+
+// TestPlaySongHoldsTheHostAwake checks play_song holds its host awake for
+// exactly as long as a song plays: from before the playback begins until it
+// has finished, was stopped, was replaced by the next song or failed, and not
+// at all when nothing was played.
+func TestPlaySongHoldsTheHostAwake(t *testing.T) {
+	hub := midicontrol.NewHub()
+	mux := http.NewServeMux()
+	midicontrol.Register(mux, hub, midicontrol.Callbacks{})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var s *Server
+	host := &fakeHost{status: func() song.Status { return s.player.Status() }}
+	s = newSongServer(t, WithMidiControl(hub), WithHostAwake(host.hold))
+	t.Cleanup(func() { s.player.Stop() })
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	want := func(when string, held, released int) {
+		t.Helper()
+		if h, r := host.counts(); h != held || r != released {
+			t.Fatalf("%s: %d hold(s) taken and %d released, want %d and %d", when, h, r, held, released)
+		}
+	}
+
+	// Nothing played, nothing held: no brain, no such section, no such track.
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive"}); !res.IsError {
+		t.Fatalf("play without a brain did not fail: %s", resultText(res))
+	}
+	want("without a brain", 0, 0)
+	frames, hangUp := dialBrain(t, srv, hub)
+	go func() {
+		for range frames {
+		}
+	}()
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "from": "nowhere"}); !res.IsError {
+		t.Fatalf("a bad start was accepted: %s", resultText(res))
+	}
+	want("with a bad start", 0, 0)
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "tracks": []string{"tuba"}}); !res.IsError {
+		t.Fatalf("an unknown track was accepted: %s", resultText(res))
+	}
+	if held, released := host.counts(); held != released {
+		t.Fatalf("a refused play left the host held awake: %d hold(s), %d released", held, released)
+	}
+	base, _ := host.counts()
+
+	// A song that plays to its end: held before the playback begins, released
+	// once it has finished.
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "preroll_ms": 20}); res.IsError {
+		t.Fatalf("play: %s", resultText(res))
+	}
+	want("while the song plays", base+1, base)
+	host.mu.Lock()
+	before := host.atHold[len(host.atHold)-1]
+	host.mu.Unlock()
+	if before.Playing || before.Song != "" {
+		t.Errorf("the hold was taken with the player at %+v, want before any playback began", before)
+	}
+	host.waitReleased(t)
+	want("after the song", base+1, base+1)
+	if st := host.lastEnd(); st.Playing || st.Outcome != "finished" {
+		t.Errorf("the hold was released at %+v, want the song finished", st)
+	}
+
+	// A song replaced by the next: the new one holds, the old one lets go.
+	// Then stop_song: released by the time it returns.
+	for i := 0; i < 2; i++ {
+		if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive"}); res.IsError {
+			t.Fatalf("play: %s", resultText(res))
+		}
+	}
+	want("with the song played again over itself", base+3, base+2)
+	if st := host.lastEnd(); st.Outcome != "stopped" {
+		t.Errorf("the replaced playback's hold was released at %+v, want stopped", st)
+	}
+	if res := call(t, s.handleStopSong, map[string]any{}); res.IsError {
+		t.Fatalf("stop: %s", resultText(res))
+	}
+	want("after stop_song", base+3, base+3)
+	if st := host.lastEnd(); st.Outcome != "stopped" {
+		t.Errorf("the stopped playback's hold was released at %+v, want stopped", st)
+	}
+
+	// A song that fails: the brain goes away while it plays.
+	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("play: %s", resultText(res))
+	}
+	want("while the last song plays", base+4, base+3)
+	hangUp()
+	host.waitReleased(t)
+	if st := host.lastEnd(); st.Playing || st.Outcome == "" || st.Outcome == "finished" || st.Outcome == "stopped" {
+		t.Errorf("the hold was released at %+v, want the playback failed", st)
 	}
 }
 
