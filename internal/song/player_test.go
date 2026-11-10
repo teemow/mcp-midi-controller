@@ -554,11 +554,12 @@ sections:
 arrangement: [s]
 `
 
-// transportEvents are stand-ins for the messages that run and stop a session's
-// transport.
+// transportEvents are stand-ins for the messages that rewind, run and stop a
+// session's transport.
 var (
-	seqStart = []Event{{Kind: Control, Channel: 15, Data1: 106}, {Kind: Control, Channel: 15, Data1: 104, Data2: 127}, {Kind: Control, Channel: 15, Data1: 102, Data2: 127}}
-	seqStop  = []Event{{Kind: Control, Channel: 15, Data1: 103, Data2: 127}, {Kind: Control, Channel: 15, Data1: 104, Data2: 127}}
+	seqRewind = []Event{{Kind: Control, Channel: 15, Data1: 106}, {Kind: Control, Channel: 15, Data1: 104, Data2: 127}}
+	seqStart  = []Event{{Kind: Control, Channel: 15, Data1: 102, Data2: 127}}
+	seqStop   = []Event{{Kind: Control, Channel: 15, Data1: 103, Data2: 127}, {Kind: Control, Channel: 15, Data1: 104, Data2: 127}}
 )
 
 // TestPlayerSequenced plays a song from its session's sequencer: the player
@@ -570,7 +571,7 @@ func TestPlayerSequenced(t *testing.T) {
 	var rec recorder
 	var p Player
 	began := time.Now()
-	st, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop, Tail: 50 * time.Millisecond}, rec.send)
+	st, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Rewind: seqRewind, Start: seqStart, Stop: seqStop, Tail: 50 * time.Millisecond}, rec.send)
 	if err != nil {
 		t.Fatalf("StartSequenced: %v", err)
 	}
@@ -583,8 +584,16 @@ func TestPlayerSequenced(t *testing.T) {
 	if st := p.Status(); !st.Playing || st.LeadInMS <= 0 || st.LeadInMS > q.Lead().Milliseconds() || st.PositionMS != 0 || st.Bar != 1 {
 		t.Errorf("status in the lead-in = %+v, want position 0 at bar 1 with the lead-in counting down", st)
 	}
-	if got := rec.snapshot(); len(got) != len(seqStart) {
-		t.Fatalf("sent %d events as the playback started, want the %d that start the transport: %v", len(got), len(seqStart), got)
+	if got := rec.snapshot(); len(got) != len(seqRewind)+len(seqStart) {
+		t.Fatalf("sent %d events as the playback started, want the %d that rewind and start the transport: %v", len(got), len(seqRewind)+len(seqStart), got)
+	}
+	// The start is held back until the rewind has had its time: sent at once
+	// after it, the transport would go on from where it stood.
+	rec.mu.Lock()
+	gap := rec.at[len(seqRewind)].Sub(rec.at[len(seqRewind)-1])
+	rec.mu.Unlock()
+	if gap < rewindSettle {
+		t.Errorf("the start followed the rewind after %v, want at least %v", gap, rewindSettle)
 	}
 	// In the song the position runs on the song's own clock.
 	time.Sleep(q.Lead())
@@ -601,9 +610,9 @@ func TestPlayerSequenced(t *testing.T) {
 		t.Errorf("the playback took %v, want the sequence and its tail (%v)", took, want)
 	}
 	got := rec.snapshot()
-	want := append(append([]Event{}, seqStart...), seqStop...)
-	if len(got) != len(want) || final.Sent != len(seqStart) {
-		t.Fatalf("sent %v (status counts %d), want the start then the stop and no note", got, final.Sent)
+	want := append(append(append([]Event{}, seqRewind...), seqStart...), seqStop...)
+	if len(got) != len(want) || final.Sent != len(seqRewind)+len(seqStart) {
+		t.Fatalf("sent %v (status counts %d), want the rewind, the start, then the stop and no note", got, final.Sent)
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -619,21 +628,35 @@ func TestPlayerSequencedStop(t *testing.T) {
 	q := tl.Sequence()
 	var rec recorder
 	var p Player
-	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop}, rec.send); err != nil {
+	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Rewind: seqRewind, Start: seqStart, Stop: seqStop}, rec.send); err != nil {
 		t.Fatalf("StartSequenced: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(rewindSettle + 100*time.Millisecond)
 	st := p.Stop()
 	if st.Playing || st.Outcome != "stopped" || st.Mode != ModeSequenced {
 		t.Errorf("status after Stop = %+v, want stopped", st)
 	}
 	got := rec.snapshot()
-	if len(got) != len(seqStart)+len(seqStop) || got[len(got)-2] != seqStop[0] || got[len(got)-1] != seqStop[1] {
-		t.Fatalf("after Stop the player had sent %v, want the start and then the stop", got)
+	if len(got) != len(seqRewind)+len(seqStart)+len(seqStop) || got[len(got)-2] != seqStop[0] || got[len(got)-1] != seqStop[1] {
+		t.Fatalf("after Stop the player had sent %v, want the rewind, the start and then the stop", got)
+	}
+
+	// Stopped before the rewind has had its time, the transport is never
+	// started, and still stopped.
+	rec = recorder{}
+	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Rewind: seqRewind, Start: seqStart, Stop: seqStop}, rec.send); err != nil {
+		t.Fatalf("StartSequenced: %v", err)
+	}
+	time.Sleep(rewindSettle / 4)
+	p.Stop()
+	for _, e := range rec.snapshot() {
+		if e == seqStart[0] {
+			t.Errorf("a playback stopped %v after its rewind started the transport: %v", rewindSettle/4, rec.snapshot())
+		}
 	}
 
 	// A live playback takes over from a sequenced one, which is stopped first.
-	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop}, rec.send); err != nil {
+	if _, err := p.StartSequenced("test", tl, q, SequencedOptions{Rewind: seqRewind, Start: seqStart, Stop: seqStop}, rec.send); err != nil {
 		t.Fatalf("StartSequenced: %v", err)
 	}
 	if st, err := p.Start("test", tl, PlayOptions{Preroll: 10 * time.Millisecond}, rec.send); err != nil || st.Mode != ModeLive {
@@ -675,7 +698,7 @@ func TestPlayerSequencedFailures(t *testing.T) {
 		got = append(got, e)
 		return nil
 	}
-	if _, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Start: seqStart, Stop: seqStop}, send); err != nil {
+	if _, err := p.StartSequenced("tiny", tl, q, SequencedOptions{Rewind: seqRewind, Start: seqStart, Stop: seqStop}, send); err != nil {
 		t.Fatalf("StartSequenced: %v", err)
 	}
 	final := waitDone(t, &p)
@@ -684,13 +707,51 @@ func TestPlayerSequencedFailures(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := append([]Event{seqStart[0]}, seqStop...)
+	want := append([]Event{seqRewind[0]}, seqStop...)
 	if len(got) != len(want) {
-		t.Fatalf("sent %v, want the first start message and then the stop", got)
+		t.Fatalf("sent %v, want the first message and then the stop", got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("event %d = %s, want %s", i, describe(got[i]), describe(want[i]))
 		}
+	}
+}
+
+// TestPlayerRewindsAheadOfTheStart: a live playback that runs the session's
+// transport rewinds it first of all and starts it no sooner than rewindSettle
+// later, however short the preroll.
+func TestPlayerRewindsAheadOfTheStart(t *testing.T) {
+	tl, _ := compileTest(t, tinySong)
+	var rec recorder
+	var p Player
+	opts := PlayOptions{Preroll: 10 * time.Millisecond, Rewind: seqRewind, Before: seqStart, After: seqStop}
+	if _, err := p.Start("tiny", tl, opts, rec.send); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if final := waitDone(t, &p); final.Outcome != "finished" {
+		t.Fatalf("final status = %+v", final)
+	}
+	got := rec.snapshot()
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(got) < 4 || got[0] != seqRewind[0] || got[1] != seqRewind[1] {
+		t.Fatalf("the playback began with %v, want the rewind", got[:min(4, len(got))])
+	}
+	started := -1
+	for i, e := range got {
+		if e == seqStart[0] {
+			started = i
+			break
+		}
+	}
+	if started < 0 || got[started+1].Kind != NoteOn {
+		t.Fatalf("the start is at %d of %v, want it right before the first note", started, got)
+	}
+	if gap := rec.at[started].Sub(rec.at[1]); gap < rewindSettle {
+		t.Errorf("the start followed the rewind after %v, want at least %v", gap, rewindSettle)
+	}
+	if n := len(got); got[n-2] != seqStop[0] || got[n-1] != seqStop[1] {
+		t.Errorf("the playback ended with %v, want the stop", got[n-2:])
 	}
 }

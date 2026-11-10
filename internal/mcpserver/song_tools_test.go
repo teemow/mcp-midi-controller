@@ -395,12 +395,13 @@ collect:
 	if firstNote < 0 || programs != 2 {
 		t.Fatalf("got %d preset loads before the first note (at %d), want the two tracks' presets: %+v", programs, firstNote, got)
 	}
-	// Transport start right before the first note, stop at the very end.
-	if r, b := got[firstNote-2], got[firstNote-1]; r.Controller != 104 || b.Type != "cc" || b.Controller != 102 || b.Value != 127 {
-		t.Errorf("before the first note: %+v then %+v, want the transport rewind and start", r, b)
+	// The transport is rewound first of all and started right before the
+	// first note; it is stopped at the very end and left at the top.
+	if r, b := got[0], got[firstNote-1]; r.Type != "cc" || r.Controller != 104 || b.Type != "cc" || b.Controller != 102 || b.Value != 127 {
+		t.Errorf("first frame %+v, before the first note %+v: want the transport rewind and start", r, b)
 	}
-	if e := got[len(got)-1]; e.Type != "cc" || e.Controller != 103 {
-		t.Errorf("last frame: %+v, want the transport stop", e)
+	if e, r := got[len(got)-2], got[len(got)-1]; e.Type != "cc" || e.Controller != 103 || r.Controller != 104 {
+		t.Errorf("last frames: %+v then %+v, want the transport stop and rewind", e, r)
 	}
 	// Notes ride their tracks' channels; the pad (channel 2) plays its chord
 	// only in the chorus, after its preset changed.
@@ -817,8 +818,8 @@ func TestPlaySongSequenced(t *testing.T) {
 			ccs = append(ccs, cmd.Controller*1000+cmd.Value)
 		}
 	}
-	if fmt.Sprint(ccs) != fmt.Sprint([]int{106127, 104127, 102127, 103127, 106000}) || notes == 0 {
-		t.Errorf("live with the transport sent %v and %d notes, want the sequencer bypassed, rewind, start, the notes, stop, the sequencer back on", ccs, notes)
+	if fmt.Sprint(ccs) != fmt.Sprint([]int{106127, 104127, 102127, 103127, 104127, 106000}) || notes == 0 {
+		t.Errorf("live with the transport sent %v and %d notes, want the sequencer bypassed, rewind, start, the notes, stop, rewind, the sequencer back on", ccs, notes)
 	}
 
 	// New notes: the sequencer holds the old song, so the song plays live and

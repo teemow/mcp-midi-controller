@@ -2,9 +2,12 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
@@ -631,5 +634,94 @@ func TestSoundCheckIsolatesEachTrack(t *testing.T) {
 	r.mu.Unlock()
 	if muted["bass"] || !muted["pad"] || muted["drums"] {
 		t.Errorf("mutes after the check = %v, want only the pad's", muted)
+	}
+}
+
+// TestSoundCheckAgainstAUMsMutes runs the check against a mixer that, like
+// AUM, can keep the first of two opposite mutes sent to a strip in the same
+// moment. On a device the first track was called silent (its strip was muted
+// and opened again at once) and the last one was left muted (muted after its
+// note and restored at once).
+func TestSoundCheckAgainstAUMsMutes(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	// The pad is muted by the song itself and plays in the first section.
+	doc := strings.Replace(toolSong, "  - id: pad\n", "  - id: pad\n    mute: true\n", 1)
+	doc = strings.Replace(doc, "verse: {bars: 1, play: {bass: bass, drums: beat}}", "verse: {bars: 1, play: {bass: bass, pad: chords, drums: beat}}", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	r.strips(cs.plan)
+	r.connect()
+
+	for run := 1; run <= 2; run++ {
+		res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+		text := resultText(res)
+		if res.IsError || strings.Contains(text, "SILENT") || strings.Contains(text, "played again") {
+			t.Fatalf("check %d: %s", run, text)
+		}
+		// The song's own mutes are back: only the pad's strip, on channel 2.
+		r.wantMuted(fmt.Sprintf("after check %d", run), 2)
+	}
+}
+
+// TestSoundCheckPlaysASilentTrackAgain checks a track that does not answer
+// its first note is played once more before it is called silent, and that
+// the report says so either way.
+func TestSoundCheckPlaysASilentTrackAgain(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	// The bass swallows its first note (a plugin still busy with its
+	// preset); the pad's instrument is dead.
+	doc := strings.Replace(toolSong, "verse: {bars: 1, play: {bass: bass, drums: beat}}", "verse: {bars: 1, play: {bass: bass, pad: chords, drums: beat}}", 1)
+	awake := false // read by the rig under its lock
+	r.Voice = func(ch, note int) (float64, float64) {
+		if ch == 2 || (ch == 1 && !awake) {
+			return 0, 0
+		}
+		return 220, 0.2
+	}
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	done := make(chan *mcp.CallToolResult, 1)
+	go func() { done <- call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false}) }()
+	// The bass answers from its second note on.
+	r.waitCommands(func(cmds []midicontrol.Command) bool {
+		for _, c := range cmds {
+			if c.Type == "noteOff" && c.Channel == 1 {
+				return true
+			}
+		}
+		return false
+	})
+	r.mu.Lock()
+	awake = true
+	r.mu.Unlock()
+	res := <-done
+	text := resultText(res)
+	for _, want := range []string{
+		"sound   FAIL  silent: pad (PolySynth)",
+		"bass       PolySynth              A1   peak",
+		"(silent at first, answered when played again)",
+		"SILENT (peak -120.0 dBFS, played 2 times)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "silent: bass") {
+		t.Errorf("the bass was called silent although it answered the second note:\n%s", text)
 	}
 }

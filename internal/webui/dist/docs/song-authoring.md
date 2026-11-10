@@ -62,6 +62,12 @@ did not load only through the colour of its node, so the check reads the
 nodes' rings off a screenshot. And a track must be checked behind the others'
 mutes: a delay that was still ringing made a quiet hat look like no answer.
 
+The second run added a third. AUM can keep the first of two opposite mutes
+that reach one strip together, so muting a strip and opening it in the same
+moment left it muted, and the check heard nothing. A strip's mute and its
+unmute are sent apart, and a track that stays silent is played once more
+before it is called silent.
+
 `load_song` ends with this check. It can be called on its own at any time, for
 instance when a playback sounded wrong. Where the session's tap names itself
 (8, below), the check learns the open session from it and leaves AUM's menu

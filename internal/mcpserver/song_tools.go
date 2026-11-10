@@ -858,7 +858,8 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
 	}
 	// Stop/Rewind only stops a running transport, so a start rewinds first to
-	// begin at the top.
+	// begin at the top. The player gives the rewind time before the start:
+	// AUM does not rewind when the start follows at once.
 	rewind, start, stop := cs.plan.Transport["Rewind"], cs.plan.Transport["Start Play"], cs.plan.Transport["Stop/Rewind"]
 	bypass := cs.plan.SequencerBypass
 
@@ -877,9 +878,10 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		// transport is rewound again at the end, so the session's own play
 		// button starts the song from the top too.
 		st, err = s.player.StartSequenced(cs.id, cs.timeline, seq, song.SequencedOptions{
-			Start: []song.Event{cc(bypass, 0), cc(rewind, 127), cc(start, 127)},
-			Stop:  []song.Event{cc(stop, 127), cc(rewind, 127)},
-			OnEnd: onEnd,
+			Rewind: []song.Event{cc(bypass, 0), cc(rewind, 127)},
+			Start:  []song.Event{cc(start, 127)},
+			Stop:   []song.Event{cc(stop, 127), cc(rewind, 127)},
+			OnEnd:  onEnd,
 		}, send)
 	} else {
 		opts := song.PlayOptions{
@@ -888,12 +890,15 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 			OnEnd:   onEnd,
 		}
 		if args.Transport {
-			opts.Before = []song.Event{cc(rewind, 127), cc(start, 127)}
-			opts.After = []song.Event{cc(stop, 127)}
+			// The transport is left at the top again, so whatever starts it
+			// next begins there.
+			opts.Rewind = []song.Event{cc(rewind, 127)}
+			opts.Before = []song.Event{cc(start, 127)}
+			opts.After = []song.Event{cc(stop, 127), cc(rewind, 127)}
 			if rec.Sequence != "" {
 				// The session's sequencer would play the song from the top along
 				// with the transport: keep it out while the song is played live.
-				opts.Before = append([]song.Event{cc(bypass, 127)}, opts.Before...)
+				opts.Rewind = append([]song.Event{cc(bypass, 127)}, opts.Rewind...)
 				opts.After = append(opts.After, cc(bypass, 0))
 			}
 		}

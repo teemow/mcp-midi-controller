@@ -46,6 +46,9 @@ var (
 	songNoteHold  = 250 * time.Millisecond
 	songNoteTail  = 450 * time.Millisecond
 	songFloorWait = 120 * time.Millisecond
+	// songMuteGap is the least time between a strip's mute and its opposite
+	// (see stripMutes). AUM's largest audio buffer is 46 ms.
+	songMuteGap = 150 * time.Millisecond
 )
 
 // silentDB is the peak below which a track counts as silent.
@@ -79,7 +82,7 @@ func (s *Server) registerSongLoadTools(songArg string) {
 		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM has the song's session open with its strips and reports no failed plugin, and every track answers a note. " +
 			"Which session is open is read from the session's master tap, which dials in under the session's id; AUM's menu is opened for the name only when no tap names the session, or with ui: true. " +
 			"The mixer is looked at either way: its strips, and a plugin that did not load, which is read off a screenshot: AUM draws its node with a ring of red stripes and says so nowhere else. " +
-			"For the notes, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted and the lowest of its first notes played, and the master tap is measured: a track that stays silent is named with its plugin — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
+			"For the notes, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted and the lowest of its first notes played, and the master tap is measured: a track that is silent is played once more, and named with its plugin when it is silent again — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
 			"Not while a song plays. ui: false leaves AUM's screen alone.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -464,6 +467,9 @@ type trackCheck struct {
 	PeakDB float64 `json:"peak_db,omitempty"`
 	RMSDB  float64 `json:"rms_db,omitempty"`
 	Sounds bool    `json:"sounds"`
+	// Tries is how often the note was played: a track that stays silent is
+	// played a second time before it is called silent.
+	Tries int `json:"tries,omitempty"`
 	// Skipped says why the track was not played.
 	Skipped string `json:"skipped,omitempty"`
 }
@@ -498,10 +504,12 @@ func (c *checkReport) text() string {
 		switch {
 		case t.Skipped != "":
 			fmt.Fprintf(&b, "    %-10s %-22s not played: %s\n", t.Track, t.Plugin, t.Skipped)
+		case t.Sounds && t.Tries > 1:
+			fmt.Fprintf(&b, "    %-10s %-22s %-4s peak %6.1f dBFS (silent at first, answered when played again)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB)
 		case t.Sounds:
 			fmt.Fprintf(&b, "    %-10s %-22s %-4s peak %6.1f dBFS\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB)
 		default:
-			fmt.Fprintf(&b, "    %-10s %-22s %-4s SILENT (peak %.1f dBFS)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB)
+			fmt.Fprintf(&b, "    %-10s %-22s %-4s SILENT (peak %.1f dBFS, played %d times)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB, t.Tries)
 		}
 	}
 	return b.String()
@@ -732,16 +740,16 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 	// left ringing in its delay or reverb is then not taken for an answer,
 	// nor does it drown a quiet one. The song's own mutes come back at the
 	// end, whatever happens on the way.
-	mute := func(tp *song.TrackPlan, on bool) error { return s.sendBrain(ctx, songCommand(tp.MuteEvent(on))) }
+	mutes := newStripMutes(s, cs.plan)
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		for _, tp := range cs.plan.Tracks {
-			_ = s.sendBrain(rctx, songCommand(tp.MuteEvent(tp.HomeMute())))
+			_ = mutes.set(rctx, tp, tp.HomeMute())
 		}
 	}()
 	for _, tp := range cs.plan.Tracks {
-		if err := mute(tp, true); err != nil {
+		if err := mutes.set(ctx, tp, true); err != nil {
 			return nil, err
 		}
 	}
@@ -755,21 +763,66 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 			continue
 		}
 		row.Note = e.Data1
-		if err := mute(tp, false); err != nil {
+		// A track that stays silent is played once more, its strip opened
+		// again, before it is called silent: one lost message or a plugin
+		// still busy with its preset is not a dead plugin.
+		for row.Tries < 2 && !row.Sounds {
+			row.Tries++
+			if err := mutes.set(ctx, tp, false); err != nil {
+				return out, err
+			}
+			h, err := s.hearNote(ctx, tap, e.Channel, e.Data1, 100, songNoteHold, songNoteTail)
+			if err != nil {
+				return out, err
+			}
+			row.PeakDB, row.RMSDB = round1(h.PeakDB), round1(h.RMSDB)
+			row.Sounds = h.Sounds()
+		}
+		if err := mutes.set(ctx, tp, true); err != nil {
 			return out, err
 		}
-		h, err := s.hearNote(ctx, tap, e.Channel, e.Data1, 100, songNoteHold, songNoteTail)
-		if merr := mute(tp, true); err == nil {
-			err = merr
-		}
-		if err != nil {
-			return out, err
-		}
-		row.PeakDB, row.RMSDB = round1(h.PeakDB), round1(h.RMSDB)
-		row.Sounds = h.Sounds()
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// stripMutes sends strip mutes no closer together than AUM takes them. Two
+// opposite mutes for one strip that reach AUM in the same audio buffer can
+// leave the strip at the first of them: on a device a mute followed at once
+// by its unmute left the strip muted in 2 of 10 tries, and in none of 24 when
+// the two were 30 ms or more apart. So a strip's mute waits until songMuteGap
+// has passed since its opposite was sent.
+type stripMutes struct {
+	s    *Server
+	last map[string]stripMute
+}
+
+type stripMute struct {
+	muted bool
+	at    time.Time
+}
+
+// newStripMutes starts from a song's home state sent just now: every strip
+// stands at the mute its track declares.
+func newStripMutes(s *Server, plan *song.Plan) *stripMutes {
+	m := &stripMutes{s: s, last: map[string]stripMute{}}
+	now := time.Now()
+	for _, tp := range plan.Tracks {
+		m.last[tp.ID] = stripMute{muted: tp.HomeMute(), at: now}
+	}
+	return m
+}
+
+// set mutes or unmutes a track's strip.
+func (m *stripMutes) set(ctx context.Context, tp *song.TrackPlan, muted bool) error {
+	if last, sent := m.last[tp.ID]; sent && last.muted != muted {
+		if err := sleepContext(ctx, songMuteGap-time.Since(last.at)); err != nil {
+			return err
+		}
+	}
+	err := m.s.sendBrain(ctx, songCommand(tp.MuteEvent(muted)))
+	m.last[tp.ID] = stripMute{muted: muted, at: time.Now()}
+	return err
 }
 
 // sendSongState sends a state's messages the way playback does: the preset
