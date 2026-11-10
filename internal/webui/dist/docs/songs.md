@@ -3,8 +3,10 @@
 A song is a multi-track arrangement written as one YAML document. From it the
 daemon makes two things: the **AUM session** that hosts the song's instruments
 and effects, and the **MIDI** that plays it. AUM has no sequencer of its own, so
-the notes come from the ProbeMidiBrain hosted in the session: the daemon sends
-it every note and control change when it is due.
+the session hosts two things that can play: a sequencer plugin with the whole
+song written into it, which runs with AUM's transport, and the ProbeMidiBrain,
+through which the daemon sends every note and control change when it is due.
+[Playing](#playing) says which is used when.
 
 This is what lets an agent be asked for a whole song — "four synths with their
 effects, a drum machine, a different sound in the chorus" — and deliver one
@@ -18,9 +20,9 @@ that plays inside AUM.
 | 2. Write | `save_song` | Store the document. It is checked first; see [What is checked](#what-is-checked). |
 | 3. Author | `author_song_session` | Build the song's `.aumproj` and stage it. The iPad's auv3-probe app pulls it into AUM's folder. |
 | 4. Load | in AUM | Open the session. Its brain and tap dial the daemon. |
-| 5. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song, or from a section, or only some tracks. |
+| 5. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
 | 6. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
-| 7. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once. A change to what the song hosts or controls, or to its tempo, needs step 3 and 4 again; `get_song` and `play_song` say when. |
+| 7. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3 and 4. A change to what the song hosts or controls, or to its tempo, needs step 3 and 4 before the song sounds right at all; `get_song` and `play_song` say when. |
 
 `export_song_midi` writes the song as a Standard MIDI File for a sequencer or a
 DAW.
@@ -213,7 +215,7 @@ problem with its place in the document:
 `author_song_session` builds one strip per part:
 
 ```
-Brain     ProbeMidiBrain (a MIDI strip)
+Brain     ProbeMidiBrain, the sequencer (a MIDI strip)
 <track>   instrument > effects > fader          one strip per track
 Master    master sum > fader > master effects > ProbeAudioTap
 ```
@@ -221,13 +223,15 @@ Master    master sum > fader > master effects > ProbeAudioTap
 **MIDI.** One brain plays every track. Its output is routed to every instrument
 through a filter that passes only that track's channel, and to AUM's MIDI
 Control through a filter that passes only the control channels. A note therefore
-never fires a mapping, and a control message never reaches a synth.
+never fires a mapping, and a control message never reaches a synth. The
+sequencer sits next to the brain and is routed the same way, to the same
+destinations through the same filters.
 
 | Channels | Carry |
 |----------|-------|
 | 1…N | the tracks' notes, one channel each |
 | N+1…14 | plugin bypasses and parameters, filled from 14 downwards |
-| 15 | strip levels and mutes and the transport (the convention's CCs), preset loads (Program Changes) |
+| 15 | strip levels and mutes, the transport and the sequencer's bypass (the convention's CCs), preset loads (Program Changes) |
 | 16 | left to the rig: tap toggles and session switching |
 
 **Mappings.** Every strip's level and mute and every plugin's bypass are mapped,
@@ -236,39 +240,96 @@ of the plugin's "Preset Load" actions in AUM, fired by a Program Change. With
 `full_control: true` every other parameter of every plugin is mapped as well,
 around the song's own mappings.
 
-The daemon records which session a song was authored into and for which
-layout. Changing notes, patterns or the arrangement leaves the layout alone.
-Adding a plugin, a preset or a parameter changes it, and so does the tempo
-(it is the session's clock): the session must then be authored and loaded
-again, and until it is `get_song` and `play_song` say so.
+**The sequencer.** When Atom | Piano Roll² is among the staged AUv3 probes,
+the session hosts it with the whole song in one clip: every track's notes on
+the track's channel and every control change as a MIDI event, after a lead-in
+(see [Playing](#playing)). The clip is armed and does not loop, so it plays
+once whenever the transport runs from the top, whoever starts it. Its bypass
+is mapped (CC 106 on channel 15), which is how a live playback that runs the
+transport keeps it silent. `sequencer: false` leaves it out; `sequencer: true`
+insists on it. [The sequencer's state](#the-sequencers-state) says what is
+written.
+
+The daemon records which session a song was authored into, for which layout,
+and which notes its sequencer holds. Changing notes, patterns or the
+arrangement leaves the layout alone, but not the sequencer: it keeps playing
+the song as it was authored. Adding a plugin, a preset or a parameter changes
+the layout, and so does the tempo (it is the session's clock): the session
+must then be authored and loaded again, and until it is `get_song` and
+`play_song` say so.
 
 The session is staged under `Songs/<title>` by default (`out_id` chooses
 another place), which is also where it lands in AUM's folder on the iPad.
 
 ## Playing
 
-`play_song` first sets the session to the opening section's whole sound —
-presets, then a pause for them to load, then everything else — and then sends
-the timeline. It returns at once; the song plays in the background.
+`play_song` returns at once; the song plays in the background. There are two
+ways to play, and a session with a sequencer offers both:
+
+| | Sequenced | Live |
+|-|-----------|------|
+| Who plays | the sequencer in the session, with AUM's transport | the daemon, through the brain |
+| What the daemon sends | rewind and start; stop and rewind at the end | the opening sound, then every note and control change when it is due |
+| Timing | AUM's own: on the sample | the network's: a few milliseconds either way |
+| What is played | the whole song, as it was when the session was authored | the song as it is stored now: all of it, from a section, a number of sections, only some tracks |
+| After a change to the notes | `save_song`, `author_song_session`, the iPad pulls the session, AUM loads it (every plugin is instantiated again) | `save_song` |
+| After a change to what the song hosts or controls, or its tempo | the same | the same: author and load again |
+
+Without `mode`, `play_song` plays sequenced when the whole song is asked for
+and the session's sequencer holds the song as it is stored now, and live
+otherwise: when `from`, `sections` or `tracks` name a part, when the session
+has no sequencer, or when the notes changed after the session was authored. In
+that last case it says so, and the song still plays, live. `mode: live` and
+`mode: sequenced` insist; `sequenced` is refused with the reason when the
+sequencer cannot play what is asked for.
+
+So writing a song goes live (change a pattern, hear it seconds later, a
+section or a track at a time), and the song as a whole is played from the
+sequencer once the session has been authored from the notes as they stand.
+
+**Sequenced.** The clip begins with a lead-in of whole bars, as many as it
+takes to cover 1.2 s (one bar at most tempos): the opening section's preset
+loads go out as the transport starts, every other control 600 ms later, and
+the song's first note on the bar line after. The song's bar 1 is therefore
+the transport's bar 2, bar lines stay on bar lines, and what follows is the
+timeline as it is played live, preset loads 400 ms early included. Because
+the opening sound is in the clip, the session plays the song by itself:
+`play_song` un-bypasses the sequencer, rewinds and starts AUM's transport, and
+anything else that runs the transport from the top plays the song too. Half a
+second after the last bar the daemon stops the transport and rewinds it;
+`stop_song` does that at once.
+
+`get_song_playback` reports a sequenced song's position from the daemon's own
+clock, started when it sent the start; it does not read AUM's transport. In
+the lead-in it reports the time to the first bar. AUM begins a few tens of
+milliseconds after the message (see [Status](#status)), so the report runs
+ahead by that much.
+
+**Live.** `play_song` first sets the session to the opening section's whole
+sound — presets, then a pause for them to load, then everything else — and
+then sends the timeline.
 
 - `from` starts at a section (its id, or a 1-based position in the
   arrangement), `sections` limits how many are played.
 - `tracks` plays only some tracks' notes, to listen to a part alone.
 - `transport: true` starts AUM's transport with the first note and stops it at
-  the end, for plugins that follow the host clock.
+  the end, for plugins that follow the host clock. In a session with a
+  sequencer, the sequencer is bypassed for the length of the playback.
 
-The daemon keeps the time, not AUM. The session's tempo is the song's, so
+Live, the daemon keeps the time, not AUM. The session's tempo is the song's, so
 tempo-synced effects fit, but the notes arrive over the LAN and are emitted on
 the brain's next render cycle: accurate to a few milliseconds on a quiet
 network, not sample-accurate. That is right for writing a song and listening to
-it. Playing a song on stage belongs to the brain itself, locked to AUM's
-transport, which is not built yet.
+a part of it.
 
-Because the daemon keeps the time, its host has to stay awake while a song
-plays. A laptop left alone dozes: the system keeps trying to sleep, and each
-attempt stalls the daemon for a second or more, the notes with it. On macOS
-the daemon holds its host awake itself: `play_song` starts `caffeinate -i -s`
-before it sets the opening sound and ends it when the song has finished, was
+Because the daemon keeps the time of a live song, its host has to stay awake
+while one plays. A laptop left alone dozes: the system keeps trying to sleep,
+and each attempt stalls the daemon for a second or more, the notes with it. A
+sequenced song's notes do not come from the host, so a stall can only delay
+the stop at the end and freeze the reported position (expected, not measured:
+every sequenced take ran on a host held awake). On macOS the daemon holds its
+host awake itself, in both modes: `play_song` starts `caffeinate -i -s` before
+its first message goes out and ends it when the song has finished, was
 stopped or failed, so the host is held for the length of the playback and no
 longer. The display may still sleep, and `-s` only counts on mains power.
 
@@ -279,12 +340,64 @@ sleep the host had already begun when `play_song` arrived. That one runs its
 course, a gap of a few seconds right at the start of the song, and none
 follows it.
 
+## The sequencer's state
+
+A sequencer can only play a song the daemon wrote if its content can be
+written from outside. That decides the choice. What a session's sequencer has
+to offer:
+
+- its saved state, which the session file carries, is readable and writable
+  (or it loads a file or a script the daemon can write);
+- it holds a whole arrangement, not a loop: every track, for the length of
+  the song;
+- it follows the host's transport and starts with it from bar 1;
+- it also sends Program Changes and Control Changes, on any channel, so the
+  preset loads and every mapped control ride in the same sequence;
+- one instance is enough.
+
+Atom | Piano Roll² (Audio Veek) does all of it, shown on a device (see
+[Status](#status)). The other installed MIDI processors that hold notes were
+looked at through the state they had saved in existing sessions, and by what
+they are. Most keep a loop, a step pattern or one short sequence by design.
+One saves an opaque document, one a single parameter (its content is not in
+the session). Several save a keyed archive, which was not decoded: they are
+step sequencers, a sequence read by several playheads, and a clip launcher,
+not a timeline. One scriptable processor saves its script as text and its data
+as arrays of 1024 values, so a song could in principle be written as a script,
+played by its interpreter. Two more, a multi-track recorder and a pattern
+sequencer, had no saved content in any session and were not examined once one
+candidate met every point.
+
+Atom saves a dictionary of some fifty keys, each a JSON value. The session
+file carries it as the node's saved state. What matters:
+
+| Key | |
+|-----|-|
+| `version` | A number, 116. Without it Atom refuses the state ("saved in the beta version"). It is the one entry that is not JSON data, and it is not the version the session library stamps on a saved state, so the song's session sets it. |
+| `patterns` | What the engine plays: a list of clips, each `{id, interval: {begin, end}, notes, events}`. A note is `{time, duration, channel, pitch, velocity}`, an event a raw MIDI message `{time, byte1, byte2, byte3}`. Times are in sixteenth notes from the clip's start, fractions allowed; channels count from 0. |
+| `store` | What the window draws: the editor's own state, a JavaScript object literal (with `new Map(…)` and `new Set(…)`) in a JSON string. It holds the clip again, each note in several forms. The window never looks at `patterns`, and the engine never at `store`. |
+| `isLaunched`, `isLooped`, … | The clip's switches: armed, not looped, nothing recorded, no quantizing, no snap-back of controllers, every output channel on. |
+
+With keys left out Atom reports "Project was corrupted" and plays nothing:
+seen with the editor's keys missing, and again with only `store` missing.
+Which of the others it could do without was not tried; all are written. For
+the engine `store` only has to be there: with an empty one the clip played and
+the window stayed on a spinner, and with another clip's store the window
+showed that clip's notes while the engine played the song. So both copies are
+written from the same sequence, and the window shows what plays.
+
+The song is one clip in one instance. A song's controls are step changes and
+ramps the daemon has already rendered as single messages, so they need nothing
+from the sequencer but to be sent on time.
+
 ## Status
 
-The test suite covers the notation, the compiled timeline, the player, and the
-authored session read back from its encoded file: strips and chains, the
-matrix routes with their port name and filters, every mapping, the preset-load
-actions.
+The test suite covers the notation, the compiled timeline, the player in both
+modes, and the authored session read back from its encoded file: strips and
+chains, the matrix routes with their port name and filters, every mapping, the
+preset-load actions, and the sequencer's node with its state: the clip decoded
+again note by note and event by event, the editor's copy, the version, the
+routes and the bypass mapping.
 
 What a session file says and what AUM does with it are two things. Measured on
 a device, in sessions authored from a song:
@@ -297,8 +410,10 @@ a device, in sessions authored from a song:
   tap every time.
 - **Transport.** The mapped CCs on channel 15 started and stopped AUM's
   transport. Stopping does not rewind, so `play_song` rewinds before it
-  starts. While the transport ran, AUM's DSP load rose from 40 % to 85 % in a
-  five-track session, which is why `transport` is off unless asked for.
+  starts. In one reading AUM's DSP load rose from 40 % to 85 % while the
+  transport ran in a five-track session, which is why `transport` is off for
+  live playing unless asked for; a later one, with the sequencer playing, is
+  below.
 - **Strip layout.** AUM stores a strip as its source, its output, then its
   inserts, and counts the inserts ahead of the fader. Sessions are authored
   that way; with the effects stored before the output, AUM took the first
@@ -336,9 +451,71 @@ a device, in sessions authored from a song:
   left to doze, timers fired up to 1.2 s late and the hits around such a stall
   were about 50 ms off the grid.
 
+Measured on a device with the sequencer, the same song of five tracks and 56
+bars authored into a session of its own:
+
+- **The sequencer's state written from scratch.** Atom loaded the authored
+  state and its window showed the song: one clip of 57 bars with 2311 notes
+  and 400 control events, armed, loop off. What it took is in
+  [The sequencer's state](#the-sequencers-state).
+- **One start.** After the rewind and the start the song played from the
+  first bar to the last with nothing else sent, in two takes. Bar by bar,
+  every section sounded as it does played live with the transport running in
+  the same session: over the first take the two differ by 0.6 dB on average,
+  and per section by 0.8 dB or less, with one exception. In the bridge of the
+  first sequenced take the level was 3 dB down for the four bars: the bass's
+  fundamental 4 dB weaker and its second partial more than 10 dB stronger
+  than in the live takes. AUM's strip showed the level and the bypass the song
+  asks for there, and the two later sequenced takes had the bridge like the
+  two live ones. Notes sent live to the same synth gave the live sound
+  whatever their order, velocity or doubling, but one single note also came
+  out different once. So it is not what the sequencer does to that part every
+  time, and the synth can do it without the sequencer; what causes it, and
+  whether the sequencer makes it likelier, five takes do not say.
+- **Control changes from the sequencer.** Program Changes and Control Changes
+  sent as the clip's MIDI events reached AUM's MIDI Control like the brain's.
+  Read back: the chord of the chorus's preset was there from the downbeat of
+  all three choruses, as it is live with the 400 ms lead; after a stop in the
+  bridge AUM's strips showed that section's levels and bypasses; the bars of
+  the fade-in and the fade-out matched the live take's; in a two-track
+  session a test note after a stop had the preset of the section it was
+  stopped in. Plugin parameters were not read back one by one.
+- **Timing.** The drums alone (the other strips muted), 100 hits recorded at
+  the tap: 0.07 ms from the sixteenth-note grid on average, 0.33 ms at worst.
+  The same part played live in the same session a minute later, 99 hits:
+  1.8 ms on average, 11 ms at worst. The whole mix, 274 onsets above 4 kHz
+  over 112 s: 0.3 ms on average, 4.4 ms at worst.
+- **The start.** AUM's transport began 22 to 28 ms after the Start Play
+  message in a two-track session and 89 to 94 ms after it in the five-track
+  one, and once, at the first start after a load, 177 ms. That moves the song
+  as a whole; nothing in it shifts.
+- **Stop.** Stopped in the middle of a section with a chord, a lead note and
+  a bass note sounding, the level fell 16 dB within half a second and 30 dB
+  within one and a half: the notes were released, what remained was reverb.
+  A clip that had played to its end stayed silent while the transport ran on.
+- **The sequencer's bypass.** With CC 106 at 127 the transport ran in silence.
+  Taken back to 0 while the transport ran, the sequencer came in at the
+  transport's position.
+- **DSP.** AUM showed 36 to 39 % with the session idle and 48 % in the last
+  chorus, the transport running and the sequencer playing all five tracks.
+
+The takes ran against a daemon without this mode: the session was authored
+with the code as it is here and staged through the daemon's receiver, and the
+rewind, start and stop were sent with `send_midi`, the messages `play_song`
+sends. `play_song` in sequenced mode is covered by the tests and has not run
+against a device.
+
 Not yet measured:
 
-- `transport: true` through a whole song;
+- `play_song` and `stop_song` in sequenced mode on a device, and
+  `get_song_playback` against AUM's own position;
+- a sequenced song on a host that dozes;
+- an edit made in the sequencer's window, and a session saved from AUM with
+  the sequencer in it;
+- a meter other than 4/4 and a song much longer than two minutes in the
+  sequencer;
+- `transport: true` through a whole live song with the daemon's own bypass of
+  the sequencer (the take above sent the bypass by hand);
 - a ramp on a plugin parameter (the song played ramps on levels only);
 - sessions authored with `track_taps` or `full_control`.
 
