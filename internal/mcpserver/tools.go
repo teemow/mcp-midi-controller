@@ -131,6 +131,7 @@ func (s *Server) registerGlobalTools() {
 	// own display) are wired in registerIPadTools when WithIPad attached a
 	// client.
 	s.registerIPadTools()
+	s.registerAUMUITools()
 }
 
 func (s *Server) handleListDevices(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

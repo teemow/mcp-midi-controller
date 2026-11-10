@@ -44,9 +44,15 @@ func TestFlatten(t *testing.T) {
 	if strings.Contains(text, `StaticText "M" `) || strings.Contains(text, `"U"`) {
 		t.Fatalf("noise kept:\n%s", text)
 	}
-	// StaticText values equal to the label are not repeated.
-	if strings.Contains(text, "value=") {
-		t.Fatalf("duplicate value shown:\n%s", text)
+	// StaticText values equal to the label are not repeated; a distinct
+	// value (a loaded node's inner button: "1") is.
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "StaticText") && strings.Contains(line, "value=") {
+			t.Fatalf("duplicate value shown: %s", line)
+		}
+	}
+	if !strings.Contains(text, `Button value="1"`) {
+		t.Fatalf("inner node button missing:\n%s", text)
 	}
 
 	all, _ := root.Flatten(FlattenOptions{All: true})
@@ -58,7 +64,7 @@ func TestFlatten(t *testing.T) {
 	}
 
 	hits, _ := root.Flatten(FlattenOptions{Contains: "synth"})
-	if len(hits) != 8 { // four titles, each repeated by a node button
+	if len(hits) != 12 { // four titles, each repeated by a node button and its caption
 		t.Fatalf("contains=synth: %d hits\n%s", len(hits), FormatNodes(hits, false))
 	}
 	limited, cut := root.Flatten(FlattenOptions{Limit: 3})

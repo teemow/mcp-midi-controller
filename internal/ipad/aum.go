@@ -4,204 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
-
-// AUMState is what AUM's accessibility tree tells about the running session.
-// It is read from AUM's own UI, independent of the MIDI path, so it is the
-// oracle for "did the MIDI I sent actually change AUM?".
-//
-// Not everything is in the tree: mute, solo and record-arm buttons carry a
-// label but no on/off state, and plugin parameters live in out-of-process
-// plugin views. Check those with a screenshot (mute/solo) or the audio tap.
-type AUMState struct {
-	// Window is AUM's window in points; it rotates with the iPad.
-	Window      Size   `json:"window"`
-	Orientation string `json:"orientation"`
-	// StartScreen is true while AUM shows LAST STATE / DEFAULT (no session).
-	StartScreen bool `json:"start_screen,omitempty"`
-	// MenuOpen is true while the main-menu side panel is open.
-	MenuOpen bool `json:"menu_open,omitempty"`
-	// Session is the session name the main menu shows ("SESSION: …"); it is
-	// only on screen while the menu is open. (The main meter's accessibility
-	// label also starts with "SESSION: …", but AUM does not refresh it: it
-	// can name a session and channels that are long gone, so it is ignored.)
-	Session string `json:"session,omitempty"`
-	// TempoBPM is the tempo shown top left (♩120).
-	TempoBPM *float64 `json:"tempo_bpm,omitempty"`
-	// Position is the transport position text ("001:1  00:00.0"); it
-	// advances while the transport runs.
-	Position string `json:"position,omitempty"`
-	// DSP is the DSP load text ("3 %").
-	DSP string `json:"dsp,omitempty"`
-	// Channels are the mixer strips in mixer order (on screen or scrolled
-	// away).
-	Channels []AUMChannel `json:"channels"`
-}
-
-// AUMChannel is one mixer strip.
-type AUMChannel struct {
-	// Strip is the 1-based position in the mixer (left to right).
-	Strip int `json:"strip"`
-	// Number is the number AUM prints in the title ("2: …", "MIDI 1").
-	Number int `json:"number"`
-	// Kind is "audio" or "midi".
-	Kind string `json:"kind"`
-	// Title is the full title label; Name is the part after "n: ".
-	Title string `json:"title"`
-	Name  string `json:"name,omitempty"`
-	// LevelDB is the fader level from the dB label above the fader; nil for
-	// -∞ (LevelLabel then reads "-∞ dB") and for MIDI strips.
-	LevelDB    *float64 `json:"level_db,omitempty"`
-	LevelLabel string   `json:"level_label,omitempty"`
-	// TitleFrame is where the title button sits (tap it for Edit Channel).
-	TitleFrame Rect `json:"title_frame"`
-	// OnScreen is false for strips scrolled out of the window: swipe the mixer
-	// before tapping them.
-	OnScreen bool `json:"on_screen"`
-}
-
-var (
-	reAudioTitle = regexp.MustCompile(`^(\d+): (.*)$`)
-	reMIDITitle  = regexp.MustCompile(`^MIDI (\d+)$`)
-	reLevel      = regexp.MustCompile(`^([+-]?\d+(?:\.\d+)?|-∞|-inf) dB$`)
-	reTempo      = regexp.MustCompile(`♩\s*(\d+(?:\.\d+)?)`)
-	rePosition   = regexp.MustCompile(`^\d+:\d+\s+\d+:\d+(?:\.\d+)?$`)
-)
-
-const sessionPrefix = "SESSION: "
-
-// ParseAUM reads AUMState out of AUM's accessibility tree. window is AUM's
-// window size (for OnScreen and Orientation).
-func ParseAUM(root *Element, window Size) AUMState {
-	st := AUMState{Window: window, Orientation: window.Orientation(), Channels: []AUMChannel{}}
-
-	type strip struct {
-		container *Element
-		title     *Element
-	}
-	var strips []strip
-	seen := map[string]bool{}
-	var walk func(el *Element)
-	walk = func(el *Element) {
-		for _, c := range el.Children {
-			// A strip's title button sits directly in the full-height strip
-			// container. The first occurrence wins, so a channel listed again
-			// elsewhere (e.g. the Navigator) is not counted twice.
-			if isChannelTitle(c) && el.Rect.Height >= 300 && !seen[c.Label] {
-				seen[c.Label] = true
-				strips = append(strips, strip{container: el, title: c})
-			}
-		}
-		switch el.Type {
-		case "StaticText":
-			switch {
-			case el.Label == "MENU":
-				st.MenuOpen = true
-			case strings.HasPrefix(el.Label, sessionPrefix):
-				st.Session = strings.TrimSpace(strings.TrimPrefix(el.Label, sessionPrefix))
-			case strings.HasPrefix(el.Label, "DSP:"):
-				st.DSP = strings.Join(strings.Fields(strings.TrimPrefix(el.Label, "DSP:")), " ")
-			case st.TempoBPM == nil && reTempo.MatchString(el.Label):
-				if v, err := strconv.ParseFloat(reTempo.FindStringSubmatch(el.Label)[1], 64); err == nil {
-					st.TempoBPM = &v
-				}
-			case st.Position == "" && rePosition.MatchString(el.Label):
-				st.Position = el.Label
-			}
-		case "Button":
-			if strings.EqualFold(el.Label, "LAST STATE") {
-				st.StartScreen = true
-			}
-		}
-		for _, c := range el.Children {
-			walk(c)
-		}
-	}
-	walk(root)
-
-	sort.SliceStable(strips, func(i, j int) bool { return strips[i].container.Rect.X < strips[j].container.Rect.X })
-	for i, s := range strips {
-		ch := AUMChannel{Strip: i + 1, Title: s.title.Label, TitleFrame: s.title.Rect}
-		if m := reMIDITitle.FindStringSubmatch(s.title.Label); m != nil {
-			ch.Kind = "midi"
-			ch.Number, _ = strconv.Atoi(m[1])
-		} else if m := reAudioTitle.FindStringSubmatch(s.title.Label); m != nil {
-			ch.Kind = "audio"
-			ch.Number, _ = strconv.Atoi(m[1])
-			ch.Name = m[2]
-		}
-		for _, lv := range s.container.Find(func(e *Element) bool { return e.Type == "Button" && reLevel.MatchString(e.Label) }) {
-			ch.LevelLabel = lv.Label
-			if v, err := strconv.ParseFloat(reLevel.FindStringSubmatch(lv.Label)[1], 64); err == nil {
-				ch.LevelDB = &v
-			}
-			break
-		}
-		r := s.container.Rect
-		ch.OnScreen = window.Width <= 0 || (r.X >= -1 && r.X+r.Width <= window.Width+1)
-		st.Channels = append(st.Channels, ch)
-	}
-	return st
-}
-
-// isChannelTitle matches a strip's title button: "2: <name>" or "MIDI 1",
-// wider than tall (156×50). A plugin node button can carry the same text but is
-// square, which keeps it out.
-func isChannelTitle(e *Element) bool {
-	if e.Type != "Button" || e.Rect.Width <= e.Rect.Height*1.5 {
-		return false
-	}
-	return reMIDITitle.MatchString(e.Label) || reAudioTitle.MatchString(e.Label)
-}
-
-// Channel finds a strip by selector: a number ("2" = the audio strip titled
-// "2: …"), a MIDI title ("MIDI 1"), or a case-insensitive part of the title.
-func (st AUMState) Channel(sel string) (AUMChannel, error) {
-	sel = strings.TrimSpace(sel)
-	if sel == "" {
-		return AUMChannel{}, fmt.Errorf("empty channel selector")
-	}
-	if n, err := strconv.Atoi(sel); err == nil {
-		for _, ch := range st.Channels {
-			if ch.Kind == "audio" && ch.Number == n {
-				return ch, nil
-			}
-		}
-		return AUMChannel{}, fmt.Errorf("no audio channel %d (channels: %s)", n, st.channelList())
-	}
-	var hits []AUMChannel
-	for _, ch := range st.Channels {
-		if strings.EqualFold(ch.Title, sel) {
-			return ch, nil
-		}
-		if strings.Contains(strings.ToLower(ch.Title), strings.ToLower(sel)) {
-			hits = append(hits, ch)
-		}
-	}
-	switch len(hits) {
-	case 0:
-		return AUMChannel{}, fmt.Errorf("no channel matches %q (channels: %s)", sel, st.channelList())
-	case 1:
-		return hits[0], nil
-	}
-	return AUMChannel{}, fmt.Errorf("%q matches %d channels; use the number (channels: %s)", sel, len(hits), st.channelList())
-}
-
-func (st AUMState) channelList() string {
-	if len(st.Channels) == 0 {
-		return "none"
-	}
-	names := make([]string, len(st.Channels))
-	for i, ch := range st.Channels {
-		names[i] = strconv.Quote(ch.Title)
-	}
-	return strings.Join(names, ", ")
-}
 
 // Expectation is what AUM should show after a MIDI action. Every set field
 // must hold at once.
@@ -219,8 +25,20 @@ type Expectation struct {
 	// Transport expects "playing" (the position advances between two reads)
 	// or "stopped" (it does not).
 	Transport string `json:"transport,omitempty"`
-	// Channels expects per-strip fader levels.
+	// Channels expects per-strip state: fader level, mute, solo, arm, node
+	// bypass.
 	Channels []ChannelExpectation `json:"channels,omitempty"`
+	// StripCount expects this many mixer strips (channels added, imported
+	// or removed).
+	StripCount *int `json:"strip_count,omitempty"`
+	// Overlay expects an open popover, side panel or alert whose title
+	// contains this text (case-insensitive), e.g. "SETTINGS".
+	Overlay string `json:"overlay,omitempty"`
+	// NoOverlay expects no popover, side panel or alert.
+	NoOverlay bool `json:"no_overlay,omitempty"`
+	// PluginWindow expects an open plugin window whose title contains this
+	// text (a "Show & Front Plugin" MIDI mapping opens one).
+	PluginWindow string `json:"plugin_window,omitempty"`
 }
 
 // ChannelExpectation is a per-strip fader expectation. A level at or below
@@ -234,12 +52,33 @@ type ChannelExpectation struct {
 	// ToleranceDB (pass the value read before sending).
 	NotLevelDB  *float64 `json:"not_level_db,omitempty"`
 	ToleranceDB float64  `json:"tolerance_db,omitempty"`
+	// Muted, Soloed and Armed expect the MUTE, SOLO and record-arm state.
+	Muted  *bool `json:"muted,omitempty"`
+	Soloed *bool `json:"soloed,omitempty"`
+	Armed  *bool `json:"armed,omitempty"`
+	// Nodes expects nodes of the strip to be bypassed or not.
+	Nodes []NodeExpectation `json:"nodes,omitempty"`
+}
+
+// NodeExpectation is a per-node bypass expectation.
+type NodeExpectation struct {
+	// Node selects the node (see AUMChannel.Node).
+	Node     string `json:"node"`
+	Bypassed bool   `json:"bypassed"`
+}
+
+func (c ChannelExpectation) empty() bool {
+	return c.LevelDB == nil && c.NotLevelDB == nil && c.Muted == nil && c.Soloed == nil && c.Armed == nil && len(c.Nodes) == 0
 }
 
 // Validate rejects an expectation that can never be checked.
 func (e Expectation) Validate() error {
-	if e.TempoBPM == nil && e.NotTempoBPM == nil && e.Session == "" && e.Transport == "" && len(e.Channels) == 0 {
-		return fmt.Errorf("nothing to wait for: set tempo_bpm, not_tempo_bpm, session, transport or channels")
+	if e.TempoBPM == nil && e.NotTempoBPM == nil && e.Session == "" && e.Transport == "" && len(e.Channels) == 0 &&
+		e.StripCount == nil && e.Overlay == "" && !e.NoOverlay && e.PluginWindow == "" {
+		return fmt.Errorf("nothing to wait for: set tempo_bpm, not_tempo_bpm, session, transport, channels, strip_count, overlay, no_overlay or plugin_window")
+	}
+	if e.Overlay != "" && e.NoOverlay {
+		return fmt.Errorf("overlay and no_overlay contradict each other")
 	}
 	switch e.Transport {
 	case "", "playing", "stopped":
@@ -250,8 +89,13 @@ func (e Expectation) Validate() error {
 		if strings.TrimSpace(c.Channel) == "" {
 			return fmt.Errorf("channels[%d]: channel is required", i)
 		}
-		if c.LevelDB == nil && c.NotLevelDB == nil {
-			return fmt.Errorf("channels[%d]: set level_db or not_level_db", i)
+		if c.empty() {
+			return fmt.Errorf("channels[%d]: set level_db, not_level_db, muted, soloed, armed or nodes", i)
+		}
+		for j, n := range c.Nodes {
+			if strings.TrimSpace(n.Node) == "" {
+				return fmt.Errorf("channels[%d].nodes[%d]: node is required", i, j)
+			}
 		}
 	}
 	return nil
@@ -305,19 +149,72 @@ func (e Expectation) Mismatches(prev *AUMState, cur AUMState) []string {
 			out = append(out, "channel "+ce.Channel+": "+err.Error())
 			continue
 		}
-		if ch.LevelLabel == "" {
-			out = append(out, fmt.Sprintf("channel %q: no fader level visible", ch.Title))
-			continue
+		out = append(out, ce.mismatches(ch)...)
+	}
+	if e.StripCount != nil && len(cur.Channels) != *e.StripCount {
+		out = append(out, fmt.Sprintf("strips: want %d, got %d", *e.StripCount, len(cur.Channels)))
+	}
+	if e.Overlay != "" {
+		found := false
+		for _, o := range cur.Overlays {
+			found = found || strings.Contains(strings.ToLower(o.Title), strings.ToLower(e.Overlay))
 		}
+		if !found {
+			out = append(out, fmt.Sprintf("overlay: nothing titled %q open (%s)", e.Overlay, cur.overlaySummary()))
+		}
+	}
+	if e.NoOverlay && len(cur.Overlays) > 0 {
+		out = append(out, "overlay: "+cur.overlaySummary())
+	}
+	if e.PluginWindow != "" {
+		found := false
+		for _, w := range cur.PluginWindows {
+			found = found || strings.Contains(strings.ToLower(w.Title), strings.ToLower(e.PluginWindow))
+		}
+		if !found {
+			out = append(out, fmt.Sprintf("plugin window: none titled %q open", e.PluginWindow))
+		}
+	}
+	return out
+}
+
+func (ce ChannelExpectation) mismatches(ch AUMChannel) []string {
+	var out []string
+	if ce.LevelDB != nil || ce.NotLevelDB != nil {
 		ctol := ce.ToleranceDB
 		if ctol <= 0 {
 			ctol = 0.5
 		}
-		if ce.LevelDB != nil && !levelNear(ch.LevelDB, *ce.LevelDB, ctol) {
-			out = append(out, fmt.Sprintf("channel %q: want %s, got %s", ch.Title, dbText(*ce.LevelDB), ch.LevelLabel))
+		if ch.LevelLabel == "" {
+			out = append(out, fmt.Sprintf("channel %q: no fader level visible", ch.Title))
+		} else {
+			if ce.LevelDB != nil && !levelNear(ch.LevelDB, *ce.LevelDB, ctol) {
+				out = append(out, fmt.Sprintf("channel %q: want %s, got %s", ch.Title, dbText(*ce.LevelDB), ch.LevelLabel))
+			}
+			if ce.NotLevelDB != nil && levelNear(ch.LevelDB, *ce.NotLevelDB, ctol) {
+				out = append(out, fmt.Sprintf("channel %q: level still %s", ch.Title, ch.LevelLabel))
+			}
 		}
-		if ce.NotLevelDB != nil && levelNear(ch.LevelDB, *ce.NotLevelDB, ctol) {
-			out = append(out, fmt.Sprintf("channel %q: level still %s", ch.Title, ch.LevelLabel))
+	}
+	for _, b := range []struct {
+		name      string
+		want, got *bool
+	}{{"mute", ce.Muted, ch.Muted}, {"solo", ce.Soloed, ch.Soloed}, {"arm", ce.Armed, ch.Armed}} {
+		switch {
+		case b.want == nil:
+		case b.got == nil:
+			out = append(out, fmt.Sprintf("channel %q: %s state not visible", ch.Title, b.name))
+		case *b.got != *b.want:
+			out = append(out, fmt.Sprintf("channel %q: %s %s, want %s", ch.Title, b.name, onOff(*b.got), onOff(*b.want)))
+		}
+	}
+	for _, ne := range ce.Nodes {
+		n, err := ch.Node(ne.Node)
+		switch {
+		case err != nil:
+			out = append(out, "channel "+strconv.Quote(ch.Title)+": "+err.Error())
+		case n.Bypassed != ne.Bypassed:
+			out = append(out, fmt.Sprintf("channel %q: %s bypassed=%v, want %v", ch.Title, nodeName(n), n.Bypassed, ne.Bypassed))
 		}
 	}
 	return out

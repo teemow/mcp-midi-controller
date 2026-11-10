@@ -92,7 +92,8 @@ func (s *Server) registerIPadTools() {
 		Name: "ipad_tap",
 		Description: "Tap the iPad's screen in an app, one of three ways: label (the element with that accessibility label, case-insensitive, buttons first — list labels with ipad_ui_tree), x+y (a point, in points, in the app's current orientation), or target (a named AUM control: " + strings.Join(targetDocs, "; ") + "). " +
 			"AUM's mixer titles, dB labels, MUTE/SOLO/REC and list rows tap by label; its icon-only buttons need x+y or a target. A label that sits on a caption under an icon (AUM's main menu: FILES, SAVE, …) taps the caption and does nothing: tap the icon by position. " +
-			"Taps can change or lose state (CLEAR, a session row in FILES loads it, SAVE SESSION, REMOVE CHANNEL, eject, record): take an ipad_screenshot first near such controls, and iterate on the ' (mcp test)' session copies, never the original sessions.",
+			"gesture double double-taps (AUM: reset a fader, edit the tempo value, add a slot below the last insert); gesture twice taps twice 0.5 s apart in one session, which AUM's two-step buttons need (CLEAR → Sure?, OVERWRITE?, REMOVE CHANNEL → TAP TO CONFIRM take the second tap only for about a second). " +
+			"Taps can change or lose state (CLEAR, a session row in FILES loads it, SAVE SESSION, REMOVE CHANNEL, eject, record): take an ipad_screenshot first near such controls, and iterate on the ' (mcp test)' session copies, never the original sessions. The aum_* tools do the common AUM operations by name and verify them.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -100,7 +101,8 @@ func (s *Server) registerIPadTools() {
 				"label": {"type": "string", "description": "Accessibility label to tap."},
 				"x": {"type": "number", "description": "Point to tap (with y)."},
 				"y": {"type": "number", "description": "Point to tap (with x)."},
-				"target": {"type": "string", "enum": ` + string(targetEnum) + `, "description": "A named AUM control (app must be aum)."}
+				"target": {"type": "string", "enum": ` + string(targetEnum) + `, "description": "A named AUM control (app must be aum)."},
+				"gesture": {"type": "string", "enum": ["tap", "double", "twice"], "description": "tap (default), double (a double-tap), or twice (two taps 0.5 s apart: confirms a two-step button)."}
 			}
 		}`),
 	}, s.handleIPadTap)
@@ -142,8 +144,9 @@ func (s *Server) registerIPadTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "get_aum_ui",
-		Description: "Read AUM's state from its own user interface over USB — independent of the MIDI path, so it shows whether MIDI the daemon sent really landed: the tempo, the transport position, the session name (only while AUM's main menu is open — ipad_tap target menu), the DSP load, whether the start screen or main menu is showing, and every mixer strip with its number, title, fader level in dB and whether it is on screen. " +
-			"Not in AUM's tree: mute/solo/record-arm state (use ipad_screenshot on the strip) and plugin parameters (use the audio tap). Brings AUM to the front. Emits the state as structuredContent.",
+		Description: "Read AUM's state from its own user interface over USB — independent of the MIDI path, so it shows whether MIDI the daemon sent really landed: the tempo, the transport position, the session name (only while AUM's main menu is open — aum_panel open menu), the DSP load, the main meter's source, whether the start screen, tempo bar or a plugin window is showing, " +
+			"every open popover, side panel or alert (title, rows of text → value, buttons), and every mixer strip with its number, title (custom titles too), fader level in dB, mute / solo / record-arm state, its nodes top to bottom (source, insert slots, output; empty or bypassed) and whether it is on screen. " +
+			"Not in AUM's tree: plugin parameters (use the audio tap) and MIDI routing connections (aum_midi_routing read). Brings AUM to the front. Emits the state as structuredContent.",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}, s.handleGetAUMUI)
 
@@ -151,7 +154,7 @@ func (s *Server) registerIPadTools() {
 		Name: "wait_for_aum_ui",
 		Description: "Verify a MIDI action against AUM's own UI: re-read AUM's state (one read takes 0.5–2 s) until every expectation holds or timeout_ms passes, then report matched or what still differs. " +
 			"Typical loop: get_aum_ui (baseline) -> send the MIDI (control_*, send_midi, set_transport, switch_aum_session, recall_scene) -> wait_for_aum_ui. " +
-			"Expect exact values (tempo_bpm, a channel's level_db, session) or a change away from the baseline (not_tempo_bpm, a channel's not_level_db) when the CC-to-value curve is unknown; transport playing/stopped compares the position across reads. " +
+			"Expect exact values (tempo_bpm, a channel's level_db, muted, soloed, armed, a node's bypassed, session, strip_count, an open overlay or plugin_window) or a change away from the baseline (not_tempo_bpm, a channel's not_level_db) when the CC-to-value curve is unknown; transport playing/stopped compares the position across reads. " +
 			"Channels are selected by number (\"2\" = the strip titled \"2: …\"), \"MIDI 1\", or part of the title. A level of -100 dB or below stands for -∞. Not matching is a normal result (isError false, matched false).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -162,11 +165,22 @@ func (s *Server) registerIPadTools() {
 				"session": {"type": "string", "description": "Expected session name as AUM's main menu shows it (case-insensitive; .aumproj optional). Open the menu first (ipad_tap target menu): AUM shows the name nowhere else."},
 				"transport": {"type": "string", "enum": ["playing", "stopped"]},
 				"channels": {"type": "array", "items": {"type": "object", "properties": {
-					"channel": {"type": "string", "description": "Strip selector: number, \"MIDI n\", or part of the title."},
+					"channel": {"type": "string", "description": "Strip selector: number, \"MIDI n\", \"#position\", or part of the title."},
 					"level_db": {"type": "number", "description": "Expected fader level in dB."},
 					"not_level_db": {"type": "number", "description": "Expect the level to differ from this (the baseline)."},
-					"tolerance_db": {"type": "number", "minimum": 0, "description": "Level tolerance in dB (default 0.5)."}
+					"tolerance_db": {"type": "number", "minimum": 0, "description": "Level tolerance in dB (default 0.5)."},
+					"muted": {"type": "boolean"},
+					"soloed": {"type": "boolean"},
+					"armed": {"type": "boolean", "description": "Record-arm state."},
+					"nodes": {"type": "array", "items": {"type": "object", "properties": {
+						"node": {"type": "string", "description": "source, output, an insert slot number, or a node label."},
+						"bypassed": {"type": "boolean"}
+					}, "required": ["node", "bypassed"]}}
 				}, "required": ["channel"]}},
+				"strip_count": {"type": "integer", "minimum": 0, "description": "Expected number of mixer strips."},
+				"overlay": {"type": "string", "description": "Expect an open popover, side panel or alert whose title contains this."},
+				"no_overlay": {"type": "boolean", "description": "Expect nothing open over the mixer."},
+				"plugin_window": {"type": "string", "description": "Expect a plugin window whose title contains this (e.g. after a Show & Front Plugin mapping)."},
 				"timeout_ms": {"type": "integer", "minimum": 0, "maximum": 60000, "description": "How long to keep re-reading (default 5000)."}
 			}
 		}`),
@@ -329,11 +343,12 @@ func (s *Server) handleIPadUITree(ctx context.Context, req *mcp.CallToolRequest)
 
 func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
-		App    string   `json:"app"`
-		Label  string   `json:"label"`
-		X      *float64 `json:"x"`
-		Y      *float64 `json:"y"`
-		Target string   `json:"target"`
+		App     string   `json:"app"`
+		Label   string   `json:"label"`
+		X       *float64 `json:"x"`
+		Y       *float64 `json:"y"`
+		Target  string   `json:"target"`
+		Gesture string   `json:"gesture"`
 	}
 	if res := decodeArgs(req, &args); res != nil {
 		return res, nil
@@ -350,6 +365,11 @@ func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*
 	if (args.X == nil) != (args.Y == nil) {
 		return textResult("x and y go together", true), nil
 	}
+	switch args.Gesture {
+	case "", "tap", "double", "twice":
+	default:
+		return textResult("gesture must be tap, double or twice", true), nil
+	}
 	app, err := s.ipad.ResolveApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
@@ -357,10 +377,20 @@ func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*
 	if args.Target != "" && app != ipad.AUMBundleID {
 		return textResult("target names AUM controls; use app aum (the default)", true), nil
 	}
+	verb := map[string]string{"": "tapped", "tap": "tapped", "double": "double-tapped", "twice": "tapped twice"}[args.Gesture]
 	var msg string
 	err = s.ipad.WithApp(ctx, app, func(sess *ipad.Session) error {
+		gesture := func(x, y float64) error {
+			switch args.Gesture {
+			case "double":
+				return sess.DoubleTap(ctx, x, y)
+			case "twice":
+				return sess.TapTwice(ctx, x, y, 0)
+			}
+			return sess.TapAt(ctx, x, y)
+		}
 		switch {
-		case args.Label != "":
+		case args.Label != "" && (args.Gesture == "" || args.Gesture == "tap"):
 			n, err := sess.TapLabel(ctx, args.Label, ipadTapLabelTimeout)
 			if err != nil {
 				return err
@@ -368,6 +398,19 @@ func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*
 			msg = fmt.Sprintf("tapped %q in %s", args.Label, app)
 			if n > 1 {
 				msg += fmt.Sprintf(" (%d matches, tapped the first)", n)
+			}
+		case args.Label != "":
+			r, n, err := sess.LabelRect(ctx, args.Label, ipadTapLabelTimeout)
+			if err != nil {
+				return err
+			}
+			x, y := r.Center()
+			if err := gesture(x, y); err != nil {
+				return err
+			}
+			msg = fmt.Sprintf("%s %q at (%g,%g) in %s", verb, args.Label, x, y, app)
+			if n > 1 {
+				msg += fmt.Sprintf(" (%d matches, used the first)", n)
 			}
 		case args.Target != "":
 			win, err := sess.WindowSize(ctx)
@@ -378,15 +421,15 @@ func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*
 			if err != nil {
 				return err
 			}
-			if err := sess.TapAt(ctx, x, y); err != nil {
+			if err := gesture(x, y); err != nil {
 				return err
 			}
-			msg = fmt.Sprintf("tapped AUM %s at (%g,%g)", args.Target, x, y)
+			msg = fmt.Sprintf("%s AUM %s at (%g,%g)", verb, args.Target, x, y)
 		default:
-			if err := sess.TapAt(ctx, *args.X, *args.Y); err != nil {
+			if err := gesture(*args.X, *args.Y); err != nil {
 				return err
 			}
-			msg = fmt.Sprintf("tapped (%g,%g) in %s", *args.X, *args.Y, app)
+			msg = fmt.Sprintf("%s (%g,%g) in %s", verb, *args.X, *args.Y, app)
 		}
 		return nil
 	})
@@ -530,11 +573,14 @@ func describeAUMState(st ipad.AUMState) string {
 	case st.MenuOpen:
 		b.WriteString(", main menu open")
 	}
+	if st.TempoBar {
+		b.WriteString(", tempo bar open")
+	}
 	b.WriteByte('\n')
 	if st.Session != "" {
 		fmt.Fprintf(&b, "session: %q\n", st.Session)
 	} else if !st.StartScreen {
-		b.WriteString("session: not on screen (AUM shows its name only in the main menu: ipad_tap target menu)\n")
+		b.WriteString("session: not on screen (AUM shows its name only in the main menu: aum_panel open menu)\n")
 	}
 	if st.TempoBPM != nil {
 		fmt.Fprintf(&b, "tempo: %g BPM\n", *st.TempoBPM)
@@ -545,6 +591,19 @@ func describeAUMState(st ipad.AUMState) string {
 	if st.DSP != "" {
 		fmt.Fprintf(&b, "DSP: %s\n", st.DSP)
 	}
+	if st.MeterSource != "" {
+		fmt.Fprintf(&b, "main meter: %s\n", st.MeterSource)
+	}
+	for _, o := range st.Overlays {
+		fmt.Fprintf(&b, "open %s %q", o.Kind, o.Title)
+		if len(o.Buttons) > 0 {
+			b.WriteString(" buttons: " + strings.Join(o.Buttons, ", "))
+		}
+		b.WriteByte('\n')
+	}
+	for _, w := range st.PluginWindows {
+		fmt.Fprintf(&b, "plugin window %q\n", w.Title)
+	}
 	if len(st.Channels) == 0 {
 		b.WriteString("channels: none visible\n")
 	} else {
@@ -554,14 +613,47 @@ func describeAUMState(st ipad.AUMState) string {
 			if ch.LevelLabel != "" {
 				b.WriteString(" " + ch.LevelLabel)
 			}
+			for _, f := range []struct {
+				name string
+				on   *bool
+			}{{"MUTED", ch.Muted}, {"SOLO", ch.Soloed}, {"ARMED", ch.Armed}} {
+				if f.on != nil && *f.on {
+					b.WriteString(" " + f.name)
+				}
+			}
 			if !ch.OnScreen {
 				b.WriteString(" (off screen)")
+			}
+			if nodes := nodeSummary(ch); nodes != "" {
+				b.WriteString(" nodes: " + nodes)
 			}
 			b.WriteByte('\n')
 		}
 	}
-	b.WriteString("not in AUM's tree: mute/solo/rec state (ipad_screenshot the strip), plugin parameters (get_audio_tap)")
+	b.WriteString("not in AUM's tree: plugin parameters (get_audio_tap), MIDI routing connections (aum_midi_routing read)")
 	return b.String()
+}
+
+// nodeSummary lists a strip's nodes compactly: "source PAR, 1 LP (bypassed), 2 +, output SPKR".
+func nodeSummary(ch ipad.AUMChannel) string {
+	var parts []string
+	for _, n := range ch.Nodes {
+		p := n.Role
+		if n.Role == "insert" {
+			p = fmt.Sprint(n.Slot)
+		}
+		switch {
+		case n.Empty:
+			p += " +"
+		case n.Label != "":
+			p += " " + n.Label
+		}
+		if n.Bypassed {
+			p += " (bypassed)"
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // decodeArgs unmarshals a tool call's arguments, returning an error result on

@@ -41,10 +41,26 @@ type WDA struct {
 	BundleID string
 	// FailSession makes POST /session answer with this W3C error code.
 	FailSession string
+	// Screens, when set, replaces Sources: GET …/source serves
+	// Screens[n], n being the number of gestures (taps, double-taps,
+	// long-presses, touch actions, element clicks, keys) so far; the last
+	// one repeats. A test lists the screen after each gesture.
+	Screens []json.RawMessage
+	// Fields are the values of the text fields on screen; typing into one
+	// replaces its value.
+	Fields []string
+	// Bright lists screenshot regions (x, y, w, h in points) drawn light
+	// grey, e.g. lit MIDI routing cells.
+	Bright [][4]float64
+	// BrightScreens, when set, replaces Bright after each gesture like
+	// Screens: BrightScreens[n] after n gestures.
+	BrightScreens [][][4]float64
 
 	requests  []Request
+	mark      int // requests before the last SetScreens
 	sourceIdx int
 	sessions  int
+	gestures  int
 	open      map[string]bool
 }
 
@@ -74,6 +90,49 @@ func (w *WDA) OpenSessions() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.open)
+}
+
+// Gestures is how many gestures the fake has received.
+func (w *WDA) Gestures() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.gestures
+}
+
+// SetScreens sets the gesture-driven screen sequence and restarts it.
+func (w *WDA) SetScreens(srcs ...json.RawMessage) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Screens = srcs
+	w.gestures = 0
+	w.mark = len(w.requests)
+}
+
+// GestureLog lists the gesture requests since the last SetScreens, in order, as
+// "kind x,y" strings ("tap 120,33", "doubleTap 300,400", "hold 1,2",
+// "actions", "click", "keys").
+func (w *WDA) GestureLog() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for _, r := range w.requests[w.mark:] {
+		_, sub, _ := strings.Cut(strings.TrimPrefix(r.Path, "/session/"), "/")
+		switch {
+		case sub == "wda/tap":
+			out = append(out, fmt.Sprintf("tap %v,%v", r.Body["x"], r.Body["y"]))
+		case sub == "wda/doubleTap":
+			out = append(out, fmt.Sprintf("doubleTap %v,%v", r.Body["x"], r.Body["y"]))
+		case sub == "wda/touchAndHold":
+			out = append(out, fmt.Sprintf("hold %v,%v", r.Body["x"], r.Body["y"]))
+		case sub == "actions":
+			out = append(out, "actions")
+		case strings.HasSuffix(sub, "/click"):
+			out = append(out, "click")
+		case sub == "wda/keys":
+			out = append(out, "keys")
+		}
+	}
+	return out
 }
 
 // SetSources replaces the source sequence and restarts it.
@@ -150,14 +209,30 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && sub == "":
 		delete(w.open, sid)
 		reply(rw, 200, nil, "")
-	case sub == "appium/settings", sub == "wda/tap", sub == "wda/touchAndHold", sub == "actions":
+	case sub == "appium/settings":
+		reply(rw, 200, nil, sid)
+	case sub == "wda/tap", sub == "wda/doubleTap", sub == "wda/touchAndHold", sub == "actions", sub == "wda/keys":
+		w.gestures++
 		reply(rw, 200, nil, sid)
 	case sub == "window/size":
 		reply(rw, 200, map[string]any{"width": w.Window[0], "height": w.Window[1]}, sid)
 	case sub == "source":
-		src := w.Sources[min(w.sourceIdx, len(w.Sources)-1)]
-		w.sourceIdx++
+		var src json.RawMessage
+		if len(w.Screens) > 0 {
+			src = w.Screens[min(w.gestures, len(w.Screens)-1)]
+		} else {
+			src = w.Sources[min(w.sourceIdx, len(w.Sources)-1)]
+			w.sourceIdx++
+		}
 		reply(rw, 200, src, sid)
+	case sub == "elements" && body["using"] == "class name":
+		found := []map[string]string{}
+		if body["value"] == "XCUIElementTypeTextField" {
+			for i := range w.Fields {
+				found = append(found, map[string]string{"ELEMENT": fmt.Sprintf("F%d", i)})
+			}
+		}
+		reply(rw, 200, found, sid)
 	case sub == "elements":
 		pred, _ := body["value"].(string)
 		key := pred[strings.Index(pred, "label ==[c] ")+len("label ==[c] "):]
@@ -178,10 +253,46 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 			found = []map[string]string{}
 		}
 		reply(rw, 200, found, sid)
-	case strings.HasPrefix(sub, "element/") && strings.HasSuffix(sub, "/click"):
-		reply(rw, 200, nil, sid)
+	case strings.HasPrefix(sub, "element/"):
+		w.element(rw, r.Method, sid, strings.TrimPrefix(sub, "element/"), body)
 	default:
 		wdaError(rw, 404, "unknown command", path)
+	}
+}
+
+// element answers …/element/<id>/<op>: click, clear, value (type), rect and
+// attribute/value. Text fields are "F<n>", label matches "E<n>".
+func (w *WDA) element(rw http.ResponseWriter, method, sid, rest string, body map[string]any) {
+	id, op, _ := strings.Cut(rest, "/")
+	field := -1
+	if _, err := fmt.Sscanf(id, "F%d", &field); err != nil || field >= len(w.Fields) {
+		field = -1
+	}
+	switch {
+	case op == "click":
+		w.gestures++
+		reply(rw, 200, nil, sid)
+	case op == "clear" && field >= 0:
+		w.Fields[field] = ""
+		reply(rw, 200, nil, sid)
+	case op == "value" && method == http.MethodPost && field >= 0:
+		chars, _ := body["value"].([]any)
+		var b strings.Builder
+		for _, c := range chars {
+			fmt.Fprint(&b, c)
+		}
+		w.Fields[field] += b.String()
+		reply(rw, 200, nil, sid)
+	case op == "rect":
+		if field >= 0 {
+			reply(rw, 200, map[string]any{"x": 100, "y": 200 + 50*field, "width": 300, "height": 36}, sid)
+			return
+		}
+		reply(rw, 200, map[string]any{"x": 10, "y": 20, "width": 100, "height": 40}, sid)
+	case op == "attribute/value" && field >= 0:
+		reply(rw, 200, w.Fields[field], sid)
+	default:
+		wdaError(rw, 404, "no such element", id+"/"+op)
 	}
 }
 
@@ -190,11 +301,21 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 func (w *WDA) png() []byte {
 	pw, ph := int(w.Window[0]*w.Scale), int(w.Window[1]*w.Scale)
 	img := image.NewRGBA(image.Rect(0, 0, pw, ph))
+	bright := w.Bright
+	if len(w.BrightScreens) > 0 {
+		bright = w.BrightScreens[min(w.gestures, len(w.BrightScreens)-1)]
+	}
 	for y := 0; y < ph; y++ {
 		for x := 0; x < pw; x++ {
 			c := color.RGBA{30, 30, 30, 255}
 			if x < pw/2 && y < ph/2 {
 				c = color.RGBA{200, 0, 0, 255}
+			}
+			px, py := float64(x)/w.Scale, float64(y)/w.Scale
+			for _, b := range bright {
+				if px >= b[0] && px < b[0]+b[2] && py >= b[1] && py < b[1]+b[3] {
+					c = color.RGBA{90, 90, 90, 255}
+				}
 			}
 			img.SetRGBA(x, y, c)
 		}

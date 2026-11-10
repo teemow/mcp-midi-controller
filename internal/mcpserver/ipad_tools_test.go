@@ -16,7 +16,9 @@ import (
 
 var ipadToolNames = []string{
 	"ipad_status", "ipad_screenshot", "ipad_ui_tree", "ipad_tap", "ipad_hold",
-	"ipad_swipe", "ipad_launch", "get_aum_ui", "wait_for_aum_ui",
+	"ipad_swipe", "ipad_drag", "ipad_text", "ipad_launch", "get_aum_ui", "wait_for_aum_ui",
+	"aum_panel", "aum_channel", "aum_node", "aum_transport", "aum_files",
+	"aum_midi_routing", "aum_midi_control", "aum_settings", "aum_file_player",
 }
 
 func newIPadServer(t *testing.T) (*ipadtest.WDA, *Server) {
@@ -207,7 +209,8 @@ func TestGetAUMUI(t *testing.T) {
 	_, s := newIPadServer(t)
 	res := call(t, s.handleGetAUMUI, map[string]any{})
 	text := resultText(res)
-	for _, want := range []string{"main menu open", `session: "test-session (mcp test)"`, "tempo: 120 BPM", `strip 2 "2: Synth One" -1.0 dB`, `"6: Pad Synth" -7.9 dB (off screen)`, "mute/solo"} {
+	for _, want := range []string{"main menu open", `session: "test-session (mcp test)"`, "tempo: 120 BPM", `strip 2 "2: Synth One" -1.0 dB nodes: source 2: Synth One, 1 LP, 2 +, output SPKR`,
+		`"3: Drum Machine" -∞ dB MUTED`, `"6: Pad Synth" -7.9 dB (off screen)`, `open panel "MENU"`, "plugin parameters"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("get_aum_ui lacks %q:\n%s", want, text)
 		}
@@ -248,5 +251,103 @@ func TestWaitForAUMUI(t *testing.T) {
 	r, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "wait_for_aum_ui", Arguments: json.RawMessage(`{"transport":"running"}`)})
 	if err == nil && !r.IsError {
 		t.Fatal("transport=running accepted")
+	}
+}
+
+func TestIPadTapGestures(t *testing.T) {
+	w, s := newIPadServer(t)
+	w.Labels[`button:"CLEAR"`] = 1
+	res := call(t, s.handleIPadTap, map[string]any{"x": 100, "y": 200, "gesture": "double"})
+	if res.IsError || !strings.Contains(resultText(res), "double-tapped (100,200)") {
+		t.Fatalf("double: %s", resultText(res))
+	}
+	res = call(t, s.handleIPadTap, map[string]any{"label": "clear", "gesture": "twice"})
+	if res.IsError || !strings.Contains(resultText(res), `tapped twice "clear" at (60,40)`) {
+		t.Fatalf("twice by label: %s", resultText(res))
+	}
+	if res := call(t, s.handleIPadTap, map[string]any{"x": 1, "y": 2, "gesture": "triple"}); !res.IsError {
+		t.Fatal("unknown gesture accepted")
+	}
+	var taps, doubles int
+	for _, r := range w.Requests() {
+		switch {
+		case strings.HasSuffix(r.Path, "/wda/tap"):
+			taps++
+		case strings.HasSuffix(r.Path, "/wda/doubleTap"):
+			doubles++
+		}
+	}
+	if taps != 2 || doubles != 1 {
+		t.Fatalf("taps=%d doubles=%d", taps, doubles)
+	}
+}
+
+func TestIPadDragAndText(t *testing.T) {
+	w, s := newIPadServer(t)
+	if res := call(t, s.handleIPadDrag, map[string]any{"points": []map[string]any{{"x": 1, "y": 2}}}); !res.IsError {
+		t.Fatal("one-point drag accepted")
+	}
+	res := call(t, s.handleIPadDrag, map[string]any{"points": []map[string]any{{"x": 842, "y": 426}, {"x": 930, "y": 426}, {"x": 930, "y": 330}}, "hold_ms": 500})
+	if res.IsError || !strings.Contains(resultText(res), "(842,426) -> (930,426) -> (930,330)") {
+		t.Fatalf("drag: %s", resultText(res))
+	}
+	var acts []any
+	for _, r := range w.Requests() {
+		if strings.HasSuffix(r.Path, "/actions") {
+			acts = r.Body["actions"].([]any)[0].(map[string]any)["actions"].([]any)
+		}
+	}
+	// move, down, (move, rest)×2, hold, up
+	if len(acts) != 8 || acts[6].(map[string]any)["duration"].(float64) != 500 {
+		t.Fatalf("drag actions = %v", acts)
+	}
+
+	w.Fields = []string{"old name"}
+	res = call(t, s.handleIPadText, map[string]any{"action": "fields"})
+	if res.IsError || !strings.Contains(resultText(res), `0 text_field at (100,200 300x36): "old name"`) {
+		t.Fatalf("fields: %s", resultText(res))
+	}
+	res = call(t, s.handleIPadText, map[string]any{"action": "type", "text": "new name", "enter": true})
+	if res.IsError || !strings.Contains(resultText(res), `field 0 now reads "new name"; pressed Return`) {
+		t.Fatalf("type: %s", resultText(res))
+	}
+	if res := call(t, s.handleIPadText, map[string]any{"action": "type", "text": "x", "field": 3}); !res.IsError || !strings.Contains(resultText(res), "no such text field") {
+		t.Fatalf("bad field: %s", resultText(res))
+	}
+}
+
+func TestAUMToolsOverMCP(t *testing.T) {
+	w, s := newIPadServer(t)
+	muted := ipadtest.MixerAUM()
+	muted.Strips[1].Muted = true
+	w.SetScreens(ipadtest.MixerAUM().Source(), muted.Source())
+	cs := connectClient(t, s)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "aum_channel", Arguments: map[string]any{"action": "mute", "channel": "2", "on": true}})
+	if err != nil || res.IsError {
+		t.Fatalf("aum_channel: %v %s", err, resultText(res))
+	}
+	text := resultText(res)
+	if !strings.HasPrefix(text, "mute: verified — strip 2 \"2: Synth One\": mute on") || !strings.Contains(text, "gestures: tap MUTE") || !strings.Contains(text, `"2: Synth One" -1.0 dB MUTED`) {
+		t.Fatalf("aum_channel text:\n%s", text)
+	}
+	// Guarded actions fail without confirm, before any gesture.
+	before := w.Gestures()
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "aum_files", Arguments: map[string]any{"action": "clear"}})
+	if err != nil || !res.IsError || !strings.Contains(resultText(res), "needs confirm: true") || w.Gestures() != before {
+		t.Fatalf("aum_files clear: %v %s", err, resultText(res))
+	}
+	// The action enum is enforced by the schema.
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "aum_node", Arguments: map[string]any{"action": "explode"}})
+	if err == nil && !res.IsError {
+		t.Fatal("unknown action accepted")
+	}
+	// wait_for_aum_ui takes the new expectations.
+	w.SetScreens(muted.Source())
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "wait_for_aum_ui", Arguments: map[string]any{
+		"channels": []map[string]any{{"channel": "2", "muted": true}, {"channel": "2", "nodes": []map[string]any{{"node": "LP", "bypassed": false}}}},
+		"strip_count": 6, "no_overlay": true, "timeout_ms": 0,
+	}})
+	if err != nil || res.IsError || !strings.HasPrefix(resultText(res), "matched") {
+		t.Fatalf("wait_for_aum_ui: %v %s", err, resultText(res))
 	}
 }
