@@ -28,6 +28,7 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
 	"github.com/teemow/mcp-midi-controller/internal/song"
+	"github.com/teemow/mcp-midi-controller/internal/sound"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
 )
@@ -35,10 +36,10 @@ import (
 // songFormat is the song document in brief, carried by save_song so an agent
 // can write one from the tool listing alone. docs/songs.md is the long form.
 const songFormat = `A song is one YAML document:
-title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional).
+title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional), calibrate (optional, see the end).
 tracks: [{id, name?, kind: drums?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?,
   instrument: {plugin, preset?, params?},
-  effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins), preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1.
+  effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1.
 master: [effects on the master strip].
 patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), velocity? (96),
   notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?}]}}
@@ -49,7 +50,8 @@ scenes: {id: {track: {level?, mute?, preset?, params?, effects: {effect id: {byp
 sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]}, automation?: [{track, effect?, param ("level" for the fader), from, to, bar?, bars?}]}} - patterns repeat until the section ends; a track left out is silent.
 arrangement: [section ids in playing order].
 session: {track_taps?, full_control?, hardware? (builtin|x32), presets? (song|all)} - how the song's AUM session is built (see author_song_session); optional. presets: all maps every factory preset, so audition_sound can play any of them in the song's session and the song can change presets without a new one.
-A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).`
+A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).
+calibrate: true compiles the song against the rig's sound catalogue (audition_sound fills it, list_sounds reads it): notes are written at the pitch they should SOUND at (each track is shifted by its preset's measured transposition, per section, so no transpose is needed to undo a preset's octave), a track's level is loudness (0 = the same reference level for every preset; the fader is trimmed per preset) and a drum track's lanes are its kit's measured pads (a lane the kit lacks is an error). A preset that is not measured plays as written and is listed.`
 
 func (s *Server) registerSongTools() {
 	songArg := `"song": {"type": "string", "description": "Song id (see list_songs)."}`
@@ -103,7 +105,7 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "get_song_plugin",
-		Description: "Get what a song can set on one plugin: its factory presets by name and its writable parameters with range, current value and value labels. " +
+		Description: "Get what a song can set on one plugin (a probe id, or a name that fits only one): its factory presets by name — with what the sound catalogue measured of each (transposition, level, envelope; see audition_sound) — and its writable parameters with range, value labels and the value of the plugin's default patch (a preset may set another, which cannot be read from outside the plugin). " +
 			"query narrows both lists to the names containing it (\"bass\", \"pad\", \"cutoff\") — a plugin can have hundreds of presets.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -138,6 +140,7 @@ func (s *Server) registerSongTools() {
 
 	s.registerSongLoadTools(songArg)
 	s.registerSoundTools()
+	s.registerSongMixTools(songArg)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "play_song",
@@ -162,7 +165,7 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "stop_song",
-		Description: "Stop the playing song: release every sounding note (live), or stop and rewind AUM's transport (sequenced).",
+		Description: "Stop the playing song: release every sounding note (live), or stop and rewind AUM's transport (sequenced). Also ends a running mix measurement (mix_song).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, s.handleStopSong)
 
@@ -312,10 +315,13 @@ func (s *Server) handleGetSongPlugin(_ context.Context, req *mcp.CallToolRequest
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
-	dump, ok := songCatalog()[args.Plugin]
-	if !ok {
-		return textResult(fmt.Sprintf("/plugin: no staged AUv3 probe %q (see list_song_plugins)", args.Plugin), true), nil
+	cat := songCatalog()
+	id, err := cat.Resolve(args.Plugin)
+	if err != nil {
+		return textResult(fmt.Sprintf("/plugin: %v (see list_song_plugins)", err), true), nil
 	}
+	args.Plugin = id
+	dump := cat[id]
 	limit := args.Limit
 	if limit <= 0 {
 		limit = 60
@@ -353,9 +359,30 @@ func (s *Server) handleGetSongPlugin(_ context.Context, req *mcp.CallToolRequest
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s, %s): %d factory preset(s), %d writable param(s)\n",
 		dump.Name, args.Plugin, pluginKind(dump.Component.Type), len(dump.FactoryPresets), writableCount(dump))
-	fmt.Fprintf(&b, "presets (%d of %d matching):\n", len(presets), presetHits)
+	// What the sound catalogue knows of the presets listed.
+	measured := map[string]*sound.Sound{}
+	if known, err := s.sounds.Plugin(args.Plugin); err == nil && known != nil {
+		for _, p := range presets {
+			for name, m := range known.Presets {
+				if strings.EqualFold(name, p) {
+					measured[p] = m
+				}
+			}
+		}
+		if m, ok := known.Presets[sound.DefaultPatch]; ok && query == "" {
+			measured[sound.DefaultPatch] = m
+		}
+	}
+	fmt.Fprintf(&b, "presets (%d of %d matching, %d measured):\n", len(presets), presetHits, len(measured))
+	if m, ok := measured[sound.DefaultPatch]; ok {
+		fmt.Fprintf(&b, "  %s  [%s]\n", sound.DefaultPatch, soundBrief(m))
+	}
 	for _, p := range presets {
-		fmt.Fprintf(&b, "  %s\n", p)
+		if m, ok := measured[p]; ok {
+			fmt.Fprintf(&b, "  %s  [%s]\n", p, soundBrief(m))
+		} else {
+			fmt.Fprintf(&b, "  %s\n", p)
+		}
 	}
 	fmt.Fprintf(&b, "params (%d of %d matching):\n", len(params), paramHits)
 	for _, p := range params {
@@ -363,7 +390,7 @@ func (s *Server) handleGetSongPlugin(_ context.Context, req *mcp.CallToolRequest
 		if p.ID != "" && p.ID != p.Name {
 			fmt.Fprintf(&b, " (%s)", p.ID)
 		}
-		fmt.Fprintf(&b, ": %g..%g, now %g", p.Min, p.Max, p.Value)
+		fmt.Fprintf(&b, ": %g..%g, default patch %g", p.Min, p.Max, p.Value)
 		if len(p.Labels) > 0 && len(p.Labels) <= 16 {
 			fmt.Fprintf(&b, " [%s]", strings.Join(p.Labels, ", "))
 		}
@@ -371,9 +398,35 @@ func (s *Server) handleGetSongPlugin(_ context.Context, req *mcp.CallToolRequest
 	}
 	return structResult(b.String(), map[string]any{
 		"plugin": args.Plugin, "name": dump.Name, "kind": pluginKind(dump.Component.Type),
-		"presets": presets, "presets_matching": presetHits,
+		"presets": presets, "presets_matching": presetHits, "measured": measured,
 		"params": params, "params_matching": paramHits,
 	}), nil
+}
+
+// soundBrief is a measured preset in a few words, for a list.
+func soundBrief(m *sound.Sound) string {
+	if len(m.Pads) > 0 {
+		return fmt.Sprintf("kit: %d pad(s), peak %.0f dBFS", len(m.Pads), m.PeakDB)
+	}
+	var parts []string
+	switch {
+	case m.Silent():
+		return "silent"
+	case m.Unpitched:
+		parts = append(parts, "no pitch")
+	default:
+		parts = append(parts, fmt.Sprintf("transpose %+d", m.Transpose))
+	}
+	parts = append(parts, fmt.Sprintf("%.0f dBFS", m.LevelDB))
+	if m.Sustains {
+		parts = append(parts, "sustains")
+	} else {
+		parts = append(parts, fmt.Sprintf("decays %.0f ms", m.DecayMS))
+	}
+	if n := len(m.Remarks); n > 0 {
+		parts = append(parts, m.Remarks[n-1])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // --- songs ------------------------------------------------------------------
@@ -386,9 +439,10 @@ type compiledSong struct {
 	timeline *song.Timeline
 }
 
-// compileSong plans a song against the staged probes and compiles it.
-func compileSong(id string, sg *song.Song) (*compiledSong, error) {
-	plan, err := song.NewPlan(sg, songCatalog())
+// compileSong plans a song against the staged probes, and against the sound
+// catalogue when it asks to be calibrated, and compiles it.
+func (s *Server) compileSong(id string, sg *song.Song) (*compiledSong, error) {
+	plan, err := song.NewPlanWith(sg, songCatalog(), song.PlanOptions{Sounds: s.voicing})
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +451,16 @@ func compileSong(id string, sg *song.Song) (*compiledSong, error) {
 		return nil, err
 	}
 	return &compiledSong{id: id, song: sg, plan: plan, timeline: tl}, nil
+}
+
+// voicing is the sound catalogue as a song's plan reads it: what a preset of
+// a plugin was measured to sound like.
+func (s *Server) voicing(plugin, preset string) (song.Voicing, bool) {
+	m := s.sounds.Sound(plugin, preset)
+	if m == nil || m.Silent() {
+		return song.Voicing{}, false
+	}
+	return song.Voicing{Transpose: m.Transpose, LevelDB: m.LevelDB, Lanes: m.Lanes}, true
 }
 
 // loadSong loads and compiles a stored song, returning a tool error on failure.
@@ -408,7 +472,7 @@ func (s *Server) loadSong(id string) (*compiledSong, *mcp.CallToolResult) {
 	if err != nil {
 		return nil, textResult("/song: "+err.Error(), true)
 	}
-	cs, err := compileSong(song.ID(id), sg)
+	cs, err := s.compileSong(song.ID(id), sg)
 	if err != nil {
 		return nil, textResult(fmt.Sprintf("song %q does not compile against the staged plugins: %v", song.ID(id), err), true)
 	}
@@ -437,6 +501,10 @@ type songSummary struct {
 	// SequenceCurrent reports, for a session that hosts the sequencer, whether
 	// it holds the song as it is now (absent without a sequencer).
 	SequenceCurrent *bool `json:"sequence_current,omitempty"`
+	// Calibration is how each preset a calibrated song uses is corrected,
+	// and Warnings what that could not do.
+	Calibration []song.TrackVoicing `json:"calibration,omitempty"`
+	Warnings    []string            `json:"warnings,omitempty"`
 }
 
 type songSectionRow struct {
@@ -494,6 +562,27 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 			names[i] = n.Name
 		}
 		fmt.Fprintf(&b, "  master: %s\n", strings.Join(names, " > "))
+	}
+	if rows := cs.plan.Calibration(); rows != nil {
+		sum.Calibration, sum.Warnings = rows, cs.plan.Warnings()
+		fmt.Fprintf(&b, "calibrated against the sound catalogue (level 0 = %g dBFS rms for the preset's reference note):\n", song.ReferenceLevelDB)
+		for _, r := range rows {
+			preset := r.Preset
+			if preset == "" {
+				preset = sound.DefaultPatch
+			}
+			switch {
+			case !r.Measured:
+				fmt.Fprintf(&b, "  %-10s %s: not measured, plays as written\n", r.Track, preset)
+			case r.Pads > 0:
+				fmt.Fprintf(&b, "  %-10s %s: a kit of %d pad(s), level %+.1f dB\n", r.Track, preset, r.Pads, r.TrimDB)
+			default:
+				fmt.Fprintf(&b, "  %-10s %s: notes %+d semitone(s), level %+.1f dB\n", r.Track, preset, r.Transpose, r.TrimDB)
+			}
+		}
+		for _, w := range sum.Warnings {
+			fmt.Fprintf(&b, "  warning: %s\n", w)
+		}
 	}
 	if rec, ok := loadSongSessions()[cs.id]; ok {
 		current := rec.Fingerprint == tl.Fingerprint
@@ -581,7 +670,7 @@ func (s *Server) handleGetSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 		// Stored but no longer valid: hand the text back so it can be fixed.
 		return structResult(fmt.Sprintf("%v\n\n%s", err, raw), map[string]any{"id": id, "yaml": string(raw), "error": err.Error()}), nil
 	}
-	cs, err := compileSong(id, sg)
+	cs, err := s.compileSong(id, sg)
 	if err != nil {
 		return structResult(fmt.Sprintf("song %q does not compile against the staged plugins: %v\n\n%s", id, err, raw),
 			map[string]any{"id": id, "yaml": string(raw), "error": err.Error()}), nil
@@ -627,7 +716,7 @@ func (s *Server) handleSaveSong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if id == "" {
 		return textResult("/song: give the song an id or a title", true), nil
 	}
-	cs, err := compileSong(id, sg)
+	cs, err := s.compileSong(id, sg)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -873,6 +962,13 @@ func playbackText(st song.Status) string {
 }
 
 func (s *Server) handleStopSong(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// A mix measurement plays the song in passes: end it, not only the pass
+	// that is playing.
+	s.mixMu.Lock()
+	if s.mix != nil && !s.mix.finished() {
+		s.mix.cancel()
+	}
+	s.mixMu.Unlock()
 	st := s.player.Stop()
 	return structResult(playbackText(st), map[string]any{"playback": st}), nil
 }

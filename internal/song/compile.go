@@ -126,11 +126,12 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 		tl.Fingerprint = p.Fingerprint()
 	}
 
-	// Each (track, pattern) pair compiles once.
-	type patKey struct{ track, pattern string }
+	// Each (track, pattern) pair compiles once; a calibrated drum track once
+	// for every kit it plays.
+	type patKey struct{ track, pattern, kit string }
 	patterns := map[patKey]*compiledPattern{}
 	pattern := func(t *Track, id string) (*compiledPattern, error) {
-		key := patKey{t.ID, id}
+		key := patKey{t.ID, id, t.kitName}
 		if cp, ok := patterns[key]; ok {
 			return cp, nil
 		}
@@ -163,10 +164,30 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 			if len(ids) == 0 {
 				continue
 			}
+			// A calibrated song is written in sounding pitch and in its kit's
+			// lanes: both follow the preset the track has in this section.
+			shift := 0
+			switch {
+			case p == nil:
+				t = s.laneTrack(t)
+			case p.calibrating():
+				tp := p.Tracks[ti]
+				preset := p.sectionPreset(sec, tp.Nodes[0])
+				if !tp.Drums {
+					shift = p.pitchShift(tp, preset)
+				} else if kit := p.kit(tp, preset); kit != nil {
+					with := *t
+					with.kit, with.kitName = kit, preset
+					t = &with
+				}
+			}
 			pos := start
 			for i := 0; pos < end; i++ {
 				cp, err := pattern(t, ids[i%len(ids)])
 				if err != nil {
+					if t.kit != nil {
+						return nil, fmt.Errorf("/sections/%s/play/%s: %w", name, t.ID, err)
+					}
 					return nil, err
 				}
 				for _, n := range cp.notes {
@@ -178,7 +199,11 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 					if off > end {
 						off = end
 					}
-					trackNotes[ti] = append(trackNotes[ti], note{on: on, off: off, note: n.note, vel: n.vel, section: idx})
+					pitch := n.note + shift
+					if pitch < 0 || pitch > 127 {
+						return nil, fmt.Errorf("/sections/%s/play/%s: %s shifted by %+d for its preset leaves the MIDI range", name, t.ID, NoteName(n.note), shift)
+					}
+					trackNotes[ti] = append(trackNotes[ti], note{on: on, off: off, note: pitch, vel: n.vel, section: idx})
 				}
 				pos += cp.ticks
 			}
@@ -446,10 +471,11 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 	}
 	for _, tp := range p.Tracks {
 		w := strips[tp]
-		if w.level > MaxLevelDB {
+		if w.level > MaxLevelDB && !p.calibrating() {
 			return nil, fmt.Errorf("/sections/%s: %s level %g dB is above the fader's +%g dB", name, tp.ID, w.level, MaxLevelDB)
 		}
-		st.set(Target{Track: tp.ID, Kind: ControlLevel}, tp.Level, levelWire(w.level))
+		level := p.fader(tp, nodes[tp.Nodes[0]].preset, w.level)
+		st.set(Target{Track: tp.ID, Kind: ControlLevel}, tp.Level, levelWire(level))
 		st.set(Target{Track: tp.ID, Kind: ControlMute}, tp.Mute, boolWire(w.mute))
 	}
 	return st, nil
@@ -547,11 +573,14 @@ func (p *Plan) sectionRamps(name string, sec Section, start, end, barTicks int64
 			if tp == nil {
 				return nil, fmt.Errorf("%s: %q has no fader to automate", where, a.Track)
 			}
-			if a.From.IsStr || a.To.IsStr || a.From.Num > MaxLevelDB || a.To.Num > MaxLevelDB {
+			if a.From.IsStr || a.To.IsStr || ((a.From.Num > MaxLevelDB || a.To.Num > MaxLevelDB) && !p.calibrating()) {
 				return nil, fmt.Errorf("%s: a level ramp runs between two dB values up to +%g", where, MaxLevelDB)
 			}
+			// A calibrated track's level is trimmed for the preset it has in
+			// the section; a ramp moves between two such levels.
+			preset := p.sectionPreset(sec, tp.Nodes[0])
 			r.target = Target{Track: tp.ID, Kind: ControlLevel}
-			r.at, r.from, r.to = tp.Level, levelWire(a.From.Num), levelWire(a.To.Num)
+			r.at, r.from, r.to = tp.Level, levelWire(p.fader(tp, preset, a.From.Num)), levelWire(p.fader(tp, preset, a.To.Num))
 		} else {
 			n := p.Node(a.Track, a.Effect)
 			if n == nil {

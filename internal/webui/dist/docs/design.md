@@ -292,6 +292,8 @@ Global tools:
   `list_sounds` / `set_sound`);
   `play_song` / `stop_song` / `get_song_playback` play it from that sequencer
   or live through the brain;
+  `mix_song` / `get_song_mix` measure the level of every bar, section and
+  track at the master tap;
   and `export_song_midi` writes it as a Standard MIDI File. See
   `docs/songs.md`; `docs/song-authoring.md` is the design of the tools around
   writing a song.

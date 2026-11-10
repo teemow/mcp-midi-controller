@@ -115,7 +115,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 	}
 	route := aum.MIDIRoute{From: aum.MIDIEndpoint{Channel: BrainStrip, Slot: 0}}
 	for _, tp := range p.Tracks {
-		gain := LevelGain(tp.homeLevel)
+		gain := LevelGain(p.homeFader(tp))
 		ch := aum.ChannelSpec{
 			Kind: aum.KindAudio, Title: tp.Name, Fader: &gain, Muted: tp.homeMute,
 			Output: &aum.ChannelOutput{Kind: aum.OutputBus, BusIndex: 0},

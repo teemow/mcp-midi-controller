@@ -22,6 +22,7 @@ that plays inside AUM.
 | 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
 | 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap. |
+| | `mix_song`, `get_song_mix` | The level of every bar, every section and every track. See [The mix](#the-mix). |
 | 6. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
 
 `check_song` tells at any time whether the loaded session will sound.
@@ -92,11 +93,13 @@ arrangement: [verse, chorus, verse, chorus]
 
 - **tracks** — each is one mixer strip: an instrument followed by its effect
   chain, on its own MIDI channel (the first track on channel 1, in order; up to
-  twelve). `plugin` is the id of a staged AUv3 probe as `list_song_plugins`
-  gives it: the unit's type, subtype and manufacturer, such as
-  `aumu-mono-_acme` (the example uses short ids to stay readable).
-  `kind: drums` makes it a drum track. `transpose` shifts all its notes, for
-  a preset that does not sound at the written pitch.
+  twelve). `plugin` names a staged AUv3 probe: by its id as
+  `list_song_plugins` gives it (the unit's type, subtype and manufacturer,
+  such as `aumu-mono-_acme`), or by any name that fits only one plugin, its
+  display name or a part of it. A name that fits several is an error that
+  lists them. `kind: drums` makes it a drum track. `transpose` shifts all its
+  notes, for a preset that does not sound at the written pitch (a
+  [calibrated](#calibration) song needs none).
 - **master** — effects on the master strip, after its fader.
 - **patterns** — the phrases; see [Notation](#notation).
 - **scenes** — named sound settings; see [Sound](#sound).
@@ -242,6 +245,55 @@ not stored: it is the chain's sound, not the preset's. What `set_sound`
 corrects (a transposition, a drum map, a comment) is kept when the preset is
 measured again.
 
+## Calibration
+
+`calibrate: true` at the top of a song compiles it against the sound
+catalogue. Three things then need no correcting by hand:
+
+```yaml
+calibrate: true
+
+tracks:
+  - id: lead
+    level: -3                         # loudness, the same for every preset
+    instrument: {plugin: poly, preset: Glass Lead}
+  - id: drums
+    kind: drums
+    instrument: {plugin: drumbox, preset: Analog Kit}
+
+patterns:
+  hook: {step: 1/8, notes: "C5 - - A4 - - C5 -"}     # the notes that should sound
+  beat: {drums: {kick: "x...x...x...x...", snare: "....x.......x..."}}
+
+scenes:
+  chorus:
+    lead: {preset: Soft Saws}         # another octave, another level: both follow
+```
+
+- **Notes are sounding pitch.** A track's notes are shifted by the measured
+  `transpose` of the preset it has in each section. A scene that changes the
+  preset changes the shift with it, so no `transpose` on tracks or patterns is
+  needed to undo a preset's octave. A track's or pattern's own `transpose`
+  still applies on top.
+- **Levels are loudness.** A track's `level` is added to what brings its
+  preset's reference note to -20 dBFS rms, per section. Level 0 is therefore
+  the same loudness for every preset, before the effects. The fader ends at
+  +6 dB: a preset too quiet for that plays as loud as the fader goes, and the
+  song says how much is missing and to raise the plugin's volume.
+- **Drum lanes are the kit's pads.** `kick`, `snare`, `hat` … resolve to the
+  notes of the kit's measured drum map instead of General MIDI's. A lane the
+  kit has no pad for is an error that lists the pads it has. The track's own
+  `drum_map` still wins, and says where such a lane goes.
+
+`save_song` and `get_song` list every preset the tracks use with what was
+applied. A preset that is not in the catalogue plays as written and is listed
+as not measured; `audition_sound` measures it. Without `calibrate` the
+catalogue is not consulted at all.
+
+The catalogue is measured on a clean path, so calibration brings presets to
+the same pitch and into the same range of loudness. The balance of a mix with
+its effects is still made by ear and by measuring it.
+
 ## What is checked
 
 `save_song` refuses a document that does not hold together, and reports every
@@ -253,7 +305,9 @@ problem with its place in the document:
 - plugins, against the staged AUv3 probes: an unknown plugin, preset or
   parameter (with the names that come close), a value outside a parameter's
   range;
-- a control a scene changes without a declaration on the track.
+- a control a scene changes without a declaration on the track;
+- in a calibrated song: a drum lane its kit has no pad for, a note that leaves
+  the MIDI range once it is shifted for its preset.
 
 `dry_run: true` checks without storing.
 
@@ -447,6 +501,35 @@ sleep the host had already begun when `play_song` arrived. That one runs its
 course, a gap of a few seconds right at the start of the song, and none
 follows it.
 
+## The mix
+
+`get_audio_tap` reports the tap's last ten seconds as one figure, and its
+`peak` is the plugin's ten-times-a-second feature, which reads under the
+sample peak. A balance needs more than that. `mix_song` plays the song and
+reads the master tap out for its whole length:
+
+- **per bar and per section**: rms and sample peak in dBFS, with the bars that
+  clipped marked;
+- **the whole**: rms, the highest peak (the headroom), the loudest and the
+  quietest bar, and what rang on after the last bar;
+- **stalls**: how often the tap's stream did not deliver, since the levels
+  around a stall read low.
+
+With `per_track: true` it then plays every distinct section once per track
+that has notes in it — the section's first bars, that track alone — and adds
+the table a balance is made from: the level of every track in every section.
+A track more than 12 dB over another in the same section is pointed out, and
+a track that is silent where it plays notes is named. The passes use
+`play_song`'s own player, so each starts from the section's whole sound.
+
+The measurement runs in the background: `mix_song` returns with an estimate,
+`get_song_mix` gives the progress or the finished report (`wait_ms` waits for
+it), and `stop_song` ends it. `from` and `sections` limit it to a part of the
+song, `whole: false` to the solo passes.
+
+The levels are what the master tap carries: after the master's effects, a
+limiter included. A peak is the highest sample, not an inter-sample estimate.
+
 ## The sequencer's state
 
 A sequencer can only play a song the daemon wrote if its content can be
@@ -627,9 +710,9 @@ against a device.
 
 Not yet measured:
 
-- `load_song`, `check_song`, `open_sound_lab` and `audition_sound` themselves
-  and a session with `presets: all`: the test suite runs them against a
-  stand-in for the iPad;
+- `load_song`, `check_song`, `open_sound_lab`, `audition_sound` and
+  `mix_song` themselves, a session with `presets: all` and a song with
+  `calibrate`: the test suite runs them against a stand-in for the iPad;
 - `play_song` and `stop_song` in sequenced mode on a device, and
   `get_song_playback` against AUM's own position;
 - a sequenced song on a host that dozes;
