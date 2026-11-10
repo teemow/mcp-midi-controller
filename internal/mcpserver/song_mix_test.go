@@ -324,7 +324,7 @@ func TestTapMeter(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	m.pull()
 	r.mu.Lock()
-	r.notes[[2]int{1, 69}] = true
+	r.notes[[2]int{1, 69}] = &rigNote{on: r.frame, off: -1}
 	r.mu.Unlock()
 	time.Sleep(600 * time.Millisecond)
 	m.pull()

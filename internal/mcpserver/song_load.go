@@ -41,11 +41,17 @@ var (
 	// control changes after them.
 	songPresetWait = 700 * time.Millisecond
 	songSettleWait = 300 * time.Millisecond
-	// A check note is held for songNoteHold and listened to for songNoteTail
-	// more; songFloorWait before it measures what was sounding anyway.
-	songNoteHold  = 250 * time.Millisecond
-	songNoteTail  = 450 * time.Millisecond
-	songFloorWait = 120 * time.Millisecond
+	// A check note is held for songNoteHold, or as long as the sound
+	// catalogue says the track's preset takes to rise to its level, up to
+	// songNoteHoldMax; a track played a second time is held songNoteHoldMax.
+	// The note is listened to for songNoteTail more. Before it the tap is
+	// given up to songQuietWait to fall silent, and songFloorWait then
+	// measures what was sounding anyway.
+	songNoteHold    = 250 * time.Millisecond
+	songNoteHoldMax = 1500 * time.Millisecond
+	songNoteTail    = 450 * time.Millisecond
+	songFloorWait   = 120 * time.Millisecond
+	songQuietWait   = 3 * time.Second
 	// songMuteGap is the least time between a strip's mute and its opposite
 	// (see stripMutes). AUM's largest audio buffer is 46 ms.
 	songMuteGap = 150 * time.Millisecond
@@ -53,6 +59,9 @@ var (
 
 // silentDB is the peak below which a track counts as silent.
 const silentDB = -60.0
+
+// songQuietPoll is how much audio waitQuiet looks at in one go.
+const songQuietPoll = 50 * time.Millisecond
 
 func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
@@ -82,7 +91,7 @@ func (s *Server) registerSongLoadTools(songArg string) {
 		Description: "Tell whether a song will sound if it is played now: the brain is connected, the tap is streaming, AUM has the song's session open with its strips and reports no failed plugin, and every track answers a note. " +
 			"Which session is open is read from the session's master tap, which dials in under the session's id; AUM's menu is opened for the name only when no tap names the session, or with ui: true. " +
 			"The mixer is looked at either way: its strips, and a plugin that did not load, which is read off a screenshot: AUM draws its node with a ring of red stripes and says so nowhere else. " +
-			"For the notes, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted and the lowest of its first notes played, and the master tap is measured: a track that is silent is played once more, and named with its plugin when it is silent again — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
+			"For the notes, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted, the master tap is let fall silent (what still rings in the strip, such as a reverb's tail, would drown a quiet note), and the lowest of its first notes is played and the tap measured. The note is held as long as the sound catalogue says the preset takes to rise to its level (a slow pad's attack), else briefly. A track that is silent is played once more, held longer, and named with its plugin when it is silent again — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
 			"Not while a song plays. ui: false leaves AUM's screen alone.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -466,7 +475,12 @@ type trackCheck struct {
 	Note   int     `json:"note,omitempty"`
 	PeakDB float64 `json:"peak_db,omitempty"`
 	RMSDB  float64 `json:"rms_db,omitempty"`
-	Sounds bool    `json:"sounds"`
+	// FloorDB is the peak of what was sounding just before the note, when
+	// that was above silence: the note had to stand 6 dB over it.
+	FloorDB float64 `json:"floor_db,omitempty"`
+	// HoldMS is how long the note was held (the last time it was played).
+	HoldMS int64 `json:"hold_ms,omitempty"`
+	Sounds bool  `json:"sounds"`
 	// Tries is how often the note was played: a track that stays silent is
 	// played a second time before it is called silent.
 	Tries int `json:"tries,omitempty"`
@@ -501,15 +515,25 @@ func (c *checkReport) text() string {
 		fmt.Fprintf(&b, "  %-7s %s  %s\n", f.Step, mark, f.Detail)
 	}
 	for _, t := range c.Tracks {
+		// A note that answered says when it was held longer than usual: for
+		// the preset's attack, or because it was played again.
+		held := ""
+		if t.HoldMS > songNoteHold.Milliseconds() {
+			held = fmt.Sprintf(", held %d ms", t.HoldMS)
+		}
 		switch {
 		case t.Skipped != "":
 			fmt.Fprintf(&b, "    %-10s %-22s not played: %s\n", t.Track, t.Plugin, t.Skipped)
 		case t.Sounds && t.Tries > 1:
-			fmt.Fprintf(&b, "    %-10s %-22s %-4s peak %6.1f dBFS (silent at first, answered when played again)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB)
+			fmt.Fprintf(&b, "    %-10s %-22s %-4s peak %6.1f dBFS%s (silent at first, answered when played again)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB, held)
 		case t.Sounds:
-			fmt.Fprintf(&b, "    %-10s %-22s %-4s peak %6.1f dBFS\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB)
+			fmt.Fprintf(&b, "    %-10s %-22s %-4s peak %6.1f dBFS%s\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB, held)
 		default:
-			fmt.Fprintf(&b, "    %-10s %-22s %-4s SILENT (peak %.1f dBFS, played %d times)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB, t.Tries)
+			floor := ""
+			if t.FloorDB != 0 {
+				floor = fmt.Sprintf(" over a floor of %.1f dBFS", t.FloorDB)
+			}
+			fmt.Fprintf(&b, "    %-10s %-22s %-4s SILENT (peak %.1f dBFS%s, played %d times)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB, floor, t.Tries)
 		}
 	}
 	return b.String()
@@ -763,19 +787,35 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 			continue
 		}
 		row.Note = e.Data1
+		hold := s.checkHold(tp)
 		// A track that stays silent is played once more, its strip opened
 		// again, before it is called silent: one lost message or a plugin
-		// still busy with its preset is not a dead plugin.
+		// still busy with its preset is not a dead plugin. The second note is
+		// held the longest, for a slow attack the catalogue does not know.
 		for row.Tries < 2 && !row.Sounds {
 			row.Tries++
+			if row.Tries > 1 {
+				hold = max(hold, songNoteHoldMax)
+			}
 			if err := mutes.set(ctx, tp, false); err != nil {
 				return out, err
 			}
-			h, err := s.hearNote(ctx, tap, e.Channel, e.Data1, 100, songNoteHold, songNoteTail)
+			// What still rings in the strip, a reverb's tail or the first
+			// try's own note, is let die before the floor is measured: a
+			// note has to stand 6 dB over the floor to count.
+			if err := s.waitQuiet(ctx, tap, songQuietWait); err != nil {
+				return out, err
+			}
+			h, err := s.hearNote(ctx, tap, e.Channel, e.Data1, 100, hold, songNoteTail)
 			if err != nil {
 				return out, err
 			}
 			row.PeakDB, row.RMSDB = round1(h.PeakDB), round1(h.RMSDB)
+			row.FloorDB = 0
+			if h.FloorDB > silentDB {
+				row.FloorDB = round1(h.FloorDB)
+			}
+			row.HoldMS = hold.Milliseconds()
 			row.Sounds = h.Sounds()
 		}
 		if err := mutes.set(ctx, tp, true); err != nil {
@@ -784,6 +824,45 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// checkHold is how long a track's check note is held: as long as the sound
+// catalogue says the track's preset takes from the note to its level (its
+// latency and attack), at least songNoteHold and at most songNoteHoldMax. On a
+// device a string pad held 250 ms peaked at -33 dBFS, 17 dB under what it
+// reached held for 2 s, and did not stand 6 dB over what was ringing before.
+func (s *Server) checkHold(tp *song.TrackPlan) time.Duration {
+	hold := songNoteHold
+	if s.sounds == nil || len(tp.Nodes) == 0 {
+		return hold
+	}
+	n := tp.Nodes[0]
+	m := s.sounds.Sound(n.Plugin, n.HomePreset())
+	if m == nil || m.Silent() {
+		return hold
+	}
+	rise := time.Duration((m.LatencyMS + m.AttackMS) * float64(time.Millisecond))
+	return min(max(hold, rise), max(hold, songNoteHoldMax))
+}
+
+// waitQuiet waits until the audio the tap carries peaks below silentDB, for at
+// most d. The tap's own level (settleAudio) calls a reverb's tail at -40 dBFS
+// rms quiet, and that tail is then the floor a quiet note is measured against.
+func (s *Server) waitQuiet(ctx context.Context, tap *audiotap.Store, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for {
+		from := tap.MarkEpoch()
+		if err := sleepContext(ctx, songQuietPoll); err != nil {
+			return err
+		}
+		clip, ok := tap.Segment(from, tap.MarkEpoch())
+		if !ok {
+			return nil // no audio came: hearNote says so
+		}
+		if peak, _ := clipLevels(clip); peak <= silentDB || !time.Now().Before(deadline) {
+			return nil
+		}
+	}
 }
 
 // stripMutes sends strip mutes no closer together than AUM takes them. Two
