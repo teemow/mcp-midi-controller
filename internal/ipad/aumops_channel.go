@@ -74,13 +74,16 @@ func (d *AUMDriver) addChannel(kind string) (AUMResult, error) {
 	if err := d.showAddTile(); err != nil {
 		return AUMResult{}, err
 	}
+	if d.St.AddTile == nil {
+		return AUMResult{}, fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
+	}
 	before := len(d.St.Channels)
 	tile := *d.St.AddTile
-	item, ok := d.St.addMenu[kind]
-	if !ok {
-		item = addMenuFallback(tile, kind)
-	}
 	if err := d.tapRect(tile, "the add-channel tile"); err != nil {
+		return AUMResult{}, err
+	}
+	item, err := d.addMenuItem(tile, kind)
+	if err != nil {
 		return AUMResult{}, err
 	}
 	if err := d.tapRect(item, kind); err != nil {
@@ -95,6 +98,18 @@ func (d *AUMDriver) addChannel(kind string) (AUMResult, error) {
 	}
 	added := d.St.Channels[len(d.St.Channels)-1]
 	return d.result("add_"+strings.ToLower(kind), true, fmt.Sprintf("added strip %d %q", added.Strip, added.Title), added), nil
+}
+
+// addMenuItem finds AUDIO, MIDI or IMPORT once the tile's menu is open: in
+// the tree when AUM lists it, else at its place in the tile.
+func (d *AUMDriver) addMenuItem(tile Rect, kind string) (Rect, error) {
+	if err := d.Read(); err != nil {
+		return Rect{}, err
+	}
+	if r, ok := d.St.addMenu[kind]; ok {
+		return r, nil
+	}
+	return addMenuFallback(tile, kind), nil
 }
 
 // addMenuFallback places AUDIO, MIDI and IMPORT in the tile (150×150; the
@@ -127,13 +142,16 @@ func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
 	if err := d.showAddTile(); err != nil {
 		return AUMResult{}, err
 	}
+	if d.St.AddTile == nil {
+		return AUMResult{}, fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
+	}
 	before := len(d.St.Channels)
 	tile := *d.St.AddTile
-	item, ok := d.St.addMenu["IMPORT"]
-	if !ok {
-		item = addMenuFallback(tile, "IMPORT")
-	}
 	if err := d.tapRect(tile, "the add-channel tile"); err != nil {
+		return AUMResult{}, err
+	}
+	item, err := d.addMenuItem(tile, "IMPORT")
+	if err != nil {
 		return AUMResult{}, err
 	}
 	if err := d.tapRect(item, "IMPORT"); err != nil {
@@ -177,7 +195,7 @@ func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
 			return AUMResult{}, err
 		}
 	}
-	ok, err = d.until(aumWait, func(st AUMState) bool { return len(st.Channels) > before })
+	ok, err := d.until(aumWait, func(st AUMState) bool { return len(st.Channels) > before })
 	if err != nil {
 		return AUMResult{}, err
 	}

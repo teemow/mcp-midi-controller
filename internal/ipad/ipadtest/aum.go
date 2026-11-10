@@ -49,8 +49,9 @@ type Overlay struct {
 	Fields []string
 	// Cells are list cells (FILES): a name and the detail line below it.
 	Cells [][2]string
-	// NavBar titles a side panel with a navigation bar and a close button
-	// (the Navigator) instead of a 60-point header text.
+	// NavBar titles a side panel with a navigation bar (the Navigator's:
+	// an eye and a bookmark filter, no close button) instead of a 60-point
+	// header text.
 	NavBar bool
 	// Frame overrides the default frame (x, y, w, h).
 	Frame *[4]float64
@@ -58,7 +59,7 @@ type Overlay struct {
 
 // AUM describes a synthetic AUM screen. The shapes follow WDA's JSON source
 // of AUM 1.4.8 (frames, types, traits, the spelled-out MUTE texts, the
-// square node buttons with their inner button, the add tile with its hidden
+// square node buttons with their inner button, the add tile and its
 // AUDIO/MIDI/IMPORT menu, popovers and side panels); the names are made up.
 type AUM struct {
 	Tempo    string // "120" -> "♩120"
@@ -70,7 +71,9 @@ type AUM struct {
 	Session     string
 	StartScreen bool
 	TempoBar    bool
-	Strips      []Strip
+	// AddMenu opens the add tile's AUDIO / MIDI / IMPORT menu.
+	AddMenu bool
+	Strips  []Strip
 	// Overlays are drawn over the mixer, front-most last.
 	Overlays []Overlay
 	// PluginWindow opens a plugin window with this title ("Synth @A1").
@@ -175,12 +178,17 @@ func (a AUM) Source() json.RawMessage {
 		lastX = x
 		mixer = append(mixer, strip(x, s))
 	}
+	// The add tile is an unlabelled button in a column of its own; its
+	// menu is in the tree only while it is open.
 	tile := lastX + 242
-	mixer = append(mixer, el("Other", "", tile, 60, 278, 774,
-		el("Other", "", tile+64, 372, 150, 150,
-			el("Button", "AUDIO", tile+64, 372, 150, 45, el("StaticText", "AUDIO", tile+113, 383, 52, 23)),
-			el("Button", "MIDI", tile+64, 425, 150, 45, el("StaticText", "MIDI", tile+121, 436, 36, 23)),
-			el("Button", "IMPORT", tile+64, 477, 150, 45, el("StaticText", "IMPORT", tile+109, 488, 60, 23)))))
+	col := []node{el("Button", "", tile+46, 372, 150, 150)}
+	if a.AddMenu {
+		col = append(col,
+			el("Button", "AUDIO", tile+46, 372, 150, 45, el("StaticText", "AUDIO", tile+95, 383, 52, 23)),
+			el("Button", "MIDI", tile+46, 425, 150, 45, el("StaticText", "MIDI", tile+103, 436, 36, 23)),
+			el("Button", "IMPORT", tile+46, 477, 150, 45, el("StaticText", "IMPORT", tile+91, 488, 60, 23)))
+	}
+	mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
 	mixerView := el("ScrollView", "", 0, 60, W, 774, mixer...)
 	// Under a side panel or the routing matrix AUM marks the mixer invisible.
 	covered := a.Session != "" || a.Routing != nil
@@ -328,6 +336,7 @@ func overlay(o Overlay) []node {
 		if o.NavBar {
 			kids = []node{el("NavigationBar", "", f[0], 0, f[2], 50,
 				el("StaticText", o.Title, f[0]+95, 17, 82, 20).with("traits", "Header"),
+				el("Button", "", f[0]+16, 11, 26, 27).with("traits", "NotEnabled, Button"),
 				el("Button", "", f[0]+f[2]-56, 5, 40, 40)).with("rawIdentifier", o.Title)}
 		}
 		kids = append(kids, body(o, f[0], 70, f[2])...)

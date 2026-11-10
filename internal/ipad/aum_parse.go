@@ -312,20 +312,25 @@ func stripTitle(el *Element) *Element {
 	return nil
 }
 
+// findAddTile finds the add-channel tile: a square (150×150) in a
+// full-height column right of the last strip. AUM 1.4.8 lists it as an
+// unlabelled Button; its AUDIO, MIDI and IMPORT menu shows in the tree only
+// while it is open.
 func (st *AUMState) findAddTile(mixer *Element) {
 	for _, c := range mixer.Children {
 		if stripTitle(c) != nil || c.Type != "Other" || c.Rect.Height < 300 {
 			continue
 		}
 		for _, g := range c.Children {
-			if g.Type == "Other" && g.Rect.Width >= 100 && math.Abs(g.Rect.Width-g.Rect.Height) <= 2 {
+			if (g.Type == "Other" || g.Type == "Button") && g.Rect.Width >= 100 && math.Abs(g.Rect.Width-g.Rect.Height) <= 2 {
 				r := g.Rect
 				st.AddTile = &r
-				for _, b := range g.Children {
-					if b.Type == "Button" && b.Label != "" {
-						st.addMenu[strings.ToUpper(b.Label)] = b.Rect
+				c.Walk(func(b *Element, _ int) bool {
+					if l := strings.ToUpper(b.Label); b.Type == "Button" && (l == "AUDIO" || l == "MIDI" || l == "IMPORT") {
+						st.addMenu[l] = b.Rect
 					}
-				}
+					return true
+				})
 				return
 			}
 		}

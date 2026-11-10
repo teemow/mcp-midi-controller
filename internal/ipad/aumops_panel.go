@@ -279,6 +279,14 @@ func (d *AUMDriver) closeTop() (AUMResult, error) {
 		if err := d.tap(x, y, "MIDI routing ⊂⊃"); err != nil {
 			return AUMResult{}, err
 		}
+	case o != nil && o.Kind == "panel" && o.Title == "NAVIGATOR":
+		// The Navigator has no close icon (top right is its bookmark
+		// filter): a tap on the mixer closes it.
+		what = "panel " + o.Title
+		x, y := d.mixerSpot(o.Frame)
+		if err := d.tap(x, y, "the mixer beside the Navigator"); err != nil {
+			return AUMResult{}, err
+		}
 	case o != nil && o.Kind == "panel":
 		what = "panel " + o.Title
 		if err := d.tap(d.win.Width-20, 30, "the panel's close icon"); err != nil {
@@ -304,6 +312,28 @@ func (d *AUMDriver) closeTop() (AUMResult, error) {
 	before := d.topSignature()
 	ok, err := d.until(aumWait, func(AUMState) bool { return d.topSignature() != before })
 	return d.result("close", ok, verdict(ok, "closed the "+what, "the "+what+" is still open"), nil), err
+}
+
+// mixerSpot picks a bare spot of the mixer left of panel p, halfway down:
+// the margin before the first strip, else the gap between two strips, else
+// halfway to the panel.
+func (d *AUMDriver) mixerSpot(p Rect) (float64, float64) {
+	y := (60 + d.win.Height) / 2
+	left := 0.0
+	for _, ch := range d.St.Channels {
+		f := ch.Frame
+		if f.X+f.Width <= 0 {
+			continue
+		}
+		if f.X >= p.X {
+			break
+		}
+		if f.X-left >= 10 {
+			return (left + f.X) / 2, y
+		}
+		left = f.X + f.Width
+	}
+	return p.X / 2, y
 }
 
 // topSignature sums up what is open over the mixer, to tell when a close

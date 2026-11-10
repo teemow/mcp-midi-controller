@@ -122,7 +122,7 @@ a normal result, not a tool error.
 
 | Tool | Actions |
 |---|---|
-| `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). |
+| `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the Navigator by a tap on the mixer, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). |
 | `aum_channel` | `add_audio`, `add_midi`, `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`, through the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. |
 | `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
@@ -156,13 +156,17 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **Popovers** are elements of type `Popover` titled by their navigation bar
   (a long-press menu has none); **side panels** (menu, Settings, MIDI Control,
   FILES) are a full-height column at the right edge with a 60-point header,
-  the Navigator one with a navigation bar instead. The Set level and Edit
-  Value dialogs are alerts with a text field and Cancel / Set.
+  closed by the icon at its top right. The Navigator has a navigation bar
+  instead, and its top-right icon is the bookmark filter: it closes on a tap
+  on the mixer, which AUM swallows. The Set level and Edit Value dialogs are
+  alerts with a text field and Cancel / Set.
 - **Under a side panel or the routing matrix** AUM marks the whole mixer
   invisible; its states still read.
 - **Unlabelled controls** carry labels iOS glues from the texts around them
   (`-∞, DSP:  2 %, -∞, Arp, Arp` on a MIDI node; the main meter's stale
   `SESSION: …` on a panel's back button); the parser strips those texts.
+- **The add-channel tile** is an unlabelled 150-point square button right of
+  the last strip; its AUDIO / MIDI / IMPORT menu stacks over it once tapped.
 - **The tempo bar** shows the tempo as a button between `‹` and `›`; **the
   keyboard** covers the mixer's bottom and is closed with its `HIDE↓` button.
 - **FILES** lists cells: a name and a detail line (date) below it. It reopens

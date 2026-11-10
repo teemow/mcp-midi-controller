@@ -70,7 +70,7 @@ func TestParseAUMStripsNodesAndOverlays(t *testing.T) {
 	if _, err := st.Channel("#9"); err == nil {
 		t.Fatal("#9 accepted")
 	}
-	if st.AddTile == nil || st.AddTile.X != 7+3*242+64 || st.addMenu["MIDI"].Y != 425 {
+	if st.AddTile == nil || st.AddTile.X != 7+3*242+46 || len(st.addMenu) != 0 {
 		t.Fatalf("add tile = %+v %+v", st.AddTile, st.addMenu)
 	}
 	if len(st.PluginWindows) != 1 || st.PluginWindows[0].Title != "Synth @A1" || len(st.PluginWindows[0].Bar) != 6 {
@@ -117,14 +117,25 @@ func TestAUMChannelAddAndRemove(t *testing.T) {
 	added.Strips = append(added.Strips[:4:4], ipadtest.Strip{Title: "CHAN 5", Level: "+0.0 dB"})
 	base := mixer()
 	base.Strips = base.Strips[:4]
-	w, c := opFake(t, base, base, added)
+	menu := base
+	menu.AddMenu = true
+	w, c := opFake(t, base, menu, added)
 	res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
 	if err != nil || !res.Verified || !strings.Contains(res.Message, `"CHAN 5"`) {
 		t.Fatalf("add_audio: %+v, %v", res, err)
 	}
-	// The tile (7+4·242+64, 372) 150×150, then AUDIO (its top 45 points).
-	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 1114,447" || g[1] != "tap 1114,394.5" {
+	// The tile (7+4·242+46, 372) 150×150, then AUDIO (its top 45 points).
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 1096,447" || g[1] != "tap 1096,394.5" {
 		t.Fatalf("gestures = %v", g)
+	}
+	// When the open menu is not in the tree, MIDI is the tile's middle row,
+	// right under the tap that opened it.
+	w.SetScreens(base.Source(), base.Source(), added.Source())
+	if res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_midi"}); err != nil || !res.Verified {
+		t.Fatalf("add_midi: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[1] != "tap 1096,447" {
+		t.Fatalf("add_midi gestures = %v", g)
 	}
 
 	// REMOVE CHANNEL needs confirm and taps twice.
@@ -522,9 +533,15 @@ func TestAUMPanelNavigatorAndKeyboard(t *testing.T) {
 	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 1190,30" || g[1] != "tap 1085,33" {
 		t.Fatalf("gestures = %v", g)
 	}
+	// It has no close icon: a tap on the mixer, in the gap between the
+	// first two strips (7+228 .. 249), closes it.
+	w.SetScreens(nav.Source(), bare.Source())
 	res, err = c.AUMPanel(context.Background(), AUMRequest{Action: "close"})
 	if err != nil || !res.Verified || !strings.Contains(res.Message, "NAVIGATOR") {
 		t.Fatalf("close navigator: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != "tap 242,447" {
+		t.Fatalf("close gestures = %v", g)
 	}
 
 	keys := mixer()
