@@ -11,6 +11,8 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
+	"github.com/teemow/mcp-midi-controller/internal/song"
+	"github.com/teemow/mcp-midi-controller/internal/sound"
 	"github.com/teemow/midi-transport/midicontrol"
 )
 
@@ -723,5 +725,251 @@ func TestSoundCheckPlaysASilentTrackAgain(t *testing.T) {
 	}
 	if strings.Contains(text, "silent: bass") {
 		t.Errorf("the bass was called silent although it answered the second note:\n%s", text)
+	}
+}
+
+// padAttack is how long slowPadRig's pad takes to rise to its level.
+const padAttack = 500 * time.Millisecond
+
+// slowPadRig saves and authors the test song with its pad playing, on a rig
+// whose pad (channel 2) is a slow string pad: it rises to its level (0.2,
+// -14 dBFS) over padAttack and rings 300 ms after its release. While its
+// strip is open it carries a floor of 0.08 (-22 dBFS) that does not die: on a
+// device the pad's check note stood over something still ringing. With dead
+// the pad's instrument makes no sound and the floor is all its strip carries.
+func slowPadRig(t *testing.T, dead bool) (*songRig, *compiledSong) {
+	t.Helper()
+	r := newSongRig(t)
+	s := r.s
+	r.Voice = func(ch, note int) (float64, float64) {
+		if ch == 2 && dead {
+			return 0, 0
+		}
+		return 220, 0.2
+	}
+	r.Envelope = func(ch int) (time.Duration, time.Duration) {
+		if ch == 2 {
+			return padAttack, 300 * time.Millisecond
+		}
+		return 0, 0
+	}
+	r.Floor = func(ch int) float64 {
+		if ch == 2 {
+			return 0.08
+		}
+		return 0
+	}
+	doc := strings.Replace(toolSong, "verse: {bars: 1, play: {bass: bass, drums: beat}}", "verse: {bars: 1, play: {bass: bass, pad: chords, drums: beat}}", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	r.strips(cs.plan)
+	r.connect()
+	return r, cs
+}
+
+// measurePad puts the pad's preset into the sound catalogue with the attack
+// it has on the rig.
+func measurePad(t *testing.T, s *Server, cs *compiledSong) {
+	t.Helper()
+	n := songTrack(t, cs, "pad").Nodes[0]
+	m := sound.Sound{Note: 57, PeakDB: -14, LevelDB: -17, LatencyMS: 20, AttackMS: float64((padAttack - 20*time.Millisecond).Milliseconds()), Sustains: true}
+	if _, err := s.sounds.Put(n.Plugin, n.Name, n.HomePreset(), m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// songTrack is a compiled song's track by id.
+func songTrack(t *testing.T, cs *compiledSong, id string) *song.TrackPlan {
+	t.Helper()
+	for _, tp := range cs.plan.Tracks {
+		if tp.ID == id {
+			return tp
+		}
+	}
+	t.Fatalf("the song has no track %q", id)
+	return nil
+}
+
+// checkRow is a track's row of a check_song result.
+func checkRow(t *testing.T, res *mcp.CallToolResult, id string) trackCheck {
+	t.Helper()
+	rep, ok := res.StructuredContent.(checkReport)
+	if !ok {
+		t.Fatalf("check_song's structured content is a %T", res.StructuredContent)
+	}
+	for _, row := range rep.Tracks {
+		if row.Track == id {
+			return row
+		}
+	}
+	t.Fatalf("check_song has no row for %q:\n%s", id, resultText(res))
+	return trackCheck{}
+}
+
+// TestSoundCheckHoldsASlowAttack checks a pad whose attack the sound
+// catalogue knows is held until it has risen to its level, and so heard over
+// what was ringing before it. On a device a string pad with a 1.2 s attack
+// was held 250 ms, peaked at -33 dBFS and was called silent twice although it
+// played.
+func TestSoundCheckHoldsASlowAttack(t *testing.T) {
+	r, cs := slowPadRig(t, false)
+	s := r.s
+	measurePad(t, s, cs)
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if res.IsError || strings.Contains(text, "SILENT") || strings.Contains(text, "played again") {
+		t.Fatalf("the slow pad was not heard at its first note:\n%s", text)
+	}
+	if !strings.Contains(text, fmt.Sprintf("dBFS, held %d ms\n", padAttack.Milliseconds())) {
+		t.Errorf("the report does not say the note was held for the attack:\n%s", text)
+	}
+	pad := checkRow(t, res, "pad")
+	if pad.Tries != 1 || pad.HoldMS != padAttack.Milliseconds() || pad.PeakDB < -14.5 {
+		t.Errorf("pad = %+v, want it heard at its level (-14 dBFS or more) at the first note, held %v", pad, padAttack)
+	}
+	// The tracks the catalogue knows nothing of keep the short note.
+	if bass := checkRow(t, res, "bass"); bass.HoldMS != songNoteHold.Milliseconds() {
+		t.Errorf("the bass was held %d ms, want %v", bass.HoldMS, songNoteHold)
+	}
+}
+
+// TestSoundCheckHoldsTheSecondNoteLonger checks a slow pad the catalogue does
+// not know: its short first note does not stand out of the floor, and the
+// second one, held longer, does.
+func TestSoundCheckHoldsTheSecondNoteLonger(t *testing.T) {
+	r, _ := slowPadRig(t, false)
+	s := r.s
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if res.IsError || strings.Contains(text, "SILENT") {
+		t.Fatalf("the slow pad was not heard:\n%s", text)
+	}
+	want := fmt.Sprintf("dBFS, held %d ms (silent at first, answered when played again)", songNoteHoldMax.Milliseconds())
+	if !strings.Contains(text, want) {
+		t.Errorf("report lacks %q:\n%s", want, text)
+	}
+	if pad := checkRow(t, res, "pad"); pad.Tries != 2 || pad.HoldMS != songNoteHoldMax.Milliseconds() {
+		t.Errorf("pad = %+v, want it heard at its second note, held %v", pad, songNoteHoldMax)
+	}
+}
+
+// TestSoundCheckCallsADeadPadSilentOverItsFloor checks the longer notes do
+// not take what was ringing for an answer: a pad whose instrument is dead is
+// silent over its floor, and the report gives the floor.
+func TestSoundCheckCallsADeadPadSilentOverItsFloor(t *testing.T) {
+	r, cs := slowPadRig(t, true)
+	s := r.s
+	measurePad(t, s, cs)
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if !res.IsError {
+		t.Fatalf("a dead pad was heard:\n%s", text)
+	}
+	for _, want := range []string{
+		"sound   FAIL  silent: pad (PolySynth)",
+		"SILENT (peak -21.9 dBFS over a floor of -21.9 dBFS, played 2 times)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "silent: bass") || strings.Contains(text, "drums (") {
+		t.Errorf("a track that plays was called silent:\n%s", text)
+	}
+}
+
+// TestCheckHold checks how long a track's check note is held for what the
+// sound catalogue knows of its preset.
+func TestCheckHold(t *testing.T) {
+	s := newSongServer(t)
+	fastSongWaits(t)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	pad := songTrack(t, cs, "pad")
+	n := pad.Nodes[0]
+	for _, tc := range []struct {
+		name string
+		m    *sound.Sound
+		want time.Duration
+	}{
+		{"not measured", nil, songNoteHold},
+		{"a fast attack", &sound.Sound{PeakDB: -10, LatencyMS: 80, AttackMS: 5}, songNoteHold},
+		{"a slow attack", &sound.Sound{PeakDB: -15, LatencyMS: 80, AttackMS: 420}, 500 * time.Millisecond},
+		{"slower than the longest hold", &sound.Sound{PeakDB: -15, LatencyMS: 80, AttackMS: 3000}, songNoteHoldMax},
+		{"measured silent", &sound.Sound{PeakDB: sound.SilenceDB, AttackMS: 420}, songNoteHold},
+	} {
+		if tc.m != nil {
+			if _, err := s.sounds.Put(n.Plugin, n.Name, n.HomePreset(), *tc.m); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := s.checkHold(pad); got != tc.want {
+			t.Errorf("%s: held %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestSoundCheckLetsATailDie checks a quiet pad is measured once what still
+// rang in its strip has died, not against it: its strip opens onto a long
+// reverb tail louder than the pad's note. On a device the tail of a string
+// pad's first try was the floor of its second, and the pad was called silent.
+func TestSoundCheckLetsATailDie(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	songQuietWait = 2500 * time.Millisecond // restored by the rig's cleanup
+	// The pad plays at -26 dBFS and its reverb rings on, falling 60 dB in
+	// 8 s. Note 40 stands for what the song left ringing in that reverb.
+	r.Voice = func(ch, note int) (float64, float64) {
+		switch {
+		case ch == 2 && note == 40:
+			return 330, 0.2
+		case ch == 2:
+			return 220, 0.05
+		}
+		return 220, 0.2
+	}
+	r.Envelope = func(ch int) (time.Duration, time.Duration) {
+		if ch == 2 {
+			return 0, 8 * time.Second
+		}
+		return 0, 0
+	}
+	doc := strings.Replace(toolSong, "verse: {bars: 1, play: {bass: bass, drums: beat}}", "verse: {bars: 1, play: {bass: bass, pad: chords, drums: beat}}", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	r.strips(cs.plan)
+	r.connect()
+	r.mu.Lock()
+	r.notes[[2]int{2, 40}] = &rigNote{on: r.frame - rigSampleRate, off: r.frame}
+	r.mu.Unlock()
+
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if res.IsError || strings.Contains(text, "SILENT") || strings.Contains(text, "played again") {
+		t.Fatalf("the quiet pad was not heard at its first note:\n%s", text)
+	}
+	if pad := checkRow(t, res, "pad"); pad.Tries != 1 || pad.FloorDB != 0 && pad.FloorDB > pad.PeakDB-6 {
+		t.Errorf("pad = %+v, want it heard at its first note, 6 dB over the floor", pad)
 	}
 }

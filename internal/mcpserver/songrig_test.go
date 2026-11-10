@@ -39,6 +39,15 @@ type songRig struct {
 	// Voice is what a note sounds like: its frequency and amplitude (0 is
 	// silence). nil plays every note at its own pitch.
 	Voice func(ch, note int) (hz, amp float64)
+	// Envelope shapes a channel's notes: they rise to their amplitude in a
+	// straight line over attack and, once released, fall 60 dB over release,
+	// as a reverb's tail does, behind the strip's mute too. nil, or zero
+	// durations, start and stop a note at once.
+	Envelope func(ch int) (attack, release time.Duration)
+	// Floor is what a channel's strip carries while it is open and no note
+	// plays, as an amplitude at rigFloorHz: a tail that has not died yet,
+	// held steady so a test does not hang on when the strip opens.
+	Floor func(ch int) float64
 	// Strips maps a strip's mute control (channel, controller) to the note
 	// channel it silences; strips() fills it from a song's plan. A muted
 	// strip's notes do not reach the tap, and as on a device a mute that
@@ -60,7 +69,7 @@ type songRig struct {
 	// Without it there is one tap that gives no name, as from a build of
 	// the plugin from before taps had names.
 	Session string
-	notes   map[[2]int]bool
+	notes   map[[2]int]*rigNote
 	started time.Time // when the stream began
 	frame   int64     // the frame the stream has been rendered up to
 	brain   *websocket.Conn
@@ -72,6 +81,43 @@ type songRig struct {
 }
 
 const rigSampleRate = 48000
+
+// rigFloorHz is the pitch of a strip's Floor.
+const rigFloorHz = 110.0
+
+// rigNote is a sounding note: the frames it started and was released at (-1
+// while it is held).
+type rigNote struct {
+	on, off int64
+}
+
+// gain is a note's envelope on channel ch at frame f, 0 to 1. r.mu must be
+// held.
+func (r *songRig) gain(n *rigNote, ch int, f int64) float64 {
+	var attack, release time.Duration
+	if r.Envelope != nil {
+		attack, release = r.Envelope(ch)
+	}
+	rise := func(at int64) float64 {
+		frames := attack.Seconds() * rigSampleRate
+		if frames <= 0 {
+			return 1
+		}
+		return math.Min(1, float64(at-n.on)/frames)
+	}
+	if n.off < 0 || f < n.off {
+		return rise(f)
+	}
+	frames := release.Seconds() * rigSampleRate
+	if frames <= 0 {
+		return 0
+	}
+	t := float64(f-n.off) / frames
+	if t >= 1 {
+		return 0
+	}
+	return rise(n.off) * math.Pow(10, -3*t)
+}
 
 // rigMuteWindow stands for one audio buffer of AUM: two opposite mutes for a
 // strip inside it leave the strip at the first.
@@ -121,7 +167,7 @@ func (r *songRig) wantMuted(when string, want ...int) {
 // it. The brain and the tap are not connected yet.
 func newSongRig(t *testing.T) *songRig {
 	t.Helper()
-	r := &songRig{t: t, hub: midicontrol.NewHub(), reg: audiotap.NewRegistry(), notes: map[[2]int]bool{}}
+	r := &songRig{t: t, hub: midicontrol.NewHub(), reg: audiotap.NewRegistry(), notes: map[[2]int]*rigNote{}}
 	r.wda = ipadtest.New(ipadtest.MixerAUM().Source())
 	t.Cleanup(r.wda.Close)
 	r.s = newSongServer(t, WithMidiControl(r.hub), WithAudioTap(r.reg), WithIPad(ipad.New(r.wda.URL)))
@@ -148,18 +194,20 @@ func fastSongWaits(t *testing.T) {
 	pause := ipad.AUMLoadPause
 	ipad.AUMLoadPause = 10 * time.Millisecond
 	t.Cleanup(func() { ipad.AUMLoadPause = pause })
-	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait, songTapNameGrace}
+	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait, songTapNameGrace, songNoteHoldMax, songQuietWait}
 	// The stand-ins answer within milliseconds; the timeouts only bound a
 	// test on a machine too busy to run them.
 	songPullGrace, songPullTimeout, songDialTimeout = 300*time.Millisecond, 20*time.Second, 20*time.Second
 	songPresetWait, songSettleWait = 20*time.Millisecond, 20*time.Millisecond
 	songNoteHold, songNoteTail, songFloorWait = 150*time.Millisecond, 150*time.Millisecond, 60*time.Millisecond
 	songTapNameGrace = 100 * time.Millisecond
+	songNoteHoldMax, songQuietWait = 600*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() {
 		songPullGrace, songPullTimeout, songDialTimeout = old[0], old[1], old[2]
 		songPresetWait, songSettleWait = old[3], old[4]
 		songNoteHold, songNoteTail, songFloorWait = old[5], old[6], old[7]
 		songTapNameGrace = old[8]
+		songNoteHoldMax, songQuietWait = old[9], old[10]
 	})
 }
 
@@ -245,7 +293,7 @@ func (r *songRig) connect() {
 			r.trackTaps[strip] = dial(name)
 		}
 	}
-	r.notes = map[[2]int]bool{}
+	r.notes = map[[2]int]*rigNote{}
 	r.mu.Unlock()
 	if old != nil {
 		_ = old.CloseNow()
@@ -276,9 +324,15 @@ func (r *songRig) read(c *websocket.Conn) {
 		r.Commands = append(r.Commands, cmd)
 		switch cmd.Type {
 		case "noteOn":
-			r.notes[[2]int{cmd.Channel, cmd.Note}] = true
+			r.notes[[2]int{cmd.Channel, cmd.Note}] = &rigNote{on: r.frame, off: -1}
 		case "noteOff":
-			delete(r.notes, [2]int{cmd.Channel, cmd.Note})
+			k := [2]int{cmd.Channel, cmd.Note}
+			if n, held := r.notes[k]; held && n.off < 0 {
+				n.off = r.frame
+				if r.gain(n, cmd.Channel, r.frame) == 0 {
+					delete(r.notes, k)
+				}
+			}
 		case "pc":
 			r.Programs = append(r.Programs, cmd)
 		case "cc":
@@ -327,9 +381,10 @@ func (r *songRig) render() {
 	type voice struct {
 		ch      int
 		hz, amp float64
+		note    *rigNote // nil for a strip's floor
 	}
 	var voices []voice
-	for k := range r.notes {
+	for k, n := range r.notes {
 		if r.muted[k[0]] {
 			continue
 		}
@@ -338,7 +393,14 @@ func (r *songRig) render() {
 			hz, amp = r.Voice(k[0], k[1])
 		}
 		if amp > 0 {
-			voices = append(voices, voice{k[0], hz, amp})
+			voices = append(voices, voice{k[0], hz, amp, n})
+		}
+	}
+	if r.Floor != nil {
+		for ch := 1; ch <= 16; ch++ {
+			if amp := r.Floor(ch); amp > 0 && !r.muted[ch] {
+				voices = append(voices, voice{ch, rigFloorHz, amp, nil})
+			}
 		}
 	}
 	if due <= r.frame {
@@ -351,13 +413,25 @@ func (r *songRig) render() {
 			var v float64
 			for _, vc := range voices {
 				if ch == 0 || vc.ch == ch {
-					v += vc.amp * math.Sin(2*math.Pi*vc.hz*float64(f)/rigSampleRate)
+					g := 1.0
+					if vc.note != nil {
+						g = r.gain(vc.note, vc.ch, f)
+					}
+					v += g * vc.amp * math.Sin(2*math.Pi*vc.hz*float64(f)/rigSampleRate)
 				}
 			}
 			buf = append(buf, float32(v), float32(v))
 		}
 		tap.AppendAudio(buf)
 	}
+	// A released note that has died away is gone.
+	defer func() {
+		for k, n := range r.notes {
+			if n.off >= 0 && r.gain(n, k[0], r.frame) == 0 {
+				delete(r.notes, k)
+			}
+		}
+	}()
 	feed(r.tap, 0)
 	for ch, tap := range r.trackTaps {
 		feed(tap, ch)

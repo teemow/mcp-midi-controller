@@ -466,14 +466,21 @@ daemon remembers it from the first `ipad_launch` with the full id.
   the ring of every node on screen;
 - every track answers a note. The daemon sets each track's own sound (its
   declaration, no scene) and mutes every strip. Then, one track at a time, it
-  unmutes the strip, plays the lowest of the notes the track starts the song
-  with (on a drum track the kick rather than a hat) and measures the master
-  tap. A track that stays silent is played a second time, and named with its
-  plugin when it is silent again. What another track left ringing in a delay
-  or reverb is behind its mute and counts for nothing. The song's own mutes
-  are put back at the end. A strip's mute and its unmute are sent at least
-  150 ms apart: AUM can keep the first of two that arrive together (see
-  Status).
+  unmutes the strip, waits up to 3 s for the master tap to fall silent, plays
+  the lowest of the notes the track starts the song with (on a drum track the
+  kick rather than a hat) and measures the master tap. The note counts when
+  it peaks above -60 dBFS and 6 dB over what was sounding just before it. It
+  is held as long as the sound catalogue says the track's preset takes from
+  the note to its level (its latency and attack), at least 250 ms and at most
+  1.5 s: a slow string pad held 250 ms is heard far under its level (see
+  Status). A track that stays silent is played a second time, held 1.5 s, and
+  named with its plugin when it is silent again; when something was sounding
+  before the note, the report gives that floor too. What another track left
+  ringing in a delay or reverb is behind its mute and counts for nothing.
+  What rings in the track's own strip, a reverb's tail or the first try's
+  note, is let die before the note. The song's own mutes are put back at the
+  end. A strip's mute and its unmute are sent at least 150 ms apart: AUM can
+  keep the first of two that arrive together (see Status).
 
 How much of AUM's screen the check touches depends on the tap. When the
 master tap names the open session, only the mixer is read: plugin windows
@@ -769,6 +776,18 @@ the iPad over the LAN and its UI over WebDriverAgent):
   measured above. With the two kept 150 ms apart, six checks in a row on two
   songs heard every track at its first note, and the mixer read after each
   showed no strip muted. A check takes about 18 s.
+- **A slow pad called silent.** At the end of a load the check called a
+  string pad silent twice: held 250 ms, its note peaked at -33.4 dBFS. The
+  preset rises to its level in 490 ms on its own (the catalogue's
+  measurement) and in 1160 ms behind its phaser and cathedral reverb, where
+  a 2 s note peaked at -16.3. A sequenced `play_song` played it, and at the
+  load before, with the pad 7 dB louder, the check had heard it at -23.9.
+  Watched at the pad's own tap through a check, its two notes ran into each
+  other: the level stayed between -36 and -33 dBFS from the first note to
+  the end of the second, so the first note's tail was the floor the second
+  had to stand 6 dB over, and the reverb was still at -55 dBFS 3 s later.
+  The check now holds a note for the attack the catalogue measured, holds
+  the second try 1.5 s, and lets the tap fall silent before each note.
 - **Another session in AUM.** With another song's session loaded,
   `check_song` named the session AUM had open, said it was not the song's
   and played nothing.
@@ -886,8 +905,9 @@ tools of a daemon that has the mode:
 
 Not yet measured:
 
-- the second try `check_song` gives a silent track (no track has needed one
-  since);
+- the check's note held for the catalogue's attack, its 1.5 s second try and
+  its wait for a silent tap (the tests run them against a stand-in with a
+  slow pad and a ringing reverb);
 - a kit's level taken from its kick, and a preset measured off the octave
   that `calibrate` therefore leaves as written;
 - `audition_sound` in a song's own session with `presets: all`, `set_sound`,
