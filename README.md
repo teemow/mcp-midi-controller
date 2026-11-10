@@ -199,7 +199,8 @@ scripts/deploy-mac.sh      # install both agents, build, install, restart
   (override with `MCP_MIDI_BIN`), restarting it after a crash
   ([`init/com.teemow.mcp-midi-controller.plist`](init/com.teemow.mcp-midi-controller.plist)).
 - `com.teemow.mcp-midi-controller.update` runs `scripts/deploy-mac.sh --update`
-  every 5 minutes and at login: when `origin/main` moved (or got its release
+  every 5 minutes (launchd can defer a run by a few minutes; a merge typically
+  lands within 10) and at login: when `origin/main` moved (or got its release
   tag) it fast-forwards the clone, builds with the version stamped in, swaps the
   binary and restarts the daemon. Otherwise it does nothing
   ([`init/com.teemow.mcp-midi-controller.update.plist`](init/com.teemow.mcp-midi-controller.update.plist)).

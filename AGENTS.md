@@ -20,8 +20,9 @@ copies"). The rig-specific list of sessions and copy ids is private:
 ## The Mac follows main by itself
 
 The rig's macOS host runs the daemon under launchd and updates itself from
-`main` within 5 minutes of a merge (`scripts/deploy-mac.sh --update`, see the
-README's macOS section). Don't build or copy binaries onto it by hand: merge to
+`main` within about 10 minutes of a merge (`scripts/deploy-mac.sh --update`
+every 5 minutes, which launchd can defer by a few minutes; see the README's
+macOS section). Don't build or copy binaries onto it by hand: merge to
 `main`, then confirm the version on the first line of
 `~/Library/Logs/mcp-midi-controller.log`. If it doesn't move, read
 `~/Library/Logs/mcp-midi-controller-update.log` (a clone with local changes or
