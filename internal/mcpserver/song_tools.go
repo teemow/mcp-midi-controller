@@ -144,7 +144,9 @@ func (s *Server) registerSongTools() {
 				"sections": {"type": "integer", "minimum": 1, "description": "How many arrangement entries to play (default: to the end)."},
 				"tracks": {"type": "array", "items": {"type": "string"}, "description": "Play only these tracks' notes (default: all)."},
 				"transport": {"type": "boolean", "description": "Also start AUM's transport with the first note and stop it at the end, for plugins that follow the host clock."},
-				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."}
+				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."},
+				"record": {"type": "boolean", "description": "Record the song at the audio tap while it plays, into a file (list_recordings). The recording ends by itself once the song is over and its tail has rung out, with the silence before the first note cut."},
+				"upload": {"type": "boolean", "description": "Record the song and upload the recording to Google Drive when it is finished (see upload_recording)."}
 			},
 			"required": ["song"]
 		}`),
@@ -823,6 +825,8 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		Tracks    []string `json:"tracks"`
 		Transport bool     `json:"transport"`
 		PrerollMS int      `json:"preroll_ms"`
+		Record    bool     `json:"record"`
+		Upload    bool     `json:"upload"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -869,11 +873,23 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
-	st, err := s.player.Start(cs.id, cs.timeline, opts, func(ctx context.Context, e song.Event) error {
+	// A recording starts before the opening sound is set and follows the song
+	// to its end (recording_tools.go).
+	var take *activeRecording
+	if args.Record || args.Upload {
+		if take, err = s.beginRecording(recordOptions{Song: cs.id, Title: cs.song.Title, Upload: args.Upload}); err != nil {
+			return textResult("play_song: cannot record: "+err.Error(), true), nil
+		}
+	}
+	st, err := s.player.Start(cs.id, cs.timeline, opts, take.sender(func(ctx context.Context, e song.Event) error {
 		return s.sendBrain(ctx, songCommand(e))
-	})
+	}))
 	if err != nil {
+		s.abortRecording(take)
 		return textResult("play_song: "+err.Error(), true), nil
+	}
+	if take != nil {
+		go s.runRecording(take)
 	}
 
 	var b strings.Builder
@@ -882,10 +898,20 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		fmt.Fprintf(&b, ", tracks %s", strings.Join(args.Tracks, ", "))
 	}
 	b.WriteString("\nlisten with get_audio_tap, follow with get_song_playback, end with stop_song\n")
+	out := map[string]any{"playback": st, "warnings": warnings}
+	if take != nil {
+		rs := take.status()
+		out["recording"] = rs
+		fmt.Fprintf(&b, "recording it as %q from the tap %q: the file is written once the song and its tail have ended (list_recordings)", rs.Name, rs.Tap)
+		if rs.Upload {
+			b.WriteString(", and then uploaded to Google Drive")
+		}
+		b.WriteByte('\n')
+	}
 	for _, w := range warnings {
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
-	return structResult(b.String(), map[string]any{"playback": st, "warnings": warnings}), nil
+	return structResult(b.String(), out), nil
 }
 
 // playbackText renders a playback status.

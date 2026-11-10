@@ -130,6 +130,12 @@ func (s *Server) registerGlobalTools() {
 	// Songs: write a multi-track song, author the AUM session that hosts it,
 	// and play it through the brain. Wired in registerSongTools.
 	s.registerSongTools()
+	// Recordings: write what a tap hears into a file (a song while it plays,
+	// or on its own) and put it into the user's Google Drive. Wired in
+	// registerRecordingTools (when WithAudioTap attached a store) and
+	// registerDriveTools.
+	s.registerRecordingTools()
+	s.registerDriveTools()
 	// ipad_* / get_aum_ui / wait_for_aum_ui (the USB channel into the iPad's
 	// UI over WebDriverAgent: operate AUM by touch, verify MIDI against AUM's
 	// own display) are wired in registerIPadTools when WithIPad attached a

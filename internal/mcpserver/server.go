@@ -110,6 +110,11 @@ type Server struct {
 	// which session each song was authored into.
 	songSessionsMu sync.Mutex
 
+	// rec is the one recording the daemon makes at a time (recording_tools.go)
+	// and drv its Google Drive client and sign-in (drive_tools.go).
+	rec recorderState
+	drv driveState
+
 	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
 	// so two probes never overlap on the shared audio tap. This is what makes
 	// each probe analyse a clean, isolated segment (and replaces the harness's

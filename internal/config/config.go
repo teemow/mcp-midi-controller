@@ -54,6 +54,30 @@ type Config struct {
 	// Default "ios" (on PATH); give an absolute path when the service's PATH
 	// lacks it.
 	IPadGoIOS string `yaml:"ipad_go_ios"`
+
+	// RecordingsKeep is how many recordings (start_recording, play_song with
+	// record) the daemon keeps in the state dir; older ones are deleted when a
+	// new one is finished. Default 50; a negative number keeps all of them.
+	RecordingsKeep int `yaml:"recordings_keep"`
+
+	// GoogleDrive says where upload_recording puts recordings.
+	GoogleDrive GoogleDrive `yaml:"google_drive"`
+}
+
+// GoogleDrive holds the upload settings. Nothing in it is secret: the OAuth
+// client is a file of its own (GoogleDriveClientPath) and the sign-in lives in
+// the state dir (GoogleDriveTokenPath).
+type GoogleDrive struct {
+	// Folder is the Drive folder recordings are uploaded into: a name, or
+	// several separated by "/" for a folder inside others. The daemon creates
+	// it on first use (it only sees folders it made itself). Empty: the
+	// Drive's top level.
+	Folder string `yaml:"folder"`
+
+	// AutoUpload uploads every recording of a song by itself once it is
+	// finished. Default false: a recording is uploaded when upload_recording
+	// is called, or when the recording was started with upload set.
+	AutoUpload bool `yaml:"auto_upload"`
 }
 
 // Default returns the default config.
@@ -64,6 +88,7 @@ func Default() Config {
 		AUMAutoImport:    true,
 		IPadWDAURL:       "http://127.0.0.1:8100",
 		IPadGoIOS:        "ios",
+		RecordingsKeep:   50,
 	}
 }
 
@@ -150,6 +175,24 @@ func AUv3ProbesDir() string { return filepath.Join(StateDir(), "auv3-probes") }
 // retention-capped (oldest pruned) so it never grows without bound.
 func AudioClipsDir() string { return filepath.Join(StateDir(), "audio-clips") }
 
+// RecordingsDir is where recordings land: for each one its audio file and a
+// small record of what it is (internal/recording). Volatile (state dir) and
+// capped at Config.RecordingsKeep; like every captured audio it is a private
+// rig signal and is never committed.
+func RecordingsDir() string { return filepath.Join(StateDir(), "recordings") }
+
+// GoogleDriveClientPath is the user's own OAuth client for Google Drive: the
+// JSON the Google Cloud console offers for download. It holds the client
+// secret, so it is a file of its own rather than a key in config.yaml: keep it
+// readable by its owner only, and out of a repository the config dir is
+// tracked in.
+func GoogleDriveClientPath() string { return filepath.Join(ConfigDir(), "google-drive-client.json") }
+
+// GoogleDriveTokenPath is the daemon's sign-in to Google Drive, written
+// owner-only by internal/drive once the user has approved it. Never committed,
+// never logged, never returned by a tool.
+func GoogleDriveTokenPath() string { return filepath.Join(StateDir(), "google-drive-token.json") }
+
 // AUMSessionsDir is the staging dir for AUM session (.aumproj) and standalone
 // MIDI-map (.aum_midimap) files: the ones uploaded from the iPad via the aum
 // receiver and the ones authored/edited by the aum MCP tools (then downloaded
@@ -173,6 +216,9 @@ func Load() (Config, error) {
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = Default().ListenAddr
+	}
+	if cfg.RecordingsKeep == 0 {
+		cfg.RecordingsKeep = Default().RecordingsKeep
 	}
 	return cfg, nil
 }
