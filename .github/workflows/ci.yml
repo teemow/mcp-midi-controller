@@ -25,7 +25,10 @@ jobs:
     # Exercise the actual release hooks and both CGO builds on every PR,
     # including changes to the dependency installer and release configuration.
     # Match auto-release.yml: moving the release image requires this proof.
-    runs-on: ubuntu-26.04
+    # On ubuntu-26.04 the dependency installer fails (apt wants to downgrade
+    # the native toolchain to install the arm64 one), so the image stays here
+    # until that is solved; renovate.json keeps Renovate from moving it.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
