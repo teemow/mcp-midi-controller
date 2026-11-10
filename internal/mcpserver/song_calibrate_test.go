@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/teemow/mcp-midi-controller/internal/sound"
+	"github.com/teemow/midi-transport/midicontrol"
 )
 
 // calibratedSong is toolSong written against the catalogue: plugins by name,
@@ -99,16 +100,21 @@ func TestCalibratedSong(t *testing.T) {
 	if res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "preroll_ms": 10}); res.IsError {
 		t.Fatalf("play: %s", resultText(res))
 	}
-	for s.player.Status().Playing {
-	}
-	r.mu.Lock()
+	// 8 bass notes, 6 pad notes and 12 drum hits.
 	notes := map[int][]int{}
-	for _, cmd := range r.Commands {
+	for _, cmd := range r.waitCommands(func(cmds []midicontrol.Command) bool {
+		n := 0
+		for _, cmd := range cmds {
+			if cmd.Type == "noteOn" {
+				n++
+			}
+		}
+		return n >= 26
+	}) {
 		if cmd.Type == "noteOn" {
 			notes[cmd.Channel] = append(notes[cmd.Channel], cmd.Note)
 		}
 	}
-	r.mu.Unlock()
 	if len(notes[1]) != 8 || notes[1][0] != 57 { // A1 (33) + 24
 		t.Errorf("bass notes = %v, want A3 (57) first", notes[1])
 	}
