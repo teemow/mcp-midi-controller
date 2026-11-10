@@ -669,7 +669,7 @@ the iPad over the LAN and its UI over WebDriverAgent):
   Loads, spread over the Program Changes of channel 15 and the control
   channels below it. Presets on channel 15 and on channels below it loaded
   when their Program Change was sent.
-- **Auditioning.** 31 presets of four synths were played and measured in five
+- **Auditioning.** 31 presets of four synths were played and measured in four
   calls, about 2.5 s a preset, and two kits of twenty notes each in 30 s. Of
   ten bass presets of one synth, six sounded two octaves below the written
   note, three had no steady pitch and one measured 25 semitones off. Of ten
