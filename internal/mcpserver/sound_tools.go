@@ -438,11 +438,12 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 	if s.audio == nil {
 		return textResult("audition_sound: no audio tap is configured", true), nil
 	}
-	tap, ok := s.audio.Active()
-	if !ok || !s.tapStreaming(ctx) {
+	rec, authored := loadSongSessions()[cs.id]
+	// The session's master tap when it names itself, else the latest tap.
+	tap, _ := s.songTap(rec.Session)
+	if !s.streaming(ctx, tap) {
 		return textResult("audition_sound: no ProbeAudioTap is streaming — load the session first (open_sound_lab, load_song)", true), nil
 	}
-	rec, authored := loadSongSessions()[cs.id]
 	var warnings []string
 	switch cur := s.loadedSessionID(); {
 	case !authored || rec.Fingerprint != cs.timeline.Fingerprint:

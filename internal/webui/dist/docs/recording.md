@@ -30,6 +30,11 @@ has no seams.
   1.5 seconds, for 10 seconds at most.
 - `stop_song` ends the song and, with it, the recording. `stop_recording` ends
   only the recording.
+- The master's tap is found by its name, `<session id>/master`, where the
+  session's taps dial in under their names (see [songs.md](songs.md), "Taps").
+  A tap that gives no name is not told from another: the recording then takes
+  the most recently connected tap, which in a session with `track_taps` may be
+  a track's.
 
 `start_recording` records on its own: `seconds` sets a length (the recording is
 then exactly that long), otherwise it runs until `stop_recording`, for 30

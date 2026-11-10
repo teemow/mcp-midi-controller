@@ -6,7 +6,9 @@ package song
 // and, when asked for, the sequencer that holds the whole song (atom.go).
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/midi-device/device"
@@ -27,6 +29,12 @@ type SessionOptions struct {
 	// TrackTaps adds a ProbeAudioTap after every track's fader, so each track
 	// can be heard on its own. The master always has one.
 	TrackTaps bool
+	// Session is the id the session is staged under. When set, every
+	// ProbeAudioTap of the session is given a name made of it and the tap's
+	// strip (TapName), which the plugin dials the daemon under: the daemon
+	// then knows which session is loaded and which stream is which strip's.
+	// Empty leaves the taps without a name.
+	Session string
 	// FullControl also maps every other target of the session (every
 	// parameter of every plugin) around the song's own mappings.
 	FullControl bool
@@ -61,6 +69,43 @@ type SessionReport struct {
 // SequencerSlot is the sequencer's slot on the brain's strip.
 const SequencerSlot = 1
 
+// MasterTap is the strip part of the name of the master's tap; a track's is
+// the track's id, which is never "master".
+const MasterTap = MasterTrack
+
+// tapNameEscaper keeps a strip from holding the separator of a tap's name.
+var (
+	tapNameEscaper   = strings.NewReplacer("%", "%25", "/", "%2F")
+	tapNameUnescaper = strings.NewReplacer("%2F", "/", "%25", "%")
+)
+
+// TapName is the name the tap of a session's strip dials the daemon under:
+// "<session id>/<strip>", the strip being MasterTap or a track's id. The
+// session id may hold folders ("Songs/Night Drive"); the strip is the part
+// after the last slash.
+func TapName(session, strip string) string {
+	return session + "/" + tapNameEscaper.Replace(strip)
+}
+
+// ParseTapName splits a tap's name into the session and the strip TapName put
+// together. ok is false for any other name, such as the remote address a tap
+// without a name is known by.
+func ParseTapName(name string) (session, strip string, ok bool) {
+	i := strings.LastIndexByte(name, '/')
+	if i <= 0 || i == len(name)-1 {
+		return "", "", false
+	}
+	return name[:i], tapNameUnescaper.Replace(name[i+1:]), true
+}
+
+// tapConfig is the ProbeAudioTap's saved state (its fullState key
+// probeAudioTapConfig), as the plugin decodes it. A build of the plugin from
+// before taps had names ignores the name.
+type tapConfig struct {
+	Streaming bool   `json:"streaming"`
+	Name      string `json:"name,omitempty"`
+}
+
 // emptyBrainProgram is a ProbeMidiBrain program that does nothing. The brain's
 // own default is a demo that sends Program Changes on channel 1 as the
 // transport runs, which a song's first track would take as patch changes.
@@ -75,11 +120,24 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		brain = aum.NodeSpecFromDump(*o.Brain)
 	}
 	brain.StateDoc = map[string][]byte{"probeMidiBrainProgram": []byte(emptyBrainProgram)}
-	tap := aum.ProbeTapNode()
-	if o.Tap != nil {
-		tap = aum.NodeSpecFromDump(*o.Tap)
+	// tapNode is the tap of one strip: streaming, and named when the session
+	// has an id to name it by.
+	tapNode := func(strip string) (*aum.NodeSpec, error) {
+		tap := aum.ProbeTapNode()
+		if o.Tap != nil {
+			tap = aum.NodeSpecFromDump(*o.Tap)
+		}
+		cfg := tapConfig{Streaming: true}
+		if o.Session != "" {
+			cfg.Name = TapName(o.Session, strip)
+		}
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("the tap of %s: %w", strip, err)
+		}
+		tap.StateDoc = map[string][]byte{"probeAudioTapConfig": data}
+		return &tap, nil
 	}
-	tap.StateDoc = map[string][]byte{"probeAudioTapConfig": []byte(`{"streaming":true}`)}
 
 	nodeSpec := func(n *NodePlan) (aum.NodeSpec, error) {
 		ns := aum.NodeSpecFromDump(n.dump)
@@ -121,7 +179,11 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			Output: &aum.ChannelOutput{Kind: aum.OutputBus, BusIndex: 0},
 		}
 		if o.TrackTaps {
-			ch.Tap, ch.TapNode = true, &tap
+			tap, err := tapNode(tp.ID)
+			if err != nil {
+				return nil, rep, err
+			}
+			ch.Tap, ch.TapNode = true, tap
 		}
 		for _, n := range tp.Nodes {
 			ns, err := nodeSpec(n)
@@ -138,11 +200,15 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		}
 		spec.Channels = append(spec.Channels, ch)
 	}
+	masterTap, err := tapNode(MasterTap)
+	if err != nil {
+		return nil, rep, err
+	}
 	master := aum.ChannelSpec{
 		Kind: aum.KindAudio, Title: "Master",
 		Source: &aum.ChannelSource{Kind: aum.SourceBus, BusIndex: 0},
 		Output: &aum.ChannelOutput{Kind: aum.OutputHardware, HWBusIndex: 0},
-		Tap:    true, TapNode: &tap,
+		Tap:    true, TapNode: masterTap,
 	}
 	for _, n := range p.Master {
 		ns, err := nodeSpec(n)

@@ -86,6 +86,20 @@ func (c *Client) AUMOpenSession(ctx context.Context, path []string, name string)
 // the main menu for the name, closes it again and lists the strips and
 // whatever on screen reports a fault. The result's Data is an AUMLoaded.
 func (c *Client) AUMSession(ctx context.Context) (AUMResult, error) {
+	return c.readAUM(ctx, true)
+}
+
+// AUMMixer reads the mixer of the session AUM has open, without its name:
+// the strips and whatever on screen reports a fault. It is AUMSession for a
+// caller that knows the session otherwise, and leaves AUM's menu shut. The
+// result's Data is an AUMLoaded with an empty Session.
+func (c *Client) AUMMixer(ctx context.Context) (AUMResult, error) {
+	return c.readAUM(ctx, false)
+}
+
+// readAUM reads the open session's strips and faults and, with menu, its
+// name, which only AUM's main menu shows.
+func (c *Client) readAUM(ctx context.Context, menu bool) (AUMResult, error) {
 	var res AUMResult
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
 		// Faults are read first: an alert would be dismissed on the way to
@@ -98,13 +112,19 @@ func (c *Client) AUMSession(ctx context.Context) (AUMResult, error) {
 		for _, title := range failed {
 			problems = append(problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
 		}
+		out := AUMLoaded{Problems: problems, Failed: failed}
+		if !menu {
+			out.Strips = d.stripTitles()
+			res = d.result("mixer", true, fmt.Sprintf("AUM's mixer has %d strip(s)", len(out.Strips)), out)
+			return nil
+		}
 		if ok, err := d.ensureMenu(); err != nil || !ok {
 			if err != nil {
 				return err
 			}
 			return fmt.Errorf("AUM's main menu did not open (%s)", d.St.overlaySummary())
 		}
-		out := AUMLoaded{Session: d.St.Session, Problems: problems, Failed: failed}
+		out.Session = d.St.Session
 		if err := d.clearScreen(); err != nil {
 			return err
 		}

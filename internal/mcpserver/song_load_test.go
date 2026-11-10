@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
 	"github.com/teemow/midi-transport/midicontrol"
 )
@@ -238,6 +240,206 @@ func TestCheckSong(t *testing.T) {
 	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
 	if res.IsError || r.wda.Gestures() != gestures {
 		t.Fatalf("check with ui false (gestures %d -> %d): %s", gestures, r.wda.Gestures(), resultText(res))
+	}
+}
+
+// mustParseSource parses the source of one of the stand-in's screens.
+func mustParseSource(t *testing.T, src json.RawMessage) *ipad.Element {
+	t.Helper()
+	root, err := ipad.ParseSource(src)
+	if err != nil {
+		t.Fatalf("parse the screen's source: %v", err)
+	}
+	return root
+}
+
+// TestLoadSongNamedTaps is a rig whose taps dial in under the names the
+// session gives them, a tap on every track: the load knows its session from
+// the master's tap, the notes are heard there and not at a track's tap, the
+// check needs no look at AUM, and another session's tap is told from the
+// song's.
+func TestLoadSongNamedTaps(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	r.Session = "Songs/Night Drive"
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong + "session: {track_taps: true}\n"}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	r.pullStaged("Songs/Night Drive.aumproj")
+	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+	res := call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("load: %s", text)
+	}
+	for _, want := range []string{
+		`4. connect ok    brain and tap connected; the tap dialled in as "Songs/Night Drive/master"`,
+		`tap     ok    ProbeAudioTap "Songs/Night Drive/master" streaming, and the taps of its 3 track(s)`,
+		// The track taps connected after the master's: each carries one
+		// track, and a check that listened there would call the others silent.
+		"sound   ok    every track answers its first note",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("load report lacks %q:\n%s", want, text)
+		}
+	}
+	if names := r.reg.Names(); len(names) != 4 {
+		t.Errorf("taps = %q, want the master's and one per track", names)
+	}
+
+	// The check knows the session from the tap: it does not touch AUM.
+	r.wda.SourceFunc = nil
+	bare := ipadtest.AUM{Tempo: "300", Position: "001:1  00:00.0", Strips: nightDriveStrips}
+	menu := bare
+	menu.Session = "Night Drive"
+	r.wda.SetScreens(bare.Source(), menu.Source(), bare.Source())
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive"})
+	text = resultText(res)
+	if res.IsError || !strings.Contains(text, `aum     ok    AUM has "Songs/Night Drive" (its ProbeAudioTap dialled in under that name) open with the song's 5 strip(s)`) {
+		t.Fatalf("check: %s", text)
+	}
+	if n := r.wda.Gestures(); n != 0 {
+		t.Errorf("the check made %d gesture(s) in AUM although the tap names the session", n)
+	}
+	// The mixer is still looked at: a node AUM draws as failed is seen
+	// without the menu.
+	st := ipad.ParseAUM(mustParseSource(t, bare.Source()), ipad.Size{Width: 1210, Height: 834})
+	var source ipad.Rect
+	for _, n := range st.Channels[2].Nodes {
+		if n.Role == "source" {
+			source = n.Frame
+		}
+	}
+	if source.Empty() {
+		t.Fatalf("no source node on the pad's strip: %+v", st.Channels[2].Nodes)
+	}
+	r.wda.RedRings = [][4]float64{{source.X, source.Y, source.Width, source.Height}}
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "sound": false})
+	if text := resultText(res); !res.IsError || r.wda.Gestures() != 0 || !strings.Contains(text, "plugins FAIL  AUM reports: AUM draws a node of") {
+		t.Fatalf("check with a failed node (%d gestures): %s", r.wda.Gestures(), text)
+	}
+	r.wda.RedRings = nil
+	// ui: false leaves AUM's screen alone; the tap still names the session.
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false, "sound": false})
+	if text := resultText(res); res.IsError || !strings.Contains(text, `aum     ok    AUM has "Songs/Night Drive" open: its ProbeAudioTap dialled in under that name`) {
+		t.Fatalf("check with ui false: %s", text)
+	}
+	// Asked for, the menu is read all the same.
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": true, "sound": false})
+	if text := resultText(res); res.IsError || r.wda.Gestures() == 0 || !strings.Contains(text, `aum     ok    AUM has "Night Drive" open with the song's 5 strip(s)`) {
+		t.Fatalf("check with ui true (%d gestures): %s", r.wda.Gestures(), text)
+	}
+
+	// A track's tap that is gone is named; the song still sounds.
+	r.mu.Lock()
+	r.trackTaps[2].Disconnect()
+	r.mu.Unlock()
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "sound": false})
+	if text := resultText(res); res.IsError || !strings.Contains(text, `ProbeAudioTap "Songs/Night Drive/master" streaming; no tap is connected for: pad`) {
+		t.Fatalf("check with a track's tap gone: %s", text)
+	}
+
+	// Somebody loads another session the daemon authored: its master tap
+	// dials in, the song's taps go away. Nothing asks AUM, nothing is played.
+	r.mu.Lock()
+	r.tap.Disconnect()
+	for _, st := range r.trackTaps {
+		st.Disconnect()
+	}
+	sent := len(r.Commands)
+	r.mu.Unlock()
+	other := r.reg.Connect("Songs/Other/master", "ipad:1")
+	r.wda.SetScreens(bare.Source(), menu.Source(), bare.Source())
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive"})
+	if text := resultText(res); !res.IsError || !strings.Contains(text, `AUM has "Songs/Other" open (its ProbeAudioTap dialled in under that name), not the song's session "Songs/Night Drive"`) {
+		t.Fatalf("check against another session's tap: %s", text)
+	}
+	r.mu.Lock()
+	played := len(r.Commands) - sent
+	r.mu.Unlock()
+	if played != 0 || r.wda.Gestures() != 0 {
+		t.Errorf("the check played %d message(s) and made %d gesture(s) for a session that is not the song's", played, r.wda.Gestures())
+	}
+	if got := s.loadedSessionID(); got != "Songs/Other" {
+		t.Errorf("loaded session = %q, want the one the connected master tap names", got)
+	}
+	if res := call(t, s.handleMixSong, map[string]any{"song": "night_drive"}); !res.IsError || !strings.Contains(resultText(res), `AUM has "Songs/Other" open`) {
+		t.Fatalf("mix into another session: %s", resultText(res))
+	}
+	// With that tap gone the daemon is back to what it loaded itself.
+	other.Disconnect()
+	if got := s.loadedSessionID(); got != "Songs/Night Drive" {
+		t.Errorf("loaded session without a tap that names one = %q", got)
+	}
+}
+
+// TestPlaySongRecordsAtTheMasterTap checks a recorded playback takes the
+// session's master tap in a session with a tap on every track, where the tap
+// that connected last is a track's.
+func TestPlaySongRecordsAtTheMasterTap(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	s.rec.quietFor, s.rec.maxTail, s.rec.poll = 150*time.Millisecond, 2*time.Second, 5*time.Millisecond
+	r.Session = "Songs/Night Drive"
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong + "session: {track_taps: true}\n"}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	if st, ok := r.reg.Active(); !ok || st.Name() == "Songs/Night Drive/master" {
+		t.Fatalf("the most recent tap is %q, want a track's for this test", st.Name())
+	}
+	res := call(t, s.handlePlaySong, map[string]any{"song": "night_drive", "preroll_ms": 50, "sections": 1, "record": true})
+	if text := resultText(res); res.IsError || !strings.Contains(text, `from the tap "Songs/Night Drive/master"`) {
+		t.Fatalf("play: %s", text)
+	}
+	last := lastRecording(t, s)
+	if last.Error != "" || last.Meta.Tap != "Songs/Night Drive/master" {
+		t.Fatalf("the recording = %+v (error %q), want it taken at the master tap", last.Meta, last.Error)
+	}
+}
+
+// TestLoadSongAuthorsTapNamesIntoAnOlderSession checks a session staged
+// before taps had names is authored again by the next load, although the
+// song did not change.
+func TestLoadSongAuthorsTapNamesIntoAnOlderSession(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError ||
+		!strings.Contains(resultText(res), `taps, as get_audio_tap names them: "Songs/Night Drive/master"`) {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	if names := stagedTapNames(t, "Songs/Night Drive"); len(names) != 1 || names[4] != "Songs/Night Drive/master" {
+		t.Fatalf("the staged session's taps = %v, want the master's on strip 4 under its name", names)
+	}
+	// The record as an earlier daemon wrote it.
+	if err := s.updateSongSessions(func(all map[string]songSessionRecord) bool {
+		rec := all["night_drive"]
+		rec.TapNames = false
+		all["night_drive"] = rec
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.pullStaged("Songs/Night Drive.aumproj")
+	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+	res := call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true, "check": false})
+	text := resultText(res)
+	if !strings.Contains(text, "1. author  ok    Songs/Night Drive.aumproj") {
+		t.Fatalf("load of a session from before taps had names: %s", text)
+	}
+	// The rig's tap gives no name, like the plugin of that time: the load
+	// goes through and says so.
+	if !strings.Contains(text, "4. connect ok    brain and tap connected; the tap gave no name") {
+		t.Errorf("load with a tap that gives no name: %s", text)
+	}
+	if rec := loadSongSessions()["night_drive"]; !rec.TapNames {
+		t.Errorf("the record after the load = %+v, want the tap names noted", rec)
 	}
 }
 

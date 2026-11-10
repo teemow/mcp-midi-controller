@@ -2,7 +2,8 @@ package mcpserver
 
 // This file is what the daemon keeps about a song's session: which session a
 // song was authored into and from what, whether the iPad has fetched that
-// file, and which session AUM has open as far as the daemon can know.
+// file, and which session AUM has open as far as the daemon can know (what
+// the session's taps say about that is in song_taps.go).
 
 import (
 	"context"
@@ -41,6 +42,10 @@ type songSessionRecord struct {
 	// empty for a session without one.
 	Sequencer string `json:"sequencer,omitempty"`
 	Sequence  string `json:"sequence,omitempty"`
+	// TapNames says the session's taps were authored with their names
+	// (song.TapName). A session staged before taps had names lacks it, and
+	// load_song authors that one again.
+	TapNames bool `json:"tap_names,omitempty"`
 }
 
 // sequenceCurrent reports whether the recorded session's sequencer holds the
@@ -228,6 +233,8 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	opts := song.SessionOptions{
 		Hardware: hardware, TrackTaps: opt.TrackTaps, FullControl: opt.FullControl,
 		Brain: rigProbe(cat, aum.ProbeBrainNode()), Tap: rigProbe(cat, aum.ProbeTapNode()),
+		// The taps dial in under the session's id: see song_taps.go.
+		Session: outID,
 	}
 	defaults := loadAUv3DefaultStates()
 	opts.Prepare = func(ns *aum.NodeSpec) error { return applyDefaultState(ns, defaults) }
@@ -256,7 +263,7 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	}
 	out := &authoredSong{OutID: outID, File: file, Path: path, SHA256: bytesSHA256(data), Options: opt, Report: rep, Sequencer: seq}
 	err = s.updateSongSessions(func(all map[string]songSessionRecord) bool {
-		rec := songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint, SHA256: out.SHA256, Options: opt}
+		rec := songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint, SHA256: out.SHA256, Options: opt, TapNames: true}
 		if seq != nil {
 			rec.Sequencer, rec.Sequence = seq.ID, seq.fingerprint()
 		}
@@ -300,6 +307,21 @@ func describeSongLayout(b *strings.Builder, cs *compiledSong, seq *songSequencer
 	b.WriteString(" > ProbeAudioTap\n")
 }
 
+// songTapNames are the names a song session's taps dial in under, by strip:
+// the master's and, with track taps, every track's. order lists the strips
+// as the mixer has them, the master last.
+func songTapNames(cs *compiledSong, au *authoredSong) (names map[string]string, order []string) {
+	names = map[string]string{}
+	if au.Options.TrackTaps {
+		for _, tp := range cs.plan.Tracks {
+			names[tp.ID] = song.TapName(au.OutID, tp.ID)
+			order = append(order, tp.ID)
+		}
+	}
+	names[song.MasterTap] = song.TapName(au.OutID, song.MasterTap)
+	return names, append(order, song.MasterTap)
+}
+
 func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Song        string `json:"song"`
@@ -329,6 +351,12 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	}
 	b.WriteByte('\n')
 	describeSongLayout(&b, cs, au.Sequencer)
+	taps, order := songTapNames(cs, au)
+	b.WriteString("  taps, as get_audio_tap names them:")
+	for _, strip := range order {
+		fmt.Fprintf(&b, " %q", taps[strip])
+	}
+	b.WriteByte('\n')
 	fmt.Fprintf(&b, "next: load_song has the iPad pull it and loads it in AUM (%s); then play_song\n", au.File)
 	switch {
 	case au.Sequencer != nil:
@@ -346,6 +374,7 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 		"download":  "/aum-session/" + au.File,
 		"report":    au.Report,
 		"options":   au.Options,
+		"taps":      taps,
 		"layout":    cs.plan,
 		"sequenced": au.Sequencer != nil,
 	}), nil
@@ -440,8 +469,8 @@ func (s *Server) waitPulled(ctx context.Context, songID, sha string, d time.Dura
 
 // --- which session AUM has open -----------------------------------------------
 
-// loadedSession is the session the daemon loaded into AUM, valid for as long
-// as the brain connection that followed the load lives.
+// loadedSession is the session the daemon loaded into AUM or saw on AUM's
+// screen, valid for as long as the brain connection that followed lives.
 type loadedSession struct {
 	mu  sync.Mutex
 	id  string
@@ -479,6 +508,13 @@ func (l *loadedSession) get() string {
 }
 
 // loadedSessionID is the staging id of the session AUM has open, "" when the
-// daemon does not know: it knows only what it loaded itself, until the brain
-// reconnects (a session load in AUM starts a new brain).
-func (s *Server) loadedSessionID() string { return s.loaded.get() }
+// daemon does not know. A session whose master tap dials in under its name
+// says so itself, for as long as it is open. Without such a tap the daemon
+// knows only what it loaded or saw itself, until the brain reconnects (a
+// session load in AUM starts a new brain).
+func (s *Server) loadedSessionID() string {
+	if id := s.tapSession(); id != "" {
+		return id
+	}
+	return s.loaded.get()
+}

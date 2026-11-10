@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
@@ -51,13 +53,22 @@ type songRig struct {
 	Programs []midicontrol.Command
 	// Commands is everything received.
 	Commands []midicontrol.Command
-	notes    map[[2]int]bool
-	started  time.Time // when the stream began
-	frame    int64     // the frame the stream has been rendered up to
-	brain    *websocket.Conn
-	tap      *audiotap.Store
-	taps     int
-	pulling  bool
+	// Session, when set, is the staged session the rig's AUM has open, and
+	// makes its taps behave like the plugin that sends its name: every tap of
+	// that session dials in under the name the staged file gives it, the
+	// master's with the whole mix and a track's with that track alone.
+	// Without it there is one tap that gives no name, as from a build of
+	// the plugin from before taps had names.
+	Session string
+	notes   map[[2]int]bool
+	started time.Time // when the stream began
+	frame   int64     // the frame the stream has been rendered up to
+	brain   *websocket.Conn
+	tap     *audiotap.Store
+	// trackTaps are the taps of the session's tracks, by MIDI channel.
+	trackTaps map[int]*audiotap.Store
+	taps      int
+	pulling   bool
 }
 
 const rigSampleRate = 48000
@@ -137,20 +148,57 @@ func fastSongWaits(t *testing.T) {
 	pause := ipad.AUMLoadPause
 	ipad.AUMLoadPause = 10 * time.Millisecond
 	t.Cleanup(func() { ipad.AUMLoadPause = pause })
-	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait}
+	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait, songTapNameGrace}
 	// The stand-ins answer within milliseconds; the timeouts only bound a
 	// test on a machine too busy to run them.
 	songPullGrace, songPullTimeout, songDialTimeout = 300*time.Millisecond, 20*time.Second, 20*time.Second
 	songPresetWait, songSettleWait = 20*time.Millisecond, 20*time.Millisecond
 	songNoteHold, songNoteTail, songFloorWait = 150*time.Millisecond, 150*time.Millisecond, 60*time.Millisecond
+	songTapNameGrace = 100 * time.Millisecond
 	t.Cleanup(func() {
 		songPullGrace, songPullTimeout, songDialTimeout = old[0], old[1], old[2]
 		songPresetWait, songSettleWait = old[3], old[4]
 		songNoteHold, songNoteTail, songFloorWait = old[5], old[6], old[7]
+		songTapNameGrace = old[8]
 	})
 }
 
-// connect starts a new brain and a new tap, as AUM does when it loads a
+// stagedTapNames reads the names a staged session gives its taps, by strip:
+// what the plugin restores when AUM loads the file, and dials in under.
+func stagedTapNames(t *testing.T, id string) map[int]string {
+	t.Helper()
+	data, err := os.ReadFile(stagedSessionPath(id))
+	if err != nil {
+		t.Fatalf("the rig's session %q is not staged: %v", id, err)
+	}
+	sess, err := aum.Open(data)
+	if err != nil {
+		t.Fatalf("open the staged %q: %v", id, err)
+	}
+	names := map[int]string{}
+	for strip, ch := range sess.Channels() {
+		for slot := range ch.Nodes {
+			doc, err := sess.NodeAuStateDoc(strip, slot)
+			if err != nil {
+				continue
+			}
+			raw, isTap := doc["probeAudioTapConfig"]
+			if !isTap {
+				continue
+			}
+			var cfg struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(raw, &cfg); err != nil {
+				t.Fatalf("the tap config of strip %d (%s): %v", strip, raw, err)
+			}
+			names[strip] = cfg.Name
+		}
+	}
+	return names
+}
+
+// connect starts a new brain and new taps, as AUM does when it loads a
 // session; the ones before are dropped.
 func (r *songRig) connect() {
 	r.t.Helper()
@@ -160,16 +208,43 @@ func (r *songRig) connect() {
 	if err != nil {
 		r.t.Fatalf("dial the brain endpoint: %v", err)
 	}
+	// The taps of the session, by strip: the last strip is the master's, a
+	// track's strip has the number of its MIDI channel.
+	var names map[int]string
+	master := 0
+	if r.Session != "" {
+		names = stagedTapNames(r.t, r.Session)
+		for strip := range names {
+			master = max(master, strip)
+		}
+	}
 	r.mu.Lock()
 	old := r.brain
 	r.brain = c
 	r.taps++
-	name := "tap-" + string(rune('0'+r.taps))
 	if r.tap != nil {
 		r.tap.Disconnect()
 	}
-	r.tap = r.reg.Connect(name, "ipad:1")
-	r.tap.SetFormat(audiotap.Format{Encoding: "f32le", Channels: 2, SampleRate: rigSampleRate, Source: "ProbeAudioTap"})
+	for _, st := range r.trackTaps {
+		st.Disconnect()
+	}
+	r.trackTaps = map[int]*audiotap.Store{}
+	dial := func(name string) *audiotap.Store {
+		source := name
+		if name == "" {
+			// A tap without a name is known by where it dials from.
+			name, source = "tap-"+string(rune('0'+r.taps)), "ProbeAudioTap"
+		}
+		st := r.reg.Connect(name, "ipad:1")
+		st.SetFormat(audiotap.Format{Encoding: "f32le", Channels: 2, SampleRate: rigSampleRate, Source: source})
+		return st
+	}
+	r.tap = dial(names[master])
+	for strip, name := range names {
+		if strip != master {
+			r.trackTaps[strip] = dial(name)
+		}
+	}
 	r.notes = map[[2]int]bool{}
 	r.mu.Unlock()
 	if old != nil {
@@ -249,7 +324,10 @@ func (r *songRig) render() {
 		r.frame = due
 		return
 	}
-	type voice struct{ hz, amp float64 }
+	type voice struct {
+		ch      int
+		hz, amp float64
+	}
 	var voices []voice
 	for k := range r.notes {
 		if r.muted[k[0]] {
@@ -260,21 +338,31 @@ func (r *songRig) render() {
 			hz, amp = r.Voice(k[0], k[1])
 		}
 		if amp > 0 {
-			voices = append(voices, voice{hz, amp})
+			voices = append(voices, voice{k[0], hz, amp})
 		}
 	}
 	if due <= r.frame {
 		return
 	}
-	buf := make([]float32, 0, 2*(due-r.frame))
-	for ; r.frame < due; r.frame++ {
-		var v float64
-		for _, vc := range voices {
-			v += vc.amp * math.Sin(2*math.Pi*vc.hz*float64(r.frame)/rigSampleRate)
+	// feed gives a tap the voices of one MIDI channel, or of all (0).
+	feed := func(tap *audiotap.Store, ch int) {
+		buf := make([]float32, 0, 2*(due-r.frame))
+		for f := r.frame; f < due; f++ {
+			var v float64
+			for _, vc := range voices {
+				if ch == 0 || vc.ch == ch {
+					v += vc.amp * math.Sin(2*math.Pi*vc.hz*float64(f)/rigSampleRate)
+				}
+			}
+			buf = append(buf, float32(v), float32(v))
 		}
-		buf = append(buf, float32(v), float32(v))
+		tap.AppendAudio(buf)
 	}
-	r.tap.AppendAudio(buf)
+	feed(r.tap, 0)
+	for ch, tap := range r.trackTaps {
+		feed(tap, ch)
+	}
+	r.frame = due
 }
 
 // waitCommands waits until the commands the rig received satisfy done, and

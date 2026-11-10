@@ -43,7 +43,8 @@ AUM operation that loses state.
 The daemon then knows which session AUM has open because it loaded it and saw
 AUM show its name. It forgets that again when the brain reconnects without a
 `load_song` (somebody loaded something else). `play_song` warns from this
-knowledge and no longer from the last download.
+knowledge and no longer from the last download. Where the session's tap
+names itself (8, below), the daemon asks the tap instead.
 
 ### 2. A check that listens: `check_song`
 
@@ -68,7 +69,9 @@ unmute are sent apart, and a track that stays silent is played once more
 before it is called silent.
 
 `load_song` ends with this check. It can be called on its own at any time, for
-instance when a playback sounded wrong.
+instance when a playback sounded wrong. Where the session's tap names itself
+(8, below), the check learns the open session from it and leaves AUM's menu
+shut; it still reads the strips and the nodes' rings off the mixer.
 
 ### 3. A sound catalogue the daemon fills by measuring
 
@@ -133,10 +136,11 @@ it as not measured. Without `calibrate` nothing of this applies.
 `mix_song` plays the song and records the master tap for its whole length (the
 tap's window is read out as it fills, so the length is not limited by it). The
 report is rms and sample peak per bar and per section, the loudest bar, clipped
-bars, and where the stream stalled. With `per_track: true` it also plays each
-section once per track and gives the level of every track in every section: the
-table a balance is made from. The call returns at once and `get_song_mix` gives
-the progress and the result.
+bars, and where the stream stalled. With `per_track: true` it also gives the
+level of every track in every section: the table a balance is made from. It
+plays each section once per track for that, or, in a session with a tap on
+every track (8, below), reads all of them out in the one pass. The call
+returns at once and `get_song_mix` gives the progress and the result.
 
 ### 7. A shorter document
 
@@ -150,16 +154,45 @@ the progress and the result.
 - `get_song_plugin` shows what the catalogue knows next to each preset, and
   labels a parameter's value as the default patch's.
 
+### 8. Taps that say who they are
+
+A session with `track_taps` streamed every track, but the plugin sent no name:
+each stream was known by the address it came from, the daemon could not tell
+the tracks apart, and "the tap" was whichever connected last, which in such a
+session is one track's as often as the master's. `mix_song` therefore measured
+the tracks one at a time at the master, and the open session was known only
+from AUM's screen.
+
+Now the plugin's saved state carries a name and the plugin dials the daemon
+under it. The daemon writes the name into every tap of a session it authors:
+the session's id and the strip, `<session id>/master` and
+`<session id>/<track id>`. From that:
+
+- the song tools listen at the session's master tap, by name;
+- the connected master tap says which session AUM has open. `check_song`
+  asks it, and opens AUM's menu for the session's name only when no tap
+  answers. The mixer is read either way, for the strips and for a node drawn
+  as failed;
+- `mix_song` reads every track's tap out during the pass through the song,
+  so the table of tracks and sections costs no pass of its own;
+- a tap that dials again under its name (a reconnect, the same session loaded
+  anew) takes its stream over. The connection before it may end later
+  without the tap counting as gone.
+
+Nothing is taken away. A tap without a name works as before: an older build
+of the plugin ignores the name in a new session, and the new build restores an
+older session to a tap without one. The solo passes are still there, as the
+fallback and on request (`solo: true`), because they measure a track after
+the master's effects and the track's tap does not.
+
 ## What stays as it is
 
 - How a song is played (the daemon keeps the time today) and recording to a
   file are separate work; these tools only use `play_song`'s player and the
   tap.
-- Taps are not named by the plugin, so a session with `track_taps` streams
-  every track but the daemon cannot tell the streams apart. `mix_song` therefore
-  measures tracks one at a time at the master. A tap that names itself would
-  make that one pass, and would let the daemon identify the loaded session
-  without AUM's UI.
+- A tap's name is the session's id at the time it was authored. A copy saved
+  under another name in AUM keeps it, and the daemon then takes the copy for
+  the session it was made from.
 - What a preset sets a parameter to is not readable from outside the plugin.
   The catalogue records what a preset sounds like, not its parameter values.
 
@@ -170,5 +203,6 @@ the progress and the result.
 2. The catalogue, `presets: all`, the lab and `audition_sound`.
 3. `calibrate`, plugin names, the catalogue in `get_song_plugin`.
 4. `mix_song`.
+5. Taps with names, in the plugin and in the sessions the daemon authors.
 
 Each step is usable without the next.

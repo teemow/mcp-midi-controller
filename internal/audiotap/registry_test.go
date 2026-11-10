@@ -75,6 +75,61 @@ func TestRegistryActivePrefersConnected(t *testing.T) {
 	}
 }
 
+// TestRegistryNewerConnectionIsTheTap checks a tap that dials again under its
+// name: the newer connection takes the tap over, what the older one still
+// sends is dropped, and the older one's end leaves the tap connected.
+func TestRegistryNewerConnectionIsTheTap(t *testing.T) {
+	r := NewRegistry()
+	old := r.Open("Songs/A/master", "10.0.0.1:5000")
+	old.SetFormat(Format{Channels: 1, SampleRate: 48000, Source: "Songs/A/master"})
+	old.AppendAudio([]float32{0.5, 0.5})
+
+	cur := r.Open("Songs/A/master", "10.0.0.1:5001")
+	if cur.Store() != old.Store() {
+		t.Fatal("the same name got a second store")
+	}
+	cur.SetFormat(Format{Channels: 2, SampleRate: 44100, Source: "Songs/A/master"})
+	cur.AppendAudio([]float32{0.1, 0.1})
+
+	// The older connection is still open for a moment.
+	old.AppendAudio([]float32{0.9, 0.9, 0.9})
+	old.SetFormat(Format{Channels: 1, SampleRate: 48000})
+	old.SetFeatures(0.9, 0.9)
+	st := cur.Store()
+	snap := st.Snapshot()
+	if snap.WindowSamples != 1 || snap.SampleRate != 44100 || snap.RMS != 0 || snap.WindowPeak > 0.2 {
+		t.Fatalf("the replaced connection still reached the tap: %+v", snap)
+	}
+	if old.Close() {
+		t.Error("the end of the replaced connection marked the tap as gone")
+	}
+	if !st.Connected() {
+		t.Fatal("the tap is not connected although its newer connection is open")
+	}
+	if !cur.Close() || st.Connected() {
+		t.Errorf("the end of the present connection left the tap connected (%v)", st.Connected())
+	}
+}
+
+// TestRegistryConnected lists the streaming taps, the most recent first.
+func TestRegistryConnected(t *testing.T) {
+	r := NewRegistry()
+	if got := r.Connected(); len(got) != 0 {
+		t.Fatalf("an empty registry lists %d connected tap(s)", len(got))
+	}
+	r.Connect("a", "x")
+	r.Connect("b", "y")
+	r.Connect("c", "z")
+	r.Disconnect("b")
+	var got []string
+	for _, st := range r.Connected() {
+		got = append(got, st.Name())
+	}
+	if len(got) != 2 || got[0] != "c" || got[1] != "a" {
+		t.Fatalf("connected = %v, want c then a", got)
+	}
+}
+
 func name(s *Store) string {
 	if s == nil {
 		return "<nil>"

@@ -129,7 +129,7 @@ func (s *Server) registerSongTools() {
 			"properties": {
 				` + songArg + `,
 				"out_id": {"type": "string", "description": "Staging id of the session, which may name a subfolder (default \"Songs/<title>\")."},
-				"track_taps": {"type": "boolean", "description": "Also put a ProbeAudioTap after every track's fader, so each track can be listened to on its own (get_audio_tap name=…). The master always has one."},
+				"track_taps": {"type": "boolean", "description": "Also put a ProbeAudioTap after every track's fader, so each track can be listened to on its own (get_audio_tap name=\"<session id>/<track id>\") and mix_song measures every track in one pass. The master always has one, \"<session id>/master\"."},
 				"full_control": {"type": "boolean", "description": "Also map every other parameter of every plugin, around the song's own mappings, so the whole session is controllable (control_* tools, the brain's surface)."},
 				"sequencer": {"type": "boolean", "description": "Host the sequencer with the song in it (default: yes when Atom | Piano Roll² is among the staged AUv3 probes). false leaves it out: the song then plays live only."},
 				"hardware": {"type": "string", "enum": ["builtin", "x32"], "description": "Hardware-I/O profile for the master's output (default builtin)."}
@@ -846,7 +846,8 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	// passes through here and the recording goes by the playback's clock.
 	var take *activeRecording
 	if args.Record || args.Upload {
-		if take, err = s.beginRecording(recordOptions{Song: cs.id, Title: cs.song.Title, Upload: args.Upload}); err != nil {
+		take, err = s.beginRecording(recordOptions{Song: cs.id, Title: cs.song.Title, Upload: args.Upload, Tap: s.songRecordingTap(rec)})
+		if err != nil {
 			return textResult("play_song: cannot record: "+err.Error(), true), nil
 		}
 	}
