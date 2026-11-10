@@ -188,7 +188,7 @@ listener carries three surfaces, none of which touch hardware:
   the `get_audio_tap` / `get_audio_clip` MCP tools — the agent's "ears". A tap
   connecting or dropping is broadcast as an `audio-tap` log notification.
 - **MIDI control** — a `GET /midi-control` **WebSocket** the ProbeMidiBrain AUv3
-  dials in to (`internal/midicontrol`). The daemon pushes note/CC/PC/transport
+  dials in to (`midicontrol` in [midi-transport](https://github.com/teemow/midi-transport)). The daemon pushes note/CC/PC/transport
   command frames the brain re-emits as MIDI — the agent's "hands", driven by the
   `play_notes` / `send_midi` / `set_transport` tools (LAN primary, BLE fallback).
   Brain connect/disconnect is broadcast as a `midi-control` log notification.

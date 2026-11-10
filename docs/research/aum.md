@@ -1,7 +1,8 @@
 # AUM (iPad host) — MIDI control research
 
-Research note for the device definition at
-`internal/device/device-types/aum.yaml`. Scope: what AUM **can be controlled by**
+Research note for AUM's device definition: once a bundled `aum.yaml`, now
+derived from each session (`MixerDeviceType` / `DeriveRig` in
+[aum-session-go](https://github.com/teemow/aum-session-go)). Scope: what AUM **can be controlled by**
 over MIDI so this MCP server can drive its mixer/transport, and how AUM's MIDI
 mapping system works. AUM is Kymatica's iOS audio mixer / AUv3 + IAA host; this
 server reaches it over **BLE-MIDI** (the iPad's WIDI dongle), so
@@ -199,7 +200,7 @@ or node-parameter (CC 30+) blocks, whatever channel those use. Because channel
   overflows the block; the extra taps stay unassigned placeholders.
 
 Single source of truth: `device.TapControlChannel` + `device.ConventionTapCC`;
-`internal/aum` (`applyConvention`) wires it into every authored session.
+aum-session-go's `aum` (`applyConvention`) wires it into every authored session.
 
 ### Session / Preset load — Program Change
 

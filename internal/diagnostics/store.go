@@ -4,7 +4,7 @@
 // latest snapshot in memory, giving an agent a read on "what can the plugin see
 // about its host?" via the get_host_diagnostics MCP tool.
 //
-// Like internal/audiotap, internal/midicontrol, internal/auv3receiver and
+// Like internal/audiotap, midi-transport's midicontrol and auv3 receiver, and
 // internal/aumreceiver it is a SEPARATE listener from the loopback-only MCP
 // endpoint (the iPad cannot reach loopback). Its surface is intentionally tiny:
 // a single WebSocket endpoint that ingests one JSON snapshot per frame into an

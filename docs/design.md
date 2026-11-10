@@ -48,7 +48,7 @@ installation-specific; a documented example is kept in `docs/private/`
 ### Boss MD-200 — default CC map
 
 The MD-200 has no public manual link here; the default CC numbers are recorded
-directly (also bundled in `internal/device/device-types/md-200.yaml`):
+directly (also bundled as `device/device-types/md-200.yaml` in [midi-device](https://github.com/teemow/midi-device)):
 
 | Control | CC# | Control | CC# |
 |---------|-----|---------|-----|
@@ -125,7 +125,7 @@ type Transport interface {
 }
 ```
 
-Backends:
+Backends (each a package of [midi-transport](https://github.com/teemow/midi-transport)):
 
 - **`blemidi`** — owns BLE **discovery + pairing + connection** via **BlueZ over
   D-Bus** (`Adapter1.StartDiscovery`, `Device1.Pair`, an `Agent1` for the PIN),
@@ -200,7 +200,7 @@ device. This is internal — to the user it is one device type with one set of
 parameters.
 
 Device types ship inside the binary via `go:embed` (source of truth:
-`internal/device/device-types/*.yaml`). User device types in
+`device/device-types/*.yaml` in [midi-device](https://github.com/teemow/midi-device)). User device types in
 `$XDG_CONFIG_HOME/mcp-midi-controller/device-types/*.yaml` **override bundled ones
 by `id`** (not by filename — the loader keys the registry on the `id:` field, so a
 user file with a bundled id replaces it whatever the file is named) and add new
@@ -382,7 +382,7 @@ this server controls. Its mixer strips and the AUv3 plugins hosted on them are
   AUM session is configured to match. Device types for plugins are generated
   directly from an `auv3-probe` parameter dump (see the probe tooling below).
 - **AUM session nodes are devices — derived from the file, not the convention.**
-  `import_aum_session` runs `DeriveRig` (`internal/aum/rig.go`): every *enabled*
+  `import_aum_session` runs `DeriveRig` (`aum/rig.go` in [aum-session-go](https://github.com/teemow/aum-session-go)): every *enabled*
   mapping in the session's MIDI control matrix becomes one control carrying the
   mapping's **exact message type (CC/Note/PC), number and per-control pinned
   MIDI channel** — so a banked ("golden") session spanning channels 2–16 is fully
@@ -447,7 +447,7 @@ $XDG_STATE_HOME/mcp-midi-controller/      # volatile — not versioned
   *.log
 ```
 
-Bundled device types: `internal/device/device-types/*.yaml` (embedded in the binary).
+Bundled device types: `device/device-types/*.yaml` in [midi-device](https://github.com/teemow/midi-device) (embedded in the binary).
 
 ## Build order (risk-first)
 
@@ -465,7 +465,7 @@ Bundled device types: `internal/device/device-types/*.yaml` (embedded in the bin
 7. **USB editor/readback tools** — USB-MIDI + vendor-HID transports exposing the
    pedals' deep editor protocols (read device state, author SL-2 patterns, verify
    what BLE writes landed). First design: `docs/usb-tools.md`. Implemented: the
-   `usbmidi`/`usbhid` transports, the four protocol codecs (`internal/usbcodec`:
+   `usbmidi`/`usbhid` transports, the four protocol codecs (`device/usbcodec` in midi-device:
    roland / morningstar / neuro / torpedo), the value encodings, the
    request/reply session + engine USB API (`internal/engine/usb.go`), the USB
    transport connection, the generic `usb_*` and semantic per-device tools
@@ -488,7 +488,7 @@ Bundled device types: `internal/device/device-types/*.yaml` (embedded in the bin
    the iPad app lives in its own repo
    ([github.com/teemow/auv3-probe](https://github.com/teemow/auv3-probe)) and
 POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
-  separate from the loopback MCP endpoint, `internal/auv3receiver`, config
+  separate from the loopback MCP endpoint, the `auv3` package of [midi-transport](https://github.com/teemow/midi-transport), config
   `auv3_receiver_addr`, default `:7800`). Staged dumps are exposed to agents
   via `list_auv3_probes` / `get_auv3_probe` and turned into device types via
   `import_auv3_probe`. The standalone `cmd/auv3-probe` still exists for running
@@ -507,7 +507,7 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
   sentinels for transport. User-preset names are installation-specific, so they
   only ever live in the gitignored state dir / user config — never in committed
   artifacts.
-9. **AUM session read/write (`internal/aum`)** — a Go library that **reads,
+9. **AUM session read/write (`aum` in [aum-session-go](https://github.com/teemow/aum-session-go))** — a Go library that **reads,
    edits, and authors** AUM session (`.aumproj`) and standalone mapping
    (`.aum_midimap`) files, and an MCP surface over it. The format is an Apple
    `NSKeyedArchiver` binary plist; the verified schema is in
@@ -610,7 +610,7 @@ All listed devices are v1; beyond the transports most of the remaining work is
 - **Eventide H90** — global/MIDI implementation:
   <https://cdn.eventideaudio.com/manuals/h90/1.7.1/content/appendix/global.html>
 - **Boss MD-200** — default CC map inlined above (no public manual link); also in
-  `internal/device/device-types/md-200.yaml`.
+  `device/device-types/md-200.yaml` in midi-device.
 - **Boss SL-2** — "Controlling This Unit from an External MIDI Device" (3 CCs +
   MIDI clock; no PC): <https://static.roland.com/manuals/sl-2/eng/33861479.html>
   (research note: `docs/research/sl-2.md`).

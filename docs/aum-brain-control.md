@@ -2,7 +2,7 @@
 
 The big picture behind the AUM work, and why it is more powerful than it looks
 today. This ties together three things that already exist in pieces — the AUM
-**session** model (`internal/aum`), the AUM **MIDI-control convention**
+**session** model (`aum` in [aum-session-go](https://github.com/teemow/aum-session-go)), the AUM **MIDI-control convention**
 (`docs/research/aum.md`), and the in-host **brain** (`ProbeMidiBrain`) — into one
 thesis, and names what is still missing.
 
@@ -41,7 +41,7 @@ Everything below is those two pillars.
 ## Pillar 1 — deep session understanding
 
 The daemon already reads, edits, and authors `.aumproj` files (the Go
-`internal/aum` library; format in `docs/research/aum-session.md` and
+`aum` library of aum-session-go; format in `docs/research/aum-session.md` and
 `docs/research/aum-midi-matrix.md`), and exposes the flat layout +
 every mapping via `get_aum_session`. That is the foundation: to reason about what
 the brain can do in a session, we must know its channels, nodes, parameters, and
@@ -133,7 +133,7 @@ further out, the north-star scriptable on-device host.
 | Piece | Status |
 |---|---|
 | Brain can reach AUM's full surface (measured) | **confirmed** (tempo / mute / node param swept) |
-| Session read/edit/author (`internal/aum`) | **strong** — channels, nodes, params, CC/Note/PC mappings |
+| Session read/edit/author (`aum` in aum-session-go) | **strong** — channels, nodes, params, CC/Note/PC mappings |
 | Convention CC map (`aum.md`) | **done** — authoring tools bake it in by default; `instrument_aum_session` (and `full_control:true`) banks **every** mappable target collision-free across channels |
 | Session-derived rig (`DeriveRig` → `import_aum_session`) | **done** — devices/controls are read back from the session's *enabled mappings* (type/number/channel pinned per control), probe dumps enrich names/enums; re-import replaces the previous session's devices |
 | Automatic import + manifest push | **done** — on session download to the iPad and on brain connect (`aum_auto_import`, default on); broadcasts `aum-rig`, pushes the `controlSurface` frame |

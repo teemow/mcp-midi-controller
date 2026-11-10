@@ -37,7 +37,7 @@ func Register(mux *http.ServeMux, store *Store, onConnect func(remote string), o
 func handleStream(store *Store, onConnect, onDisconnect func(string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Clear the shared lanhttp absolute deadlines before upgrading, exactly
-		// like internal/audiotap and internal/midicontrol: a long-lived
+		// like internal/audiotap and midi-transport's midicontrol: a long-lived
 		// diagnostics stream must not be dropped after the receiver's 60s
 		// Read/WriteTimeout. The loop is bound by r.Context() (cancelled on
 		// disconnect / daemon shutdown) instead.

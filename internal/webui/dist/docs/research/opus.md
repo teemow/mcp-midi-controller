@@ -1,6 +1,6 @@
 # Two Notes Opus — MIDI research note
 
-Research for the device definition `internal/device/device-types/opus.yaml`.
+Research for the device definition `device/device-types/opus.yaml` in [midi-device](https://github.com/teemow/midi-device).
 
 ## Sources
 

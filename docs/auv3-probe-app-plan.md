@@ -1,13 +1,13 @@
 # auv3-probe app plan — capture the on-device-only artifacts the session author needs
 
 Plan for the **auv3-probe iPad app** (separate repo `github.com/teemow/auv3-probe`).
-The shared wire contract (`device.ProbeDump`) lives in *this* repo
-(`internal/device/auv3probe.go`), so this plan documents both sides of it; the
+The shared wire contract (`device.ProbeDump`) lives in
+[midi-device](https://github.com/teemow/midi-device) (`device/auv3probe.go`), so this plan documents both sides of it; the
 app changes are the iOS-side work, the Go changes are the contract + author side.
 
 ## Why
 
-The from-scratch AUM session author (`internal/aum`, see
+The from-scratch AUM session author (`aum` in [aum-session-go](https://github.com/teemow/aum-session-go), see
 `.cursor/plans/aum-session-author_*.plan.md`) reproduces a `.aumproj` off-device
 from a `ProbeDump`. Two pieces of a real `AUMNodeArchive` exist **only on the
 iPad** and cannot be reconstructed off-device, so the author currently omits or
@@ -139,7 +139,7 @@ plugin's `fullState` exceeds it; surface that in diagnostics).
 2. **`aum.NodeSpec`**: add `ComponentIcon []byte` (the archived UIImage bytes)
    and reuse the existing `StateDoc`/`AuStateDoc` path for `defaultState` (stamp
    the captured blob as the plugin-state entry of `AuStateDoc` when present).
-3. **`buildAUXNode`** (`internal/aum/nodes.go`): when `n.ComponentIcon` is set,
+3. **`buildAUXNode`** (`aum/nodes.go` in aum-session-go): when `n.ComponentIcon` is set,
    `Decode` it as a standalone archive and `Builder.Graft` its root `UIImage`
    object into the session, setting the node's `componentIcon` field — the same
    graft primitive `AddProbeRig` already uses to splice template nodes (handles
@@ -192,7 +192,7 @@ daemon's staged probes/sessions):
 - [ ] **app:** (secondary, opt-in) capture default `fullState` as `defaultState`
   — **not implemented** (the only remaining item; optional, see status below).
 - [x] **author:** `aum.NodeSpec.ComponentIcon` + `buildAUXNode` Decode+Graft via
-  `graftComponentIcon` (`internal/aum/nodes.go`), with tests
+  `graftComponentIcon` (`aum/nodes.go` in aum-session-go), with tests
   (`TestBuildAUXNodeComponentIcon`, `TestGraftComponentIconFallback`). The
   `defaultState`→`AuStateDoc` stamp is **not** wired (the `StateDoc` loop in
   `buildAuStateDoc` is the hook; only our own plugins use it today).
@@ -224,7 +224,7 @@ running daemon's staged probes + the five real rig sessions:
   `keyPath == identifier == displayName` for every param, and every assigned
   node-param mapping in the whole corpus happens to be on iSEM — so the corpus
   cannot prove **which** field AUM keys by when the three diverge. The author's
-  `paramTarget` (`internal/aum/build.go`) prefers `identifier → displayName →
+  `paramTarget` (`aum/build.go` in aum-session-go) prefers `identifier → displayName →
   keyPath`; correct for iSEM and any plugin where they agree. Settling the
   divergent case needs one real assigned param mapping on a plugin whose three
   names differ (e.g. a FabFilter node) — **zero probe changes required**, since

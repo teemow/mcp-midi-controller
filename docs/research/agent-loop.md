@@ -34,7 +34,7 @@ flowchart LR
 
 ## `/midi-control` wire contract (the hands)
 
-`internal/midicontrol` mounts `GET /midi-control` on the shared LAN receiver
+`midicontrol` in [midi-transport](https://github.com/teemow/midi-transport) mounts `GET /midi-control` on the shared LAN receiver
 (alongside `/audio-stream` and the auv3 probe receiver). ProbeMidiBrain dials in;
 the `Hub` tracks the single connected brain and pushes JSON command frames:
 
@@ -127,7 +127,7 @@ the loop is live.
 ## Status / validation
 
 The daemon and app pieces are implemented and unit-tested (matrix + `AuStateDoc`
-round-trip in `internal/aum`; both projects build). The remaining check is the
+round-trip in aum-session-go's `aum`; both projects build). The remaining check is the
 **on-device end-to-end run**: author → push & open → `play_notes` /
 `set_transport` → `get_audio_tap` / `get_audio_clip` → tweak CC → re-fetch, on a
 trusted device with the extensions installed (`make deploy`). If matrix authoring

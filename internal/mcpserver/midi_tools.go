@@ -20,7 +20,7 @@ const maxNoteDurationMS = 10_000
 
 // registerMidiTools wires the agent's "hands": play_notes / send_midi /
 // set_transport. Their PRIMARY target is the ProbeMidiBrain LAN control channel
-// (internal/midicontrol), which makes the brain AUv3 emit the MIDI on its host
+// (midi-transport's midicontrol), which makes the brain AUv3 emit the MIDI on its host
 // MIDI-out — so notes/CC/transport flow through AUM's routing exactly like a
 // real controller. When an explicit endpoint is supplied the call instead falls
 // back to a hardware transport (BLE) via the engine's send_raw path. These
