@@ -515,6 +515,10 @@ spreads are over 16 hits, the patterns over 16 bars unless said.
 - **Channel 10**, to a Battalion on a track's own channel 10, its generators
   playing: note 38 held for 2 s muted voice 3 for those 2 s and no longer; note
   48 held soloed voice 1; note 14 toggled voice 3's mute.
+- **Channel 10 from a song.** A track on `channel: 10` whose pattern held D2
+  over beats 3 and 4 of one bar and C3 over the whole of another, played from
+  the session's sequencer: the hat stopped for those two beats (one hit at the
+  edge), and the next bar but one had the kick alone.
 - **Channel 11**, likewise: each note 12 gave the kit another state (at the
   default RANDOMIZE DEPTH of 0.1 the hat on sixteenths dropped to one hit and
   then none a second, the kick's hits grew 3 to 5 times longer; at 0.5 the hat
@@ -522,14 +526,28 @@ spreads are over 16 hits, the patterns over 16 bars unless said.
   exactly. Note 26 gave voice 3 a new sound and a new rhythm on every press
   (onsets a second 12, then 3, 10, 8; 7 dB louder), with no way back but the
   parameters the song declares.
+- **A whole groove** of generators (kick on quarters, snare on 2 and 4, hat
+  on eighths, three hits of a Modal voice): as it stood, 14 of 16 bars were
+  the same bar (the other two lacked one hit, most likely to the detector).
+  With the recipe under [In a song](#in-a-song), "A groove that differs in
+  every bar", all 16 bars differed, with 6 to 11 hits above 6 kHz a bar and
+  the kick and snare in place.
+- **Lanes written into the saved state.** A session file whose Battalion
+  state carried hand-drawn steps for voice 1 (one each beat), all sixteen for
+  voice 3, and voice 3's PROB lane at 0 for steps 9 to 16 played exactly that:
+  four kicks a bar and the hat in the first half of each bar only, four bars
+  of four. The state had no other key (`jucePluginState` alone, without the
+  binary `data` beside it). With the PROB lane 12 steps long in FREE mode,
+  six on and six off, against the 16 steps, the hat's bars came round every
+  three: `xxxxxx......xxxx`, `xx......xxxxxx..`, `....xxxxxx......`.
 
 ### What a song does not reach
 
 - **The lanes and the hand-drawn steps.** Their values are not parameters.
   They are plain XML in the saved state the session file carries (see [The
-  sequencer](#the-sequencer)), so a session author could write them: a VEL
-  lane of 12 steps against a pattern of 16, a PROB lane in TRIG mode. Whether
-  the plugin takes an authored state is not tried.
+  sequencer](#the-sequencer)), and the plugin plays an authored one (above),
+  but a song document has no place for them yet: its session gives each
+  plugin the default state.
 - **Channels 10 and 11 to a kit that also plays pads.** A song's session
   routes each channel to one track. The control notes reach a Battalion only
   when the track it is on has that channel, and that Battalion then hears no
@@ -648,7 +666,9 @@ preset.
 snare stay as written, and everything else varies: the Performance page
 drops a share of the other voices' steps at random, a second hat comes in
 only as ghost hits, VARIATION gives each hit its own sound and HUMANIZE its
-own place. A scene re-arranges a voice's hits for another section.
+own place. Measured: 16 different bars in 16; the same kit without
+VARIATION, the ghost hat, the Performance page and HUMANIZE played one bar
+sixteen times. A scene re-arranges a voice's hits for another section.
 
 ```yaml
     instrument:
@@ -695,7 +715,8 @@ range set by the knob under it, the velocity the song writes, a glitch.
 **Drop-outs from channel 10.** A Battalion on a track of its own channel 10
 plays its generators, and the song's notes on that track mute or solo its
 voices for as long as they are held (C2 to G2 mute voices 1 to 8, C3 to G3
-solo them, while held).
+solo them). `load_song`'s check calls such a track silent: its first note is
+a mute, not a sound.
 
 ```yaml
   - id: groove
@@ -719,7 +740,7 @@ holds over a preset's own value: declare only what the song means to set.
   0.46 and 0.48) and a chance for the generator's hits.
 - Whether HUMANIZE moves the voices together, as the manual says.
 - Choke "Random" with the transport running; Trigger "Random" on voice 8.
-- What lane lengths and the TRIG and RETRIG modes do, and whether the plugin
-  takes lane values written into its saved state.
+- What the TRIG and RETRIG modes of a lane do, and the other lanes' scales
+  (a RATCH value of 1, a PITCH value of 1).
 - The other voices' chromatic channels (4 to 9) and the rest of channels 10
   and 11 were not tried one by one.
