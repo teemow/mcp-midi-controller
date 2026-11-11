@@ -37,12 +37,13 @@ import (
 // can write one from the tool listing alone. docs/songs.md is the long form.
 const songFormat = `A song is one YAML document:
 title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional), calibrate (optional, see the end).
-tracks: [{id, name?, kind: drums?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?,
+tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?,
   instrument: {plugin, preset?, params?},
-  effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1.
+  effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1 (channel: another of 1..12). control_channels: [10, 11] lets the track's instrument also hear those channels, for control notes such as a drum machine's mutes; no other track may use them.
 master: [effects on the master strip].
 patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), velocity? (96),
-  notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?}]}}
+  notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?, channel?}], channel?}}
+  channel (on a pattern or an event): send those notes on one of the playing track's control_channels, as written (no transpose, no drum lanes). A drum pattern with events on channel 10 plays pads and mutes together.
   Melodic grid: steps separated by spaces - "A2" note (C4 = middle C), "[A3 C4 E4]" chord, "-" hold the previous step, "." rest; add "!" to accent or ":NN" for a velocity.
   Drum grid: one character per step - "x" hit, "X" accent, "o" soft, "." rest. Lanes: kick snare clap rim hat open_hat tom_low tom_mid tom_high crash ride cowbell tamb shaker (or the track's drum_map, or a note).
   "|" marks a bar line in both and is checked: every bar must hold exactly a bar's steps.
@@ -578,12 +579,14 @@ type songSectionRow struct {
 }
 
 type songTrackRow struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Channel    int      `json:"channel"`
-	Instrument string   `json:"instrument"`
-	Effects    []string `json:"effects"`
-	Notes      int      `json:"notes"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Channel         int      `json:"channel"`
+	ControlChannels []int    `json:"control_channels,omitempty"`
+	Instrument      string   `json:"instrument"`
+	Effects         []string `json:"effects"`
+	Notes           int      `json:"notes"`
+	ControlNotes    int      `json:"control_notes,omitempty"`
 }
 
 // summarize renders a compiled song as text and as its structured summary.
@@ -603,7 +606,10 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 	}
 	b.WriteString("tracks:\n")
 	for i, tp := range cs.plan.Tracks {
-		row := songTrackRow{ID: tp.ID, Name: tp.Name, Channel: tp.Channel, Effects: []string{}, Notes: tl.Tracks[i].Notes}
+		row := songTrackRow{
+			ID: tp.ID, Name: tp.Name, Channel: tp.Channel, ControlChannels: tp.ControlChannels,
+			Effects: []string{}, Notes: tl.Tracks[i].Notes, ControlNotes: tl.Tracks[i].ControlNotes,
+		}
 		for j, n := range tp.Nodes {
 			if j == 0 {
 				row.Instrument = n.Name
@@ -615,7 +621,11 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		if len(row.Effects) > 0 {
 			fmt.Fprintf(&b, " > %s", strings.Join(row.Effects, " > "))
 		}
-		fmt.Fprintf(&b, "  (%d notes)\n", row.Notes)
+		fmt.Fprintf(&b, "  (%d notes", row.Notes)
+		if len(row.ControlChannels) > 0 {
+			fmt.Fprintf(&b, "; %d control notes on ch%s", row.ControlNotes, joinInts(row.ControlChannels, ", ch"))
+		}
+		b.WriteString(")\n")
 		sum.Tracks = append(sum.Tracks, row)
 	}
 	if len(cs.plan.Master) > 0 {
@@ -1111,7 +1121,7 @@ func (s *Server) handleExportSongMIDI(_ context.Context, req *mcp.CallToolReques
 	}
 	notes := 0
 	for _, t := range cs.timeline.Tracks {
-		notes += t.Notes
+		notes += t.Notes + t.ControlNotes
 	}
 	return structResult(
 		fmt.Sprintf("exported %q -> %s (%d bytes: %d track(s), %d notes, %d bars at %g BPM)", cs.song.Title, path, len(data), len(cs.timeline.Tracks), notes, cs.timeline.Bars, cs.timeline.Tempo),

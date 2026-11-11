@@ -973,3 +973,75 @@ func TestSoundCheckLetsATailDie(t *testing.T) {
 		t.Errorf("pad = %+v, want it heard at its first note, 6 dB over the floor", pad)
 	}
 }
+
+// TestSoundCheckSkipsControlNotes: a track whose first note in time is a
+// control note (a mute on channel 10) is checked with the first note on its
+// own channel, and a track that plays control notes alone is skipped, not
+// called silent. On a device a Battalion whose first note was a mute was
+// reported SILENT.
+func TestSoundCheckSkipsControlNotes(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	r.Voice = func(ch, note int) (float64, float64) {
+		if ch >= 10 { // control notes make no sound of their own
+			return 0, 0
+		}
+		return 220, 0.2
+	}
+	doc := strings.NewReplacer(
+		"    kind: drums\n", "    kind: drums\n    control_channels: [10]\n",
+		"  - id: pad\n", "  - id: pad\n    control_channels: [11]\n",
+		`beat: {drums: {kick: "x...x...x...x...", snare: "....x.......x..."}}`,
+		`beat: {drums: {kick: "....x...x...x...", snare: "........x......."}, events: [{at: 0, dur: 1, note: D2, channel: 10}]}
+  reset: {channel: 11, step: 1/4, notes: "C#0 . . ."}`,
+		"chorus: {bars: 1, scene: open, play: {bass: bass, pad: chords, drums: beat}}",
+		"chorus: {bars: 1, scene: open, play: {bass: bass, pad: reset, drums: beat}}",
+	).Replace(toolSong)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	res := call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "ui": false})
+	text := resultText(res)
+	if res.IsError || strings.Contains(text, "SILENT") {
+		t.Fatalf("check: %s", text)
+	}
+	for _, want := range []string{
+		"drums      DrumBox                C2 ", // the kick on beat 2, not the D2 on 10
+		"it plays no note on its own channel",   // the pad
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("check lacks %q:\n%s", want, text)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.Commands {
+		if c.Type == "noteOn" && c.Channel >= 10 {
+			t.Errorf("the check sent a control note: %+v", c)
+		}
+	}
+}
+
+// TestCheckNotes picks each track's check note from its own channel only.
+func TestCheckNotes(t *testing.T) {
+	plan := &song.Plan{Tracks: []*song.TrackPlan{{ID: "drums", Channel: 1, ControlChannels: []int{10}}, {ID: "keys", Channel: 2}}}
+	tl := &song.Timeline{Events: []song.Event{
+		{Tick: 0, Kind: song.NoteOn, Channel: 10, Data1: 36, Track: "drums"}, // a mute, earliest and lowest
+		{Tick: 0, Kind: song.Control, Channel: 15, Data1: 7},
+		{Tick: 10, Kind: song.NoteOn, Channel: 1, Data1: 42, Track: "drums"},
+		{Tick: 10, Kind: song.NoteOn, Channel: 1, Data1: 38, Track: "drums"},
+		{Tick: 20, Kind: song.NoteOn, Channel: 1, Data1: 30, Track: "drums"},
+		{Tick: 5, Kind: song.NoteOn, Channel: 2, Data1: 60, Track: "keys"},
+	}}
+	got := checkNotes(plan, tl)
+	if e := got["drums"]; e.Channel != 1 || e.Data1 != 38 || e.Tick != 10 {
+		t.Errorf("drums check note = %+v, want the lowest of the first notes on channel 1 (38 at 10)", e)
+	}
+	if e := got["keys"]; e.Channel != 2 || e.Data1 != 60 {
+		t.Errorf("keys check note = %+v, want 60 on channel 2", e)
+	}
+}

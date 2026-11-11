@@ -18,6 +18,7 @@ package song
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,6 +105,12 @@ type Track struct {
 	// Channel is the MIDI channel the track plays on. 0 takes the track's
 	// position (the first track plays on channel 1).
 	Channel int `yaml:"channel,omitempty" json:"channel,omitempty"`
+	// ControlChannels are further MIDI channels the track's instrument hears,
+	// for one that takes control notes on a channel of its own (a drum
+	// machine's mutes on channel 10) while it plays the track's notes on the
+	// track's channel. A pattern or event with a channel sends its notes on
+	// one of them. No other track may play or listen on them.
+	ControlChannels []int `yaml:"control_channels,omitempty" json:"control_channels,omitempty"`
 	// Transpose shifts every note of the track by semitones.
 	Transpose int `yaml:"transpose,omitempty" json:"transpose,omitempty"`
 
@@ -225,6 +232,11 @@ type Pattern struct {
 	Transpose int `yaml:"transpose,omitempty" json:"transpose,omitempty"`
 	// Swing overrides the song's swing for this pattern.
 	Swing *float64 `yaml:"swing,omitempty" json:"swing,omitempty"`
+	// Channel sends the pattern's notes on one of the control channels of the
+	// track that plays it instead of the track's own: control notes, sent as
+	// written, with no transposition and no drum lanes. 0 is the track's
+	// channel.
+	Channel int `yaml:"channel,omitempty" json:"channel,omitempty"`
 
 	// Notes is one grid line per voice; the voices sound together.
 	Notes StringList `yaml:"notes,omitempty" json:"notes,omitempty"`
@@ -243,6 +255,10 @@ type NoteEvent struct {
 	// separated by spaces for a chord.
 	Note     string `yaml:"note" json:"note"`
 	Velocity int    `yaml:"vel,omitempty" json:"vel,omitempty"`
+	// Channel sends the event on one of the track's control channels, as the
+	// pattern's channel does, so a pattern can hold the track's notes and
+	// control notes together. 0 takes the pattern's channel.
+	Channel int `yaml:"channel,omitempty" json:"channel,omitempty"`
 }
 
 // StringList is a list of strings that may be written as a single string.
@@ -463,6 +479,32 @@ func (s *Song) Validate() error {
 			}
 		}
 	}
+	// A control channel is its track's alone: what is sent on it reaches that
+	// track's instrument and nothing else.
+	listens := map[int]string{}
+	for i := range s.Tracks {
+		t := &s.Tracks[i]
+		if t.ID == "" {
+			continue
+		}
+		for j, ch := range t.ControlChannels {
+			at := fmt.Sprintf("/tracks/%d/control_channels/%d", i, j)
+			other, taken := listens[ch]
+			switch {
+			case ch < 1 || ch > maxTracks:
+				e.addf("%s: %d is not within 1..%d", at, ch, maxTracks)
+			case channels[ch] == t.ID:
+				e.addf("%s: MIDI channel %d is the track's own channel", at, ch)
+			case channels[ch] != "":
+				e.addf("%s: MIDI channel %d is track %q's (give that track another channel)", at, ch, channels[ch])
+			case taken && other == t.ID:
+				e.addf("%s: MIDI channel %d is listed twice", at, ch)
+			case taken:
+				e.addf("%s: MIDI channel %d is already a control channel of track %q", at, ch, other)
+			}
+			listens[ch] = t.ID
+		}
+	}
 	checkEffects(&e, "/master", s.Master)
 
 	for _, name := range sortedKeys(s.Scenes) {
@@ -519,6 +561,22 @@ func (s *Song) Validate() error {
 		if p.Bars < 0 || p.Bars > maxPatternBars {
 			e.addf("%s/bars: %d is not a length (1..%d bars)", at, p.Bars, maxPatternBars)
 		}
+		if p.Channel != 0 {
+			if p.Channel < 1 || p.Channel > maxTracks {
+				e.addf("%s/channel: %d is not within 1..%d", at, p.Channel, maxTracks)
+			}
+			if len(p.Drums) > 0 {
+				e.addf("%s/channel: control notes are written as notes or events, not drum lanes", at)
+			}
+			if p.Transpose != 0 {
+				e.addf("%s/transpose: control notes are sent as written; a pattern with a channel is not transposed", at)
+			}
+		}
+		for i, ev := range p.Events {
+			if ev.Channel != 0 && (ev.Channel < 1 || ev.Channel > maxTracks) {
+				e.addf("%s/events/%d/channel: %d is not within 1..%d", at, i, ev.Channel, maxTracks)
+			}
+		}
 		if err == nil {
 			// Parse with no track: lane names and note spellings are checked
 			// where a track plays the pattern.
@@ -560,6 +618,15 @@ func (s *Song) Validate() error {
 				}
 				if len(p.Drums) > 0 && t.Kind != "drums" {
 					e.addf("%s/play/%s/%d: pattern %q has drum lanes but %q is not a drum track (set kind: drums)", at, tid, i, pid, tid)
+				}
+				for _, ch := range p.channels() {
+					switch {
+					case slices.Contains(t.ControlChannels, ch):
+					case channels[ch] == tid:
+						e.addf("%s/play/%s/%d: pattern %q sends on channel %d, which is %q's own channel; leave the channel out", at, tid, i, pid, ch, tid)
+					default:
+						e.addf("%s/play/%s/%d: pattern %q sends on channel %d, which is not one of %q's control_channels (%s)", at, tid, i, pid, ch, tid, channelList(slices.Sorted(slices.Values(t.ControlChannels))))
+					}
 				}
 				if err == nil && !broken[pid] {
 					if _, perr := compilePattern(pid, p, meter, s.Swing, s.laneTrack(t)); perr != nil {
@@ -674,6 +741,36 @@ func (s *Song) TrackChannel(i int) int {
 		return c
 	}
 	return i + 1
+}
+
+// channels lists the control channels the pattern sends notes on, its own and
+// its events', each once and in order; none for a pattern that plays on its
+// track's channel.
+func (p Pattern) channels() []int {
+	var out []int
+	add := func(ch int) {
+		if ch != 0 && !slices.Contains(out, ch) {
+			out = append(out, ch)
+		}
+	}
+	add(p.Channel)
+	for _, ev := range p.Events {
+		add(ev.Channel)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// channelList renders channels for a message.
+func channelList(chs []int) string {
+	if len(chs) == 0 {
+		return "none"
+	}
+	s := make([]string, len(chs))
+	for i, ch := range chs {
+		s[i] = strconv.Itoa(ch)
+	}
+	return strings.Join(s, ", ")
 }
 
 // TrackName returns the track's display name.

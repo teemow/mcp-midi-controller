@@ -175,9 +175,11 @@ arrangement: [verse, chorus, verse, chorus]
 
 - **tracks** — each is one mixer strip: an instrument followed by its effect
   chain, on its own MIDI channel (the first track on channel 1, in order; up to
-  twelve). `channel` puts a track on another of the twelve, for an instrument
-  that hears control notes on a channel of its own, such as a drum machine's
-  mutes on channel 10. `plugin` names a staged AUv3 probe: by its id as
+  twelve). `channel` puts a track on another of the twelve.
+  `control_channels: [10, 11]` lets the track's instrument hear those channels
+  as well, for one that takes control notes on a channel of its own, such as a
+  drum machine's mutes on channel 10, while it plays the track's notes on the
+  track's channel (see [Control notes](#control-notes)). `plugin` names a staged AUv3 probe: by its id as
   `list_song_plugins` gives it (the unit's type, subtype and manufacturer,
   such as `aumu-mono-_acme`), or by any name that fits only one plugin, its
   display name or a part of it. A name that fits several is an error that
@@ -235,6 +237,43 @@ is legato), `velocity` the velocity of a plain note (default 96), `transpose` a
 shift in semitones, and `bars` the length when the grid is shorter than the
 pattern should be. Without `bars` a grid must be whole bars. `swing` (on the
 song or a pattern) delays every second step by that fraction of a step.
+
+### Control notes
+
+Some instruments take notes on a channel of their own as commands: a drum
+machine that mutes a voice while a note on channel 10 is held, or randomises
+its kit on a note on channel 11. A track that lists those channels under
+`control_channels` can send them, and its instrument hears them beside the
+track's own notes:
+
+- `channel` on a pattern sends all its notes on that channel;
+- `channel` on a free event sends that event's notes on it, so a drum pattern
+  can play its lanes on the track's channel and hold a mute on channel 10 at
+  the same time:
+
+```yaml
+tracks:
+  - id: kit
+    kind: drums
+    control_channels: [10, 11]
+    instrument: {plugin: UA Battalion}
+patterns:
+  beat:
+    drums: {C2: "x...x...x...x...", C#2: "....x.......x..."}
+    events:
+      - {at: 2, dur: 2, note: D2, channel: 10}   # voice 3 muted for beats 3 and 4
+  shake: {channel: 11, step: 1/4, notes: "C0 . . ."}
+```
+
+A control note is sent as written: no transposition reaches it (the track's,
+the pattern's or a calibrated preset's), and it is a note, not a drum lane. The
+channel must be one of the playing track's `control_channels`, and a control
+channel belongs to its track alone: it is no track's own channel and no other
+track's control channel. The patterns of a play list follow one another, so
+notes that go with a track's own notes are events in the same pattern. A track
+that plays control notes only (a drum machine whose own sequencer plays) is
+skipped by the [load check](#loading), which plays each track's first note on
+its own channel and never a control note.
 
 ## Sound
 
@@ -397,6 +436,9 @@ problem with its place in the document:
 - references: tracks, patterns, scenes, sections and effects that do not exist;
 - patterns: notes that are not notes, lines of unequal length, bars of the
   wrong length;
+- channels: two tracks on one channel, a control channel that is a track's
+  channel or another track's control channel, a pattern that sends on a
+  channel the track playing it does not list;
 - plugins, against the staged AUv3 probes: an unknown plugin, preset or
   parameter (with the names that come close), a value outside a parameter's
   range;
@@ -417,16 +459,18 @@ Master    master sum > fader > master effects > ProbeAudioTap
 ```
 
 **MIDI.** One brain plays every track. Its output is routed to every instrument
-through a filter that passes only that track's channel, and to AUM's MIDI
-Control through a filter that passes only the control channels. A note therefore
-never fires a mapping, and a control message never reaches a synth. The
+through a filter that passes only that track's channel and its
+`control_channels` (an effect with `midi: true` hears the track's channel
+alone), and to AUM's MIDI Control through a filter that passes only the control
+channels. A note therefore never fires a mapping, and a control message never
+reaches a synth. The
 sequencer sits next to the brain and is routed the same way, to the same
 destinations through the same filters.
 
 | Channels | Carry |
 |----------|-------|
-| 1…N | the tracks' notes, one channel each |
-| N+1…14 | plugin bypasses and parameters, filled from 14 downwards |
+| 1…N | the tracks' notes, one channel each, and their control notes |
+| N+1…14 | plugin bypasses and parameters, filled from 14 downwards; N is the highest channel a track plays or hears on |
 | 15 | strip levels and mutes, the transport and the sequencer's bypass (the convention's CCs), preset loads (Program Changes) |
 | 16 | left to the rig: tap toggles and session switching |
 
@@ -548,8 +592,10 @@ daemon remembers it from the first `ipad_launch` with the full id.
 - every track answers a note. The daemon sets each track's own sound (its
   declaration, no scene) and mutes every strip. Then, one track at a time, it
   unmutes the strip, waits up to 3 s for the master tap to fall silent, plays
-  the lowest of the notes the track starts the song with (on a drum track the
-  kick rather than a hat) and measures the master tap. The note counts when
+  the lowest of the notes the track starts the song with on its own channel
+  (on a drum track the kick rather than a hat; a [control
+  note](#control-notes) is never played, and a track with no note on its own
+  channel is skipped) and measures the master tap. The note counts when
   it peaks above -60 dBFS and 6 dB over what was sounding just before it. It
   is held as long as the sound catalogue says the track's preset takes from
   the note to its level (its latency and attack), at least 250 ms and at most

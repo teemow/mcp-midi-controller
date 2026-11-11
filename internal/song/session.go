@@ -2,8 +2,9 @@ package song
 
 // This file authors a song's AUM session from its plan: the strips, the hosted
 // plugins, the MIDI matrix that lets one ProbeMidiBrain play every track on its
-// own channel, the MIDI-control mappings behind every control the song uses,
-// and, when asked for, the sequencer that holds the whole song (atom.go).
+// own channel (and its control channels), the MIDI-control mappings behind
+// every control the song uses, and, when asked for, the sequencer that holds
+// the whole song (atom.go).
 
 import (
 	"encoding/json"
@@ -192,9 +193,15 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			}
 			ch.Nodes = append(ch.Nodes, ns)
 			if n.MIDI {
+				// The instrument also hears the track's control channels; an
+				// effect that follows the notes hears the notes alone.
+				hears := []int{tp.Channel}
+				if n.Effect == "" {
+					hears = tp.Hears()
+				}
 				route.To = append(route.To, aum.MIDIEndpoint{
 					Channel: n.Strip, Slot: n.Slot,
-					Filter: &aum.MIDIFilter{Channels: []int{tp.Channel}},
+					Filter: &aum.MIDIFilter{Channels: hears},
 				})
 			}
 		}
@@ -336,9 +343,9 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 	}
 
 	if o.FullControl {
-		play := make([]int, len(p.Tracks))
-		for i, tp := range p.Tracks {
-			play[i] = tp.Channel
+		var play []int
+		for _, tp := range p.Tracks {
+			play = append(play, tp.Hears()...)
 		}
 		ir, err := sess.Instrument(aum.InstrumentOptions{
 			GlobalChannel:    GlobalChannel,

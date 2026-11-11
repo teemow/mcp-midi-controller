@@ -298,7 +298,11 @@ func describeSongLayout(b *strings.Builder, cs *compiledSong, seq *songSequencer
 		for i, n := range tp.Nodes {
 			names[i] = n.Name
 		}
-		fmt.Fprintf(b, "  strip %d: %s on MIDI channel %d: %s\n", tp.Strip+1, tp.Name, tp.Channel, strings.Join(names, " > "))
+		controls := ""
+		if len(tp.ControlChannels) > 0 {
+			controls = " (and control notes on " + joinInts(tp.ControlChannels, ", ") + ")"
+		}
+		fmt.Fprintf(b, "  strip %d: %s on MIDI channel %d%s: %s\n", tp.Strip+1, tp.Name, tp.Channel, controls, strings.Join(names, " > "))
 	}
 	fmt.Fprintf(b, "  strip %d: Master", cs.plan.MasterStrip+1)
 	for _, n := range cs.plan.Master {
