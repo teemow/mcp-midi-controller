@@ -159,7 +159,12 @@ How AUM shows state in its tree (AUM 1.4.8):
   closed by the icon at its top right. A panel opened from the main menu is
   pushed over it: for a moment the menu's header stays in the tree, hidden
   and slid above the screen, ahead of the new one, so the title is the
-  visible header at the panel's top edge. The Navigator has a navigation bar
+  visible header at the panel's top edge. A closed menu lingers the same
+  way: the first read after its close icon was tapped still has its page,
+  hidden and slid out past the right edge. Either leftover carries the
+  menu's `SESSION: …` line as well, so the menu counts as open, and the
+  session name as on screen, only while the menu itself is the panel at the
+  right edge. The Navigator has a navigation bar
   instead, and its top-right icon is the bookmark filter: it closes on a tap
   on the mixer, which AUM swallows. The Set level and Edit Value dialogs are
   alerts with a text field and Cancel / Set. Their field is filled without

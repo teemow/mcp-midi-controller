@@ -11,10 +11,11 @@ import (
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
 )
 
-// The testdata/aum-plugin-window*.json trees were captured from AUM 1.4.8 on
-// an iPad in landscape (1210×834) with a plugin window open on a strip with
-// a custom title, trimmed to the keys ParseSource reads, the plugin's own view
-// emptied and the names of private sessions replaced.
+// The testdata/aum-*.json trees were captured from AUM 1.4.8 on an iPad in
+// landscape (1210×834), trimmed to the keys ParseSource reads, with the names
+// of private sessions replaced. The aum-plugin-window*.json ones have a
+// plugin window open on a strip with a custom title, the plugin's own view
+// emptied.
 
 func capturedTree(t *testing.T, name string) json.RawMessage {
 	t.Helper()
@@ -99,6 +100,48 @@ func TestParseAUMCapturedPanelOverPluginWindow(t *testing.T) {
 	}
 	if st := parseCaptured(t, "aum-plugin-window-save.json"); st.Overlays[0].Fields[0] != "Eight Voices" {
 		t.Errorf("SAVE fields = %v", st.Overlays[0].Fields)
+	}
+}
+
+// The main menu's page stays in the tree after AUM has pushed another page
+// over it (SESSIONS, SAVE): its header and its "SESSION: …" line are then no
+// sign of an open menu, and the name is not on screen.
+func TestParseAUMCapturedMenuLeftover(t *testing.T) {
+	if st := parseCaptured(t, "aum-plugin-window-menu.json"); !st.MenuOpen || st.Session != "Eight Voices" {
+		t.Errorf("menu open: menu %v, session %q", st.MenuOpen, st.Session)
+	}
+	for _, file := range []string{
+		"aum-plugin-window-sessions.json",
+		"aum-plugin-window-save.json",
+		"aum-plugin-window-midi-control.json",
+		"aum-plugin-window.json",
+	} {
+		if st := parseCaptured(t, file); st.MenuOpen || st.Session != "" {
+			t.Errorf("%s: menu %v, session %q, want no open menu and no name", file, st.MenuOpen, st.Session)
+		}
+	}
+}
+
+// aum-menu-closing.json is the first read after the main menu's close icon
+// was tapped: the menu's page is still in the tree, hidden and slid out past
+// the right edge. The close reports the menu as closed, and so does the state
+// it returns.
+func TestAUMCloseMenuCaptured(t *testing.T) {
+	if st := parseCaptured(t, "aum-menu-closing.json"); st.MenuOpen || st.Session != "" || st.Panel() != "" || len(st.Channels) != 5 {
+		t.Fatalf("closing menu: menu %v, session %q, panel %q, %d strips", st.MenuOpen, st.Session, st.Panel(), len(st.Channels))
+	}
+	w := ipadtest.New(capturedTree(t, "aum-plugin-window-menu.json"))
+	w.SetScreens(capturedTree(t, "aum-plugin-window-menu.json"), capturedTree(t, "aum-menu-closing.json"))
+	t.Cleanup(w.Close)
+	res, err := New(w.URL).AUMPanel(context.Background(), AUMRequest{Action: "close"})
+	if err != nil || !res.Verified {
+		t.Fatalf("close: %+v, %v", res.Message, err)
+	}
+	if res.State.MenuOpen || res.State.Session != "" {
+		t.Fatalf("state after the close: menu %v, session %q", res.State.MenuOpen, res.State.Session)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != "tap 1190,30" {
+		t.Fatalf("gestures = %v", g)
 	}
 }
 
