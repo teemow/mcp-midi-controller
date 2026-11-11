@@ -43,7 +43,8 @@ tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, leve
   sequence (UA Battalion only, no preset beside it): the drum machine's own pattern per voice, written into its saved state and played with AUM's transport - {1..8: {steps: drum grid ("x" a step, "." none), length? (1..64 steps), vel|shift|pitch|ratch|env|pan|var|prob|sends|macro2: values 0..1 as a list or a grid line ("." neutral) or {values, length?, mode?: sync|free|trig|retrig}}}. sync lanes repeat with the steps; a free lane of another length, or a trig one, comes round in another place every time. pitch is round((v-0.5)*48) semitones, ratch 1+round(6v) hits a step, prob 0 never and 0.5 always. Scenes cannot change it (a lane's length and mode are params too); docs/songs.md has the rest.
 master: [effects on the master strip].
 patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), velocity? (96),
-  notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?, channel?}], channel?}}
+  notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?, channel?}], pedal?: [{at, dur (beats)}], channel?}}
+  pedal: the sustain pedal of the track's instrument, down from at for dur beats (Control Change 64 on the track's channel). It comes up with the section at the latest, a stretch that begins under another makes the pedal change there, and stopping the song lifts it.
   channel (on a pattern or an event): send those notes on one of the playing track's control_channels, as written (no transpose, no drum lanes). A drum pattern with events on channel 10 plays pads and mutes together.
   Melodic grid: steps separated by spaces - "A2" note (C4 = middle C), "[A3 C4 E4]" chord, "-" hold the previous step, "." rest; add "!" to accent or ":NN" for a velocity.
   Drum grid: one character per step - "x" hit, "X" accent, "o" soft, "." rest. Lanes: kick snare clap rim hat open_hat tom_low tom_mid tom_high crash ride cowbell tamb shaker (or the track's drum_map, or a note).
@@ -588,6 +589,8 @@ type songTrackRow struct {
 	Effects         []string `json:"effects"`
 	Notes           int      `json:"notes"`
 	ControlNotes    int      `json:"control_notes,omitempty"`
+	// Pedal counts how often the track's sustain pedal goes down.
+	Pedal int `json:"pedal,omitempty"`
 	// Sequence says the instrument's own step sequence is written into its
 	// saved state; NoBase that the rig has no state to write it over yet.
 	Sequence bool `json:"sequence,omitempty"`
@@ -614,6 +617,7 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		row := songTrackRow{
 			ID: tp.ID, Name: tp.Name, Channel: tp.Channel, ControlChannels: tp.ControlChannels,
 			Effects: []string{}, Notes: tl.Tracks[i].Notes, ControlNotes: tl.Tracks[i].ControlNotes,
+			Pedal: tl.Tracks[i].Pedal,
 		}
 		for j, n := range tp.Nodes {
 			if j == 0 {
@@ -629,6 +633,9 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		fmt.Fprintf(&b, "  (%d notes", row.Notes)
 		if len(row.ControlChannels) > 0 {
 			fmt.Fprintf(&b, "; %d control notes on ch%s", row.ControlNotes, joinInts(row.ControlChannels, ", ch"))
+		}
+		if row.Pedal > 0 {
+			fmt.Fprintf(&b, "; the pedal goes down %d time(s)", row.Pedal)
 		}
 		b.WriteString(")\n")
 		if n := tp.Nodes[0]; n.HasStepSequence() {

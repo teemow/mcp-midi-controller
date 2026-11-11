@@ -3,7 +3,8 @@ package song
 // This file writes a compiled song as a Standard MIDI File (format 1), so the
 // same notes can go into a sequencer or a DAW: a conductor track with the
 // tempo, the time signature and a marker per section, one track per song
-// track, and one track with the control messages.
+// track with its notes and its pedalling, and one track with the control
+// messages.
 
 import (
 	"bytes"
@@ -48,7 +49,7 @@ func (t *Timeline) SMF() []byte {
 		}
 	}
 	for _, e := range t.Events {
-		if e.Kind == Program || e.Kind == Control {
+		if (e.Kind == Program || e.Kind == Control) && !e.pedal() {
 			ctl.event(e)
 			controls++
 		}

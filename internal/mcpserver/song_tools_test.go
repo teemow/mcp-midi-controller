@@ -148,6 +148,14 @@ func TestSongToolsSaveGetList(t *testing.T) {
 		}
 	}
 
+	// A pattern's pedal is counted with the track that plays it.
+	pedalled := strings.Replace(toolSong, `chords: {step: 1/4, gate: 1, notes: "[A3 C4 E4] - - -"}`,
+		`chords: {step: 1/4, gate: 1, notes: "[A3 C4 E4] - - -", pedal: [{at: 0, dur: 1.9}, {at: 2, dur: 1.9}]}`, 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": pedalled, "dry_run": true}); res.IsError ||
+		!strings.Contains(resultText(res), "ch2  pad        PolySynth > TapeDelay  (3 notes; the pedal goes down 2 time(s))") {
+		t.Errorf("the summary of a pedalled song:\n%s", resultText(res))
+	}
+
 	res = call(t, s.handleListSongs, map[string]any{})
 	if res.IsError || !strings.Contains(resultText(res), `night_drive`) || !strings.Contains(resultText(res), "3 track(s)") {
 		t.Fatalf("list: %s", resultText(res))

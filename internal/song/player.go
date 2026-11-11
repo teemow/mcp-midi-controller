@@ -183,8 +183,9 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 		if e.Section < opts.From || e.Section > last {
 			continue
 		}
-		switch e.Kind {
-		case NoteOn, NoteOff:
+		switch {
+		case e.Kind == NoteOn, e.Kind == NoteOff, e.pedal():
+			// A track's pedal is played with its notes, or not at all.
 			if len(only) > 0 && !only[e.Track] {
 				continue
 			}
@@ -244,7 +245,8 @@ type SequencedOptions struct {
 // session, stopping whatever was playing: it sends opts.Rewind and then
 // opts.Start, follows the sequence q of tl by the clock, and sends opts.Stop
 // at the end. The notes and control changes are the sequencer's; nothing else
-// is sent.
+// is sent, but for the sustain pedal, which is lifted after the stop: a
+// sequencer stopped under a held pedal leaves it down.
 func (p *Player) StartSequenced(id string, tl *Timeline, q *Sequence, opts SequencedOptions, send Sender) (Status, error) {
 	if len(tl.Sections) == 0 {
 		return Status{}, fmt.Errorf("the song has no sections")
@@ -298,6 +300,9 @@ func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts Sequence
 		defer cancel()
 		for _, e := range opts.Stop {
 			_ = send(fctx, e)
+		}
+		for _, ch := range q.pedalChannels() {
+			_ = send(fctx, Event{Kind: Control, Channel: ch, Data1: SustainPedal})
 		}
 	}
 	for _, e := range opts.Rewind {
@@ -354,15 +359,19 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 
 	type voice struct{ channel, note int }
 	sounding := map[voice]bool{}
-	// release ends every note still sounding and sends After. It runs however
-	// the playback ends, cut short in the preroll too, so a transport rewound
-	// or a sequencer bypassed by Rewind is put back; it must not depend on the
-	// cancelled context.
+	pedalled := map[int]bool{} // the channels whose sustain pedal is down
+	// release ends every note still sounding, lifts every pedal still down and
+	// sends After. It runs however the playback ends, cut short in the preroll
+	// too, so a transport rewound or a sequencer bypassed by Rewind is put
+	// back; it must not depend on the cancelled context.
 	release := func() {
 		fctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 		defer cancel()
 		for v := range sounding {
 			_ = send(fctx, Event{Kind: NoteOff, Channel: v.channel, Data1: v.note})
+		}
+		for ch := range pedalled {
+			_ = send(fctx, Event{Kind: Control, Channel: ch, Data1: SustainPedal})
 		}
 		for _, e := range opts.After {
 			_ = send(fctx, e)
@@ -432,11 +441,15 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 			return err.Error()
 		}
 		v := voice{e.Channel, e.Data1}
-		switch e.Kind {
-		case NoteOn:
+		switch {
+		case e.Kind == NoteOn:
 			sounding[v] = true
-		case NoteOff:
+		case e.Kind == NoteOff:
 			delete(sounding, v)
+		case e.pedal() && e.Data2 > 0:
+			pedalled[e.Channel] = true
+		case e.pedal():
+			delete(pedalled, e.Channel)
 		}
 	}
 	// Let the last bar run out before reporting the song finished.
