@@ -67,6 +67,17 @@ the end of every one. Each had taken the song before it for its model. So:
 - **Movement.** [Automation](#sound) ramps any parameter over a section: a
   filter that opens into a chorus, a delay that grows into a break. A scene
   changes presets, bypasses and levels from one section to the next.
+- **Variation.** A part that repeats need not sound the same twice. Some
+  plugins vary themselves, and a song switches that on and moves it like any
+  parameter: a drum machine that gives every hit its own level, length and
+  tone, thins out, doubles and re-arranges its own pattern from bar to bar,
+  and loosens its timing. A loop of four bars then differs in every bar
+  while the song holds it for sixteen, and a section that returns can return
+  with more or less of it. Such a plugin does not always vary the notes the
+  song plays as it varies its own hits; the notation varies those
+  (velocities, pattern lists, free events). What one drum machine offers,
+  and what of it a song reaches, is in
+  [research/battalion.md](research/battalion.md#variation).
 - **Ending.** End the song: a last chord or hit that rings out, a stop
   together on a beat, a last line left to one instrument. A fade-out is the
   exception.
@@ -164,7 +175,9 @@ arrangement: [verse, chorus, verse, chorus]
 
 - **tracks** — each is one mixer strip: an instrument followed by its effect
   chain, on its own MIDI channel (the first track on channel 1, in order; up to
-  twelve). `plugin` names a staged AUv3 probe: by its id as
+  twelve). `channel` puts a track on another of the twelve, for an instrument
+  that hears control notes on a channel of its own, such as a drum machine's
+  mutes on channel 10. `plugin` names a staged AUv3 probe: by its id as
   `list_song_plugins` gives it (the unit's type, subtype and manufacturer,
   such as `aumu-mono-_acme`), or by any name that fits only one plugin, its
   display name or a part of it. A name that fits several is an error that
@@ -1018,6 +1031,11 @@ tools of a daemon that has the mode:
   song had read -20 dB) and the fade-in after it; and after a verse played
   live with the transport, AUM's transport stood at the top.
 
+**Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
+(108 BPM), each a little over a minute, were played from the session's
+sequencer from the first bar to the last with their bars in place: the hats of
+the 6/8 song sat on its eighth-note grid in its first bar and in its 35th.
+
 Not yet measured:
 
 - the check's note held for the catalogue's attack, its 1.5 s second try and
@@ -1032,8 +1050,7 @@ Not yet measured:
 - a sequenced song on a host that dozes;
 - an edit made in the sequencer's window, and a session saved from AUM with
   the sequencer in it;
-- a meter other than 4/4 and a song much longer than two minutes in the
-  sequencer;
+- a song much longer than two minutes in the sequencer;
 - `transport: true` through a whole live song with the daemon's own bypass of
   the sequencer (one section was; the whole-song take sent the bypass by
   hand);

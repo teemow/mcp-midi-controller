@@ -16,10 +16,12 @@ measured.
 - The maker's release notes for 1.1 to 1.2: <https://www.unfilteredaudio.com/pages/beta>.
 - Product pages: <https://www.unfilteredaudio.com/products/battalion>,
   <https://www.plugin-alliance.com/products/battalion>.
-- The plugin's parameter tree as the probe dumps it, and what a device showed
-  (marked *measured*).
+- The plugin's parameter tree as the probe dumps it, its saved state as AUM
+  keeps it in a session file, and what a device showed (marked *measured*).
 
-What comes from a forum post by one of the two developers is marked *dev*.
+What comes from a forum post by one of the two developers is marked *dev*
+(the plugin's thread on the Elektronauts forum,
+<https://www.elektronauts.com/t/unfiltered-audio-battalion-soft-drum-synth/211853>).
 
 ## MIDI
 
@@ -43,7 +45,9 @@ The bundled device type `battalion` is this table: a note control for every
 entry (`voice_1`, `play_voice_3`, `sequencer_stop`, `mute_2`, `preset_next` …),
 each on its own channel. Bound to the endpoint that reaches the plugin, it
 works wherever the session routes those channels to the instrument. A song's
-session routes one channel to each instrument, the track's.
+session routes one channel to each instrument, the track's: a Battalion on a
+track with `channel: 10` or `channel: 11` hears that channel's notes and no
+pads, so its drums are its generators (see [Variation](#variation)).
 
 *Measured:* on channel 1 the eight pads repeat in every octave (24-31, 36-43,
 48-55, 60-67 …), each octave the same sound, and G# to B are silent. A scan
@@ -59,10 +63,12 @@ the same eight pads again.
 - **No CC map.** A parameter moves when the host maps it; see
   [Parameters](#parameters).
 - Since 1.2.0 a note from outside takes the values of the sequencer step that
-  is active when it arrives: the PITCH lane transposes it, the VEL lane scales
-  it, the PROB lane can drop it, a ratchet repeats it. A global option of the
-  plugin ("MIDI Triggers Ignore Sequencer Data", *dev*) turns that off. A
-  preset whose lanes are neutral leaves notes alone.
+  is active when it arrives, also while the transport stands (*dev*): the
+  PITCH lane transposes it, the VEL lane scales it (down to nothing below the
+  middle, up to 20 % louder above it, *dev*), the PROB lane can drop it, a
+  ratchet repeats it. A global option of the plugin turns that off (*dev*). A
+  preset whose lanes are neutral leaves notes alone; the Performance page's
+  probability and ratchet still reach them (see [Variation](#variation)).
 
 ## A voice
 
@@ -112,6 +118,24 @@ through its parameter and its knobs read off the window).
 STEREO makes an engine produce a stereo signal, each in its own way, at more
 CPU.
 
+*Measured:* PITCH moves in whole semitones, 24 either way: semitones =
+round((v - 0.5) x 48), so v = 0.5 + st/48 reaches each semitone through a
+CC, and a kit can be tuned to a key. With their other knobs at the default
+patch's values, these engines hold a pitch to write for (note 60 on the
+voice's chromatic channel):
+
+| Note 60 sounds | Engines | `transpose` |
+|----------------|---------|-------------|
+| C3 | Additive, VOSIM, LPG, Haywire, Builder; Kombucha at high feedback | 12 |
+| C5 | Modal, Reson, Scrapyard | -12 |
+| C2 | Pillow, Zap, Radiator; Tripwire 23 cents sharp | 24 |
+| C1 | Kick, with its pitch envelope nearly off (held notes read sharp otherwise: +10 cents with pitch decay 0.1 and depth 0.15) | 36 |
+
+Entangled sounds 40 cents sharp, Shame 20 and FM 59 at their defaults.
+SumSyn, Terraining, Combinatoric, Chaos, Cowbell, Hat and Clap give no note to
+write for. Modal does not answer velocity evenly (a note at 90 rang shorter
+than at 50 and at 127); Additive does.
+
 ### Sampler
 
 START and END markers (END before START plays backwards), PITCH, and four
@@ -142,11 +166,26 @@ none loaded.
   Tilt is a third envelope.
 - Eight modulation sources per voice (LFO 1 and 2, Envelope 1 and 2, Random,
   Velocity, Macro 1 and 2), each with a bipolar depth to every sound
-  parameter of the voice. Those depths are parameters too: 296 a voice.
+  parameter of the voice. Those depths are parameters too: 296 a voice. Random
+  draws a new value from 0 to 1 on every hit; Velocity is the hit's velocity
+  from 0 to 1 (p. 14).
 - MACRO 1 and 2 are knobs that do nothing but modulate, so one of them moves
   everything it is mapped to.
 - VARIATION adds a little randomness to nearly every control of the voice on
-  each hit.
+  each hit (p. 19). A control locked in the window is left out.
+
+*Measured:*
+
+- A depth d adds (2d - 1) x the source to the target's value (0 to 1). An LFO
+  runs from 0 to 1, or from -1 to 1 with BIPOLAR on. So a depth above 0.5
+  only adds what Random or Velocity bring, one under 0.5 only takes away. For
+  pitch the full depth is 48 semitones: Random at 0.52 gives 0 to 2
+  semitones, at 0.56 0 to 6.
+- LFO speed, tempo-synced, as a period in beats: 0.3 is 2.67, 0.4 is 1.5, 0.5
+  is 1, 0.6 is 0.75, 0.75 is 0.375, 1.0 is 0.125; 0.18 and less is ten beats
+  or more. Free: 0.18 is 0.5 Hz, 0.3 is 3.5 Hz, 0.4 is 11 Hz.
+- An LFO in sample and hold that is tempo-synced gives hits on a regular grid
+  nearly the same value each time; free, every hit gets another.
 
 ### Tone and mixer
 
@@ -162,6 +201,27 @@ none loaded.
 - **Output bus**: the main pair or one of eight more. Only the main pair runs
   through the master section.
 
+*Measured:*
+
+- **Trigger and Choke entries.** A number is that voice. "1-4", "5-8", "Odd"
+  and "Even" are those voices, all at once. "Last" is the voice that was
+  played last before this one: hit after voices 6, 8 and 2 in turn, voice 1
+  fired 6, 8 and 2. "Random" behaves as if its random value moved on
+  only while the sequencer runs. With the transport stopped it is the
+  same voice on every hit (voice 2 on 50 of 50 hits in one session, voice 5
+  in another); with it running it is another voice on nearly every hit,
+  for the generator's hits and for notes from outside alike (25 hits fired
+  voices 2 to 7 in no order). A song played from its session's sequencer runs
+  the transport. Chains run on (1 fires 2 fires 3 fires 4 from one hit); a
+  loop does not run away, each voice fires once. Choke "Delay" and "Reverb"
+  cut that effect's tail to silence.
+- **A voice's Out Gain** is cubic: dB = 60 x log10(v / 0.68), so 0.8 is +4 dB
+  and 0.5 is -8 dB. Velocity 40 against 127 is only 3.5 dB at the default
+  velocity depth.
+- **The filter**, Scream LP on noise: cutoff 1.0 leaves its spectral centroid
+  at 8.4 kHz, 0.8 at 5.4, 0.6 at 2.6, 0.4 at 0.8 kHz; 0.2 leaves next to
+  nothing.
+
 ## The sequencer
 
 Each voice has a sequencer (pp. 34-44): steps drawn by hand, and a generator
@@ -176,7 +236,7 @@ bank.
 | INVERT | swaps hits and rests |
 | DENSITY | a chance for the whole voice: below the middle every hit fires less often, above it empty steps start to fire |
 | SWING, SHIFT, SHAPE | every second step later or earlier; the whole voice ahead of or behind the beat; time bent across each group of STEPS steps |
-| SPEED, MULT | the length of a step (1/16 by default) |
+| SPEED, MULT | the length of a step (1/16 by default; SEQ TEMPO UNIT also has 1/5, 1/6, 1/7, 1/9 to 1/15) |
 | LENGTH, SNAP | the length of the drawn sequence, 1 to 64 steps. With SNAP off the generator's STEPS and the LENGTH run against each other |
 | RESET | restart both after a number of steps |
 | HUMANIZE | for all voices: small timing offsets that hang together |
@@ -185,12 +245,30 @@ Under the steps are ten lanes with a value per step: VEL, SHIFT, PITCH, RATCH
 (retriggers within the step), ENV (envelope length), PAN, VAR, PROB, SENDS
 (up for delay, down for reverb) and MACRO 2. A lane has a length of its own
 and follows the steps (SYNC), runs free (FREE), or advances only when a hit
-fires (TRIG, RETRIG).
+fires (TRIG, RETRIG: the latter also restarts with the steps). PROB in the
+middle is a sure hit, lower is less likely, higher adds a chance of a double
+hit (p. 37). A lane of another length than the steps, or one that advances
+only on hits, gives a pattern that comes round in another place every time:
+the maker's advice for patterns that evolve (*dev*).
+
+The lengths and modes of the lanes are parameters (`seqChan<N>probSeqLength`,
+`seqChan<N>probSeqMode` …); the values of the lanes and the steps drawn by
+hand are not. They are in the plugin's saved state, which AUM keeps in the
+session file: JUCE's binary XML (the header `VC2!`, a length, the XML text),
+whose `sequences` element holds for each voice 64 values of each lane as a
+comma-separated list (`fills0` are voice 1's steps, 0 or 1; `velocities0`,
+`shift0`, `pitches0`, `ratchets0`, `lengths0`, `pans0`, `variations0`,
+`probabilities0`, `sends0`, `mod0`). Neutral is 0.5, and 0 for steps and
+ratchets. The same state holds every parameter as `<PARAM id=… value=…>` in
+the units the window shows, the sample paths, and the transport state.
 
 **Transport.** The sequencer follows the host's tempo, and by default its
 transport: it plays while the host plays. Its Stop button makes it ignore the
 host until Play is pressed again; channel 10 note 2 does the same. There is no
 parameter for that state.
+
+*Measured:* a generator's step is that fraction of a whole note: 5 steps of
+1/5, 7 of 1/7, 9 of 1/9 and 11 of 1/11 each turn once in a 4/4 bar.
 
 ## The Performance page
 
@@ -200,7 +278,18 @@ variation, the macros, and of the sequencers density, steps, fill, pattern,
 probability and ratchet (pp. 29-33). MOD AMP scales every modulation depth.
 Each voice can be left out (ENABLE) or turned the other way (FLIP). GLOBAL
 DEPTH scales the whole page from -100 % to 100 %, and ENABLED switches it off.
-It is the plugin's surface for changing a whole kit at once.
+It is the plugin's surface for changing a whole kit at once. RANDOMIZE sets
+every knob of the page to a random value as deep as RANDOMIZE DEPTH allows,
+RESET puts them all back to neutral, and COMMIT writes what they do into the
+voices' own knobs and resets them (pp. 31-33); channel 11 notes 12, 13 and 14
+press the three.
+
+*Measured:* the page adds (2k - 1) x (2D - 1) to that knob of every enabled
+voice, k being the page's knob and D its DEPTH: a decay offset of +0.3 took a
+225 ms voice to 860 ms at +100 %, 485 ms at +50 %, 55 ms at -50 % and a click
+at -100 %. Its pitch offset moves in semitones too (0.625 is an octave). MOD
+AMP (`modulationDepth`) scales every modulation depth by 2v: 0 is none, 0.5
+as set. Its probability and ratchet: see [Variation](#variation).
 
 ## Effects and master
 
@@ -212,6 +301,24 @@ It is the plugin's surface for changing a whole kit at once.
   decay, a tilt filter before and after, a sample rate.
 - **Master**, on the main pair only: MAXIMIZE, a three-band EQ, the output
   gain, then a clipper (none, hard, soft, wavefold; soft by default).
+
+*Measured:*
+
+- **Delay time**, synced, in beats: 0.125 is 1/12, 0.25 is 1/6, 0.375 is 1/4,
+  0.5 is 3/8, 0.625 is 3/4, 0.75 is 4/3, 0.875 is 8/3. Free: about 2 s x v.
+- **Feedback** is a gain per echo: 0.5 is -6 dB, 0.8 -2 dB, 0.95 -0.5 dB, and
+  1.0 holds without running away.
+- **The delay's sample rate** is its clock: 0.5 doubles the echo time (and
+  what is in the delay drops an octave), 0.2 makes it five times as long.
+- **GLITCH** at 0.5 scattered a single hit's echoes 30 to 175 ms apart and
+  20 dB quieter. DUCKING showed nothing on a single hit.
+- **The reverb's modes**, time to -20 and -40 dB at decay 0.5: Dark 1.4 and
+  3.7 s, Glitter 1.6 and 3.9, Bokeh 1.9 and 4.3, Flare 1.6 and 4.0, Flutter
+  1.7 and 4.2, Hollow 1.6 and 3.9. Rusty, SATREV, Crayon and Austere start
+  more than 20 dB under the hit: thin. Dark at decay 0.27 is at -40 dB after
+  2.1 s, at 0.7 after 5.1 s.
+- **The first hit** that reaches the reverb after the plugin has loaded gets
+  no reverb; every later one does.
 
 ## Presets
 
@@ -282,9 +389,14 @@ Levels and pitches are read at the session's audio tap.
   parameters were mapped in one session. Each of the 25 engines was reached
   through the engine selector's CC: AUM rounds to the nearest index.
 - **The middle of a knob.** A CC has no value for exactly 0.5: 64 is 50.4 %,
-  63 is 49.6 %. On a knob that does nothing in the middle that is a small
-  offset. For Density it matters: just above the middle every empty step
-  fires once in a while. Write 0.496.
+  63 is 49.6 %. A parameter a song declares at 0.5 therefore goes out as
+  50.4 %. On a knob that does nothing in the middle that is a small offset,
+  but not everywhere: Density just above the middle lets every empty step fire
+  once in a while; a pitch modulation depth there is +0.8 % of 48 semitones,
+  and four of them detuned a voice by one to two semitones; Mult ran its
+  generator 2 % fast; the Performance page's probability at 49.6 % dropped 3
+  of 128 steps of a voice. Declare no bipolar knob at its middle unless the
+  song moves it, and write 0.496 where it must sit near it.
 - **The lead-in.** A song played from its session's sequencer starts with a
   bar of lead-in, in which the opening section's values are sent. The
   plugin's sequencer is already running then and plays them. A song whose
@@ -312,8 +424,116 @@ parameter's value, 0 to 1):
 | SEQ LENGTH | 1 to 64, one per index |
 
 Elsewhere: an envelope time is v² times the longest (5 s; 20 s for Envelope
-2's hold), a voice's and the master's gain are 0 dB at 0.68, and a send is
-off at 0.
+2's hold), a voice's and the master's gain are 0 dB at 0.68, a send is off at
+0, and a voice's Synth Pitch is round((v - 0.5) x 48) semitones.
+
+## Variation
+
+A Battalion pattern need not play the same bar twice, and a hit need not
+sound like the one before it. The plugin varies at three levels: each hit's
+sound, each bar's pattern, and the kit as a whole. What it offers, and how a
+song reaches it:
+
+| Means | Varies | A song reaches it by |
+|-------|--------|----------------------|
+| VARIATION of a voice | every hit: nearly every knob of the voice | `drum<N>variation` |
+| VARIATION of the Performance page | every enabled voice's VARIATION | `performvariation` |
+| the Random source | every hit: any of 37 targets of the voice | a depth, `drum<N><target>random` |
+| an LFO in sample and hold, or smooth random | every hit, or slowly over bars | `drum<N>lfo1resetMode`, `drum<N>lfo1shapeMode`, a depth `drum<N><target>lfo1` |
+| the Velocity source | every hit, by its velocity | the song's velocities, a depth `drum<N><target>velocity` |
+| MiniGlitch, MegaGlitch | every hit: a small delay in the voice whose time wanders | `drum<N>distortMode`, `drum<N>distort` |
+| the delay's GLITCH | the echoes | `sendAGlitch` |
+| DENSITY | which of the generator's hits fire; ghost hits on empty steps | `seqChan<N>density`, `performdensity` |
+| the PROB lane | each step's chance; double hits | not the lane; `performprobability` offsets every step of every enabled voice |
+| the RATCH lane | retriggers within a step | not the lane; `performratchet` |
+| the VEL, SHIFT, PITCH, ENV, PAN, VAR, SENDS and MACRO 2 lanes | per step | no: their values are in the saved state |
+| a lane's length and mode (SYNC, FREE, TRIG, RETRIG) | where the lane's values fall against the steps | parameters (`seqChan<N>velSeqLength`, `seqChan<N>velSeqMode` …), with nothing to move while the lanes are neutral |
+| PATTERN, ROTATE, INVERT, FILL, STEPS | the generator's arrangement | `seqChan<N>pattern`, `seqChan<N>euclidRotate` …; `performpattern`, `performfill`, `performsteps` |
+| step counts and step units against each other; SNAP off | a polymeter: a bar comes back only after several | `seqChan<N>euclidSteps`, `seqChan<N>seqTempoUnit`, `seqChan<N>lockLength` |
+| SWING, SHIFT, SHAPE | a voice's timing | `seqChan<N>swing`, `seqChan<N>shift`, `seqChan<N>shape` |
+| HUMANIZE | every voice's timing | `humanize` |
+| Trigger and Choke "Random", "Last" | which voice answers a hit | `drum<N>trigger`, `drum<N>choke` |
+| randomise, reset, commit the Performance page | the whole kit's offsets at once | channel 11 notes 12, 13, 14: only to a Battalion on a track with `channel: 11` |
+| randomise a voice | one voice's whole sound | channel 11 notes 24-31: likewise |
+| mute, solo, choke | drop-outs and breaks | channel 10 notes: only to a Battalion on a track with `channel: 10` |
+| the song's own notation | velocities, pattern lists that end differently, free events, ramps, scenes | the document |
+
+Generator hits and notes from outside do not take all of it alike: DENSITY
+and the Performance page's probability are made for the generator's hits.
+
+### What a device showed
+
+Battalion 1.2.0 in AUM, default patch and no preset, 120 BPM (a sixteenth is
+125 ms); every parameter moved by its CC, the tap's capture analysed. The
+spreads are over 16 hits, the patterns over 16 bars unless said.
+
+- **VARIATION** gives every hit its own level, length and tone, and leaves the
+  Pitch knob alone: a Modal voice stayed exactly on C5 at 0, 0.1, 0.25 and
+  0.5. Kick engine: length 75-80 ms at 0, 60-95 at 0.1, 60-105 at 0.5, 45-120
+  at 1.0; level spread (sd) 0.03, 0.2, 1.0 and 2.2 dB; its pitch sweep (an
+  engine knob) moved about a semitone (sd) at 0.1. Modal: 125-140 ms at 0,
+  120-150 at 0.1, 105-165 at 0.5. Generator hits vary the same as notes (Modal
+  at 0.5: 105-175 ms over 33 hits).
+- **The Performance page's VARIATION** adds (2v - 1) to every enabled voice's:
+  at 0.75 the Modal varied as at a VARIATION of 0.5 (85-145 ms, levels over
+  6.5 dB), at 1.0 as at 1.0 (70-190 ms, 12 dB).
+- **The Random source**, on a cowbell: pan 0.35 with a depth of 0.65 put each
+  hit between -2.9 and +2.5 dB right-minus-left (-3.9 dB without); a decay
+  depth of 0.6 made the hits 95-335 ms long (85-100 without); a gain depth of
+  0.4 took 0 to 5 dB off each hit; a cutoff depth of 0.3 (cutoff 1.0) moved
+  the spectral centroid between 3.3 and 8.8 kHz (9.0-9.4 without).
+- **MegaGlitch** at 0.5 spread a snare's length from 95-100 ms to 70-125 ms and
+  gave most hits a stray echo 35-115 ms after; at 0.8, 20-210 ms and tails
+  17 dB louder. MiniGlitch at 0.2 to 0.5 changed the length (50-105 ms) and
+  echoed rarely.
+- **DENSITY** under the middle lets each of the generator's hits fire with a
+  chance of about 2v, above it each empty step with a chance of 2v - 1: with
+  four hits a bar, 0.3 kept 58 % of them and 11 of 16 bars differed, 0.4 kept
+  89 % (5 of 16 differed); 0.6 filled 21 % of the empty steps and 0.7 43 %,
+  16 and 15 of 16 bars different. On notes from outside it does nothing: 36
+  of 36 sounded at 0.3, 0.4 and 0.6.
+- **The Performance page's probability** under the middle lets every step of
+  the generator fire with a chance of 4v - 1: a hat on all sixteen steps kept
+  77 % of 256 at 0.45, 66 % at 0.4, 36 % at 0.35, 20 % at 0.3 and nothing at
+  0.25; every bar of 16 differed. Above the middle it doubles steps at random:
+  47 % at 0.6, every step from 0.75. On notes from outside it is a switch, not
+  a chance: at 0.48 all 36 notes sounded, at 0.46 and less none, with the
+  transport running or not; at 0.55 every note was doubled.
+- **The Performance page's ratchet** is a fixed roll, no chance: 2 hits a step
+  at 0.6, 4 at 0.75, faster at 1.0, on the generator's steps and on notes from
+  outside (36 notes, 144 hits at 0.75), with the transport running or not.
+  ENABLE off kept a voice out of all of it.
+- **HUMANIZE** moved each step evenly within about ±25 ms x v (at 120 BPM: a
+  fifth of a sixteenth at 1.0): ±2.5 ms at 0.1, ±6 at 0.25, ±12.5 at 0.5.
+- **PATTERN**: every value is another arrangement of the same hits, the first
+  kept on the downbeat. Five hits in 16 steps gave 21 different bars for the
+  values 0, 0.05 … 1.0, and 13 different bars for CC 0 to 12: each CC step is
+  a new arrangement. A change takes effect at once, also in the middle of a
+  bar.
+- **Trigger "Random"** draws another voice on each hit only while the
+  transport runs; see [Tone and mixer](#tone-and-mixer).
+- **Channel 10**, to a Battalion on a track's own channel 10, its generators
+  playing: note 38 held for 2 s muted voice 3 for those 2 s and no longer; note
+  48 held soloed voice 1; note 14 toggled voice 3's mute.
+- **Channel 11**, likewise: each note 12 gave the kit another state (at the
+  default RANDOMIZE DEPTH of 0.1 the hat on sixteenths dropped to one hit and
+  then none a second, the kick's hits grew 3 to 5 times longer; at 0.5 the hat
+  turned into 6 ms clicks, then silence), and note 13 put every value back
+  exactly. Note 26 gave voice 3 a new sound and a new rhythm on every press
+  (onsets a second 12, then 3, 10, 8; 7 dB louder), with no way back but the
+  parameters the song declares.
+
+### What a song does not reach
+
+- **The lanes and the hand-drawn steps.** Their values are not parameters.
+  They are plain XML in the saved state the session file carries (see [The
+  sequencer](#the-sequencer)), so a session author could write them: a VEL
+  lane of 12 steps against a pattern of 16, a PROB lane in TRIG mode. Whether
+  the plugin takes an authored state is not tried.
+- **Channels 10 and 11 to a kit that also plays pads.** A song's session
+  routes each channel to one track. The control notes reach a Battalion only
+  when the track it is on has that channel, and that Battalion then hears no
+  pad notes.
 
 ## In a song
 
@@ -417,11 +637,74 @@ preset.
       plugin: UA Battalion
       preset: "…a factory groove…"
       params: {performBypass: "On", performanceDepth: 1.0,
-               performdensity: 0.496, performcutoff: 0.5, performdecay: 0.5, performratchet: 0.5}
+               performdensity: 0.496, performcutoff: 0.496, performdecay: 0.496, performratchet: 0.496}
 …
     automation:
       - {track: drums, param: performdensity, from: 0.0, to: 0.496, bars: 6}
-      - {track: drums, param: performratchet, from: 0.5, to: 0.85, bar: 3, bars: 2}
+      - {track: drums, param: performratchet, from: 0.496, to: 0.85, bar: 3, bars: 2}
+```
+
+**A groove that differs in every bar.** The generators play; the kick and the
+snare stay as written, and everything else varies: the Performance page
+drops a share of the other voices' steps at random, a second hat comes in
+only as ghost hits, VARIATION gives each hit its own sound and HUMANIZE its
+own place. A scene re-arranges a voice's hits for another section.
+
+```yaml
+    instrument:
+      plugin: UA Battalion
+      params:
+        seqChan1euclidFill: 0.25          # kick: four to the bar
+        seqChan2euclidFill: 0.125         # snare: two hits ...
+        seqChan2euclidRotate: 0.625       # ... moved onto 2 and 4
+        drum3env1decay: 0.09
+        seqChan3euclidFill: 0.5           # hat: eighths ...
+        drum3variation: 0.15              # ... no two alike
+        drum4mode: Hat
+        drum4env1decay: 0.09
+        seqChan4euclidFill: 0.0
+        seqChan4density: 0.62             # a second hat, ghost hits only: about a quarter of the steps
+        seqChan5euclidFill: 0.1875        # three hits of the Modal voice ...
+        seqChan5pattern: 0.0
+        drum5variation: 0.25
+        performBypass: "On"
+        performEnable1: "Off"             # kick and snare out of the Performance page
+        performEnable2: "Off"
+        performprobability: 0.45          # every other voice: 77 % of its steps
+        humanize: 0.15                    # within about ±4 ms at 120 BPM
+scenes:
+  b:
+    drums: {params: {seqChan5pattern: 0.3}}   # ... another arrangement of them
+```
+
+**Every hit its own, on a played part.** DENSITY and the page's probability
+leave notes from outside alone or drop all of them, so a part the song plays
+varies through the per-hit sources: VARIATION, the Random source with its
+range set by the knob under it, the velocity the song writes, a glitch.
+
+```yaml
+      params:
+        drum2variation: 0.15              # level, length, tone; the pitch stays
+        drum3pan: 0.35
+        drum3panrandom: 0.65              # each hat between 0.35 and 0.65
+        drum3env1decayvelocity: 0.59      # accents ring longer
+        drum2distortMode: MegaGlitch
+        drum2distort: 0.3                 # now and then a stray echo
+```
+
+**Drop-outs from channel 10.** A Battalion on a track of its own channel 10
+plays its generators, and the song's notes on that track mute or solo its
+voices for as long as they are held (C2 to G2 mute voices 1 to 8, C3 to G3
+solo them, while held).
+
+```yaml
+  - id: groove
+    channel: 10
+    instrument:
+      plugin: UA Battalion
+      params: {seqChan1euclidFill: 0.25, seqChan3euclidFill: 1.0}
+patterns:
+  drop_hat: {step: 1/4, notes: ". . D2 - | . . . ."}    # no hat on beats 3 and 4 of every other bar
 ```
 
 A parameter a song declares is sent again after every preset load, so it
@@ -429,10 +712,14 @@ holds over a preset's own value: declare only what the song means to set.
 
 ## Not known
 
-- Whether "MIDI Triggers Ignore Sequencer Data" is on by default, and which
-  step's lane values a note takes while the transport stands still.
-- The meaning of the Trigger and Choke entries 1-4, 5-8, Odd, Even, Last and
-  Random.
-- The range of the Pitch knobs in semitones.
+- Which step's lane values a note takes while the transport stands still
+  (the Performance page's probability and ratchet reached notes then too, so
+  the option that makes notes ignore the sequencer is off by default).
+- Why the page's probability is a switch for notes from outside (between
+  0.46 and 0.48) and a chance for the generator's hits.
+- Whether HUMANIZE moves the voices together, as the manual says.
+- Choke "Random" with the transport running; Trigger "Random" on voice 8.
+- What lane lengths and the TRIG and RETRIG modes do, and whether the plugin
+  takes lane values written into its saved state.
 - The other voices' chromatic channels (4 to 9) and the rest of channels 10
   and 11 were not tried one by one.
