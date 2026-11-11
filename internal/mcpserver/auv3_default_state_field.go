@@ -4,13 +4,16 @@ package mcpserver
 // text entry. capture/get classify a fullState leaf into editable `text` (JSON
 // or a JUCE-style XML body, optionally behind a base64 binary `prefix`);
 // set_auv3_default_state_field edits one path inside that body and leaves
-// everything else — sibling fields and the binary prefix — untouched. JSON edits
+// everything else — sibling fields and the binary prefix — untouched, but for
+// the length word of JUCE's header, which follows the edited text. JSON edits
 // go through tidwall/sjson (it rewrites only the addressed path, preserving key
-// order and formatting); XML edits go through beevik/etree. Opaque base64 leaves
-// have no addressable structure and are rejected.
+// order and formatting); XML edits go through beevik/etree. A base64 leaf that
+// is JUCE binary XML is edited as XML; other base64 leaves have no addressable
+// structure and are rejected.
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -22,6 +25,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
+	"github.com/teemow/mcp-midi-controller/internal/juce"
 	"github.com/teemow/midi-device/device"
 )
 
@@ -91,11 +95,27 @@ func (s *Server) handleSetAUv3DefaultStateField(_ context.Context, req *mcp.Call
 
 // editStateEntryField applies a single set-or-delete at path inside a structured
 // text entry, returning the updated entry, the detected format ("json"/"xml"),
-// or an error. The binary prefix (if any) is preserved verbatim; only the text
-// body is rewritten. Opaque (base64) and unstructured text entries are rejected.
+// or an error. Only the text body is rewritten. A binary prefix is preserved
+// verbatim, except JUCE's header, whose length word follows the edited text.
+// A base64 entry that is JUCE binary XML (as a captured state ending in its
+// NUL is classified) is edited as XML and kept as base64; other base64 and
+// unstructured text entries are rejected.
 func editStateEntryField(e device.StateEntry, path string, value json.RawMessage, del bool) (device.StateEntry, string, error) {
 	if e.Base64 != "" {
-		return e, "", fmt.Errorf("entry is opaque base64 (no addressable structure); recapture or replace it with set_auv3_default_state")
+		raw, err := base64.StdEncoding.DecodeString(e.Base64)
+		if err != nil || !juce.IsBinaryXML(raw) {
+			return e, "", fmt.Errorf("entry is opaque base64 (no addressable structure); recapture or replace it with set_auv3_default_state")
+		}
+		text, err := juce.DecodeBinaryXML(raw)
+		if err != nil {
+			return e, "", err
+		}
+		out, err := editXMLField(text, path, value, del)
+		if err != nil {
+			return e, "xml", err
+		}
+		e.Base64 = base64.StdEncoding.EncodeToString(juce.EncodeBinaryXML(out))
+		return e, "xml", nil
 	}
 	body := e.Text
 	if strings.TrimSpace(body) == "" {
@@ -119,6 +139,11 @@ func editStateEntryField(e device.StateEntry, path string, value json.RawMessage
 			return e, "xml", err
 		}
 		e.Text = out
+		// JUCE's header holds the length of the text after it, and a plugin
+		// reads no more than that.
+		if prefix, perr := base64.StdEncoding.DecodeString(e.Prefix); perr == nil && juce.IsHeader(prefix) {
+			e.Prefix = base64.StdEncoding.EncodeToString(juce.Header(len(strings.TrimRight(out, "\x00"))))
+		}
 		return e, "xml", nil
 	}
 }

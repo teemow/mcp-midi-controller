@@ -22,8 +22,10 @@ type SessionOptions struct {
 	// uses the identity alone.
 	Brain, Tap *device.ProbeDump
 	// Prepare, when set, sees every hosted plugin's node before the session is
-	// built — the place to fill in an audio unit's saved default state.
-	Prepare func(*aum.NodeSpec) error
+	// built, with the node's plan — the place to fill in an audio unit's
+	// saved default state, and the state a node's step sequence is written
+	// into (NodePlan.StepSequenceState).
+	Prepare func(*NodePlan, *aum.NodeSpec) error
 	// Hardware is the hardware-I/O profile the master's output is authored
 	// for.
 	Hardware aum.HardwareProfile
@@ -143,7 +145,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 	nodeSpec := func(n *NodePlan) (aum.NodeSpec, error) {
 		ns := aum.NodeSpecFromDump(n.dump)
 		if o.Prepare != nil {
-			if err := o.Prepare(&ns); err != nil {
+			if err := o.Prepare(n, &ns); err != nil {
 				return ns, fmt.Errorf("%s: %w", nodeLabel(n), err)
 			}
 		}

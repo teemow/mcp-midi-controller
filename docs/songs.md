@@ -75,7 +75,10 @@ the end of every one. Each had taken the song before it for its model. So:
   while the song holds it for sixteen, and a section that returns can return
   with more or less of it. Such a plugin does not always vary the notes the
   song plays as it varies its own hits; the notation varies those
-  (velocities, pattern lists, free events). What one drum machine offers,
+  (velocities, pattern lists, free events). A drum machine's own sequence
+  varies by itself when its lanes are of other lengths than its steps, or move
+  only when a voice fires: a song writes those with
+  [sequence](#a-drum-machines-own-sequence). What one drum machine offers,
   and what of it a song reaches, is in
   [research/battalion.md](research/battalion.md#variation).
 - **Ending.** End the song: a last chord or hit that rings out, a stop
@@ -196,6 +199,9 @@ arrangement: [verse, chorus, verse, chorus]
   than once.
 - **session** — optional: how the song's session is built beyond what the
   tracks say. See [The session](#the-session).
+
+An instrument may also carry a `sequence`: a drum machine's own steps and
+lanes, see [A drum machine's own sequence](#a-drum-machines-own-sequence).
 
 Unknown keys are errors, so a misspelled field is reported rather than ignored.
 
@@ -328,6 +334,94 @@ sections:
 instrument, or of `effect`. `bar` (1-based, default 1) and `bars` (default: to
 the section's end) place the ramp.
 
+## A drum machine's own sequence
+
+A drum machine plays a pattern of its own while AUM's transport runs. UA
+Battalion keeps one per voice: steps drawn by hand, and under them ten lanes
+with a value for every step (see
+[research/battalion.md](research/battalion.md#the-sequencer)). They are not
+parameters; they live in the plugin's saved state. A song writes them with
+`sequence:` on the instrument, and the session's file carries them:
+
+```yaml
+tracks:
+  - id: kit
+    instrument:
+      plugin: UA Battalion
+      sequence:
+        1: {steps: "x... x... x... x..."}                     # voice 1 on every beat
+        3:
+          steps: "xxxx xxxx xxxx xxxx"
+          vel: [0.75, 0.4]                                     # loud, soft, loud, soft …
+          ratch: ". . . . . . . . . . . . . . 0.5 ."           # four hits in step 15
+          prob: {values: "0.5 0.5 0.5 0.5 0.5 0.5 0 0 0 0 0 0", mode: free}   # 12 against 16: three bars before it comes round
+        5:
+          steps: "x..x ..x. .x.. x..x"
+          pitch: {values: [0.5, 0.645833, 0.75], mode: trig}   # every hit the next of three pitches
+```
+
+Voices are `1` to `8`. Each says any of:
+
+| Key | Is |
+|-----|----|
+| `steps` | the steps drawn by hand, a drum grid: `x` a step, `.` none, `\|` a bar line of 16 steps in 4/4 (checked) |
+| `length` | how many steps the sequence runs for, 1 to 64 (default: the steps written) |
+| `vel` `shift` `pitch` `ratch` `env` `pan` `var` `prob` `sends` `macro2` | the lanes |
+
+A lane is its values, a list or a grid line of numbers from 0 to 1 with `.`
+for the lane's neutral value (0.5, and 0 for `ratch`), or
+`{values, length, mode}`:
+
+- `length` is how many steps the values repeat after (default: as many as are
+  written; more than that runs on at the neutral value).
+- `mode` is `sync` (the default): the lane runs with the steps, its values
+  repeating from the start of the sequence. `free` runs on by itself from the
+  transport's start, across the end of the sequence: a lane of 12 against
+  steps of 16 comes round in another place every bar. `trig` moves on only when
+  the voice fires, `retrig` too, and goes back to its start with the steps.
+  `shift` has only `sync` and `free`.
+
+What a lane does, measured at 120 BPM (a step is 125 ms):
+
+| Lane | 0 | 0.5 | 1 |
+|------|---|-----|---|
+| `vel` | 4 dB softer, not silent | as played | 6 dB louder (0.25: 2 dB softer, 0.75: 3 dB louder) |
+| `shift` | 95 % of a step early | on the step | 95 % of a step late; in between ±(2v − 1)² of that |
+| `pitch` | 24 semitones down | as tuned | 24 up: round((v − 0.5) × 48) semitones, so 0.5 + st/48 |
+| `ratch` | one hit | 4 hits | 7 hits in the step: 1 + round(6v), evenly spaced |
+| `env` | shorter (a hit of 95 ms: 40 ms) | as set | longer (280 ms; 0.75: 185 ms) |
+| `pan` | hard left | where the voice is | hard right |
+| `prob` | never | every time | a chance of a double hit (the manual) |
+
+`var` (the voice's variation), `sends` (up for the delay, down for the reverb)
+and `macro2` (the voice's MACRO 2) are written as the others; their scales are
+not measured.
+
+- **The same in every section.** A scene cannot change a saved state. A lane's
+  length and mode are parameters as well (`seqChan3probSeqLength`,
+  `seqChan3probSeqMode`), so params, scenes and ramps can move those: say them
+  in params then, not in the sequence (`save_song` refuses both). Another
+  arrangement in another section needs another voice, or the parameters of
+  the generator and the Performance page.
+- **No preset.** A preset replaces the whole kit with its own sequence: an
+  instrument with a sequence has no preset, in no scene.
+- **With the transport.** The steps play while AUM's transport runs, from
+  its start. A song played from its session's sequencer has them in the bar of
+  lead-in before bar 1 too.
+- **Length.** Writing a voice's length switches its SNAP off, which would keep
+  the sequence as long as the generator's steps.
+- **Where it is written.** The sequence is written over the saved state of the
+  plugin's default patch, which the rig keeps as the plugin's base state:
+  capture it once with `capture_auv3_default_state {session_id, channel, slot,
+  base: true}` from a session AUM saved with a Battalion of the default patch.
+  `save_song` warns while the rig has neither. Where the rig has a default
+  state for the plugin, which every node of it gets, the sequence is written
+  over that instead. The node's state is then
+  Battalion's XML alone, without the binary copy the plugin keeps beside it:
+  given the XML alone, it plays what the XML says.
+- **Another sequence, another session.** The sequence is in the session file,
+  so a changed one makes `load_song` author the session again.
+
 ## Sounds
 
 A preset's name says little about its sound. One sounds at the written pitch,
@@ -443,6 +537,10 @@ problem with its place in the document:
   parameter (with the names that come close), a value outside a parameter's
   range;
 - a control a scene changes without a declaration on the track;
+- a [sequence](#a-drum-machines-own-sequence): a voice, step or value that is
+  none, a length shorter than what is written, a mode the lane lacks, a
+  plugin without one a song can write, a preset beside it, a lane length or
+  mode said both in the sequence and in params;
 - in a calibrated song: a drum lane its kit has no pad for, a note that leaves
   the MIDI range once it is shifted for its preset.
 
@@ -494,9 +592,10 @@ The daemon records which session a song was authored into, for which layout,
 and which notes its sequencer holds. Changing notes, patterns or the
 arrangement leaves the layout alone, but not the sequencer: it keeps playing
 the song as it was authored. Adding a plugin, a preset or a parameter changes
-the layout, and so does the tempo (it is the session's clock): the session
-must then be authored and loaded again, and until it is `get_song` and
-`play_song` say so.
+the layout, and so do the tempo (it is the session's clock) and an
+instrument's [sequence](#a-drum-machines-own-sequence) (it is in a plugin's
+saved state): the session must then be authored and loaded again, and until it
+is `get_song` and `play_song` say so.
 
 The session is staged under `Songs/<title>` by default (`out_id` chooses
 another place), which is also where it lands in AUM's folder on the iPad.

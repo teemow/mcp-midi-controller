@@ -257,13 +257,18 @@ the maker's advice for patterns that evolve (*dev*).
 The lengths and modes of the lanes are parameters (`seqChan<N>probSeqLength`,
 `seqChan<N>probSeqMode` …); the values of the lanes and the steps drawn by
 hand are not. They are in the plugin's saved state, which AUM keeps in the
-session file: JUCE's binary XML (the header `VC2!`, a length, the XML text),
-whose `sequences` element holds for each voice 64 values of each lane as a
+session file: JUCE's binary XML (the header `VC2!`, the length of the XML
+text as a little-endian 32-bit number, the XML text, a NUL), whose
+`sequences` element holds for each voice 64 values of each lane as a
 comma-separated list (`fills0` are voice 1's steps, 0 or 1; `velocities0`,
 `shift0`, `pitches0`, `ratchets0`, `lengths0`, `pans0`, `variations0`,
 `probabilities0`, `sends0`, `mod0`). Neutral is 0.5, and 0 for steps and
 ratchets. The same state holds every parameter as `<PARAM id=… value=…>` in
-the units the window shows, the sample paths, and the transport state.
+the units the window shows (a length as the index of its label, 0 for one
+step; a mode as 0 SYNC, 1 FREE, 2 TRIG, 3 RETRIG), the sample paths, and the
+transport state. AUM keeps a binary copy of the state beside it (the key
+`data`); a state without it, the XML alone, is played as the XML says. A song
+writes the steps and the lanes this way: see [In a song](#in-a-song).
 
 **Transport.** The sequencer follows the host's tempo, and by default its
 transport: it plays while the host plays. Its Stop button makes it ignore the
@@ -272,6 +277,33 @@ parameter for that state.
 
 *Measured:* a generator's step is that fraction of a whole note: 5 steps of
 1/5, 7 of 1/7, 9 of 1/9 and 11 of 1/11 each turn once in a 4/4 bar.
+
+*Measured,* with steps and lanes written into the saved state (default patch,
+120 BPM, a step of 125 ms; a lane's value v):
+
+| Lane | Does |
+|------|------|
+| VEL | the hit's level: on a cowbell 0 took 4 dB off (not silence), 0.25 2 dB, 0.75 added 3 dB, 1.0 6 dB |
+| SHIFT | moves the hit by ±(2v − 1)² of 95 % of a step: 1.0 119 ms late, 0 as early, 0.75 30 ms late |
+| PITCH | whole semitones, round((v − 0.5) × 48), ±24, as the Synth Pitch knob: 1.0 two octaves up, 0.5 + 1/96 one semitone |
+| RATCH | 1 + round(6v) hits in the step, evenly spaced: 0 one, 0.125 two, 0.25 and 0.375 three, 0.5 four, 0.625 five, 0.75 six, 1.0 seven |
+| ENV | the envelope's length: a hit that rang 95 ms rang 280 ms at 1.0, 185 at 0.75, 40 at 0 |
+| PAN | 0 hard left, 1.0 hard right |
+| PROB | 0 never fires; 0.5 always |
+
+- **SYNC follows the steps, whatever the lane's length.** Lanes of one to four
+  values in SYNC changed only steps 1 to 4; the other steps took the lane's
+  other values. FREE runs for its own length from the transport's start, across
+  the end of the sequence (three values against sixteen steps came round one
+  step later every bar). TRIG moves on one value per hit (three pitches over six
+  hits a bar: C5 G5 C6 C5 G5 C6), RETRIG too and back to the start with the
+  steps (four pitches over six hits: C5 G5 C6 E5 C5 G5 in every bar).
+- **LENGTH counts only with SNAP off.** With SNAP on (the default patch's),
+  drawn steps of 3 played once a bar: the sequence is as long as the
+  generator's STEPS. With SNAP off, 3 and 5 steps came round every 375 and
+  625 ms.
+- **The steps start with the transport.** A song played from its session's
+  sequencer has them from its lead-in bar on.
 
 ## The Performance page
 
@@ -447,10 +479,11 @@ song reaches it:
 | MiniGlitch, MegaGlitch | every hit: a small delay in the voice whose time wanders | `drum<N>distortMode`, `drum<N>distort` |
 | the delay's GLITCH | the echoes | `sendAGlitch` |
 | DENSITY | which of the generator's hits fire; ghost hits on empty steps | `seqChan<N>density`, `performdensity` |
-| the PROB lane | each step's chance; double hits | not the lane; `performprobability` offsets every step of every enabled voice |
-| the RATCH lane | retriggers within a step | not the lane; `performratchet` |
-| the VEL, SHIFT, PITCH, ENV, PAN, VAR, SENDS and MACRO 2 lanes | per step | no: their values are in the saved state |
-| a lane's length and mode (SYNC, FREE, TRIG, RETRIG) | where the lane's values fall against the steps | parameters (`seqChan<N>velSeqLength`, `seqChan<N>velSeqMode` …), with nothing to move while the lanes are neutral |
+| the steps drawn by hand | a voice's own pattern, up to 64 steps | `sequence:`, the voice's `steps` and `length` |
+| the PROB lane | each step's chance; double hits | `sequence:`, the voice's `prob`; `performprobability` offsets every step of every enabled voice |
+| the RATCH lane | retriggers within a step | `sequence:`, `ratch`; `performratchet` for every voice |
+| the VEL, SHIFT, PITCH, ENV, PAN, VAR, SENDS and MACRO 2 lanes | per step | `sequence:`, `vel`, `shift`, `pitch`, `env`, `pan`, `var`, `sends`, `macro2` |
+| a lane's length and mode (SYNC, FREE, TRIG, RETRIG) | where the lane's values fall against the steps: a pattern that comes round in another place | `sequence:`, a lane's `length` and `mode`; or the parameters (`seqChan<N>velSeqLength`, `seqChan<N>velSeqMode` …), which scenes can move |
 | PATTERN, ROTATE, INVERT, FILL, STEPS | the generator's arrangement | `seqChan<N>pattern`, `seqChan<N>euclidRotate` …; `performpattern`, `performfill`, `performsteps` |
 | step counts and step units against each other; SNAP off | a polymeter: a bar comes back only after several | `seqChan<N>euclidSteps`, `seqChan<N>seqTempoUnit`, `seqChan<N>lockLength` |
 | SWING, SHIFT, SHAPE | a voice's timing | `seqChan<N>swing`, `seqChan<N>shift`, `seqChan<N>shape` |
@@ -528,11 +561,10 @@ spreads are over 16 hits, the patterns over 16 bars unless said.
 
 ### What a song does not reach
 
-- **The lanes and the hand-drawn steps.** Their values are not parameters.
-  They are plain XML in the saved state the session file carries (see [The
-  sequencer](#the-sequencer)), so a session author could write them: a VEL
-  lane of 12 steps against a pattern of 16, a PROB lane in TRIG mode. Whether
-  the plugin takes an authored state is not tried.
+- **Other steps and lanes in another section.** The steps and the lanes'
+  values are in the saved state, which a song writes once (`sequence:`): a
+  scene cannot change them. Their lengths and modes are parameters, which a
+  scene can.
 - **Two kits from one control channel.** A control channel belongs to one
   track, so of two Battalions in a song only one can hear channel 10; the
   other's mutes are out of reach.
@@ -732,6 +764,25 @@ A Battalion whose generators play everything takes the same `control_channels`
 and plays control patterns alone; the load check then skips the track, which
 has no note of its own to play.
 
+**Steps and lanes.** The song draws a voice's steps and writes its lanes,
+which go into the plugin's saved state in the session (see
+[songs.md](../songs.md#a-drum-machines-own-sequence)). A lane of another
+length than the steps in FREE, or one that moves only when the voice fires,
+gives a pattern that comes round in another place every time. No preset: it
+would replace them.
+
+```yaml
+    instrument:
+      plugin: UA Battalion
+      sequence:
+        1: {steps: "x... x... x... x..."}
+        3:
+          steps: "xxxx xxxx xxxx xxxx"
+          vel: [0.75, 0.4]
+          prob: {values: "0.5 0.5 0.5 0.5 0.5 0.5 0 0 0 0 0 0", mode: free}   # three bars before it comes round
+          ratch: ". . . . . . . . . . . . . . 0.5 ."                         # a roll of four in step 15
+```
+
 A parameter a song declares is sent again after every preset load, so it
 holds over a preset's own value: declare only what the song means to set.
 
@@ -749,7 +800,10 @@ holds over a preset's own value: declare only what the song means to set.
   0.46 and 0.48) and a chance for the generator's hits.
 - Whether HUMANIZE moves the voices together, as the manual says.
 - Choke "Random" with the transport running; Trigger "Random" on voice 8.
-- What lane lengths and the TRIG and RETRIG modes do, and whether the plugin
-  takes lane values written into its saved state.
+- The PROB lane between 0 and 0.5 and above it, and the scales of the VAR,
+  SENDS and MACRO 2 lanes.
+- Whether the lanes reach notes from outside as they reach the drawn steps.
+- Which of its two saved states (the XML or its binary copy) the plugin reads
+  when it is given both.
 - The other voices' chromatic channels (4 to 9) and the rest of channels 10
   and 11 were not tried one by one.

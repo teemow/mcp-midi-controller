@@ -38,8 +38,9 @@ import (
 const songFormat = `A song is one YAML document:
 title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional), calibrate (optional, see the end).
 tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?,
-  instrument: {plugin, preset?, params?},
+  instrument: {plugin, preset?, params?, sequence?},
   effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1 (channel: another of 1..12). control_channels: [10, 11] lets the track's instrument also hear those channels, for control notes such as a drum machine's mutes; no other track may use them.
+  sequence (UA Battalion only, no preset beside it): the drum machine's own pattern per voice, written into its saved state and played with AUM's transport - {1..8: {steps: drum grid ("x" a step, "." none), length? (1..64 steps), vel|shift|pitch|ratch|env|pan|var|prob|sends|macro2: values 0..1 as a list or a grid line ("." neutral) or {values, length?, mode?: sync|free|trig|retrig}}}. sync lanes repeat with the steps; a free lane of another length, or a trig one, comes round in another place every time. pitch is round((v-0.5)*48) semitones, ratch 1+round(6v) hits a step, prob 0 never and 0.5 always. Scenes cannot change it (a lane's length and mode are params too); docs/songs.md has the rest.
 master: [effects on the master strip].
 patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), velocity? (96),
   notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?, channel?}], channel?}}
@@ -587,6 +588,10 @@ type songTrackRow struct {
 	Effects         []string `json:"effects"`
 	Notes           int      `json:"notes"`
 	ControlNotes    int      `json:"control_notes,omitempty"`
+	// Sequence says the instrument's own step sequence is written into its
+	// saved state; NoBase that the rig has no state to write it over yet.
+	Sequence bool `json:"sequence,omitempty"`
+	NoBase   bool `json:"no_base_state,omitempty"`
 }
 
 // summarize renders a compiled song as text and as its structured summary.
@@ -626,6 +631,13 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 			fmt.Fprintf(&b, "; %d control notes on ch%s", row.ControlNotes, joinInts(row.ControlChannels, ", ch"))
 		}
 		b.WriteString(")\n")
+		if n := tp.Nodes[0]; n.HasStepSequence() {
+			row.Sequence, row.NoBase = true, !hasStepSequenceBase(n)
+			fmt.Fprintf(&b, "       its own sequence, written into %s's saved state in the session\n", n.Name)
+			if row.NoBase {
+				fmt.Fprintf(&b, "       warning: the rig has no base state of %s to write it over, so its session cannot be authored: load a session with a %s of the default patch in AUM, save it there, and capture_auv3_default_state {session_id, channel, slot, base: true}\n", n.Name, n.Name)
+			}
+		}
 		sum.Tracks = append(sum.Tracks, row)
 	}
 	if len(cs.plan.Master) > 0 {

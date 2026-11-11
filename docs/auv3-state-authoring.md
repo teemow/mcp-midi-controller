@@ -95,11 +95,21 @@ capture-only (faithful base64/text), which is always safe.
   it. The binary `data` stayed byte-identical, so it is not the parameter store.
   The JSON `kernelData`/`globalData` twins are the authoritative, editable state.
 
+- **UA Battalion** (`aumu/uaBL/UnAu`) — **the XML alone is played.** On-device
+  (2026-11): a node whose state was `jucePluginState` alone, without the binary
+  `data`, played the steps and lanes written into its XML (see
+  [docs/research/battalion.md](research/battalion.md#the-sequencer)). Which key
+  the plugin reads when it is given both is not tried, so a song's authored
+  Battalion state is the XML alone (`internal/song/battalion.go`).
+
 The empirical surprise from the same rig survey: on this rig the JUCE
 `jucePluginState` twins (Audio Damage, BABY Audio, Caelum) capture as **opaque
-`base64`, not XML** — they are compressed/wrapped, so Tier-1 XML editing does not
-apply to them as-is (a decompression step would be needed first). The editable
-twins that actually exist here are **JSON** (KORG, PatternBud, Moog `State`).
+`base64`, not XML**. At least for Battalion that is not compression: its
+`jucePluginState` is plain JUCE binary XML (`VC2!`, a length, the XML, a NUL),
+and the NUL at its end is what fails the classifier's printable-text test.
+`set_auv3_default_state_field` therefore edits a `base64` entry that is JUCE
+binary XML as XML (see Tier 1). The editable twins that classify as text here
+are **JSON** (KORG, PatternBud, Moog `State`).
 
 ## Design
 
@@ -164,9 +174,13 @@ entries are Tier 2.)
   optionally `Name[index]` (0-based) or `Name[@attr=value]`, with a trailing
   `@attr` to target an attribute (otherwise the element's text). Example:
   `PARAM[@id=cutoff]/@value`. `value` must be a scalar; the binary `prefix` is
-  re-prepended unchanged.
-- **Opaque `base64`** entries have no addressable structure and are rejected;
-  replace them wholesale with `set_auv3_default_state`.
+  re-prepended unchanged, except JUCE's header (`VC2!` and a little-endian
+  32-bit length of the XML text): a plugin reads no more text than that length
+  says, so it is written for the edited XML (`internal/juce`). A `base64` entry
+  that is JUCE binary XML is edited as XML and stays `base64`.
+- **Opaque `base64`** entries (other than JUCE binary XML) have no addressable
+  structure and are rejected; replace them wholesale with
+  `set_auv3_default_state`.
 
 ### Tier 2 — reuse the NSKeyedArchiver codec
 
@@ -228,6 +242,14 @@ and CRUD are covered by `internal/mcpserver/auv3_default_state_tools_test.go`
   `Name[@attr=val]`, trailing `@attr`); `delete` supported for both. Opaque
   base64 entries are rejected. Covered by
   `internal/mcpserver/auv3_default_state_field_test.go`.
+
+- **Base states and authored state:** `capture_auv3_default_state` with
+  `base: true` stores a unit's state under `auv3-base-states` instead
+  (`config.AUv3BaseStatesDir()`): the state an authored state is written over,
+  which nodes are not given by themselves. A song's UA Battalion with a
+  `sequence:` gets its steps and lanes written over the rig's default state for
+  the unit, else over its base state, by the song session builder's `Prepare`
+  hook (`internal/mcpserver/song_stepseq.go`, `internal/song/battalion.go`).
 
 Next slices:
 

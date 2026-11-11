@@ -151,6 +151,10 @@ type Plugin struct {
 	MIDI bool `yaml:"midi,omitempty" json:"midi,omitempty"`
 
 	NodeState `yaml:",inline"`
+
+	// Sequence is an instrument's own step sequence (a drum machine's steps
+	// and lanes per voice), written into its saved state. See stepseq.go.
+	Sequence StepSequence `yaml:"sequence,omitempty" json:"sequence,omitempty"`
 }
 
 // NodeState is what a scene (or a plugin's own declaration) says about one
@@ -472,6 +476,9 @@ func (s *Song) Validate() error {
 		if t.Instrument.Plugin == "" {
 			e.addf("%s/instrument/plugin: a track needs an instrument", at)
 		}
+		if len(t.Instrument.Sequence) > 0 && err == nil {
+			checkStepSequence(&e, at+"/instrument/sequence", t.Instrument.Sequence, meter)
+		}
 		checkEffects(&e, at+"/effects", t.Effects)
 		for lane, note := range t.DrumMap {
 			if _, err := parseNote(note); err != nil {
@@ -684,6 +691,9 @@ func checkEffects(e *errs, at string, effects []Plugin) {
 		if fx.Plugin == "" {
 			e.addf("%s/%d/plugin: an effect needs a plugin", at, i)
 			continue
+		}
+		if len(fx.Sequence) > 0 {
+			e.addf("%s/%d/sequence: only an instrument has a step sequence", at, i)
 		}
 		id := fx.EffectID()
 		if seen[id] {

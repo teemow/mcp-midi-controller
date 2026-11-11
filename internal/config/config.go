@@ -152,6 +152,12 @@ func SongExportsDir() string { return filepath.Join(StateDir(), "song-exports") 
 // file they consider private (see the public-vs-private rule).
 func AUv3DefaultStatesDir() string { return filepath.Join(ConfigDir(), "auv3-default-states") }
 
+// AUv3BaseStatesDir is where the base states of audio units live: the saved
+// state of a plugin's default patch, in the format of AUv3DefaultStatesDir,
+// which an authored state is written over (a Battalion song's step sequence).
+// Unlike a default state it is not given to every node of its unit.
+func AUv3BaseStatesDir() string { return filepath.Join(ConfigDir(), "auv3-base-states") }
+
 // DevicesPath is the persisted rig file: the set of controllable Device
 // instances (devices.yaml).
 func DevicesPath() string { return filepath.Join(ConfigDir(), "devices.yaml") }

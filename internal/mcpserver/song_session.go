@@ -236,8 +236,13 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 		// The taps dial in under the session's id: see song_taps.go.
 		Session: outID,
 	}
-	defaults := loadAUv3DefaultStates()
-	opts.Prepare = func(ns *aum.NodeSpec) error { return applyDefaultState(ns, defaults) }
+	defaults, bases := loadAUv3DefaultStates(), loadAUv3BaseStates()
+	opts.Prepare = func(n *song.NodePlan, ns *aum.NodeSpec) error {
+		if err := applyDefaultState(ns, defaults); err != nil {
+			return err
+		}
+		return applyStepSequence(n, ns, bases)
+	}
 	seq, err := songSequencerFor(cs, cat, a.Sequencer)
 	if err != nil {
 		return nil, err
