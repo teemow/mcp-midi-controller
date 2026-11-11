@@ -386,9 +386,35 @@ Notes:
 - Inside a channel: the `"Channel controls"` collection holds the strip
   controls (`Mute`, `Solo`, `Rec enable`, `Volume`); each node's collection is
   keyed `"slot<N>"` (its slot position) and contains that node's mappable
-  parameters by **parameter name/identifier** (e.g. an AUv3's `keyPath`), plus
+  parameters by their **key path**, plus
   reserved keys `"_AUMNode:Bypass"`, `"_AUMNode:FrontPlugin"` (Show & Front)
   and `"_AUMNode:TogglePlugin"` (Show/Hide) and, on a pan node, `"Pan"`.
+- A plugin's parameter **groups are collections of their own**. AUM mirrors
+  the AUParameterTree below the slot: a group is a collection keyed by the
+  group's key path, nested in its parent's, and a parameter's leaf is keyed
+  by the parameter's full key path. A group collection has no
+  `_collection_map_name`. In a flat tree the key path is the identifier, so
+  every leaf sits in the slot collection itself.
+
+  ```
+  Channels/chan1/slot0/
+    _AUMNode:Bypass, …, _collection_map_name
+    kitParams/                             a group
+      kitParams.voice1/                    a subgroup
+        kitParams.voice1.decay             a parameter
+        kitParams.voice1.mod/
+          kitParams.voice1.mod.decayLfo
+      kitParams.master/
+        kitParams.master.gain
+  ```
+
+  Read back from a session AUM saved after a parameter of an instrument with
+  groups three deep was mapped in its MIDI Control panel. A session that
+  keeps such a plugin's leaves flat in the slot collection loads, but AUM
+  shows none of them as mapped, no message moves the parameter, and the
+  leaves are gone from the next save. About a quarter of the plugins probed
+  on one device have groups, every Apple effect among them.
+  `aum.ParamRefs` (aum-session-go) gives each parameter's place.
 - Reserved/internal targets use an underscore prefix: `"_AUMNode:Bypass"`,
   `"_AUMNode:FrontPlugin"`, `"_AUMNode:TogglePlugin"`, `"_AUM:ShowSelf"`
   (System → Switch to AUM), etc. (key strings confirmed from the probe capture).
