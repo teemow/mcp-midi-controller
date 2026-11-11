@@ -908,3 +908,84 @@ func TestSongPlayMode(t *testing.T) {
 		}
 	}
 }
+
+// TestSongToolsReview checks save_song and get_song say what stands out in a
+// song as music, and compare its sounds with the other stored songs'.
+func TestSongToolsReview(t *testing.T) {
+	s := newSongServer(t)
+	// Eight bars: long enough to be a song the next one is compared with.
+	long := strings.NewReplacer("{bars: 1,", "{bars: 4,").Replace(toolSong)
+
+	res := call(t, s.handleSaveSong, map[string]any{"yaml": long})
+	if res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	text := resultText(res)
+	for _, want := range []string{
+		"review (the song as music; advice, none of it an error):",
+		"  length: 0:06 long (8 bars). A full song runs 3 to 4½ minutes: 225 to 337 bars at this tempo.",
+		"  tracks: 3 tracks; a song can have 12.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the review lacks %q:\n%s", want, text)
+		}
+	}
+	// It is the only song, so there is nothing to compare its sounds with.
+	if strings.Contains(text, "  sounds:") {
+		t.Errorf("the only stored song got a remark on its sounds:\n%s", text)
+	}
+
+	// A second song with the first one's bass and another pad.
+	second := strings.NewReplacer(`title: "Night Drive"`, `title: "Day Trip"`, "preset: Warm Pad", "preset: Init").Replace(long)
+	res = call(t, s.handleSaveSong, map[string]any{"yaml": second, "dry_run": true})
+	if res.IsError {
+		t.Fatalf("dry run of the second song: %s", resultText(res))
+	}
+	text = resultText(res)
+	if want := `  sounds: the same sound as another stored song: bass has PolySynth "Deep Bass", as in night_drive (one of its 4 presets); pad has PolySynth "Bright Pad", as in night_drive (one of its 4 presets).`; !strings.Contains(text, want) {
+		t.Errorf("the review lacks %q:\n%s", want, text)
+	}
+	var out struct {
+		Summary struct {
+			Review []song.Remark `json:"review"`
+		} `json:"summary"`
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("structured result: %v", err)
+	}
+	about := map[string]int{}
+	for _, r := range out.Summary.Review {
+		about[r.About]++
+	}
+	if about[song.AboutLength] != 1 || about[song.AboutTracks] != 1 || about[song.AboutSounds] != 1 {
+		t.Errorf("structured review = %+v, want one remark each on length, tracks and sounds", out.Summary.Review)
+	}
+
+	// A stored song is not compared with itself, and get_song shows its review
+	// to whoever reads it as an example.
+	res = call(t, s.handleGetSong, map[string]any{"song": "night_drive"})
+	text = resultText(res)
+	if res.IsError || !strings.Contains(text, "  length: 0:06 long") || strings.Contains(text, "  sounds:") {
+		t.Errorf("get_song's review:\n%s", text)
+	}
+
+	// A sound lab has no notes and gets no review, and it is no song another
+	// one's sounds are compared with.
+	lab := `
+title: Lab
+tempo: 120
+tracks: [{id: a, instrument: {plugin: syn1, preset: Init}}]
+patterns: {rest: {bars: 1, notes: ["."]}}
+sections: {idle: {bars: 1}}
+arrangement: [idle]
+`
+	res = call(t, s.handleSaveSong, map[string]any{"yaml": lab})
+	if res.IsError || strings.Contains(resultText(res), "review") {
+		t.Fatalf("a lab's save: %s", resultText(res))
+	}
+	res = call(t, s.handleSaveSong, map[string]any{"yaml": second, "dry_run": true})
+	if text := resultText(res); res.IsError || strings.Contains(text, "as in lab") {
+		t.Errorf("the lab counts as a song with sounds to share:\n%s", text)
+	}
+}

@@ -51,7 +51,16 @@ sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]},
 arrangement: [section ids in playing order].
 session: {track_taps?, full_control?, hardware? (builtin|x32), presets? (song|all)} - how the song's AUM session is built (see author_song_session); optional. presets: all maps every factory preset, so audition_sound can play any of them in the song's session and the song can change presets without a new one.
 A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).
-calibrate: true compiles the song against the rig's sound catalogue (audition_sound fills it, list_sounds reads it): notes are written at the pitch they should SOUND at (each track is shifted by its preset's measured transposition, per section, so no transpose is needed to undo a preset's octave), a track's level is loudness (0 = the same reference level for every preset; the fader is trimmed per preset) and a drum track's lanes are its kit's measured pads (a lane the kit lacks is an error). A preset that is not measured plays as written and is listed.`
+calibrate: true compiles the song against the rig's sound catalogue (audition_sound fills it, list_sounds reads it): notes are written at the pitch they should SOUND at (each track is shifted by its preset's measured transposition, per section, so no transpose is needed to undo a preset's octave), a track's level is loudness (0 = the same reference level for every preset; the fader is trimmed per preset) and a drum track's lanes are its kit's measured pads (a lane the kit lacks is an error). A preset that is not measured plays as written and is listed.
+
+Writing a song (the review at the end of save_song's answer says where a song falls short of this; none of it is an error):
+- A stored song shows the format. It is no model: the next one gets a form, sounds and an ending of its own.
+- Length: 3 to 4½ minutes unless something else is asked for. In 4/4 that is minutes x tempo / 4 bars: 105 bars for 3:30 at 120 BPM.
+- Form: decide where the song starts, where it peaks, and what the last chorus has that the first had not. A section that returns is a section of its own with something changed (a second verse with a track more, a last chorus with a lift): the same patterns under another scene or play list are a few lines. Give parts phrases of 8 or 16 bars beside the 1- to 4-bar loops, and let a repeat end differently with a pattern list ([a, a, a, b]).
+- Tracks: up to 12. Beside drums, bass, chords and a lead there is room for a second harmony part, a counter-melody, percussion, a texture, an effects track. A track that rests is heard when it comes in.
+- Sounds: choose from everything installed (list_song_plugins lists the instruments and the effects), not from what the stored songs use; audition_sound measures a preset in seconds. What it reports describes the preset: a layered fifth, a slow attack or a pitch that drifts is a character to write for, not a fault.
+- Movement: automation ramps any parameter over a section (a filter that opens into a chorus, a delay that grows into a break), not only a level.
+- Ending: end the song. A last chord or hit that rings out (a recording waits for the tail), a stop together on a beat, a last line left to one instrument. A fade-out is the exception.`
 
 func (s *Server) registerSongTools() {
 	songArg := `"song": {"type": "string", "description": "Song id (see list_songs)."}`
@@ -64,14 +73,15 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "get_song",
-		Description: "Get a stored song: its YAML document and what it compiles to — the arrangement with each section's bars and start time, the tracks with their MIDI channel, plugins and note count. " +
-			"Edit the document and hand it back to save_song to change the song.",
+		Description: "Get a stored song: its YAML document and what it compiles to — the arrangement with each section's bars and start time, the tracks with their MIDI channel, plugins and note count, and a review of it as music (see save_song). " +
+			"Edit the document and hand it back to save_song to change the song. A stored song shows how one is written; it is no model for the next one's form, sounds or ending.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + songArg + `},"required":["song"]}`),
 	}, s.handleGetSong)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "save_song",
 		Description: "Create or replace a song. The document is checked before it is stored: every reference, every pattern (a miscounted bar is an error), and — against the staged AUv3 probes — every plugin, preset and parameter it names; problems come back with their place in the document and what would have matched. " +
+			"The answer ends with a review of the song as music: its length, a fade-out at its end, sections heard unchanged several times, few tracks, and the sounds it shares with the other stored songs. That is advice and keeps nothing from being stored. " +
 			"Then load_song puts its session into AUM and play_song plays it.\n\n" + songFormat,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -439,12 +449,15 @@ type compiledSong struct {
 	song     *song.Song
 	plan     *song.Plan
 	timeline *song.Timeline
+	// catalog is the staged plugins the song was planned against.
+	catalog song.Catalog
 }
 
 // compileSong plans a song against the staged probes, and against the sound
 // catalogue when it asks to be calibrated, and compiles it.
 func (s *Server) compileSong(id string, sg *song.Song) (*compiledSong, error) {
-	plan, err := song.NewPlanWith(sg, songCatalog(), song.PlanOptions{Sounds: s.voicing})
+	cat := songCatalog()
+	plan, err := song.NewPlanWith(sg, cat, song.PlanOptions{Sounds: s.voicing})
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +465,47 @@ func (s *Server) compileSong(id string, sg *song.Song) (*compiledSong, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &compiledSong{id: id, song: sg, plan: plan, timeline: tl}, nil
+	return &compiledSong{id: id, song: sg, plan: plan, timeline: tl, catalog: cat}, nil
+}
+
+// labBars is the length under which a stored song is a sound lab or a test
+// and not a song another one is compared with.
+const labBars = 8
+
+// songLibrary is what a song's review compares it with: the plugins and
+// presets of the other stored songs, and how many plugins are installed.
+func (s *Server) songLibrary(except string, cat song.Catalog) song.Library {
+	lib := song.Library{Songs: map[string][]song.Voice{}}
+	for _, dump := range cat {
+		switch pluginKind(dump.Component.Type) {
+		case "instrument":
+			lib.Instruments++
+		case "effect":
+			lib.Effects++
+		}
+	}
+	ids, err := s.songs.List()
+	if err != nil {
+		return lib
+	}
+	for _, id := range ids {
+		if id == except {
+			continue
+		}
+		sg, _, err := s.songs.Load(id)
+		if err != nil {
+			continue
+		}
+		bars := 0
+		for _, name := range sg.Arrangement {
+			bars += sg.Sections[name].Bars
+		}
+		if bars < labBars {
+			continue
+		}
+		lib.Songs[id] = sg.Palette(cat)
+	}
+	return lib
 }
 
 // voicing is the sound catalogue as a song's plan reads it: what a preset of
@@ -511,6 +564,9 @@ type songSummary struct {
 	// and Warnings what that could not do.
 	Calibration []song.TrackVoicing `json:"calibration,omitempty"`
 	Warnings    []string            `json:"warnings,omitempty"`
+	// Review is what stands out in the song as a piece of music (its length,
+	// its ending, its repeats, its sounds): advice, not errors.
+	Review []song.Remark `json:"review,omitempty"`
 }
 
 type songSectionRow struct {
@@ -610,6 +666,12 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		}
 	} else {
 		b.WriteString("session: not authored yet (load_song)\n")
+	}
+	if sum.Review = song.Review(cs.song, tl, cs.catalog, s.songLibrary(cs.id, cs.catalog)); len(sum.Review) > 0 {
+		b.WriteString("review (the song as music; advice, none of it an error):\n")
+		for _, r := range sum.Review {
+			fmt.Fprintf(&b, "  %s: %s\n", r.About, r.Text)
+		}
 	}
 	return b.String(), sum
 }
