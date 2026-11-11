@@ -102,6 +102,25 @@ func TestParseAUMCapturedPanelOverPluginWindow(t *testing.T) {
 	}
 }
 
+// The main menu's page stays in the tree after AUM has pushed another page
+// over it (SESSIONS, SAVE): its header and its "SESSION: …" line are then no
+// sign of an open menu, and the name is not on screen.
+func TestParseAUMCapturedMenuLeftover(t *testing.T) {
+	if st := parseCaptured(t, "aum-plugin-window-menu.json"); !st.MenuOpen || st.Session != "Eight Voices" {
+		t.Errorf("menu open: menu %v, session %q", st.MenuOpen, st.Session)
+	}
+	for _, file := range []string{
+		"aum-plugin-window-sessions.json",
+		"aum-plugin-window-save.json",
+		"aum-plugin-window-midi-control.json",
+		"aum-plugin-window.json",
+	} {
+		if st := parseCaptured(t, file); st.MenuOpen || st.Session != "" {
+			t.Errorf("%s: menu %v, session %q, want no open menu and no name", file, st.MenuOpen, st.Session)
+		}
+	}
+}
+
 func TestAUMWindowCloseCapturedPluginWindow(t *testing.T) {
 	w := ipadtest.New(capturedTree(t, "aum-plugin-window.json"))
 	w.SetScreens(capturedTree(t, "aum-plugin-window.json"), ipadtest.MixerAUM().Source())

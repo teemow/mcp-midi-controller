@@ -228,10 +228,6 @@ func ParseAUM(root *Element, window Size) AUMState {
 		switch el.Type {
 		case "StaticText":
 			switch {
-			case el.Label == "MENU":
-				st.MenuOpen = true
-			case strings.HasPrefix(el.Label, sessionPrefix):
-				st.Session = strings.TrimSpace(strings.TrimPrefix(el.Label, sessionPrefix))
 			case strings.HasPrefix(el.Label, "DSP:"):
 				st.DSP = strings.Join(strings.Fields(strings.TrimPrefix(el.Label, "DSP:")), " ")
 			case st.TempoBPM == nil && el.Rect.Y < 60 && reTempo.MatchString(el.Label):
@@ -275,7 +271,25 @@ func ParseAUM(root *Element, window Size) AUMState {
 	}
 	st.Overlays = parseOverlays(root, window)
 	st.PluginWindows = parsePluginWindows(root)
+	st.readMenu()
 	return st
+}
+
+// readMenu sets MenuOpen and Session from the main menu when it is the open
+// side panel. Texts alone do not tell: the menu's page stays in the tree for
+// a moment after it was closed or another page was pushed over it, and its
+// "MENU" header and "SESSION: …" line with it.
+func (st *AUMState) readMenu() {
+	menu := st.Overlay("panel")
+	if menu == nil || menu.Title != "MENU" {
+		return
+	}
+	st.MenuOpen = true
+	if t := menu.el.First(func(e *Element) bool {
+		return e.Type == "StaticText" && strings.HasPrefix(e.Label, sessionPrefix)
+	}); t != nil {
+		st.Session = strings.TrimSpace(strings.TrimPrefix(t.Label, sessionPrefix))
+	}
 }
 
 // parsePluginWindows finds plugin title bars: a button labelled
