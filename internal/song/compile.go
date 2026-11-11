@@ -38,12 +38,23 @@ type Event struct {
 	// Data1 is the note, controller or program; Data2 the velocity or value.
 	Data1 int `json:"data1"`
 	Data2 int `json:"data2"`
-	// Track is the id of the track a note belongs to ("" for a control).
+	// Track is the id of the track a note or a pedal change belongs to ("" for
+	// a control of the session's sound).
 	Track string `json:"track,omitempty"`
 	// Section is the arrangement entry the event belongs to: the one a note
 	// sounds in, a control change leads into, or a ramp runs in.
 	Section int `json:"-"`
 }
+
+// SustainPedal is the controller a pattern's pedal is sent as, on the channel
+// of the track that plays the pattern: 127 down, 0 up.
+const SustainPedal = 64
+
+// pedal reports whether the event is a pedal change. It is a Control, but one
+// that is part of a track's playing, as its notes are, and not of a section's
+// sound: a section's opening state does not stand for it, and it is played
+// only when its track is.
+func (e Event) pedal() bool { return e.Kind == Control && e.Track != "" }
 
 // SectionSpan is one entry of the arrangement placed on the timeline.
 type SectionSpan struct {
@@ -66,6 +77,8 @@ type TrackSummary struct {
 	// its control channels.
 	Notes        int `json:"notes"`
 	ControlNotes int `json:"control_notes,omitempty"`
+	// Pedal counts how often the sustain pedal goes down.
+	Pedal int `json:"pedal,omitempty"`
 }
 
 // Timeline is a compiled song.
@@ -153,6 +166,11 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 		section   int
 	}
 	trackNotes := make([][]note, len(s.Tracks))
+	type pedal struct {
+		down, up int64
+		section  int
+	}
+	trackPedals := make([][]pedal, len(s.Tracks))
 
 	var current map[Target]int // each control's value as the timeline runs
 	var tick int64
@@ -213,6 +231,15 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 						return nil, fmt.Errorf("/sections/%s/play/%s: %s shifted by %+d for its preset leaves the MIDI range", name, t.ID, NoteName(n.note), shift)
 					}
 					trackNotes[ti] = append(trackNotes[ti], note{on: on, off: off, note: pitch, vel: n.vel, channel: n.channel, section: idx})
+				}
+				// The pedal comes up with the section at the latest, as a note
+				// ends with it: nothing carries over into the next section.
+				for _, sp := range cp.pedals {
+					down := pos + sp.at
+					if sp.at >= cp.ticks || down >= end {
+						continue
+					}
+					trackPedals[ti] = append(trackPedals[ti], pedal{down: down, up: min(down+sp.dur, end), section: idx})
 				}
 				pos += cp.ticks
 			}
@@ -289,6 +316,23 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 			tl.Events = append(tl.Events,
 				Event{Tick: n.on, Kind: NoteOn, Channel: n.channel, Data1: n.note, Data2: n.vel, Track: t.ID, Section: n.section},
 				Event{Tick: n.off, Kind: NoteOff, Channel: n.channel, Data1: n.note, Track: t.ID, Section: n.section},
+			)
+		}
+		// There is one pedal: a stretch that begins while another holds it
+		// down takes over, and the pedal comes up and goes down again there.
+		pedals := trackPedals[ti]
+		sort.SliceStable(pedals, func(i, j int) bool { return pedals[i].down < pedals[j].down })
+		for i, pd := range pedals {
+			if i+1 < len(pedals) && pedals[i+1].down < pd.up {
+				pd.up = pedals[i+1].down
+			}
+			if pd.up <= pd.down {
+				continue
+			}
+			sum.Pedal++
+			tl.Events = append(tl.Events,
+				Event{Tick: pd.down, Kind: Control, Channel: ch, Data1: SustainPedal, Data2: 127, Track: t.ID, Section: pd.section},
+				Event{Tick: pd.up, Kind: Control, Channel: ch, Data1: SustainPedal, Track: t.ID, Section: pd.section},
 			)
 		}
 		tl.Tracks = append(tl.Tracks, sum)

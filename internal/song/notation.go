@@ -213,10 +213,15 @@ type patNote struct {
 	channel int
 }
 
-// compiledPattern is a pattern reduced to notes and a length.
+// patPedal is one stretch of a compiled pattern with the sustain pedal down,
+// placed from the pattern's start.
+type patPedal struct{ at, dur int64 }
+
+// compiledPattern is a pattern reduced to notes, pedalling and a length.
 type compiledPattern struct {
-	ticks int64
-	notes []patNote
+	ticks  int64
+	notes  []patNote
+	pedals []patPedal
 }
 
 // gridStep is one parsed step of a melodic grid line.
@@ -413,6 +418,19 @@ func compilePattern(name string, p Pattern, m meter, songSwing float64, t *Track
 		}
 	}
 
+	// The pedal counts for the pattern's length as an event does: by where it
+	// goes down.
+	for i, sp := range p.Pedal {
+		if sp.At < 0 || sp.Dur <= 0 {
+			return nil, fmt.Errorf("%s/pedal/%d: the pedal needs at >= 0 and dur > 0 (in beats)", at, i)
+		}
+		start := int64(math.Round(sp.At * PPQ))
+		out.pedals = append(out.pedals, patPedal{at: start, dur: max(int64(math.Round(sp.Dur*PPQ)), 1)})
+		if start+1 > eventsEnd {
+			eventsEnd = start + 1
+		}
+	}
+
 	// Length: the declared bars, or the grid rounded up to whole bars.
 	var gridTicks int64
 	if gridSteps > 0 {
@@ -439,6 +457,7 @@ func compilePattern(name string, p Pattern, m meter, songSwing float64, t *Track
 	}
 
 	sort.SliceStable(out.notes, func(i, j int) bool { return out.notes[i].at < out.notes[j].at })
+	sort.SliceStable(out.pedals, func(i, j int) bool { return out.pedals[i].at < out.pedals[j].at })
 	return out, nil
 }
 

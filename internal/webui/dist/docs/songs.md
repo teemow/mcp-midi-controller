@@ -238,6 +238,26 @@ Write them. A miscounted bar is then an error instead of a song that drifts.
 **Free events** — `events: [{at: 0, dur: 1.5, note: "A2 E3", vel: 90}]` places
 notes in beats from the pattern's start, for what a grid cannot say.
 
+**The sustain pedal** — `pedal: [{at: 0.1, dur: 3.8}, {at: 4.1, dur: 3.8}]`
+holds the pedal of the track's instrument down from `at` for `dur`, in beats
+from the pattern's start, beside the pattern's notes, drums or events. It is
+sent to the instrument as Control Change 64 on the track's channel, 127 down
+and 0 up, so it does what the instrument makes of a pedal: a sampled piano
+lets the notes ring on after their keys and adds the resonance of its open
+strings.
+
+- A pedal change is a pedal that comes up and goes down again: the end of one
+  stretch and the start of the next, a little apart. Where the pedal goes down
+  just after a chord is struck, the chord before it is damped and the new one
+  caught, as a pianist changes the pedal.
+- A stretch that begins while another holds the pedal takes over: the pedal
+  comes up and goes down again where it begins.
+- The pedal comes up with the section at the latest, as a note ends with it,
+  and it repeats with its pattern. Nothing carries over into the next section,
+  so a section sounds the same wherever the playback starts.
+- `stop_song` lifts the pedal, in both ways of [playing](#playing).
+- `save_song` says how often each track's pedal goes down.
+
 Per pattern: `gate` is how much of a note's grid length sounds (default 0.9; 1
 is legato), `velocity` the velocity of a plain note (default 96), `transpose` a
 shift in semitones, and `bars` the length when the grid is shorter than the
@@ -528,6 +548,8 @@ its effects is still made by ear and by measuring it.
 problem with its place in the document:
 
 - references: tracks, patterns, scenes, sections and effects that do not exist;
+- pedalling: a stretch without a start or a length, a pedal in a pattern of
+  control notes;
 - patterns: notes that are not notes, lines of unequal length, bars of the
   wrong length;
 - channels: two tracks on one channel, a control channel that is a track's
@@ -567,7 +589,7 @@ destinations through the same filters.
 
 | Channels | Carry |
 |----------|-------|
-| 1…N | the tracks' notes, one channel each, and their control notes |
+| 1…N | the tracks' notes, one channel each, their control notes and their sustain pedal |
 | N+1…14 | plugin bypasses and parameters, filled from 14 downwards; N is the highest channel a track plays or hears on |
 | 15 | strip levels and mutes, the transport and the sequencer's bypass (the convention's CCs), preset loads (Program Changes) |
 | 16 | left to the rig: tap toggles and session switching |
@@ -762,7 +784,9 @@ the opening sound is in the clip, the session plays the song by itself:
 fifth of a second later (AUM does not rewind when the start follows at once),
 and anything else that runs the transport from the top plays the song too.
 Half a second after the last bar the daemon stops the transport and rewinds
-it; `stop_song` does that at once.
+it; `stop_song` does that at once. Either way it then lifts the sustain pedal
+of every track that has one: a sequencer stopped under a held pedal leaves it
+down.
 
 `get_song_playback` reports a sequenced song's position from the daemon's own
 clock, started when it sent the start; it does not read AUM's transport. In
@@ -776,7 +800,8 @@ then sends the timeline.
 
 - `from` starts at a section (its id, or a 1-based position in the
   arrangement), `sections` limits how many are played.
-- `tracks` plays only some tracks' notes, to listen to a part alone.
+- `tracks` plays only some tracks' notes and pedalling, to listen to a part
+  alone.
 - `transport: true` starts AUM's transport with the first note and stops it at
   the end, for plugins that follow the host clock. In a session with a
   sequencer, the sequencer is bypassed for the length of the playback. The
@@ -936,6 +961,11 @@ routes and the bypass mapping.
 What a session file says and what AUM does with it are two things. Measured on
 a device, in sessions authored from a song:
 
+- **The sustain pedal.** Control Change 64 on a track's channel, sent through
+  the brain, reached the track's instrument, a sampled piano: two notes held
+  250 ms rang at -36 dBFS 1.3 s after their release with the pedal down and
+  had fallen to -62 dBFS without it, and lifting the pedal damped them
+  (-58 dBFS 0.7 s later). Twice each way.
 - **Routing.** One brain plays every track. A note on a track's channel
   sounded only that track's instrument (its pitch read back at the tap), and a
   message on a control channel made no sound.

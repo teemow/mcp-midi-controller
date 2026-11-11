@@ -248,6 +248,16 @@ type Pattern struct {
 	Drums map[string]string `yaml:"drums,omitempty" json:"drums,omitempty"`
 	// Events are notes placed freely, in beats from the pattern's start.
 	Events []NoteEvent `yaml:"events,omitempty" json:"events,omitempty"`
+	// Pedal is where the sustain pedal of the track's instrument is down.
+	Pedal []PedalSpan `yaml:"pedal,omitempty" json:"pedal,omitempty"`
+}
+
+// PedalSpan is one stretch of a pattern with the sustain pedal down.
+type PedalSpan struct {
+	// At is where the pedal goes down and Dur how long it stays down, in
+	// beats (quarter notes) from the pattern's start.
+	At  float64 `yaml:"at" json:"at"`
+	Dur float64 `yaml:"dur" json:"dur"`
 }
 
 // NoteEvent is one freely placed note or chord of a pattern.
@@ -577,6 +587,9 @@ func (s *Song) Validate() error {
 			}
 			if p.Transpose != 0 {
 				e.addf("%s/transpose: control notes are sent as written; a pattern with a channel is not transposed", at)
+			}
+			if len(p.Pedal) > 0 {
+				e.addf("%s/pedal: a pattern with a channel is control notes; the pedal goes with the notes on the track's own channel", at)
 			}
 		}
 		for i, ev := range p.Events {

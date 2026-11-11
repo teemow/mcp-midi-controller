@@ -14,6 +14,7 @@ package song
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -115,8 +116,9 @@ func (t *Timeline) Sequence() *Sequence {
 		default:
 			// The opening state stands for the first section's own changes up
 			// to its start. A later section's preset load that is due that
-			// early (the sections before it are shorter than the lead) stays.
-			if e.Section == 0 && e.Tick <= 0 {
+			// early (the sections before it are shorter than the lead) stays,
+			// and so does a pedal that goes down with the first note.
+			if e.Section == 0 && e.Tick <= 0 && !e.pedal() {
 				continue
 			}
 			e.Tick += lead
@@ -137,6 +139,18 @@ func (t *Timeline) Sequence() *Sequence {
 		return a.Kind < b.Kind
 	})
 	return q
+}
+
+// pedalChannels lists the channels the sequence presses the sustain pedal on.
+func (q *Sequence) pedalChannels() []int {
+	var out []int
+	for _, e := range q.Controls {
+		if e.pedal() && !slices.Contains(out, e.Channel) {
+			out = append(out, e.Channel)
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 // ticksOf converts a duration into ticks at the song's tempo.
