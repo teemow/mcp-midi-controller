@@ -34,7 +34,9 @@ type PlayOptions struct {
 	// and the first note, so loaded presets are in place. 0 takes the default.
 	Preroll time.Duration
 	// Before and After are sent as the first note is due and once the last has
-	// ended — the session's transport start and stop, when wanted.
+	// ended — the session's transport start and stop, when wanted. After is
+	// sent however the playback ends, also when it is stopped or fails before
+	// its first note, so it must put back whatever Rewind changed.
 	Before, After []Event
 	// Rewind is sent before anything else, and Before no sooner than
 	// rewindSettle after it: what puts the session's transport back to the top
@@ -350,6 +352,24 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 		}
 	}
 
+	type voice struct{ channel, note int }
+	sounding := map[voice]bool{}
+	// release ends every note still sounding and sends After. It runs however
+	// the playback ends, cut short in the preroll too, so a transport rewound
+	// or a sequencer bypassed by Rewind is put back; it must not depend on the
+	// cancelled context.
+	release := func() {
+		fctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+		defer cancel()
+		for v := range sounding {
+			_ = send(fctx, Event{Kind: NoteOff, Channel: v.channel, Data1: v.note})
+		}
+		for _, e := range opts.After {
+			_ = send(fctx, e)
+		}
+	}
+	defer release()
+
 	// The transport is put back first, so the rewind has the whole preroll,
 	// and rewindSettle at the least, before the start.
 	for _, e := range opts.Rewind {
@@ -394,39 +414,21 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 		return "stopped"
 	}
 
-	type voice struct{ channel, note int }
-	sounding := map[voice]bool{}
-	// release ends every note still sounding. It runs when the playback is
-	// cut short, so it must not depend on the cancelled context.
-	release := func() {
-		fctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
-		defer cancel()
-		for v := range sounding {
-			_ = send(fctx, Event{Kind: NoteOff, Channel: v.channel, Data1: v.note})
-		}
-		for _, e := range opts.After {
-			_ = send(fctx, e)
-		}
-	}
-
 	start := time.Now()
 	pb.mu.Lock()
 	pb.started = start
 	pb.mu.Unlock()
 	for _, e := range opts.Before {
 		if err := deliver(e); err != nil {
-			release()
 			return err.Error()
 		}
 	}
 	for _, e := range events {
 		due := start.Add(pb.tl.TickTime(e.Tick - pb.startTick))
 		if d := time.Until(due); d > 0 && !wait(d) {
-			release()
 			return "stopped"
 		}
 		if err := deliver(e); err != nil {
-			release()
 			return err.Error()
 		}
 		v := voice{e.Channel, e.Data1}
@@ -439,10 +441,8 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 	}
 	// Let the last bar run out before reporting the song finished.
 	if d := time.Until(start.Add(pb.tl.TickTime(pb.endTick - pb.startTick))); d > 0 && !wait(d) {
-		release()
 		return "stopped"
 	}
-	release()
 	return "finished"
 }
 
