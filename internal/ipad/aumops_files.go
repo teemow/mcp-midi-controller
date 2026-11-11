@@ -242,15 +242,65 @@ func (d *AUMDriver) loadSession(path []string, name string) (AUMResult, error) {
 	if err := d.pause(AUMLoadPause); err != nil {
 		return AUMResult{}, err
 	}
-	if err := d.Read(); err != nil {
-		return AUMResult{}, err
-	}
-	if _, err := d.ensureMenu(); err != nil {
-		return AUMResult{}, err
-	}
 	want := strings.TrimSuffix(name, ".aumproj")
-	ok, err := d.until(10*time.Second, func(st AUMState) bool { return strings.EqualFold(st.Session, want) })
-	return d.result("load", ok, fmt.Sprintf("session now %q (wanted %q)", d.St.Session, want), nil), err
+	ok, loading, err := d.awaitSession(want)
+	if err != nil {
+		return AUMResult{}, err
+	}
+	msg := fmt.Sprintf("session now %q (wanted %q)", d.St.Session, want)
+	if !ok && loading {
+		msg += fmt.Sprintf("; AUM still shows %s after %s", loadingLabel, aumLoadTimeout)
+	}
+	return d.result("load", ok, msg, nil), nil
+}
+
+// aumNameWait is how long the main menu is given to show the loaded
+// session's name once AUM has stopped loading. A variable for tests.
+var aumNameWait = 10 * time.Second
+
+// awaitSession waits for AUM's main menu to show the session want after its
+// row was tapped. While AUM instantiates heavy plugins its UI does not answer
+// and a single read can block for most of a minute, so the wait is not a
+// fixed budget of reads: it lasts as long as AUM shows that it is loading
+// (bounded by aumLoadTimeout from now), and only once AUM has stopped loading
+// is the name given aumNameWait, counted from the first read that saw the
+// load over. The load can close the menu; it is opened again. loading reports
+// whether AUM still showed that it was loading when the wait gave up.
+func (d *AUMDriver) awaitSession(want string) (ok, loading bool, err error) {
+	deadline := time.Now().Add(aumLoadTimeout)
+	var settled time.Time // when a read first saw AUM no longer loading
+	for {
+		if err := d.Read(); err != nil {
+			return false, false, err
+		}
+		if strings.EqualFold(d.St.Session, want) {
+			return true, false, nil
+		}
+		now := time.Now()
+		loading = d.loading()
+		switch {
+		case loading:
+			settled = time.Time{}
+		case settled.IsZero():
+			settled = now
+		case now.Sub(settled) > aumNameWait:
+			return false, false, nil
+		}
+		if now.After(deadline) {
+			return false, loading, nil
+		}
+		if d.St.Panel() != "MENU" {
+			// ensureMenu re-reads until the menu shows (or aumWait passes);
+			// the loop then reads the name again.
+			if _, err := d.ensureMenu(); err != nil {
+				return false, false, err
+			}
+			continue
+		}
+		if err := d.pause(150 * time.Millisecond); err != nil {
+			return false, false, err
+		}
+	}
 }
 
 // saveSession types the name into SAVE's name field and presses Return,

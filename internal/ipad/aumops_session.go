@@ -50,9 +50,11 @@ func (c *Client) AUMOpenSession(ctx context.Context, path []string, name string)
 		if err != nil {
 			return err
 		}
-		// loadSession leaves the main menu open with the session's name.
+		// loadSession leaves the main menu open with the session's name. It
+		// may have waited out most of the load already; the rest of
+		// aumLoadTimeout is what is left for AUM to finish.
 		out := AUMLoaded{Session: d.St.Session}
-		done, err := d.until(aumLoadTimeout, func(AUMState) bool { return !d.loading() })
+		done, err := d.until(aumLoadTimeout-time.Since(start), func(AUMState) bool { return !d.loading() })
 		if err != nil {
 			return err
 		}

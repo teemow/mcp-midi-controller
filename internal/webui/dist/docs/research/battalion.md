@@ -285,9 +285,10 @@ Levels and pitches are read at the session's audio tap.
   drums come from the generators opens with them empty and fills them from
   bar 1.
 - **Four instances** in one session loaded and played. AUM took over a
-  minute to bring them up, longer than `load_song` waits for the session's
-  name, so the load was reported as failed although it went through;
-  `check_song` afterwards found every track.
+  minute to bring them up, and its UI did not answer for most of that time.
+  `load_song` waits for the session's name as long as AUM shows that it is
+  loading (up to 2 minutes), so such a load is reported as verified;
+  `check_song` found every track.
 
 How the sequencer's parameters run, read off the plugin's window (v is the
 parameter's value, 0 to 1):
