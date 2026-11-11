@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -10,9 +11,9 @@ import (
 // fastMix shortens the waits of a mix measurement.
 func fastMix(t *testing.T) {
 	t.Helper()
-	old := []time.Duration{mixTail, mixBetween, mixPull}
-	mixTail, mixBetween, mixPull = 150*time.Millisecond, 60*time.Millisecond, 50*time.Millisecond
-	t.Cleanup(func() { mixTail, mixBetween, mixPull = old[0], old[1], old[2] })
+	old := []time.Duration{mixTail, mixBetween, mixPull, mixPreroll}
+	mixTail, mixBetween, mixPull, mixPreroll = 150*time.Millisecond, 60*time.Millisecond, 50*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { mixTail, mixBetween, mixPull, mixPreroll = old[0], old[1], old[2], old[3] })
 }
 
 // mixRig is a rig playing toolSong's session: the bass loud, the pad very
@@ -57,7 +58,7 @@ func TestMixSong(t *testing.T) {
 	}
 
 	res := call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "solo_bars": 1})
-	if res.IsError || !strings.Contains(resultText(res), `measuring the mix of "Night Drive"`) || !strings.Contains(resultText(res), "5 solo pass(es)") {
+	if res.IsError || !strings.Contains(resultText(res), `measuring the mix of "Night Drive"`) || !strings.Contains(resultText(res), "6 solo pass(es)") {
 		t.Fatalf("mix: %s", resultText(res))
 	}
 	if again := call(t, s.handleMixSong, map[string]any{"song": "night_drive"}); !again.IsError || !strings.Contains(resultText(again), "is running") {
@@ -285,7 +286,7 @@ func TestMixSongTrackTaps(t *testing.T) {
 	// Solo passes on request: the tracks at the master, as without the taps.
 	before := bassNotes()
 	res = call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "solo": true, "solo_bars": 1, "whole": false, "sections": 1})
-	if text := resultText(res); res.IsError || !strings.Contains(text, "(2 solo pass(es))") {
+	if text := resultText(res); res.IsError || !strings.Contains(text, "(3 solo pass(es))") {
 		t.Fatalf("mix with solo passes asked for: %s", text)
 	}
 	res = call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000})
@@ -302,12 +303,225 @@ func TestMixSongTrackTaps(t *testing.T) {
 	r.trackTaps[2].Disconnect()
 	r.mu.Unlock()
 	res = call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "solo_bars": 1, "whole": false, "sections": 1})
-	if text := resultText(res); res.IsError || !strings.Contains(text, "(2 solo pass(es))") ||
+	if text := resultText(res); res.IsError || !strings.Contains(text, "(3 solo pass(es))") ||
 		!strings.Contains(text, "no tap is connected for pad, so the tracks are measured by solo passes at the master") {
 		t.Fatalf("mix with a track's tap gone: %s", text)
 	}
 	if res := call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000}); res.IsError {
 		t.Fatalf("report with a track's tap gone: %s", resultText(res))
+	}
+}
+
+// selfSong is toolSong with drums that play no notes: the drum machine plays
+// its own sequencer, as long as AUM's transport runs.
+var selfSong = strings.ReplaceAll(toolSong, ", drums: beat}}", "}}")
+
+// selfPlayingDrums makes the rig's drum machine (channel 3) play by itself
+// while the transport runs: a sine of 0.1, -20 dBFS peak and -23 rms.
+func selfPlayingDrums(r *songRig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.SelfPlay = func(ch int) float64 {
+		if ch == 3 {
+			return 0.1
+		}
+		return 0
+	}
+}
+
+// transportCCs lists the transport's and the sequencer bypass's messages the
+// rig received, as controller*1000+value.
+func (r *songRig) transportCCs() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []int
+	for _, cmd := range r.Commands {
+		if cmd.Type == "cc" && cmd.Channel == 15 {
+			switch cmd.Controller {
+			case rigStartCC, rigStopCC, rigRewindCC, rigBypassCC:
+				out = append(out, cmd.Controller*1000+cmd.Value)
+			}
+		}
+	}
+	return out
+}
+
+// mixReportOf waits for the running measurement and returns its report.
+func mixReportOf(t *testing.T, s *Server) (*mixReport, string) {
+	t.Helper()
+	res := call(t, s.handleGetSongMix, map[string]any{"wait_ms": 40000})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("report: %s", text)
+	}
+	s.mixMu.Lock()
+	defer s.mixMu.Unlock()
+	if s.mix.report == nil {
+		t.Fatalf("no report: %s", text)
+	}
+	return s.mix.report, text
+}
+
+// TestMixSongTransport measures a song whose drums play no notes, made by an
+// instrument that plays by itself while AUM's transport runs: every pass
+// runs the transport with the session's sequencer bypassed, the drums are in
+// the whole song's levels and have their row in every section, each solo
+// pass has the other strips muted, and stop_song leaves the transport
+// stopped at the top.
+func TestMixSongTransport(t *testing.T) {
+	r := mixRig(t)
+	s := r.s
+	stageSequencer(t)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": selfSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	r.connect()
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	cs, fail := s.loadSong("night_drive")
+	if fail != nil {
+		t.Fatal(resultText(fail))
+	}
+	r.strips(cs.plan)
+	selfPlayingDrums(r)
+
+	// Each section once per track, the drums and the pad where it plays
+	// nothing included: nothing in the song says they are silent there.
+	res := call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "solo_bars": 1})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "(6 solo pass(es)), with AUM's transport running") {
+		t.Fatalf("mix: %s", text)
+	}
+	rep, text := mixReportOf(t, s)
+	cell := map[string]mixSolo{}
+	for _, tr := range rep.Tracks {
+		cell[tr.Section+"/"+tr.Track] = tr
+	}
+	for _, sec := range []string{"verse", "chorus"} {
+		drums, ok := cell[sec+"/drums"]
+		if !ok || drums.Notes != 0 || drums.Silent || math.Abs(drums.PeakDB+20) > 1 || math.Abs(drums.RMSDB+23) > 1.5 {
+			t.Errorf("the drums alone in %s = %+v (measured %v), want their own sequencer's -23 rms and -20 peak\n%s", sec, drums, ok, text)
+		}
+		// The drum machine's strip is muted in the bass's pass: the bass's
+		// peak is its own sine's.
+		if bass := cell[sec+"/bass"]; math.Abs(bass.PeakDB+12) > 1 {
+			t.Errorf("the bass alone in %s = %+v, want its own -12 dBFS peak (the drums muted)", sec, bass)
+		}
+	}
+	if pad, ok := cell["verse/pad"]; ok {
+		t.Errorf("a row for a track that neither plays notes nor sounds in the section: %+v", pad)
+	}
+	// The whole song carries the drums with the bass.
+	for _, sec := range rep.Sections {
+		if bass := cell[sec.Name+"/bass"]; sec.RMSDB < bass.RMSDB+1 {
+			t.Errorf("the master in %s reads %.1f dBFS rms, the bass alone %.1f: the drums are missing", sec.Name, sec.RMSDB, bass.RMSDB)
+		}
+	}
+	// Seven passes, each rewinding and starting the transport with the
+	// sequencer bypassed, then stopping and rewinding it and putting the
+	// sequencer back in line.
+	pass := []int{106127, 104127, 102127, 103127, 104127, 106000}
+	var want []int
+	for range 7 {
+		want = append(want, pass...)
+	}
+	if got := r.transportCCs(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the transport and the sequencer's bypass got %v, want %v for each of the 7 passes", got, pass)
+	}
+	r.mu.Lock()
+	running, bypassed := r.Running, r.Bypassed
+	r.mu.Unlock()
+	if running || bypassed {
+		t.Errorf("after the measurement the transport runs: %v, the sequencer is bypassed: %v", running, bypassed)
+	}
+	r.wantMuted("after the solo passes")
+
+	// stop_song in the middle of a solo pass: the transport is stopped and
+	// rewound, the sequencer back in line, the strips open again.
+	before := len(r.transportCCs())
+	if res := call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true, "whole": false, "sections": 1, "solo_bars": 1}); res.IsError {
+		t.Fatalf("mix: %s", resultText(res))
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		r.mu.Lock()
+		running := r.Running
+		r.mu.Unlock()
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the transport was not started")
+		}
+	}
+	if res := call(t, s.handleStopSong, map[string]any{}); res.IsError {
+		t.Fatalf("stop: %s", resultText(res))
+	}
+	if _, text := mixReportOf(t, s); !strings.Contains(text, "the measurement ended early: stopped") {
+		t.Fatalf("report after stop_song: %s", text)
+	}
+	got := r.transportCCs()[before:]
+	if n := len(got); n < 6 || fmt.Sprint(got[n-3:]) != fmt.Sprint([]int{103127, 104127, 106000}) || got[0] != 106127 {
+		t.Errorf("a measurement stopped in a pass sent %v, want it to end with the stop, the rewind and the sequencer back in line", got)
+	}
+	r.mu.Lock()
+	running, bypassed = r.Running, r.Bypassed
+	r.mu.Unlock()
+	if running || bypassed {
+		t.Errorf("after stop_song the transport runs: %v, the sequencer is bypassed: %v", running, bypassed)
+	}
+	r.wantMuted("after stop_song")
+
+	// transport: false keeps the transport stopped: the drums are not heard.
+	before = len(r.transportCCs())
+	res = call(t, s.handleMixSong, map[string]any{"song": "night_drive", "sections": 1, "transport": false})
+	if text := resultText(res); res.IsError || strings.Contains(text, "transport running") {
+		t.Fatalf("mix without the transport: %s", text)
+	}
+	rep, text = mixReportOf(t, s)
+	if len(rep.Sections) != 1 || math.Abs(rep.Sections[0].PeakDB+12) > 1 {
+		t.Errorf("without the transport the verse peaks at %+v, want the bass's -12 alone\n%s", rep.Sections, text)
+	}
+	if got := r.transportCCs()[before:]; len(got) != 0 {
+		t.Errorf("a measurement without the transport sent %v", got)
+	}
+}
+
+// TestMixSongTransportTrackTaps reads a self-playing drum machine at its own
+// tap in the one pass, which runs the transport.
+func TestMixSongTransportTrackTaps(t *testing.T) {
+	r := mixRig(t)
+	s := r.s
+	r.Session = "Songs/Night Drive"
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": selfSong + "session: {track_taps: true}\n"}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	selfPlayingDrums(r)
+	res := call(t, s.handleMixSong, map[string]any{"song": "night_drive", "per_track": true})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "in the same pass), with AUM's transport running") {
+		t.Fatalf("mix: %s", text)
+	}
+	rep, text := mixReportOf(t, s)
+	cell := map[string]mixSolo{}
+	for _, tr := range rep.Tracks {
+		cell[tr.Section+"/"+tr.Track] = tr
+	}
+	for _, sec := range []string{"verse", "chorus"} {
+		drums, ok := cell[sec+"/drums"]
+		if !ok || drums.Notes != 0 || drums.Silent || math.Abs(drums.PeakDB+20) > 1 || math.Abs(drums.RMSDB+23) > 1.5 {
+			t.Errorf("the drums at their tap in %s = %+v (measured %v), want -23 rms and -20 peak\n%s", sec, drums, ok, text)
+		}
+	}
+	if pad, ok := cell["verse/pad"]; ok {
+		t.Errorf("a row for a track that neither plays notes nor sounds in the section: %+v", pad)
+	}
+	// One pass, the transport rewound, started, stopped and rewound; the
+	// session has no sequencer to bypass.
+	if got := r.transportCCs(); fmt.Sprint(got) != fmt.Sprint([]int{104127, 102127, 103127, 104127}) {
+		t.Errorf("the transport got %v, want one pass's rewind, start, stop and rewind", got)
 	}
 }
 

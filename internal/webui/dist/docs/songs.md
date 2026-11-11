@@ -595,21 +595,49 @@ reads the master tap out for its whole length:
   around a stall read low.
 
 With `per_track: true` it adds the table a balance is made from: the level of
-every track in every distinct section, where the track has notes in it. A
-track more than 12 dB over another in the same section is pointed out, and a
-track that is silent where it plays notes is named. Where the tracks are
-measured depends on the session:
+every track in every distinct section where the track has notes or makes a
+sound of its own. A track more than 12 dB over another in the same section is
+pointed out, and a track that is silent where it plays notes is named. Where
+the tracks are measured depends on the session:
 
 | The session has | The tracks are measured | Passes |
 |-----------------|-------------------------|--------|
 | a tap on every track (`track_taps: true`), each connected under its name | each at its own tap while the song plays: after the track's fader, before the master's effects, over the whole section | the one through the song |
-| no track taps, or one that is not connected | each alone at the master tap, after the master's effects, over the section's first bars (`solo_bars`) | one more per track and section |
+| no track taps, or one that is not connected | each alone at the master tap, the other strips muted, after the master's effects, over the section's first bars (`solo_bars`) | one more per track and section |
 
 `solo: true` asks for the solo passes although the track taps are there, for
 the level a track has after the master's effects. The answer of `mix_song`
 says which of the two it does, and names a track whose tap is missing. The
 solo passes use `play_song`'s own player, so each starts from the section's
-whole sound.
+whole sound; as the track's first note is due, every other strip is muted,
+and when the measurement ends, however it ends, the strips are put back as
+the last section played has them.
+
+**The transport.** Every pass is played live, and every pass runs AUM's
+transport, as `play_song` does with `transport: true`: the session's sequencer
+is bypassed, the transport rewound, started with the first note, and stopped
+and rewound after the last bar, and the sequencer put back in line. That is
+what lets an instrument that plays by itself while the transport runs be
+heard: a drum machine playing its own sequencer, whose rhythm the song writes
+as parameters and no notes (see the drum machine's notes in
+[research](research/battalion.md)). The passes stay live rather than
+sequenced because the daemon's clock then starts with the first note, which
+is where the bars' levels are counted from, and because a part of the song
+and a track alone can only be played live. A stopped measurement
+(`stop_song`) or a failed pass leaves the transport stopped at the top and the
+sequencer in line, as a pass that ran to its end does.
+
+Nothing in the song says which instrument sounds by itself, so the tracks are
+told by listening: a track with no notes in a section is measured there too,
+where its strip is open (alone in a solo pass, or at its tap), and has a row
+when it sounded and none when it stayed silent. This costs a solo pass per
+such track and section.
+
+`transport: false` keeps the transport stopped through every pass, as before
+the transport was run: the DSP load stays lower (AUM's rose from 40 % to 85 %
+in one reading with the transport running, see [Status](#status)), only the
+tracks that have notes get solo passes, and an instrument that needs the
+transport is not heard.
 
 The measurement runs in the background: `mix_song` returns with an estimate,
 `get_song_mix` gives the progress or the finished report (`wait_ms` waits for
@@ -941,9 +969,11 @@ Not yet measured:
 - `transport: true` through a whole live song with the daemon's own bypass of
   the sequencer (one section was; the whole-song take sent the bypass by
   hand);
-- `mix_song` on a song whose drums come from a plugin's own sequencer: its
-  live passes do not run the transport, so that plugin stays silent in them
-  (the levels of such a song were read during a sequenced `play_song`);
+- `mix_song` running the transport in its passes (with the sequencer
+  bypassed, the other strips muted in a solo pass, a track without notes
+  measured by listening): the levels of a song whose drums come from a
+  plugin's own sequencer were read during a sequenced `play_song`, not yet
+  in a `mix_song`;
 - sessions authored with `track_taps` or `full_control`;
 - taps that dial in under their names: that needs the ProbeAudioTap build
   that sends them on the iPad. Until then every tap comes without a name and

@@ -7,6 +7,12 @@ package mcpserver
 // pass, each telling its track by the name it dialled in under; without them
 // every section is played once per track and measured at the master.
 //
+// Every pass is played live, as play_song plays a part of a song, and runs
+// AUM's transport with it (unless asked not to): an instrument that plays by
+// itself while the transport runs — a drum machine's own sequencer, set by a
+// song's parameters alone — is heard as it is when the song is played. The
+// session's own sequencer is bypassed meanwhile, as play_song does.
+//
 // A tap keeps only its last seconds, so the stream is read out as it
 // arrives and reduced on the way: nothing of the audio is kept but the mean
 // square and the sample peak of every hundredth of a second.
@@ -38,6 +44,8 @@ var (
 	mixBetween = 700 * time.Millisecond
 	// mixPull is how often the tap is read out.
 	mixPull = 400 * time.Millisecond
+	// mixPreroll is a pass's preroll; 0 takes the player's default.
+	mixPreroll time.Duration
 )
 
 const (
@@ -55,7 +63,8 @@ func (s *Server) registerSongMixTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "mix_song",
 		Description: "Measure a song's mix: play it (the whole song, or from a section for a number of sections) and read the master tap out for its whole length. The report is rms and sample peak per bar and per section, the loudest and the clipped bars, how much headroom is left, and where the tap's stream stalled. " +
-			"per_track: true adds the level of every track in every section — the table a balance is made from — and names a track that is silent where it has notes. A session with a tap on every track (session: {track_taps: true}) has them read out in the same pass: each track at its own tap, after its fader and before the master's effects, over the whole section. Without those taps each section is played once per track (the first bars of it, solo) and measured at the master; solo: true asks for that although the taps are there. " +
+			"per_track: true adds the level of every track in every section — the table a balance is made from — and names a track that is silent where it has notes; a track without notes in a section that sounds by itself there (an instrument playing its own sequencer with the transport) has its row too. A session with a tap on every track (session: {track_taps: true}) has them read out in the same pass: each track at its own tap, after its fader and before the master's effects, over the whole section. Without those taps each section is played once per track (the first bars of it, solo) and measured at the master; solo: true asks for that although the taps are there. " +
+			"Every pass is played live and runs AUM's transport with it, the session's sequencer bypassed meanwhile (as play_song with transport: true), so instruments that follow the host clock sound as they do in the song; transport: false keeps the transport stopped, for less DSP load, when nothing in the session needs it. " +
 			"Returns at once; get_song_mix gives the progress and the report (stop_song ends the measurement). The song's session must be loaded (load_song).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -66,7 +75,8 @@ func (s *Server) registerSongMixTools(songArg string) {
 				"per_track": {"type": "boolean", "description": "Also measure every track in every section: at its own tap in the same pass when the session has track taps, else alone in a pass of its own."},
 				"solo": {"type": "boolean", "description": "With per_track: measure the tracks by solo passes at the master even when the session has track taps (the level then includes the master's effects)."},
 				"solo_bars": {"type": "integer", "minimum": 1, "maximum": 32, "description": "How many bars of a section a solo pass plays (default 4)."},
-				"whole": {"type": "boolean", "description": "Report the whole range's bars and sections at the master (default true). false with per_track measures only the tracks."}
+				"whole": {"type": "boolean", "description": "Report the whole range's bars and sections at the master (default true). false with per_track measures only the tracks."},
+				"transport": {"type": "boolean", "description": "Run AUM's transport through every pass, with the session's sequencer bypassed (default true): an instrument that plays by itself with the transport (a drum machine's own sequencer) is silent without it. false keeps the transport stopped, which spares the DSP load a running transport adds, and measures only the tracks that have notes."}
 			},
 			"required": ["song"]
 		}`),
@@ -407,17 +417,21 @@ type mixArgs struct {
 	// one and the tracks are to be measured there; nil measures them by solo
 	// passes.
 	TrackTaps map[string]*audiotap.Store
+	// Transport runs AUM's transport through every pass; Sequencer says the
+	// session hosts the sequencer, which is bypassed meanwhile.
+	Transport, Sequencer bool
 }
 
 func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
-		Song     string `json:"song"`
-		From     string `json:"from"`
-		Sections int    `json:"sections"`
-		PerTrack bool   `json:"per_track"`
-		Solo     bool   `json:"solo"`
-		SoloBars int    `json:"solo_bars"`
-		Whole    *bool  `json:"whole"`
+		Song      string `json:"song"`
+		From      string `json:"from"`
+		Sections  int    `json:"sections"`
+		PerTrack  bool   `json:"per_track"`
+		Solo      bool   `json:"solo"`
+		SoloBars  int    `json:"solo_bars"`
+		Whole     *bool  `json:"whole"`
+		Transport *bool  `json:"transport"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -444,6 +458,7 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 		return textResult("mix_song: no audio tap is configured", true), nil
 	}
 	rec, authored := loadSongSessions()[cs.id]
+	ma.Transport, ma.Sequencer = args.Transport == nil || *args.Transport, rec.Sequence != ""
 	// The session's master tap when it names itself, else the latest tap.
 	tap, _ := s.songTap(rec.Session)
 	if tap == nil {
@@ -503,7 +518,7 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	var solos []soloPass
 	if ma.PerTrack && ma.TrackTaps == nil {
-		solos = s.mixSolos(cs, from, last, ma.SoloBars)
+		solos = s.mixSolos(cs, from, last, ma.SoloBars, ma.Transport)
 		for _, so := range solos {
 			est += cs.timeline.TickTime(int64(so.bars)*cs.timeline.BarTicks) + mixBetween + 2*time.Second
 		}
@@ -518,6 +533,10 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 		text += fmt.Sprintf(" (%d solo pass(es))", len(solos))
 		out["tracks_at"] = tracksAtMaster
 	}
+	if ma.Transport {
+		text += ", with AUM's transport running"
+	}
+	out["transport"] = ma.Transport
 	text += tapNote
 	text += "\nget_song_mix gives the progress and the report (wait_ms waits for it); stop_song ends it"
 	return structResult(text, out), nil
@@ -573,8 +592,11 @@ type soloPass struct {
 
 // mixSolos lists the solo passes of a range: every distinct section once, at
 // its first occurrence, with every track that plays notes in it, for at most
-// bars bars of it.
-func (s *Server) mixSolos(cs *compiledSong, from, last, bars int) []soloPass {
+// bars bars of it. quiet adds the tracks that play no notes there but whose
+// strip is open: an instrument may sound by itself (its own sequencer, with
+// the transport running), and nothing in the song says which does, so they
+// are measured too and the ones that stay silent are left out of the report.
+func (s *Server) mixSolos(cs *compiledSong, from, last, bars int, quiet bool) []soloPass {
 	tl := cs.timeline
 	var out []soloPass
 	seen := map[string]bool{}
@@ -591,13 +613,27 @@ func (s *Server) mixSolos(cs *compiledSong, from, last, bars int) []soloPass {
 			}
 		}
 		for _, tr := range tl.Tracks {
-			if notes[tr.ID] == 0 {
+			if notes[tr.ID] == 0 && (!quiet || stripMuted(cs.plan.Track(tr.ID), sec.State)) {
 				continue
 			}
 			out = append(out, soloPass{index: idx, section: sec.Name, track: tr.ID, bars: min(sec.Bars, bars), notes: notes[tr.ID], startTick: sec.Tick, sectionLength: sec.Bars})
 		}
 	}
 	return out
+}
+
+// stripMuted reports whether a section's state leaves a track's strip muted.
+func stripMuted(tp *song.TrackPlan, state []song.Event) bool {
+	if tp == nil {
+		return true
+	}
+	m := tp.MuteEvent(true)
+	for _, e := range state {
+		if e.Kind == m.Kind && e.Channel == m.Channel && e.Data1 == m.Data1 {
+			return e.Data2 >= 64
+		}
+	}
+	return tp.HomeMute()
 }
 
 // runMix does the measuring.
@@ -650,7 +686,18 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 	// play starts a playback and, once its first note is due, notes on every
 	// meter where in its stream that note is: the zero the levels of the
 	// playback are counted from.
+	//
+	// With the transport, every pass rewinds it, starts it with the first
+	// note, and stops and rewinds it at the end — also when the pass is
+	// stopped or fails (the player sends that however it ends) — with the
+	// session's sequencer bypassed in between.
 	play := func(opts song.PlayOptions) error {
+		if a.Transport {
+			var before []song.Event
+			opts.Rewind, before, opts.After = liveTransport(cs.plan, a.Sequencer)
+			opts.Before = append(opts.Before, before...)
+		}
+		opts.Preroll = mixPreroll
 		if _, err := s.player.Start(cs.id, tl, opts, send); err != nil {
 			return err
 		}
@@ -755,14 +802,21 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 		// Every track at its own tap, out of the pass just played: each
 		// distinct section at its first occurrence, the whole of it.
 		rep.TracksAt = tracksAtTaps
-		for _, so := range s.mixSolos(cs, a.From, last, math.MaxInt) {
+		// A track without notes in a section is read too, and kept when it
+		// sounded there.
+		for _, so := range s.mixSolos(cs, a.From, last, math.MaxInt, true) {
 			at := secs(so.startTick - startTick)
 			rms, peak, ok := trackMeters[so.track].levelSince(at, at+secs(int64(so.bars)*tl.BarTicks))
 			if !ok {
-				rep.Findings = append(rep.Findings, fmt.Sprintf("the tap of %s delivered no audio in %s: its level there is not known", so.track, so.section))
+				if so.notes > 0 {
+					rep.Findings = append(rep.Findings, fmt.Sprintf("the tap of %s delivered no audio in %s: its level there is not known", so.track, so.section))
+				}
 				continue
 			}
 			row := mixSolo{Section: so.section, Track: so.track, Bars: so.bars, Notes: so.notes, RMSDB: rms, PeakDB: peak, Silent: peak <= silentDB}
+			if so.notes == 0 && row.Silent {
+				continue
+			}
 			rep.Tracks = append(rep.Tracks, row)
 			if row.Silent {
 				rep.Findings = append(rep.Findings, fmt.Sprintf("%s%s is silent at its tap in %s although it plays %d note(s) there: check_song tells whether its plugin still answers", so.track, plugin(so.track), so.section, so.notes))
@@ -772,13 +826,28 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 	case a.PerTrack:
 		// No taps on the tracks: every track alone, at the master.
 		rep.TracksAt = tracksAtMaster
-		solos := s.mixSolos(cs, a.From, last, a.SoloBars)
+		solos := s.mixSolos(cs, a.From, last, a.SoloBars, a.Transport)
+		// The passes mute the other strips; the session is left with the
+		// strips as the last pass's section has them, however it ends.
+		var soloState []song.Event
+		defer func() { s.restoreStrips(cs.plan, soloState) }()
 		for i, so := range solos {
 			job.setPhase("track %s alone in %s (%d of %d)", so.track, so.section, i+1, len(solos))
 			if err := sleepContext(ctx, mixBetween); err != nil {
 				return rep, err
 			}
-			if err := play(song.PlayOptions{From: so.index, Count: 1, Tracks: []string{so.track}}); err != nil {
+			// Only the track's notes are played, and every other strip is
+			// muted as the pass begins (the section's sound has just opened
+			// them), so an instrument that plays by itself with the transport
+			// is not heard in another track's pass.
+			var others []song.Event
+			for _, tp := range cs.plan.Tracks {
+				if tp.ID != so.track {
+					others = append(others, tp.MuteEvent(true))
+				}
+			}
+			soloState = tl.Sections[so.index].State
+			if err := play(song.PlayOptions{From: so.index, Count: 1, Tracks: []string{so.track}, Before: others}); err != nil {
 				return rep, err
 			}
 			played := secs(int64(so.bars) * tl.BarTicks)
@@ -790,6 +859,10 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 			meter.pull()
 			rms, peak, _ := meter.levelSince(0, played)
 			row := mixSolo{Section: so.section, Track: so.track, Bars: so.bars, Notes: so.notes, RMSDB: rms, PeakDB: peak, Silent: peak <= silentDB}
+			if so.notes == 0 && row.Silent {
+				// No notes and no sound of its own there: nothing to report.
+				continue
+			}
 			rep.Tracks = append(rep.Tracks, row)
 			if row.Silent {
 				rep.Findings = append(rep.Findings, fmt.Sprintf("%s%s is silent in %s although it plays %d note(s) there: check_song tells whether its plugin still answers", so.track, plugin(so.track), so.section, so.notes))
@@ -798,6 +871,23 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 		rep.Findings = append(rep.Findings, soloFindings(rep)...)
 	}
 	return rep, nil
+}
+
+// restoreStrips puts every track's strip back to the mute a section's state
+// gives it, after solo passes muted the others. It runs however the
+// measurement ended, so it does not use its context, and it waits songMuteGap
+// first: a mute and its reversal that reach AUM in one audio buffer can leave
+// the strip at the first (see stripMutes).
+func (s *Server) restoreStrips(plan *song.Plan, state []song.Event) {
+	if len(state) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = sleepContext(ctx, songMuteGap)
+	for _, tp := range plan.Tracks {
+		_ = s.sendBrain(ctx, songCommand(tp.MuteEvent(stripMuted(tp, state))))
+	}
 }
 
 // wholeFindings says what stands out in the whole pass.
