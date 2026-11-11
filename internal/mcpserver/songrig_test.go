@@ -58,6 +58,15 @@ type songRig struct {
 	LostMutes int
 	muted     map[int]bool
 	muteAt    map[int]time.Time
+	// SelfPlay is what a channel's instrument plays by itself while AUM's
+	// transport runs, as a drum machine's own sequencer does: an amplitude
+	// at rigSelfHz, behind the strip's mute like a note. nil, or 0, plays
+	// nothing.
+	SelfPlay func(ch int) float64
+	// Running is whether the transport runs: Start Play on the global
+	// channel starts it, Stop/Rewind stops it. Bypassed is the session's
+	// sequencer's bypass (CC 106 there).
+	Running, Bypassed bool
 	// Programs are the Program Changes received, in order.
 	Programs []midicontrol.Command
 	// Commands is everything received.
@@ -82,8 +91,21 @@ type songRig struct {
 
 const rigSampleRate = 48000
 
-// rigFloorHz is the pitch of a strip's Floor.
-const rigFloorHz = 110.0
+// rigFloorHz is the pitch of a strip's Floor, rigSelfHz the one of what an
+// instrument plays by itself (SelfPlay).
+const (
+	rigFloorHz = 110.0
+	rigSelfHz  = 330.0
+)
+
+// The global channel's controls the rig follows: the transport's (the
+// convention's CCs) and the sequencer's bypass.
+const (
+	rigStartCC  = 102
+	rigStopCC   = 103
+	rigRewindCC = 104
+	rigBypassCC = 106
+)
 
 // rigNote is a sounding note: the frames it started and was released at (-1
 // while it is held).
@@ -336,6 +358,16 @@ func (r *songRig) read(c *websocket.Conn) {
 		case "pc":
 			r.Programs = append(r.Programs, cmd)
 		case "cc":
+			if cmd.Channel == song.GlobalChannel {
+				switch cmd.Controller {
+				case rigStartCC:
+					r.Running = true
+				case rigStopCC:
+					r.Running = false
+				case rigBypassCC:
+					r.Bypassed = cmd.Value >= 64
+				}
+			}
 			strip, ok := r.Strips[[2]int{cmd.Channel, cmd.Controller}]
 			if !ok {
 				break
@@ -400,6 +432,13 @@ func (r *songRig) render() {
 		for ch := 1; ch <= 16; ch++ {
 			if amp := r.Floor(ch); amp > 0 && !r.muted[ch] {
 				voices = append(voices, voice{ch, rigFloorHz, amp, nil})
+			}
+		}
+	}
+	if r.SelfPlay != nil && r.Running {
+		for ch := 1; ch <= 16; ch++ {
+			if amp := r.SelfPlay(ch); amp > 0 && !r.muted[ch] {
+				voices = append(voices, voice{ch, rigSelfHz, amp, nil})
 			}
 		}
 	}

@@ -890,17 +890,7 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 			OnEnd:   onEnd,
 		}
 		if args.Transport {
-			// The transport is left at the top again, so whatever starts it
-			// next begins there.
-			opts.Rewind = []song.Event{cc(rewind, 127)}
-			opts.Before = []song.Event{cc(start, 127)}
-			opts.After = []song.Event{cc(stop, 127), cc(rewind, 127)}
-			if rec.Sequence != "" {
-				// The session's sequencer would play the song from the top along
-				// with the transport: keep it out while the song is played live.
-				opts.Rewind = append([]song.Event{cc(bypass, 127)}, opts.Rewind...)
-				opts.After = append(opts.After, cc(bypass, 0))
-			}
+			opts.Rewind, opts.Before, opts.After = liveTransport(cs.plan, rec.Sequence != "")
 		}
 		st, err = s.player.Start(cs.id, cs.timeline, opts, send)
 	}
@@ -941,6 +931,27 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
 	return structResult(b.String(), out), nil
+}
+
+// liveTransport is what a live playback sends to run AUM's transport along
+// with it: rewind (then the player's rewindSettle at the least), start with
+// the first note, stop and rewind at the end, so whatever starts the
+// transport next begins at the top. In a session that hosts the sequencer
+// (sequencer), the sequencer would play the song from the top along with the
+// transport: it is bypassed first and put back in line last.
+func liveTransport(plan *song.Plan, sequencer bool) (rewind, before, after []song.Event) {
+	cc := func(at song.Assignment, value int) song.Event {
+		return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
+	}
+	rw, start, stop := plan.Transport["Rewind"], plan.Transport["Start Play"], plan.Transport["Stop/Rewind"]
+	rewind = []song.Event{cc(rw, 127)}
+	before = []song.Event{cc(start, 127)}
+	after = []song.Event{cc(stop, 127), cc(rw, 127)}
+	if sequencer {
+		rewind = append([]song.Event{cc(plan.SequencerBypass, 127)}, rewind...)
+		after = append(after, cc(plan.SequencerBypass, 0))
+	}
+	return rewind, before, after
 }
 
 // songPlayMode decides how a song is played. want is the mode asked for ("" to

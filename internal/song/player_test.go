@@ -755,3 +755,34 @@ func TestPlayerRewindsAheadOfTheStart(t *testing.T) {
 		t.Errorf("the playback ended with %v, want the stop", got[n-2:])
 	}
 }
+
+// TestPlayerStoppedInThePrerollPutsBack: a live playback stopped before its
+// first note still sends After, so what its Rewind changed (a transport
+// rewound, a sequencer bypassed) is put back.
+func TestPlayerStoppedInThePrerollPutsBack(t *testing.T) {
+	tl, _ := compileTest(t, tinySong)
+	var rec recorder
+	var p Player
+	opts := PlayOptions{Preroll: 2 * time.Second, Rewind: seqRewind, Before: seqStart, After: seqStop}
+	if _, err := p.Start("tiny", tl, opts, rec.send); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); len(rec.snapshot()) < len(seqRewind); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the rewind was not sent")
+		}
+	}
+	if final := p.Stop(); final.Outcome != "stopped" {
+		t.Fatalf("final status = %+v", final)
+	}
+	got := rec.snapshot()
+	n := len(got)
+	if n < len(seqRewind)+len(seqStop) || got[0] != seqRewind[0] || got[n-2] != seqStop[0] || got[n-1] != seqStop[1] {
+		t.Fatalf("a playback stopped in its preroll sent %v, want the rewind first and the stop last", got)
+	}
+	for _, e := range got {
+		if e == seqStart[0] || e.Kind == NoteOn {
+			t.Errorf("a playback stopped in its preroll sent %s", describe(e))
+		}
+	}
+}

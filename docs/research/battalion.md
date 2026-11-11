@@ -39,6 +39,12 @@ the plugin remaps it.
 | 11 | 12 / 13 / 14 | Performance page: randomise / reset / commit |
 | 11 | 24-31 | randomise voice 1 to 8 |
 
+The bundled device type `battalion` is this table: a note control for every
+entry (`voice_1`, `play_voice_3`, `sequencer_stop`, `mute_2`, `preset_next` …),
+each on its own channel. Bound to the endpoint that reaches the plugin, it
+works wherever the session routes those channels to the instrument. A song's
+session routes one channel to each instrument, the track's.
+
 *Measured:* on channel 1 the eight pads repeat in every octave (24-31, 36-43,
 48-55, 60-67 …), each octave the same sound, and G# to B are silent. A scan
 for a kit's pads therefore needs eight notes, 36 to 43, and a wider one finds
@@ -285,9 +291,10 @@ Levels and pitches are read at the session's audio tap.
   drums come from the generators opens with them empty and fills them from
   bar 1.
 - **Four instances** in one session loaded and played. AUM took over a
-  minute to bring them up, longer than `load_song` waits for the session's
-  name, so the load was reported as failed although it went through;
-  `check_song` afterwards found every track.
+  minute to bring them up, and its UI did not answer for most of that time.
+  `load_song` waits for the session's name as long as AUM shows that it is
+  loading (up to 2 minutes), so such a load is reported as verified;
+  `check_song` found every track.
 
 How the sequencer's parameters run, read off the plugin's window (v is the
 parameter's value, 0 to 1):
