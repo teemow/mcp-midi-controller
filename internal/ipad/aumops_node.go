@@ -468,18 +468,36 @@ func (d *AUMDriver) pluginWindow(r AUMRequest) (AUMResult, error) {
 	if err := d.tapRect(w.Bar[len(w.Bar)-2], "window mode of "+strconv.Quote(w.Title)); err != nil {
 		return AUMResult{}, err
 	}
-	ok, err := d.until(aumWait, func(st AUMState) bool { return d.findText(mode, nil) != nil })
+	ok, err := d.until(aumWait, func(st AUMState) bool { return d.windowModeItem(mode) != nil })
 	if err != nil {
 		return AUMResult{}, err
 	}
 	if !ok {
 		return d.result("window_mode", false, "the window-mode menu did not open", nil), nil
 	}
-	if err := d.tapText(mode, nil); err != nil {
+	if err := d.tapRect(d.windowModeItem(mode).Rect, mode); err != nil {
 		return AUMResult{}, err
 	}
-	ok, err = d.until(aumWait, func(st AUMState) bool { return d.findText(mode, nil) == nil })
+	ok, err = d.until(aumWait, func(st AUMState) bool { return d.windowModeItem(mode) == nil })
 	return d.result("window_mode", ok, verdict(ok, fmt.Sprintf("%q set to %s", w.Title, mode), "the menu did not close"), nil), err
+}
+
+// windowModeItem finds mode in the open window-mode menu. AUM marks the
+// window's current mode with ✓ and the default one with ‧ ("MAXIMIZED ✓",
+// "DEFAULT ‧"), so an item is matched by its first word.
+func (d *AUMDriver) windowModeItem(mode string) *Element {
+	pop := d.St.Overlay("popover")
+	if pop == nil {
+		return nil
+	}
+	return d.find(func(e *Element) bool {
+		f := strings.Fields(e.Text())
+		if e.Type != "Button" || e.Hidden || e.Rect.Empty() || len(f) == 0 || !strings.EqualFold(f[0], mode) {
+			return false
+		}
+		cx, cy := e.Rect.Center()
+		return pop.Frame.Contains(cx, cy)
+	})
 }
 
 // nameNode sets the custom short name of a bus or MIDI-bus node: its

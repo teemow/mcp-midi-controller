@@ -176,7 +176,10 @@ var (
 	reLevel      = regexp.MustCompile(`^([+-]?\d+(?:\.\d+)?|-∞|-inf) dB$`)
 	reTempo      = regexp.MustCompile(`♩\s*(\d+(?:\.\d+)?)`)
 	rePosition   = regexp.MustCompile(`^-?\d+:\d+\s+-?\d+:\d+(?:\.\d+)?$`)
-	rePluginWin  = regexp.MustCompile(` @[A-Z]+\d+$`)
+	// rePluginWin matches a plugin window's title: "<plugin> @<node>", and
+	// " - <strip title>" after it when the strip has a custom title ("UA
+	// Battalion @A2 - Battalion"). A MIDI node reads "@M1:1".
+	rePluginWin = regexp.MustCompile(`^.+ @[A-Z]+\d+(?::\d+)?(?: - .+)?$`)
 	// reGlued matches the texts iOS glues into the accessibility label of
 	// an unlabelled AUM control: meter readings, the DSP load, the main
 	// meter's stale "SESSION: …" label and the about line.
@@ -276,7 +279,9 @@ func ParseAUM(root *Element, window Size) AUMState {
 }
 
 // parsePluginWindows finds plugin title bars: a button labelled
-// "<name> @<node>" among a row of buttons.
+// "<name> @<node>" (or "<name> @<node> - <strip>") among a row of buttons.
+// A side panel opened over the window marks the bar hidden: it is not
+// listed then, as its ✕ lies under the panel.
 func parsePluginWindows(root *Element) []AUMPluginWindow {
 	var out []AUMPluginWindow
 	root.Walk(func(el *Element, _ int) bool {
@@ -510,11 +515,20 @@ func isSidePanel(el *Element, window Size) bool {
 
 // panelTitle is the text in a side panel's 60-point header, or the
 // identifier of a navigation bar at its top (the Navigator).
+//
+// While AUM pushes a page (MENU → FILES, SAVE, MIDI CONTROL) the outgoing
+// page's header stays in the tree for a moment, hidden and slid up above
+// the screen (y -60), ahead of the new one. So a header must sit at the top
+// edge, and a visible one wins over a hidden one.
 func panelTitle(el *Element) string {
-	t := el.First(func(e *Element) bool {
-		return e.Type == "StaticText" && e.Label != "" && e.Rect.Y <= 1 && e.Rect.Height >= 40 && e.Rect.Height <= 70
-	})
-	if t != nil {
+	header := func(e *Element) bool {
+		r := e.Rect
+		return e.Type == "StaticText" && e.Label != "" && r.Y >= -1 && r.Y <= 1 && r.Height >= 40 && r.Height <= 70
+	}
+	if t := el.First(func(e *Element) bool { return header(e) && !e.Hidden }); t != nil {
+		return t.Label
+	}
+	if t := el.First(header); t != nil {
 		return t.Label
 	}
 	if nb := el.First(func(e *Element) bool { return e.Type == "NavigationBar" && e.Identifier != "" && e.Rect.Y <= 1 }); nb != nil {

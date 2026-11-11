@@ -199,17 +199,20 @@ func (d *AUMDriver) pressReturn() error {
 
 func (d *AUMDriver) pause(t time.Duration) error { return sleepCtx(d.ctx, t) }
 
-// until re-reads AUM until cond holds or timeout passes.
+// until re-reads AUM until cond holds or timeout passes, and reads at least
+// twice: with a plugin window open one read can take longer than timeout
+// (12 to 15 seconds with UA Battalion's), and a single read taken while AUM
+// still animates says nothing about where it ends up.
 func (d *AUMDriver) until(timeout time.Duration, cond func(st AUMState) bool) (bool, error) {
 	deadline := time.Now().Add(timeout)
-	for {
+	for reads := 1; ; reads++ {
 		if err := d.Read(); err != nil {
 			return false, err
 		}
 		if cond(d.St) {
 			return true, nil
 		}
-		if time.Now().After(deadline) {
+		if reads >= 2 && time.Now().After(deadline) {
 			return false, nil
 		}
 		if err := d.pause(150 * time.Millisecond); err != nil {

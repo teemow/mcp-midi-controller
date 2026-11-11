@@ -156,12 +156,23 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **Popovers** are elements of type `Popover` titled by their navigation bar
   (a long-press menu has none); **side panels** (menu, Settings, MIDI Control,
   FILES) are a full-height column at the right edge with a 60-point header,
-  closed by the icon at its top right. The Navigator has a navigation bar
+  closed by the icon at its top right. A panel opened from the main menu is
+  pushed over it: for a moment the menu's header stays in the tree, hidden
+  and slid above the screen, ahead of the new one, so the title is the
+  visible header at the panel's top edge. The Navigator has a navigation bar
   instead, and its top-right icon is the bookmark filter: it closes on a tap
   on the mixer, which AUM swallows. The Set level and Edit Value dialogs are
   alerts with a text field and Cancel / Set. Their field is filled without
   a tap and Set is pressed as an element: after a tap on the field (which
   brings up the on-screen keyboard), AUM ignored a tap on Set.
+- **Plugin windows** have a 32-point title bar of buttons: the title
+  `<plugin> @<node>`, followed by ` - <strip title>` when the strip has a
+  custom title (`UA Battalion @A2 - Battalion`), then the window mode and ✕
+  last. The window-mode menu marks the current mode with ✓ and the default
+  one with ‧ (`MAXIMIZED ✓`, `DEFAULT ‧`). A side panel or popover opened
+  over the window marks its bar hidden: `get_aum_ui` lists the window only
+  while nothing covers its bar. Side panels open over a plugin window, so
+  `aum_panel`, `aum_files` and `aum_midi_control` leave it open.
 - **Under a side panel or the routing matrix** AUM marks the whole mixer
   invisible; its states still read.
 - **Unlabelled controls** carry labels iOS glues from the texts around them
@@ -243,9 +254,15 @@ What AUM's tree does **not** carry, and how to check it instead:
   window open: tree reads time out, then every request bound to AUM hangs until
   `scripts/ipad wda` restarts). Close plugin windows (`aum_node window_close`)
   before reading the tree again.
+- **Plugin windows slow every read.** A plugin's view adds its own elements
+  to AUM's tree: with UA Battalion's window open one read took 12 to 15
+  seconds (about 3 without a window), so an `aum_*` call takes tens of
+  seconds. A wait re-reads at least once after its deadline, as one read can
+  outlast it. Close the window when it is not needed.
 - **Screenshots and trees are private.** They show session, plugin and device
   names. The daemon returns them to the caller and stores nothing; keep them out
-  of this public repository.
+  of this public repository. The captured trees under `internal/ipad/testdata`
+  are trimmed and have the names of private sessions replaced.
 - **Coordinates are points** in the app's current orientation. AUM rotates with
   the iPad: `get_aum_ui` reports the window and orientation; the named targets
   follow it. Settings → Show Status Bar moves AUM down by about 32 points.
