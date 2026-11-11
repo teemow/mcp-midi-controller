@@ -242,7 +242,7 @@ func TestBuildSession(t *testing.T) {
 	s := mustParse(t, testSong)
 	p := mustPlan(t, s)
 	prepared := 0
-	sess, rep, err := p.BuildSession(SessionOptions{Prepare: func(*aum.NodeSpec) error { prepared++; return nil }})
+	sess, rep, err := p.BuildSession(SessionOptions{Prepare: func(*NodePlan, *aum.NodeSpec) error { prepared++; return nil }})
 	if err != nil {
 		t.Fatalf("BuildSession: %v", err)
 	}

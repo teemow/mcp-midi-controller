@@ -43,7 +43,8 @@ func (s *Server) registerAUv3DefaultStateTools() {
 				"slot": {"type": "integer", "description": "Slot index of the node within the channel chain."},
 				"out_id": {"type": "string", "description": "Default-state file id (defaults to the component id <type>-<subtype>-<manufacturer>, the audio unit's probe id)."},
 				"name": {"type": "string", "description": "Optional human label stored in the file."},
-				"merge": {"type": "boolean", "description": "Merge captured keys into an existing file for this audio unit (default false = replace)."}
+				"merge": {"type": "boolean", "description": "Merge captured keys into an existing file for this audio unit (default false = replace)."},
+				"base": {"type": "boolean", "description": "Store it as the unit's base state instead (under auv3-base-states): the state an authored state is written over, such as the step sequence of a UA Battalion in a song. A base state is not given to every node of the unit. Capture it from a session AUM saved with the plugin's default patch."}
 			},
 			"required": ["channel", "slot"]
 		}`),
@@ -123,7 +124,8 @@ func (s *Server) registerAUv3DefaultStateTools() {
 		Description: "Edit one field inside a structured (JSON or JUCE-style XML) `text` entry of a default state, leaving every other field and the binary prefix untouched (capture-and-mutate, docs/auv3-state-authoring.md Tier 1). " +
 			"The entry's format is auto-detected. JSON paths use gjson/sjson dot syntax (e.g. `host`, `mixer.0.gain`, `voices.-1` to append). " +
 			"XML paths are slash-separated element steps relative to the root's children, each optionally `Name[index]` (0-based) or `Name[@attr=value]`, with a trailing `@attr` to target an attribute (else the element's text); e.g. `PARAM[@id=cutoff]/@value`. " +
-			"Opaque base64 entries have no addressable structure and are rejected (use set_auv3_default_state to replace them wholesale).",
+			"Behind JUCE's binary header (\"VC2!\" and a length) the length is written for the edited XML; a base64 entry that is JUCE binary XML (a captured JUCE state) is edited as XML too. " +
+			"Other opaque base64 entries have no addressable structure and are rejected (use set_auv3_default_state to replace them wholesale).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -147,6 +149,7 @@ func (s *Server) handleCaptureAUv3DefaultState(_ context.Context, req *mcp.CallT
 		OutID     string `json:"out_id"`
 		Name      string `json:"name"`
 		Merge     bool   `json:"merge"`
+		Base      bool   `json:"base"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -188,7 +191,11 @@ func (s *Server) handleCaptureAUv3DefaultState(_ context.Context, req *mcp.CallT
 	if id == "" {
 		return textResult("cannot derive a default-state id (empty component type, subtype and name); pass out_id", true), nil
 	}
-	outPath := filepath.Join(config.AUv3DefaultStatesDir(), id+".yaml")
+	dir := config.AUv3DefaultStatesDir()
+	if args.Base {
+		dir = config.AUv3BaseStatesDir()
+	}
+	outPath := filepath.Join(dir, id+".yaml")
 
 	if args.Merge {
 		if existing, lerr := loadAUv3DefaultState(outPath); lerr == nil {
@@ -235,6 +242,9 @@ func (s *Server) handleCaptureAUv3DefaultState(_ context.Context, req *mcp.CallT
 		fmt.Fprintf(&b, "  %-26s %-12s %6dB\n", k, kind, len(raw))
 	}
 	fmt.Fprintf(&b, "%d key(s): %d editable text, %d opaque base64\n", len(keys), text, b64)
+	if args.Base {
+		b.WriteString("a base state: a song's authored state for this unit (a UA Battalion's sequence) is written over it; nodes without one stay as they were\n")
+	}
 
 	structured := map[string]any{
 		"id":        id,
@@ -244,6 +254,7 @@ func (s *Server) handleCaptureAUv3DefaultState(_ context.Context, req *mcp.CallT
 		"keys":      keys,
 		"text":      text,
 		"base64":    b64,
+		"base":      args.Base,
 	}
 	return structResult(b.String(), structured), nil
 }
@@ -458,7 +469,18 @@ func defaultStatePath(id string) (string, error) {
 // unreadable ones (a bad file should not block authoring). It is the
 // default-state counterpart of loadStagedProbeDumps.
 func loadAUv3DefaultStates() []device.AUv3DefaultState {
-	dir := config.AUv3DefaultStatesDir()
+	return loadAUv3StatesIn(config.AUv3DefaultStatesDir())
+}
+
+// loadAUv3BaseStates reads every base state (config.AUv3BaseStatesDir), as
+// loadAUv3DefaultStates reads the default states.
+func loadAUv3BaseStates() []device.AUv3DefaultState {
+	return loadAUv3StatesIn(config.AUv3BaseStatesDir())
+}
+
+// loadAUv3StatesIn reads every state file of a directory, skipping unreadable
+// ones.
+func loadAUv3StatesIn(dir string) []device.AUv3DefaultState {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil

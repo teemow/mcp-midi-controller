@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/teemow/mcp-midi-controller/internal/juce"
 	"github.com/teemow/midi-device/device"
 )
 
@@ -140,6 +141,55 @@ func TestEditXMLField(t *testing.T) {
 		if !strings.HasPrefix(string(raw), "VC2!") {
 			t.Fatalf("prefix not re-prepended: %q", string(raw)[:8])
 		}
+	})
+}
+
+// TestEditJUCEStateLength checks an edit that changes the XML's length writes
+// the length into JUCE's header, behind a text entry's prefix and inside a
+// base64 entry that is JUCE binary XML.
+func TestEditJUCEStateLength(t *testing.T) {
+	body := `<state><PARAM id="cutoff" value="0.5"/></state>`
+	check := func(t *testing.T, raw []byte, want string) {
+		t.Helper()
+		text, err := juce.DecodeBinaryXML(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(text, want) || !strings.HasSuffix(text, "</state>") {
+			t.Fatalf("the plugin would read %q", text)
+		}
+	}
+
+	t.Run("text behind the header", func(t *testing.T) {
+		e := device.StateEntry{Prefix: base64.StdEncoding.EncodeToString(juce.Header(len(body))), Text: body}
+		got, _, err := editStateEntryField(e, "PARAM[@id=cutoff]/@value", []byte(`"0.123456"`), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := got.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, raw, `value="0.123456"`)
+	})
+
+	t.Run("a captured JUCE block", func(t *testing.T) {
+		e := device.StateEntry{Base64: base64.StdEncoding.EncodeToString(juce.EncodeBinaryXML(body))}
+		got, format, err := editStateEntryField(e, "PARAM[@id=cutoff]/@value", []byte(`"0.75"`), false)
+		if err != nil || format != "xml" {
+			t.Fatalf("format=%q err=%v", format, err)
+		}
+		if got.Base64 == "" || got.Text != "" {
+			t.Fatalf("the entry is no longer base64: %+v", got)
+		}
+		raw, err := got.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw[len(raw)-1] != 0 {
+			t.Error("the block lost its NUL")
+		}
+		check(t, raw, `value="0.75"`)
 	})
 }
 

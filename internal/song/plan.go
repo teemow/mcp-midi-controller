@@ -164,6 +164,10 @@ type NodePlan struct {
 
 	dump device.ProbeDump
 	home NodeState // the plugin's own declaration
+	// seq is the instrument's own step sequence, nil without one; seqAt is
+	// where the document writes it.
+	seq   *stepSequence
+	seqAt string
 	// refs is where the session keeps each of the dump's parameters, worked
 	// out when the first one is asked for.
 	refs []aum.ParamRef
@@ -332,6 +336,11 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			MIDI: track != MasterTrack && (pl.MIDI || effect == ""),
 			dump: dump, home: pl.NodeState,
 		}
+		if effect == "" && len(pl.Sequence) > 0 {
+			n.seqAt = at + "/sequence"
+			m, _ := parseMeter(s.TimeSignature) // checked by Validate
+			n.seq = checkStepSequence(&e, n.seqAt, pl.Sequence, m)
+		}
 		p.nodes[track+"/"+effect] = n
 		return n
 	}
@@ -406,6 +415,7 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	// A control a scene or ramp sets needs a home value on the track, so the
 	// sections that do not set it know what to return to.
 	p.checkHomes(&e)
+	p.checkSequences(&e)
 	if err := e.err(); err != nil {
 		return nil, err
 	}
@@ -597,6 +607,9 @@ func (n *NodePlan) FactoryPresets() []string {
 	return out
 }
 
+// Component is the audio unit the node hosts.
+func (n *NodePlan) Component() device.ProbeComponent { return n.dump.Component }
+
 // HomePreset is the preset the node's plugin declares for itself, "" for none.
 func (n *NodePlan) HomePreset() string { return n.home.Preset }
 
@@ -679,6 +692,39 @@ func (p *Plan) checkHomes(e *errs) {
 			}
 			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
 				needParam(n, r.Param, fmt.Sprintf("/sections/%s/automation/%d", name, i))
+			}
+		}
+	}
+}
+
+// checkSequences checks every instrument's step sequence against its plugin
+// and against the rest of the song: only UA Battalion has one a song can
+// write; a preset would replace it; and a lane's length or mode the song also
+// sets as a parameter is set in two places.
+func (p *Plan) checkSequences(e *errs) {
+	for _, n := range p.allNodes() {
+		if n.seq == nil {
+			continue
+		}
+		if !aum.ComponentMatches(n.dump.Component, BattalionComponent) {
+			e.addf("%s: %s has no step sequence a song can write; only UA Battalion does", n.seqAt, n.Name)
+			continue
+		}
+		if n.home.Preset != "" {
+			e.addf("%s: a preset replaces the whole kit with its own sequence; leave out the preset (%q) of an instrument with a sequence", n.seqAt, n.home.Preset)
+		}
+		for _, name := range sortedKeys(p.song.Scenes) {
+			if st, ok := p.song.Scenes[name][n.Track]; ok && st.Preset != "" {
+				e.addf("/scenes/%s/%s/preset: a preset replaces the whole kit with its own sequence, and %s has one", name, n.Track, nodeLabel(n))
+			}
+		}
+		set := map[string]bool{}
+		for _, pa := range n.Params {
+			set[pa.Key] = true
+		}
+		for _, sp := range n.seq.params(n.seqAt) {
+			if sp.set && set[sp.id] {
+				e.addf("%s: the song also sets %s as a parameter; say it in one place (in params, a scene can move it)", sp.where, sp.id)
 			}
 		}
 	}
@@ -1006,6 +1052,11 @@ func (p *Plan) Fingerprint() string {
 			if pr.Channel != GlobalChannel {
 				fmt.Fprintf(&b, "c%d|", pr.Channel)
 			}
+		}
+		if n.seq != nil {
+			// The sequence is in the node's saved state: another sequence is
+			// another session.
+			fmt.Fprintf(&b, "Q%s|", n.seq.fingerprint())
 		}
 		for _, pa := range n.Params {
 			fmt.Fprintf(&b, "A%s:%s|", pa.Key, pa.At)
