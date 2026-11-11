@@ -39,6 +39,12 @@ the plugin remaps it.
 | 11 | 12 / 13 / 14 | Performance page: randomise / reset / commit |
 | 11 | 24-31 | randomise voice 1 to 8 |
 
+The bundled device type `battalion` is this table: a note control for every
+entry (`voice_1`, `play_voice_3`, `sequencer_stop`, `mute_2`, `preset_next` …),
+each on its own channel. Bound to the endpoint that reaches the plugin, it
+works wherever the session routes those channels to the instrument. A song's
+session routes one channel to each instrument, the track's.
+
 *Measured:* on channel 1 the eight pads repeat in every octave (24-31, 36-43,
 48-55, 60-67 …), each octave the same sound, and G# to B are silent. A scan
 for a kit's pads therefore needs eight notes, 36 to 43, and a wider one finds
