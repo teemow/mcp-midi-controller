@@ -712,6 +712,25 @@ a device, in sessions authored from a song:
   0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
 - **A preset load resets parameters.** Loading a reverb preset put its mix
   back to the preset's own value, and the song's value sent after it held.
+- **Parameters in groups.** Many plugins sort their parameters into groups,
+  and AUM keeps the mapping of such a parameter in a collection per group,
+  under the parameter's key path. A session that kept them next to the
+  ungrouped ones loaded, but AUM listed none of them as mapped and no CC moved
+  them. Authored where AUM keeps them, 857 parameters of a drum machine with
+  groups three deep answered their CCs: a voice's gain at 0 was silence, and
+  each of 25 values of an indexed parameter selected its entry
+  ([research/aum-session.md](research/aum-session.md)).
+- **A ramp on a plugin parameter.** A filter offset ramped over a four-bar
+  intro raised the level bar by bar (-66, -56, -51, -47 dBFS rms), and a
+  sequencer's fill and density ramped over a section added and dropped its
+  hits.
+- **A plugin with a sequencer of its own.** A drum machine whose presets
+  carry patterns played them as soon as AUM's transport ran, and so under a
+  song played from the session's sequencer. A song silences such a pattern
+  with the plugin's own parameters, or uses it and writes no drum notes. In
+  the lead-in the plugin already plays the opening section's values, so a
+  song whose drums come from the plugin opens with them silent and brings
+  them in from bar 1 ([research/battalion.md](research/battalion.md)).
 - **A plugin is deaf while it loads a preset.** Two of five instruments lost
   every note sent up to 250 ms after the Program Change and played the ones
   from 275 ms on; at 300 ms two notes in sixteen were still lost, at 350 and
@@ -922,7 +941,9 @@ Not yet measured:
 - `transport: true` through a whole live song with the daemon's own bypass of
   the sequencer (one section was; the whole-song take sent the bypass by
   hand);
-- a ramp on a plugin parameter (the song played ramps on levels only);
+- `mix_song` on a song whose drums come from a plugin's own sequencer: its
+  live passes do not run the transport, so that plugin stays silent in them
+  (the levels of such a song were read during a sequenced `play_song`);
 - sessions authored with `track_taps` or `full_control`;
 - taps that dial in under their names: that needs the ProbeAudioTap build
   that sends them on the iPad. Until then every tap comes without a name and

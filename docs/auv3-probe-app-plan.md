@@ -220,15 +220,15 @@ running daemon's staged probes + the five real rig sessions:
   Arturia iSEM nodes, and `captureprobe` mapped `…/slot0/Master Vol`. Both keys
   match the iSEM probe's captured name string **byte-for-byte** — no truncation,
   no `displayName(withLength:)` abbreviation, nothing missing.
-- **Narrow residual (not a missing-data problem).** For iSEM
-  `keyPath == identifier == displayName` for every param, and every assigned
-  node-param mapping in the whole corpus happens to be on iSEM — so the corpus
-  cannot prove **which** field AUM keys by when the three diverge. The author's
-  `paramTarget` (`aum/build.go` in aum-session-go) prefers `identifier → displayName →
-  keyPath`; correct for iSEM and any plugin where they agree. Settling the
-  divergent case needs one real assigned param mapping on a plugin whose three
-  names differ (e.g. a FabFilter node) — **zero probe changes required**, since
-  the probe already carries all three candidates.
+- **Which field AUM keys by: the key path (settled 2026-11-11).** For iSEM
+  `keyPath == identifier == displayName` for every param, so the corpus could
+  not tell which of the three AUM uses. A parameter of an instrument whose
+  tree has groups was mapped in AUM's MIDI Control panel and the saved session
+  decoded: the leaf is keyed by the parameter's full key path, inside one
+  collection per group, each keyed by the group's key path
+  ([aum-session.md](research/aum-session.md), midiCtrlState notes). The probe
+  already carries `keyPath`, so nothing in it changes; aum-session-go's
+  `ParamRefs` places the leaves.
 
 ## Risks / open items
 

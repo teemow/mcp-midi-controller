@@ -315,7 +315,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			return nil, rep, err
 		}
 		for _, pp := range n.Params {
-			if _, err := assign(coll, pp.Key, pp.At); err != nil {
+			if _, err := assign(pp.ref.Collection(coll), pp.ref.Target, pp.At); err != nil {
 				return nil, rep, err
 			}
 		}

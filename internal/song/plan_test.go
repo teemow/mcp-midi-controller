@@ -657,3 +657,104 @@ func TestTrackHomeState(t *testing.T) {
 		}
 	}
 }
+
+// groupedSong sets parameters of a plugin whose parameter tree has groups.
+const groupedSong = `
+title: Grouped
+tempo: 120
+tracks:
+  - id: kit
+    kind: drums
+    instrument:
+      plugin: kit
+      params: {Voice 1 Decay: 0.25, v1modDecayLfo: 0.5, Gain: 0.8, level: 1}
+patterns:
+  beat: {drums: {kick: "x...x...x...x..."}}
+sections:
+  a: {bars: 1, play: {kit: beat}}
+arrangement: [a]
+`
+
+// groupedCatalog is a drum machine whose parameters sit in groups of its
+// parameter tree, three deep, next to one at the top.
+func groupedCatalog(flat bool) Catalog {
+	param := func(keyPath, id, name string) device.ProbeParam {
+		if flat {
+			keyPath = id
+		}
+		return device.ProbeParam{Identifier: id, DisplayName: name, KeyPath: keyPath, Max: 1, Writable: true}
+	}
+	return Catalog{"kit": {
+		Component: device.ProbeComponent{Type: "aumu", Subtype: "Kit1", Manufacturer: "Test"},
+		Name:      "Test Kit",
+		Parameters: []device.ProbeParam{
+			param("kitParams.voice1.v1decay", "v1decay", "Voice 1 Decay"),
+			param("kitParams.voice1.v1mod.v1modDecayLfo", "v1modDecayLfo", "Voice 1 Decay LFO Depth"),
+			param("kitParams.master.gain", "gain", "Gain"),
+			param("level", "level", "Level"),
+		},
+	}}
+}
+
+// TestBuildSessionGroupedParams checks that a parameter inside a group of its
+// plugin's parameter tree is mapped where AUM keeps it: in a collection per
+// group, each named by the group's key path, under the parameter's key path.
+// AUM ignores a mapping of such a parameter kept anywhere else.
+func TestBuildSessionGroupedParams(t *testing.T) {
+	p, err := NewPlan(mustParse(t, groupedSong), groupedCatalog(false))
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	sess, _, err := p.BuildSession(SessionOptions{})
+	if err != nil {
+		t.Fatalf("BuildSession: %v", err)
+	}
+	data, err := sess.Archive().Encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	re, err := aum.Open(data)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	got := map[string]aum.Mapping{}
+	for _, m := range re.Mappings(false) {
+		got[m.Collection+"/"+m.Target] = m
+	}
+	node := p.Node("kit", "")
+	slot := slotCollection(node.Strip, node.Slot)
+	for key, path := range map[string]string{
+		"v1decay":       slot + "/kitParams/kitParams.voice1/kitParams.voice1.v1decay",
+		"v1modDecayLfo": slot + "/kitParams/kitParams.voice1/kitParams.voice1.v1mod/kitParams.voice1.v1mod.v1modDecayLfo",
+		"gain":          slot + "/kitParams/kitParams.master/kitParams.master.gain",
+		"level":         slot + "/level",
+	} {
+		pp, err := node.param(key)
+		if err != nil {
+			t.Fatalf("the plan has no parameter %s: %v", key, err)
+		}
+		m, ok := got[path]
+		if !ok {
+			t.Errorf("%s is not mapped at %s", key, path)
+			continue
+		}
+		if m.Spec.Data1 != pp.At.Number || m.Spec.Channel != pp.At.Channel-1 {
+			t.Errorf("%s is mapped to CC %d on channel %d, want %s", key, m.Spec.Data1, m.Spec.Channel+1, pp.At)
+		}
+	}
+	for path := range got {
+		if strings.HasPrefix(path, slot+"/") && strings.HasSuffix(path, "/v1decay") {
+			t.Errorf("the session also maps the parameter by its bare identifier at %s", path)
+		}
+	}
+
+	// The same parameters in a flat tree are another session: one authored
+	// for it would keep the mappings where AUM does not look for these.
+	flat, err := NewPlan(mustParse(t, groupedSong), groupedCatalog(true))
+	if err != nil {
+		t.Fatalf("NewPlan (flat): %v", err)
+	}
+	if flat.Fingerprint() == p.Fingerprint() {
+		t.Error("a grouped and a flat parameter tree give the same session fingerprint")
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/midi-device/device"
 )
 
@@ -161,6 +162,9 @@ type NodePlan struct {
 
 	dump device.ProbeDump
 	home NodeState // the plugin's own declaration
+	// refs is where the session keeps each of the dump's parameters, worked
+	// out when the first one is asked for.
+	refs []aum.ParamRef
 }
 
 // PresetPlan is one factory preset the session can load into a node: the
@@ -179,13 +183,17 @@ func (pr PresetPlan) event() Event {
 
 // ParamPlan is one parameter the song sets on a node.
 type ParamPlan struct {
-	// Key is the session's mapping target (the parameter's identifier) and
-	// Name what the plugin calls it.
+	// Key names the parameter within its plugin (its identifier) and Name is
+	// what the plugin calls it.
 	Key  string     `json:"key"`
 	Name string     `json:"name"`
 	At   Assignment `json:"-"`
 
 	param device.ProbeParam
+	// ref is where the session keeps the parameter's mapping: below the
+	// node's slot, inside one collection per group of the plugin's parameter
+	// tree.
+	ref aum.ParamRef
 }
 
 // TrackPlan is one track's strip.
@@ -697,7 +705,7 @@ func (n *NodePlan) preset(name string) (*PresetPlan, error) {
 // param resolves a writable parameter by identifier, display name or key path
 // (ignoring case) and adds it to the node's plan.
 func (n *NodePlan) param(name string) (*ParamPlan, error) {
-	key, pr, err := findParam(n.dump, name)
+	at, key, err := findParam(n.dump, name)
 	if err != nil {
 		return nil, fmt.Errorf("%s %w", n.Name, err)
 	}
@@ -706,14 +714,23 @@ func (n *NodePlan) param(name string) (*ParamPlan, error) {
 			return &n.Params[i], nil
 		}
 	}
-	n.Params = append(n.Params, ParamPlan{Key: key, Name: device.FirstNonEmpty(pr.DisplayName, pr.Identifier, key), param: pr})
+	if n.refs == nil {
+		n.refs = aum.ParamRefs(n.dump.Parameters)
+	}
+	pr := n.dump.Parameters[at]
+	n.Params = append(n.Params, ParamPlan{
+		Key:   key,
+		Name:  device.FirstNonEmpty(pr.DisplayName, pr.Identifier, key),
+		param: pr,
+		ref:   n.refs[at],
+	})
 	return &n.Params[len(n.Params)-1], nil
 }
 
-// paramKeys returns the session mapping key of every writable parameter of a
-// dump, in the dump's order. It is the key the session library gives the
-// parameter's placeholder (identifier, then display name, then key path, made
-// unique), so a key found here is a mapping target that exists.
+// paramKeys returns the key of every writable parameter of a dump, in the
+// dump's order: its identifier, then display name, then key path, made unique.
+// A key names the parameter within its plugin; where the session keeps the
+// parameter's mapping is the session library's to say (aum.ParamRefs).
 func paramKeys(dump device.ProbeDump) []string {
 	used := map[string]bool{}
 	keys := make([]string, len(dump.Parameters))
@@ -726,8 +743,9 @@ func paramKeys(dump device.ProbeDump) []string {
 	return keys
 }
 
-// findParam finds a writable parameter by name, returning its mapping key.
-func findParam(dump device.ProbeDump, name string) (string, device.ProbeParam, error) {
+// findParam finds a writable parameter by name, returning its place in the
+// dump and its key.
+func findParam(dump device.ProbeDump, name string) (int, string, error) {
 	keys := paramKeys(dump)
 	want := strings.ToLower(strings.TrimSpace(name))
 	match := func(pick func(device.ProbeParam) string) (int, int) {
@@ -749,12 +767,12 @@ func findParam(dump device.ProbeDump, name string) (string, device.ProbeParam, e
 	} {
 		switch i, count := match(pick); {
 		case count == 1:
-			return keys[i], dump.Parameters[i], nil
+			return i, keys[i], nil
 		case count > 1:
-			return "", device.ProbeParam{}, fmt.Errorf("has %d parameters called %q; use the identifier (%s)", count, name, sameNamed(dump, keys, want))
+			return 0, "", fmt.Errorf("has %d parameters called %q; use the identifier (%s)", count, name, sameNamed(dump, keys, want))
 		}
 	}
-	return "", device.ProbeParam{}, fmt.Errorf("has no writable parameter %q%s", name, suggestParams(dump, keys, want))
+	return 0, "", fmt.Errorf("has no writable parameter %q%s", name, suggestParams(dump, keys, want))
 }
 
 // sameNamed lists the identifiers of the writable parameters sharing a name.
@@ -970,6 +988,13 @@ func (p *Plan) Fingerprint() string {
 		}
 		for _, pa := range n.Params {
 			fmt.Fprintf(&b, "A%s:%s|", pa.Key, pa.At)
+			// A parameter inside a group of its plugin's tree is mapped in
+			// that group's collection. A session authored before that was
+			// known keeps it where AUM does not look, so it is another
+			// session; a parameter of a flat tree keeps its fingerprint.
+			if len(pa.ref.Groups) > 0 {
+				fmt.Fprintf(&b, "@%s|", pa.ref.Path())
+			}
 		}
 	}
 	return fmt.Sprintf("%016x", fnv64(b.String()))
