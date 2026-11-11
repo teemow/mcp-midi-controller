@@ -12,7 +12,8 @@ package song
 // control channels, so a note never fires a mapping and a control message never
 // reaches a synth.
 //
-//	1..N    one per track (notes)
+//	1..N    one per track (notes), and the control channels a track's
+//	        instrument also hears (control notes)
 //	N+1..14 node bypasses and parameters, filled from 14 downwards
 //	15      mixer strips and transport (the convention's CCs), preset loads (PC)
 //	16      left to the rig: tap toggles and session switching
@@ -20,6 +21,7 @@ package song
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -201,8 +203,11 @@ type TrackPlan struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Channel int    `json:"channel"`
-	Strip   int    `json:"strip"`
-	Drums   bool   `json:"drums,omitempty"`
+	// ControlChannels are the further channels the track's instrument hears
+	// (Track.ControlChannels), in order.
+	ControlChannels []int `json:"control_channels,omitempty"`
+	Strip           int   `json:"strip"`
+	Drums           bool  `json:"drums,omitempty"`
 
 	Level Assignment `json:"-"`
 	Mute  Assignment `json:"-"`
@@ -211,6 +216,12 @@ type TrackPlan struct {
 
 	homeLevel float64
 	homeMute  bool
+}
+
+// Hears lists the MIDI channels the track's instrument hears: its own, then
+// its control channels.
+func (tp *TrackPlan) Hears() []int {
+	return append([]int{tp.Channel}, tp.ControlChannels...)
 }
 
 // Plan is a song's session layout and control map.
@@ -332,6 +343,9 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			ID: t.ID, Name: t.TrackName(), Channel: s.TrackChannel(i), Strip: BrainStrip + 1 + i,
 			Drums: t.Kind == "drums", homeMute: t.Mute,
 		}
+		if len(t.ControlChannels) > 0 {
+			tp.ControlChannels = slices.Sorted(slices.Values(t.ControlChannels))
+		}
 		if t.Level != nil {
 			tp.homeLevel = *t.Level
 		}
@@ -398,11 +412,13 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 
 	// Addresses. Strips and transport take the convention's CCs on the global
 	// channel; presets take its Program Changes; bypasses and parameters fill
-	// the pool.
+	// the pool, which starts above every channel a track plays or hears on.
 	lowest := 1
 	for _, tp := range p.Tracks {
-		if tp.Channel >= lowest {
-			lowest = tp.Channel + 1
+		for _, ch := range tp.Hears() {
+			if ch >= lowest {
+				lowest = ch + 1
+			}
 		}
 	}
 	pool := &ccPool{channel: poolTopChannel, lowest: lowest}
@@ -977,6 +993,11 @@ func (p *Plan) Fingerprint() string {
 	}
 	for _, tp := range p.Tracks {
 		fmt.Fprintf(&b, "T%s:%d:%d:%s:%s|", tp.ID, tp.Channel, tp.Strip, tp.Level, tp.Mute)
+		// The channels the instrument's route passes, when it passes more
+		// than the track's own (a track without keeps its fingerprint).
+		if len(tp.ControlChannels) > 0 {
+			fmt.Fprintf(&b, "K%v|", tp.ControlChannels)
+		}
 	}
 	for _, n := range p.allNodes() {
 		fmt.Fprintf(&b, "N%s/%s:%s:%d:%d:%v:%s|", n.Track, n.Effect, n.Plugin, n.Strip, n.Slot, n.MIDI, n.Bypass)

@@ -62,7 +62,10 @@ type TrackSummary struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Channel int    `json:"channel"`
-	Notes   int    `json:"notes"`
+	// Notes counts the notes on the track's channel and ControlNotes those on
+	// its control channels.
+	Notes        int `json:"notes"`
+	ControlNotes int `json:"control_notes,omitempty"`
 }
 
 // Timeline is a compiled song.
@@ -146,6 +149,7 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 	type note struct {
 		on, off   int64
 		note, vel int
+		channel   int // a control note's channel, 0 for the track's own
 		section   int
 	}
 	trackNotes := make([][]note, len(s.Tracks))
@@ -199,11 +203,16 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 					if off > end {
 						off = end
 					}
-					pitch := n.note + shift
+					// A control note is sent as written: a preset's pitch
+					// does not move a mute.
+					pitch := n.note
+					if n.channel == 0 {
+						pitch += shift
+					}
 					if pitch < 0 || pitch > 127 {
 						return nil, fmt.Errorf("/sections/%s/play/%s: %s shifted by %+d for its preset leaves the MIDI range", name, t.ID, NoteName(n.note), shift)
 					}
-					trackNotes[ti] = append(trackNotes[ti], note{on: on, off: off, note: pitch, vel: n.vel, section: idx})
+					trackNotes[ti] = append(trackNotes[ti], note{on: on, off: off, note: pitch, vel: n.vel, channel: n.channel, section: idx})
 				}
 				pos += cp.ticks
 			}
@@ -250,26 +259,39 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 		t := &s.Tracks[ti]
 		notes := trackNotes[ti]
 		sort.SliceStable(notes, func(i, j int) bool { return notes[i].on < notes[j].on })
+		ch := s.TrackChannel(ti)
+		for i := range notes {
+			if notes[i].channel == 0 {
+				notes[i].channel = ch
+			}
+		}
 		// A note struck again before it ended would be cut short by the first
 		// note's release: end the first one where the second begins.
-		last := map[int]int{}
+		type voice struct{ channel, note int }
+		last := map[voice]int{}
 		for i, n := range notes {
-			if j, ok := last[n.note]; ok && notes[j].off > n.on {
+			v := voice{n.channel, n.note}
+			if j, ok := last[v]; ok && notes[j].off > n.on {
 				notes[j].off = n.on
 			}
-			last[n.note] = i
+			last[v] = i
 		}
-		ch := s.TrackChannel(ti)
+		sum := TrackSummary{ID: t.ID, Name: t.TrackName(), Channel: ch}
 		for _, n := range notes {
+			if n.channel == ch {
+				sum.Notes++
+			} else {
+				sum.ControlNotes++
+			}
 			if n.off <= n.on {
 				continue
 			}
 			tl.Events = append(tl.Events,
-				Event{Tick: n.on, Kind: NoteOn, Channel: ch, Data1: n.note, Data2: n.vel, Track: t.ID, Section: n.section},
-				Event{Tick: n.off, Kind: NoteOff, Channel: ch, Data1: n.note, Track: t.ID, Section: n.section},
+				Event{Tick: n.on, Kind: NoteOn, Channel: n.channel, Data1: n.note, Data2: n.vel, Track: t.ID, Section: n.section},
+				Event{Tick: n.off, Kind: NoteOff, Channel: n.channel, Data1: n.note, Track: t.ID, Section: n.section},
 			)
 		}
-		tl.Tracks = append(tl.Tracks, TrackSummary{ID: t.ID, Name: t.TrackName(), Channel: ch, Notes: len(notes)})
+		tl.Tracks = append(tl.Tracks, sum)
 	}
 
 	sort.SliceStable(tl.Events, func(i, j int) bool {

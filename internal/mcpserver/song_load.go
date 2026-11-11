@@ -749,17 +749,7 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 		return nil, err
 	}
 
-	// A track's check note is the first one it plays; of several that start
-	// together the lowest, which on a drum track is the kick and not a hat.
-	first := map[string]song.Event{}
-	for _, e := range cs.timeline.Events {
-		if e.Kind != song.NoteOn {
-			continue
-		}
-		if have, seen := first[e.Track]; !seen || (e.Tick == have.Tick && e.Data1 < have.Data1) {
-			first[e.Track] = e
-		}
-	}
+	first := checkNotes(cs.plan, cs.timeline)
 	// Every strip is muted but the one being checked: what an earlier track
 	// left ringing in its delay or reverb is then not taken for an answer,
 	// nor does it drown a quiet one. The song's own mutes come back at the
@@ -783,6 +773,9 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 		e, plays := first[tp.ID]
 		if !plays {
 			row.Skipped = "it plays no note in the song"
+			if len(tp.ControlChannels) > 0 {
+				row.Skipped = "it plays no note on its own channel in the song"
+			}
 			out = append(out, row)
 			continue
 		}
@@ -824,6 +817,27 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// checkNotes picks every track's check note: the first one it plays; of
+// several that start together the lowest, which on a drum track is the kick
+// and not a hat. Only a note on the track's own channel counts: one on a
+// control channel mutes or randomises, and played alone it is silence.
+func checkNotes(plan *song.Plan, tl *song.Timeline) map[string]song.Event {
+	own := map[string]int{}
+	for _, tp := range plan.Tracks {
+		own[tp.ID] = tp.Channel
+	}
+	first := map[string]song.Event{}
+	for _, e := range tl.Events {
+		if e.Kind != song.NoteOn || e.Channel != own[e.Track] {
+			continue
+		}
+		if have, seen := first[e.Track]; !seen || (e.Tick == have.Tick && e.Data1 < have.Data1) {
+			first[e.Track] = e
+		}
+	}
+	return first
 }
 
 // checkHold is how long a track's check note is held: as long as the sound

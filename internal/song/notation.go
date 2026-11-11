@@ -208,6 +208,9 @@ type patNote struct {
 	at, dur int64
 	note    int
 	vel     int
+	// channel is the control channel a control note is sent on, 0 for a note
+	// on the track's own channel.
+	channel int
 }
 
 // compiledPattern is a pattern reduced to notes and a length.
@@ -249,6 +252,11 @@ func compilePattern(name string, p Pattern, m meter, songSwing float64, t *Track
 	transpose := p.Transpose
 	if t != nil {
 		transpose += t.Transpose
+	}
+	// The grid of a pattern with a channel is control notes: sent as written.
+	gridShift := transpose
+	if p.Channel != 0 {
+		gridShift = 0
 	}
 	stepsPerBar := 0
 	if m.barTicks%step == 0 {
@@ -303,11 +311,11 @@ func compilePattern(name string, p Pattern, m meter, songSwing float64, t *Track
 			}
 			v = clampVelocity(v + st.boost)
 			for _, n := range st.notes {
-				n += transpose
+				n += gridShift
 				if n < 0 || n > 127 {
-					return nil, fmt.Errorf("%s: step %d: %s transposed by %d leaves the MIDI range", where, i+1, NoteName(n-transpose), transpose)
+					return nil, fmt.Errorf("%s: step %d: %s transposed by %d leaves the MIDI range", where, i+1, NoteName(n-gridShift), gridShift)
 				}
-				out.notes = append(out.notes, patNote{at: stepAt(i), dur: dur, note: n, vel: v})
+				out.notes = append(out.notes, patNote{at: stepAt(i), dur: dur, note: n, vel: v, channel: p.Channel})
 			}
 		}
 	}
@@ -370,10 +378,17 @@ func compilePattern(name string, p Pattern, m meter, songSwing float64, t *Track
 		if ev.Velocity > 0 {
 			v = ev.Velocity
 		}
+		channel := ev.Channel
+		if channel == 0 {
+			channel = p.Channel
+		}
 		for _, nm := range names {
 			var n int
 			var err error
 			switch {
+			case channel != 0:
+				// A control note: a note as written, never a drum lane.
+				n, err = parseNote(nm)
 			case t != nil && t.Kind == "drums":
 				n, err = drumNote(t, nm)
 			case t == nil:
@@ -391,7 +406,7 @@ func compilePattern(name string, p Pattern, m meter, songSwing float64, t *Track
 			if n < 0 || n > 127 {
 				return nil, fmt.Errorf("%s/note: %q transposed by %d leaves the MIDI range", where, nm, transpose)
 			}
-			out.notes = append(out.notes, patNote{at: start, dur: dur, note: n, vel: v})
+			out.notes = append(out.notes, patNote{at: start, dur: dur, note: n, vel: v, channel: channel})
 		}
 		if start+1 > eventsEnd {
 			eventsEnd = start + 1

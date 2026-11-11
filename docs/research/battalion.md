@@ -45,9 +45,12 @@ The bundled device type `battalion` is this table: a note control for every
 entry (`voice_1`, `play_voice_3`, `sequencer_stop`, `mute_2`, `preset_next` …),
 each on its own channel. Bound to the endpoint that reaches the plugin, it
 works wherever the session routes those channels to the instrument. A song's
-session routes one channel to each instrument, the track's: a Battalion on a
-track with `channel: 10` or `channel: 11` hears that channel's notes and no
-pads, so its drums are its generators (see [Variation](#variation)).
+session routes each instrument its track's channel and the track's
+`control_channels`: a Battalion on a track on channel 1 with
+`control_channels: [10, 11]` plays the song's pads and hears its mutes, solos,
+chokes and randomise notes (see [In a song](#in-a-song)). Notes 0 to 3 of
+channel 11 load presets or randomise every parameter; a song sends none of
+them.
 
 *Measured:* on channel 1 the eight pads repeat in every octave (24-31, 36-43,
 48-55, 60-67 …), each octave the same sound, and G# to B are silent. A scan
@@ -453,9 +456,9 @@ song reaches it:
 | SWING, SHIFT, SHAPE | a voice's timing | `seqChan<N>swing`, `seqChan<N>shift`, `seqChan<N>shape` |
 | HUMANIZE | every voice's timing | `humanize` |
 | Trigger and Choke "Random", "Last" | which voice answers a hit | `drum<N>trigger`, `drum<N>choke` |
-| randomise, reset, commit the Performance page | the whole kit's offsets at once | channel 11 notes 12, 13, 14: only to a Battalion on a track with `channel: 11` |
+| randomise, reset, commit the Performance page | the whole kit's offsets at once | channel 11 notes 12, 13, 14, on a track with `control_channels: [11]` |
 | randomise a voice | one voice's whole sound | channel 11 notes 24-31: likewise |
-| mute, solo, choke | drop-outs and breaks | channel 10 notes: only to a Battalion on a track with `channel: 10` |
+| mute, solo, choke | drop-outs and breaks | channel 10 notes, on a track with `control_channels: [10]` |
 | the song's own notation | velocities, pattern lists that end differently, free events, ramps, scenes | the document |
 
 Generator hits and notes from outside do not take all of it alike: DENSITY
@@ -530,10 +533,13 @@ spreads are over 16 hits, the patterns over 16 bars unless said.
   sequencer](#the-sequencer)), so a session author could write them: a VEL
   lane of 12 steps against a pattern of 16, a PROB lane in TRIG mode. Whether
   the plugin takes an authored state is not tried.
-- **Channels 10 and 11 to a kit that also plays pads.** A song's session
-  routes each channel to one track. The control notes reach a Battalion only
-  when the track it is on has that channel, and that Battalion then hears no
-  pad notes.
+- **Two kits from one control channel.** A control channel belongs to one
+  track, so of two Battalions in a song only one can hear channel 10; the
+  other's mutes are out of reach.
+- **Channel 11's notes 0 to 3** (C-1 to D#-1): previous, next and random
+  preset and randomise everything. A song writes none of them. Nothing in the
+  daemon refuses one, and a section sends only the controls that change, so
+  what the song declares would not come back.
 
 ## In a song
 
@@ -692,25 +698,49 @@ range set by the knob under it, the velocity the song writes, a glitch.
         drum2distort: 0.3                 # now and then a stray echo
 ```
 
-**Drop-outs from channel 10.** A Battalion on a track of its own channel 10
-plays its generators, and the song's notes on that track mute or solo its
-voices for as long as they are held (C2 to G2 mute voices 1 to 8, C3 to G3
-solo them, while held).
+**Drop-outs and new states from channels 10 and 11.** The track keeps
+channel 1 for the pads and lists 10 and 11 as its `control_channels` (see
+[Control notes](../songs.md#control-notes)). A note on 10 mutes or solos a
+voice for as long as it is held (C2 to G2 mute voices 1 to 8, C3 to G3 solo
+them), C4 to G4 choke one; a note on 11 gives the Performance page a new
+state (C0), puts it back exactly (C#0), or gives a voice a new sound (C1 to
+G1). A control note goes with the pads as a free event with a `channel`, in
+the same pattern: the patterns of a play list follow one another.
 
 ```yaml
-  - id: groove
-    channel: 10
+  - id: kit
+    kind: drums
+    channel: 1                            # the pads: C2 to G2 play voices 1 to 8
+    control_channels: [10, 11]
     instrument:
       plugin: UA Battalion
-      params: {seqChan1euclidFill: 0.25, seqChan3euclidFill: 1.0}
+      params: {seqChan3euclidFill: 1.0}   # voice 3's generator: a hat on every step
 patterns:
-  drop_hat: {step: 1/4, notes: ". . D2 - | . . . ."}    # no hat on beats 3 and 4 of every other bar
+  beat:
+    drums: {C2: "x...x...x...x...", C#2: "....x.......x..."}   # voices 1 and 2, from the song
+  turn:
+    drums: {C2: "x...x...x.x.x.x."}
+    events:
+      - {at: 0, dur: 0.25, note: C0, channel: 11}   # the Performance page: a new state
+      - {at: 2, dur: 2, note: D2, channel: 10}      # the hat out for beats 3 and 4
+  back: {channel: 11, step: 1/4, notes: "C#0 . . ."}   # the page put back; the hat alone
+sections:
+  verse: {bars: 8, play: {kit: [beat, beat, beat, turn, beat, beat, beat, back]}}
 ```
+
+A Battalion whose generators play everything takes the same `control_channels`
+and plays control patterns alone; the load check then skips the track, which
+has no note of its own to play.
 
 A parameter a song declares is sent again after every preset load, so it
 holds over a preset's own value: declare only what the song means to set.
 
 ## Not known
+
+- Whether a mute or solo from channel 10 also holds back the pad notes the
+  song plays on channel 1, and whether a randomise from channel 11 reaches a
+  kit while the song plays its pads: both were measured on the generators'
+  hits only, with the plugin on a track of its own channel 10 or 11.
 
 - Which step's lane values a note takes while the transport stands still
   (the Performance page's probability and ratchet reached notes then too, so
