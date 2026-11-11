@@ -18,7 +18,7 @@ that plays inside AUM.
 |------|------|-|
 | 1. Look | `list_song_plugins`, `get_song_plugin` | Which instruments and effects are installed (the staged AUv3 probes), their factory presets and parameters. |
 | | `open_sound_lab`, `audition_sound`, `list_sounds` | What a preset sounds like, before it is in a song. See [Sounds](#sounds). |
-| 2. Write | `save_song` | Store the document. It is checked first; see [What is checked](#what-is-checked). |
+| 2. Write | `save_song` | Store the document. It is checked first, and reviewed as a song; see [What is checked](#what-is-checked) and [A full song](#a-full-song). |
 | 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
 | 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap, known to the daemon as `<session id>/master`. See [Taps](#taps). |
@@ -35,6 +35,73 @@ DAW.
 `play_song` with `record: true` also records the song at the master's tap into
 a file, and `upload_recording` puts that file into Google Drive: see
 [Recording and Google Drive](recording.md).
+
+## A full song
+
+The document can hold any song. What comes out is still up to whoever writes
+it, and the first eight songs written with these tools came out alike: one to
+two minutes long, three to five tracks, loops of four or eight bars, ten of
+the rig's 64 instruments and fourteen of its 92 effects, and a fade-out at
+the end of every one. Each had taken the song before it for its model. So:
+
+- **A stored song shows the format, not a form.** `get_song` is for reading
+  how something is written. The next song gets a form, sounds and an ending
+  of its own.
+- **Length.** A full song runs 3 to 4½ minutes unless something else is asked
+  for. In 4/4 that is minutes × tempo ÷ 4 bars: 105 bars for 3:30 at 120 BPM.
+- **Form.** Decide where the song starts, where it peaks, and what the last
+  chorus has that the first had not. A section that returns is a section of
+  its own with something changed: a second verse with a track more, a last
+  chorus with a lift. The same patterns under another scene or play list are
+  a few lines. Give parts phrases of 8 or 16 bars beside the one- to four-bar
+  loops, and let a repeat end differently with a pattern list
+  (`[beat, beat, beat, fill]`).
+- **Tracks.** Up to twelve. Beside drums, bass, chords and a lead there is
+  room for a second harmony part, a counter-melody, percussion, a texture, an
+  effects track. A track that rests is heard when it comes in.
+- **Sounds.** Choose from everything installed, not from what the stored
+  songs use: `list_song_plugins` lists the instruments and the effects, and
+  `audition_sound` measures a preset in seconds. What it reports describes the
+  preset. A layered fifth, a slow attack or a pitch that drifts is a character
+  to write for, not a fault.
+- **Movement.** [Automation](#sound) ramps any parameter over a section: a
+  filter that opens into a chorus, a delay that grows into a break. A scene
+  changes presets, bypasses and levels from one section to the next.
+- **Ending.** End the song: a last chord or hit that rings out, a stop
+  together on a beat, a last line left to one instrument. A fade-out is the
+  exception.
+
+An ending is a section like any other:
+
+```yaml
+patterns:
+  last_chord: {step: 1/2, gate: 1, notes: "[A3 C4 E4] - | - -"}   # held for two bars
+  last_note:  {bars: 2, step: 1/2, notes: "A1 -"}                    # one bar, then nothing
+  last_hit:   {bars: 2, drums: {kick: "x", crash: "x"}}             # one hit on the one
+
+sections:
+  ending: {bars: 2, play: {pad: last_chord, bass: last_note, drums: last_hit}}
+```
+
+What rings on after the last bar belongs to the song. `play_song` with
+`record: true` waits for that tail before it ends the recording.
+
+### The review
+
+`save_song` and `get_song` end their answer with a review of the song as
+music. It is advice and never an error: a song that is meant to be short, or
+to fade, is stored and plays as it is.
+
+| About | The review says |
+|-------|-----------------|
+| `length` | how long the song is and how many bars a full one has at its tempo, when it is under 2:30 |
+| `ending` | that it ends in a fade-out: level ramps take at least half of the tracks playing in the last section down by 12 dB or more, to the section's end |
+| `form` | which section is heard three times or more unchanged, under whatever names; and that no track plays a phrase longer than four bars, in a song of sixteen bars or more |
+| `tracks` | that it has five tracks or fewer |
+| `sounds` | which instrument has the very preset another stored song has; and that none of its instruments, or none of its effects, is new to the rig's stored songs |
+
+A stored song of under eight bars is a sound lab or a test: no other song is
+compared with it. A song without a note gets no review.
 
 ## The document
 
@@ -200,8 +267,9 @@ sections:
     bars: 4
     play: {pad: chords}
     automation:
-      - {track: pad, param: level, from: -30, to: 0}                 # a fade-in over the section
+      - {track: pad, param: Cutoff, from: 0.2, to: 0.8}              # the filter opens over the section
       - {track: pad, effect: reverb, param: Mix, from: 0.2, to: 0.6, bar: 3, bars: 2}
+      - {track: pad, param: level, from: -12, to: 0, bar: 4}         # a swell into the next section
 ```
 
 `param: level` is the track's fader; anything else is a parameter of the track's

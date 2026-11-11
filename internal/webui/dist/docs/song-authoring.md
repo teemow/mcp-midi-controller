@@ -185,6 +185,43 @@ older session to a tap without one. The solo passes are still there, as the
 fallback and on request (`solo: true`), because they measure a track after
 the master's effects and the track's tap does not.
 
+### 9. A review of the song as music
+
+With the pieces above a song costs little to write, and eight had been
+written by several agents. Read side by side they were one song eight times:
+
+| | |
+|-|-|
+| Length | 0:57 to 2:04, 20 to 64 bars. Three and a half minutes would have been 74 to 131 bars at their tempos. |
+| Ending | A fade-out, in all eight. |
+| Form | Intro, the parts, an outro. A chorus was the same each time, and every written bar was heard three to four times. In four of them no part had a phrase longer than four bars. |
+| Tracks | Three to five, of twelve. |
+| Sounds | Ten of 64 installed instruments and fourteen of 92 effects. One synth was the bass of five songs, one reverb sat in seven. |
+
+Nothing in the tools asks for that, and the transcripts show where it came
+from. Every session read the songs doc and then the stored songs, and wrote
+the next one after them: the first song, made to show scenes, preset changes
+and automation in 56 bars, became the form of all. The doc's one example of
+automation was a fade. A plugin that had played before was the safe choice,
+because one that does not come up costs a reload of a minute, and a preset
+that measured in tune with one clean note was preferred to one with a
+character. The whole document was written in one go, in about a minute, and
+the rest of the session went into its levels. Nobody asked for a length, and
+no tool said anything about one.
+
+So the tools now say it. `save_song` and `get_song` end with a review: the
+song's length against a full song's, a fade-out at its end, sections heard
+unchanged three times, a song of short loops, few tracks, and the sounds it
+shares with the other stored songs. It is advice, and nothing it says keeps a
+song from being stored or played. `save_song`'s description and
+[songs.md](songs.md#a-full-song) say what a full song takes, and that a
+stored song shows the format and is no model. Because `get_song` reviews too,
+whoever reads an old song as an example reads what it lacks with it.
+
+What this does not do: widen what is measured (the catalogue holds a few
+presets of nine instruments and no effect), or make a varied repeat cheaper
+to write than it is.
+
 ## What stays as it is
 
 - How a song is played (the daemon keeps the time today) and recording to a
@@ -204,5 +241,8 @@ the master's effects and the track's tap does not.
 3. `calibrate`, plugin names, the catalogue in `get_song_plugin`.
 4. `mix_song`.
 5. Taps with names, in the plugin and in the sessions the daemon authors.
+
+6. The review, and what a full song takes in the tool's description and the
+   docs.
 
 Each step is usable without the next.
