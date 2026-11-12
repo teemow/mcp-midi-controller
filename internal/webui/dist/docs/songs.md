@@ -1428,6 +1428,44 @@ tools of a daemon that has the mode:
   front. AUM keeps the screen awake, the app does not. That is why a failed
   pull now brings AUM back and the iPad tools say when they leave another
   app in front.
+- **The sync report on the rig.** With the app that sends the report on the
+  iPad and a daemon that takes it, the daemon's log had a line for the app's
+  report whenever its counts changed: one before the first copy of a cycle,
+  with the copies queued, and one at the cycle's end. After a cycle in which
+  the app had uploaded six files, its report was of a rev six behind the
+  daemon's, as expected. `load_song` of a new song: the app reported the
+  session as a copy queued, the daemon saw the download, the next report
+  listed the session nowhere, and the pull step ended after 25 s with "the
+  iPad pulled the session". The app had been started afresh in that time.
+  The same session was then saved in AUM and staged again with another note.
+  The app's report counted one conflict more, and the step failed after 26 s
+  with the conflict, the copy's 159 KB against the 105 KB staged, and what to
+  do. No side was picked, and AUM was in front again. The step's text is the
+  same whether the report or the app's screen told it of the conflict, so the
+  run does not show which of the two it ended on.
+  In the app's tree every conflict row had both identifiers and the
+  navigation bar had its folder's path, and the daemon's reader took each
+  row's file path from them. A search for the button by its identifier found
+  one button in a folder where the label "keep controller" found five. A
+  click on it, made from outside the daemon on that session's row while the
+  row was scrolled out of sight, had the app fetch the staged file and report
+  one conflict fewer. The app did not upload the fetched file back in the
+  minute it then stayed in front, and the staging rev stood still. An app
+  that was started again reported its audio units as `done` at once (183 of
+  184; one unit fails at every start). The first report after each start
+  came without `audio_units`.
+- **What that run showed beside the report.** When the probe app came
+  forward, the brain and the tap of the session open in AUM lost their
+  connections to the daemon. With AUM in front again neither dialled anew,
+  for two minutes, until the session was loaded again. So after a pull that
+  fails, the session AUM still shows is without its brain and tap until it is
+  loaded once more. AUM itself crashed once, while the load step replaced a
+  session that hosted two of Apple's own audio units, a few minutes after
+  the probe app had been installed anew. Its crash report shows a
+  segmentation fault in the system's own code, reading a parameter of an
+  audio unit. The step failed with WebDriverAgent's "is not running,
+  possibly crashed" and left the Home Screen in front, where nothing keeps
+  the iPad from locking itself. AUM had to be started again.
 
 **Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
 (108 BPM), each a little over a minute, were played from the session's
@@ -1446,18 +1484,14 @@ Not yet measured:
 - AUM brought back after a failed pull, and `load_song`, `check_song` and
   the iPad tools on a locked iPad (the tests run them against the stand-in;
   on the rig only the locked iPad's answer to `/wda/locked` was read);
-- the probe app's sync report, all of it. Nothing of it has run on the rig:
-  not the app's report arriving at the daemon, not a pull step that ends on
-  one, not the conflict buttons and the folder found by their accessibility
-  identifiers in the app's real tree (the navigation bar's identifier is the
-  least certain of them). The tests run the daemon's route against the
-  documents the app's own tests pin as its output, the pull step against a
-  stand-in app that posts its reports over HTTP, and the identifiers against
-  a stand-in tree. The rig's iPad still had the app from before the report
-  when this was written. Its tree was read once with the screen reader as it
-  is now, and nothing was pressed: no identifier of the new kind in it, the
-  navigation bar's identifier its title, and a folder's rows, five conflicts
-  and their "keep controller" buttons read by label and frame as before;
+- of the probe app's sync report: a pull step known to have ended on the
+  report and not on the app's screen, a conflict the daemon resolves by
+  itself on a report (the copy has to be the size of a file it staged; on
+  the rig the click by identifier was made from outside the daemon), a
+  report that lists the session with an error, one that says the app copies
+  no file at all, and a pull step on a daemon that has no look at the app.
+  The tests run these against a stand-in app that posts its reports over
+  HTTP;
 - `get_song_playback` against AUM's own position display (it was measured
   against the sound);
 - a sequenced song on a host that dozes;
