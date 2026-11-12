@@ -42,8 +42,14 @@ type WDA struct {
 	Labels map[string]int
 	// BundleID is reported by /wda/activeAppInfo.
 	BundleID string
-	// FailSession makes POST /session answer with this W3C error code.
+	// FailSession makes POST /session answer with this W3C error code:
+	// every session, or with FailBundle set only one bound to that bundle id.
 	FailSession string
+	FailBundle  string
+	// Locked is the iPad on its lock screen: /wda/locked says so, and a
+	// session bound to an app fails the way WDA's does, since a locked iPad
+	// brings no app to the front.
+	Locked bool
 	// Screens, when set, replaces Sources: GET …/source serves
 	// Screens[n], n being the number of gestures (taps, double-taps,
 	// long-presses, touch actions, element clicks, keys) so far; the last
@@ -79,6 +85,7 @@ type WDA struct {
 	reads     int // source reads since the last gesture
 	open      map[string]bool
 	bound     map[string]string // session -> the bundle id it was opened with
+	fronted   []string          // the bundle ids of the bound sessions, in order
 
 	appMu  sync.Mutex
 	appEls []appElement // the elements found in an app's window ("A<n>")
@@ -117,6 +124,22 @@ func (w *WDA) OpenSessions() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.open)
+}
+
+// Fronted lists the apps brought to the front, in order: the bundle id of
+// every session that was opened bound to an app. The last one is the app in
+// front.
+func (w *WDA) Fronted() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.fronted...)
+}
+
+// SetLocked puts the iPad on its lock screen, or takes it off.
+func (w *WDA) SetLocked(locked bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Locked = locked
 }
 
 // Gestures is how many gestures the fake has received.
@@ -209,19 +232,29 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/screenshot":
 		reply(rw, 200, base64.StdEncoding.EncodeToString(w.png()), "")
 		return
+	case r.Method == http.MethodGet && path == "/wda/locked":
+		reply(rw, 200, w.Locked, "")
+		return
 	case r.Method == http.MethodPost && path == "/session":
-		if w.FailSession != "" {
+		caps, _ := body["capabilities"].(map[string]any)
+		match, _ := caps["alwaysMatch"].(map[string]any)
+		bundle, _ := match["bundleId"].(string)
+		if w.FailSession != "" && (w.FailBundle == "" || w.FailBundle == bundle) {
 			wdaError(rw, 500, w.FailSession, "cannot create session")
+			return
+		}
+		if w.Locked && bundle != "" {
+			wdaError(rw, 500, "unknown error", "Unable to launch "+bundle+" because the device was not, or could not be, unlocked.")
 			return
 		}
 		w.sessions++
 		sid := fmt.Sprintf("S%d", w.sessions)
 		// Like WDA: one session at a time, a new one ends the previous.
 		w.open = map[string]bool{sid: true}
-		caps, _ := body["capabilities"].(map[string]any)
-		match, _ := caps["alwaysMatch"].(map[string]any)
-		bundle, _ := match["bundleId"].(string)
 		w.bound = map[string]string{sid: bundle}
+		if bundle != "" {
+			w.fronted = append(w.fronted, bundle)
+		}
 		reply(rw, 200, map[string]any{"sessionId": sid, "capabilities": map[string]any{}}, sid)
 		return
 	}

@@ -30,7 +30,7 @@ const (
 	ipadTapLabelTimeout = 2 * time.Second
 )
 
-const ipadAppProp = `"app": {"type": "string", "description": "Which app the action targets: aum (default), probe (AUv3 Probe, resolved on the device), or a bundle ID. The app is brought to the front (launched when not running)."}`
+const ipadAppProp = `"app": {"type": "string", "description": "Which app the action targets: aum (default), probe (AUv3 Probe, resolved on the device), or a bundle ID. The app is brought to the front (launched when not running) and stays there. Only AUM keeps the iPad awake: after work in another app bring AUM back (ipad_launch without app), or the iPad locks itself and needs its passcode."}`
 
 // registerIPadTools wires the iPad UI tools. They drive the iPad's screen over
 // USB through WebDriverAgent — a channel independent of MIDI — so an agent can
@@ -42,7 +42,7 @@ func (s *Server) registerIPadTools() {
 	}
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "ipad_status",
-		Description: "Check the USB control channel into the iPad's UI: whether WebDriverAgent is reachable and ready, the device's iPadOS version, the screen size in points and its pixels-per-point scale, and the app in the foreground. " +
+		Description: "Check the USB control channel into the iPad's UI: whether WebDriverAgent is reachable and ready, the device's iPadOS version, the screen size in points and its pixels-per-point scale, the app in the foreground, and whether the iPad is locked (it then has to be unlocked on the device: the daemon never unlocks it). " +
 			"When WebDriverAgent is not reachable it checks the layers below it (go-ios tunnel, developer disk image) and names the command that brings the missing one up. Read-only; opens no WebDriverAgent session.",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}, s.handleIPadStatus)
@@ -137,8 +137,9 @@ func (s *Server) registerIPadTools() {
 	}, s.handleIPadSwipe)
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "ipad_launch",
-		Description: "Bring an app to the front on the iPad, launching it when it is not running (a running app keeps its state; AUM keeps its loaded session). Reports the window size and orientation.",
+		Name: "ipad_launch",
+		Description: "Bring an app to the front on the iPad, launching it when it is not running (a running app keeps its state; AUM keeps its loaded session). Reports the window size and orientation. " +
+			"Without app it brings AUM back, which is how work in another app ends: AUM keeps the iPad awake, the AUv3 Probe app does not, and an iPad left with it in front locks itself.",
 		InputSchema: json.RawMessage(`{"type": "object", "properties": {` + ipadAppProp + `}}`),
 	}, s.handleIPadLaunch)
 
@@ -194,9 +195,13 @@ func (s *Server) ipadError(ctx context.Context, err error) *mcp.CallToolResult {
 		return textResult(err.Error()+"\n"+s.ipadStackHint(ctx), true)
 	}
 	if ipad.SessionLost(err) {
-		return textResult(err.Error()+"\nAnother WebDriverAgent client (e.g. scripts/ipad) opened a session meanwhile; WDA serves one at a time, so this call's session was ended. Retry once that client is idle.", true)
+		return textResult(s.withFrontNote(err.Error()+"\nAnother WebDriverAgent client (e.g. scripts/ipad) opened a session meanwhile; WDA serves one at a time, so this call's session was ended. Retry once that client is idle."), true)
 	}
-	return textResult(err.Error(), true)
+	// A locked iPad fails every call, each in its own words.
+	if s.ipadLocked(ctx) {
+		return textResult(fmt.Sprintf("%s: %s. WebDriverAgent said: %v", ipadLockedText, ipadUnlock, err), true)
+	}
+	return textResult(s.withFrontNote(err.Error()), true)
 }
 
 // ipadStackHint names the missing layer of the device stack. The commands are
@@ -224,8 +229,13 @@ type ipadStatus struct {
 	Status    *ipad.Status  `json:"status,omitempty"`
 	Screen    *ipad.Screen  `json:"screen,omitempty"`
 	ActiveApp *ipad.AppInfo `json:"active_app,omitempty"`
-	Layers    *ipad.Layers  `json:"layers,omitempty"`
-	Hint      string        `json:"hint,omitempty"`
+	// Locked is whether the iPad is on its lock screen (absent when
+	// WebDriverAgent does not say).
+	Locked *bool        `json:"locked,omitempty"`
+	Layers *ipad.Layers `json:"layers,omitempty"`
+	Hint   string       `json:"hint,omitempty"`
+	// Note says that another app than AUM is in front.
+	Note string `json:"note,omitempty"`
 }
 
 func (s *Server) handleIPadStatus(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -254,6 +264,25 @@ func (s *Server) handleIPadStatus(ctx context.Context, _ *mcp.CallToolRequest) (
 	if app, err := s.ipad.ActiveApp(ctx); err == nil {
 		out.ActiveApp = &app
 		fmt.Fprintf(&b, "\nforeground app: %s (pid %d)", app.BundleID, app.PID)
+	}
+	if locked, err := s.ipad.Locked(ctx); err == nil {
+		out.Locked = &locked
+	}
+	switch {
+	case out.Locked != nil && *out.Locked:
+		out.Hint = ipadUnlock
+		fmt.Fprintf(&b, "\nthe iPad is LOCKED: %s. Until then no app can be brought to the front, and the iPad tools and load_song fail.", ipadUnlock)
+	default:
+		// What the daemon brought forward, else what WebDriverAgent names
+		// when that is an app (in windowed multitasking it names the Home
+		// Screen whatever is shown).
+		out.Note = s.frontNote()
+		if out.Note == "" && out.ActiveApp != nil && out.ActiveApp.BundleID != springBoard {
+			out.Note = frontNoteFor(out.ActiveApp.BundleID, time.Time{})
+		}
+		if out.Note != "" {
+			b.WriteString("\n" + out.Note)
+		}
 	}
 	return structResult(b.String(), out), nil
 }
@@ -284,7 +313,7 @@ func (s *Server) handleIPadScreenshot(ctx context.Context, req *mcp.CallToolRequ
 		shot.Width, shot.Height, shot.MIMEType, len(shot.Data)/1024, r.X, r.Y, r.Width, r.Height, shot.PPP, r.X, shot.PPP, r.Y, shot.PPP)
 	return &mcp.CallToolResult{Content: []mcp.Content{
 		&mcp.ImageContent{Data: shot.Data, MIMEType: shot.MIMEType},
-		&mcp.TextContent{Text: text},
+		&mcp.TextContent{Text: s.withFrontNote(text)},
 	}}, nil
 }
 
@@ -294,6 +323,8 @@ type ipadTree struct {
 	Window    ipad.Size   `json:"window"`
 	Nodes     []ipad.Node `json:"nodes"`
 	Truncated bool        `json:"truncated,omitempty"`
+	// Note says that the call left another app than AUM in front.
+	Note string `json:"note,omitempty"`
 }
 
 func (s *Server) handleIPadUITree(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -337,6 +368,9 @@ func (s *Server) handleIPadUITree(ctx context.Context, req *mcp.CallToolRequest)
 	b.WriteString(ipad.FormatNodes(out.Nodes, args.All))
 	if out.Truncated {
 		fmt.Fprintf(&b, "… cut at %d elements; narrow with contains or raise limit\n", args.Limit)
+	}
+	if out.Note = s.frontNote(); out.Note != "" {
+		b.WriteString(out.Note + "\n")
 	}
 	return structResultNoEmbed(b.String(), out), nil
 }
@@ -435,11 +469,11 @@ func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*
 	})
 	if err != nil {
 		if errors.Is(err, ipad.ErrNoSuchLabel) {
-			return textResult(err.Error()+" in "+app+"; list the labels with ipad_ui_tree, or tap by x+y", true), nil
+			return textResult(s.withFrontNote(err.Error()+" in "+app+"; list the labels with ipad_ui_tree, or tap by x+y"), true), nil
 		}
 		return s.ipadError(ctx, err), nil
 	}
-	return textResult(msg, false), nil
+	return textResult(s.withFrontNote(msg), false), nil
 }
 
 func (s *Server) handleIPadHold(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -467,7 +501,7 @@ func (s *Server) handleIPadHold(ctx context.Context, req *mcp.CallToolRequest) (
 	if err != nil {
 		return s.ipadError(ctx, err), nil
 	}
-	return textResult(fmt.Sprintf("held (%g,%g) for %v in %s", *args.X, *args.Y, d, app), false), nil
+	return textResult(s.withFrontNote(fmt.Sprintf("held (%g,%g) for %v in %s", *args.X, *args.Y, d, app)), false), nil
 }
 
 func (s *Server) handleIPadSwipe(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -499,7 +533,7 @@ func (s *Server) handleIPadSwipe(ctx context.Context, req *mcp.CallToolRequest) 
 	if err != nil {
 		return s.ipadError(ctx, err), nil
 	}
-	return textResult(fmt.Sprintf("swiped (%g,%g) -> (%g,%g) over %v in %s", *args.X1, *args.Y1, *args.X2, *args.Y2, d, app), false), nil
+	return textResult(s.withFrontNote(fmt.Sprintf("swiped (%g,%g) -> (%g,%g) over %v in %s", *args.X1, *args.Y1, *args.X2, *args.Y2, d, app)), false), nil
 }
 
 func (s *Server) handleIPadLaunch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -527,8 +561,13 @@ func (s *Server) handleIPadLaunch(ctx context.Context, req *mcp.CallToolRequest)
 		// bring the probe app forward.
 		rememberIPadApp("probe", app)
 	}
-	return structResult(fmt.Sprintf("%s is in front, window %gx%g points (%s)", app, win.Width, win.Height, win.Orientation()),
-		map[string]any{"app": app, "window": win, "orientation": win.Orientation()}), nil
+	out := map[string]any{"app": app, "window": win, "orientation": win.Orientation()}
+	text := fmt.Sprintf("%s is in front, window %gx%g points (%s)", app, win.Width, win.Height, win.Orientation())
+	if note := s.frontNote(); note != "" {
+		out["note"] = note
+		text += "\n" + note
+	}
+	return structResult(text, out), nil
 }
 
 func (s *Server) handleGetAUMUI(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -99,14 +99,14 @@ the iPad.
 
 | Tool | What it does |
 |---|---|
-| `ipad_status` | WDA reachable/ready, iPadOS version, screen size and scale, foreground app; diagnoses the stack when WDA is down. Opens no WDA session. |
+| `ipad_status` | WDA reachable/ready, iPadOS version, screen size and scale, foreground app, whether the iPad is locked; diagnoses the stack when WDA is down. Opens no WDA session. |
 | `ipad_screenshot` | The screen as an image. One image pixel = one point by default, so pixel positions are tap coordinates; `region` crops (in points), `pixels_per_point: 2` gives Retina detail. |
 | `ipad_ui_tree` | An app's accessibility tree, one line per labelled element with its frame; `all`, `contains`, `limit`. |
 | `ipad_tap` | Tap by `label`, by `x`+`y`, or by a named AUM `target` (`tempo`, `rewind`, `play`, `engine_info`, `navigator`, `midi_routing`, `menu`, `keyboard`). `gesture: double` double-taps; `gesture: twice` taps twice 0.5 s apart in one session, which AUM's two-step buttons need. |
 | `ipad_hold` / `ipad_swipe` | Long-press; drag as a quick touch (scroll AUM's mixer, faders, knobs). |
 | `ipad_drag` | Press, move through several points (resting at each), hold, release — for gestures AUM reads only while the finger is down: reordering nodes and channels, moving plugin windows. |
 | `ipad_text` | `fields` lists the text fields and their values; `type` clears one and types into it (`enter` presses Return); `enter` presses Return. |
-| `ipad_launch` | Bring an app to the front, launching it when needed; a running app keeps its state. |
+| `ipad_launch` | Bring an app to the front, launching it when needed; a running app keeps its state. Without `app` it brings AUM back. |
 
 These mirror auv3-probe's `scripts/ipad` (`tap-at`, `dtap`, `confirm`, `hold`,
 `swipe`, `drag`, `type`, `enter`, `fields`) request for request.
@@ -201,7 +201,25 @@ How AUM shows state in its tree (AUM 1.4.8):
 
 The tools take an `app` argument: `aum` (default), `probe` (AUv3 Probe), or any
 bundle ID. Every call opens a WDA session bound to that app, which brings it to
-the front, and closes it again with the app left running.
+the front, and closes it again with the app left running and in front.
+
+**Another app in front lets the iPad lock.** AUM keeps the iPad awake. Other
+apps need not, and AUv3 Probe does not: left in front, the iPad locks itself
+after its auto-lock time, and with a passcode set the rig is out of reach
+until the code is entered on the device. So work in another app ends with
+`ipad_launch` (no `app`), which brings AUM back. For as long as the last app
+the daemon brought forward is not AUM, every one of these tools, `ipad_status`
+and `ipad_screenshot` end their result with a note that says so: which app,
+for how long, and how AUM comes back. `load_song` brings AUM back by itself
+when its pull step fails with the probe app in front (`docs/songs.md`,
+"Loading").
+
+**A locked iPad** is named as that. The daemon asks WDA (`GET /wda/locked`,
+no session): `ipad_status` reports it (`locked` in its structured result), and
+a tool that fails on a locked iPad says "the iPad is locked" first and WDA's
+own words after it ("Unable to launch … because the device was not, or could
+not be, unlocked"). The daemon never calls WDA's unlock and never types a
+code; the iPad is unlocked on the device.
 
 ## Verifying MIDI against AUM
 

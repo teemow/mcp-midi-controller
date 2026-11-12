@@ -686,7 +686,7 @@ and stops at the first one that fails, with what it saw and what to do:
 | Step | What happens |
 |------|--------------|
 | author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
-| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and reads the app's list of sessions while it waits, up to a minute. A session the app holds as a conflict ends the wait at once: see below. Skipped when the iPad already has this very file. |
+| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and reads the app's list of sessions while it waits, up to a minute. A session the app holds as a conflict ends the wait at once: see below. Skipped when the iPad already has this very file. When the step fails, the daemon brings AUM back to the front: the app is not left there. |
 | load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM's main menu shows the session's name and AUM has finished restoring the plugins, up to 2 minutes in all. A heavy session can keep AUM's UI from answering for a minute, so the name is waited for as long as AUM shows that it is loading, and the menu is opened again when the load closed it; once the load is over the name gets 10 s more. The step fails, saying which session AUM shows, when AUM ends up with another session or none. |
 | connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. |
 | check | `check_song`, below. |
@@ -736,6 +736,37 @@ been started. iPadOS drops the app while AUM is in front, and every start
 sends all its audio units to the daemon again (184 on the rig, a few
 minutes), which it does only while it is in front. Sessions are pulled while
 that runs: see Status.
+
+**The probe app is not left in front.** AUM keeps the iPad awake; the probe
+app does not. An iPad left with the app in front locks itself after its
+auto-lock time, and with a passcode set nothing reaches AUM or the app until
+the code is entered on the device. After a pull the load step brings AUM
+forward. A pull that fails ends the load, so the pull step then brings AUM
+back itself, and says so.
+
+That stops the app's sync, because the app syncs sessions and its audio units
+only while it is in front. Whatever a failed pull says to look at or do in the
+app therefore starts with opening the app again: `next` names the call for
+that (`ipad_launch` with the app's bundle id; `ipad_ui_tree` and `ipad_tap`
+take the same `app`) and the one that brings AUM back afterwards (`ipad_launch`
+without `app`). When AUM cannot be brought back, the step says that the app
+is still in front, and getting AUM there comes first in `next`.
+
+The iPad tools that take an `app` bring it forward and leave it there. For as
+long as the last app the daemon brought forward is another one than AUM, each
+of them ends its result with a note: which app is in front and for how long,
+that the iPad locks itself with it there, and how AUM comes back. `ipad_status`
+and `ipad_screenshot` carry the same note. A reader who opens the probe app to
+watch its sync brings AUM back when done.
+
+**A locked iPad.** WebDriverAgent tells whether the iPad is on its lock
+screen, and the daemon asks: `ipad_status` reports it, `load_song` ends at
+once with "the iPad is locked" (at the pull step, or at the load step when
+the iPad already has the file) instead of waiting a minute for a pull that
+cannot come, and `check_song` and every iPad tool that fails on a locked
+iPad say that first, with WebDriverAgent's own words after it ("Unable to
+launch … because the device was not, or could not be, unlocked"). The daemon
+never unlocks the iPad and never types a code. It is unlocked on the device.
 
 `check_song` answers whether the song will sound if it is played now:
 
@@ -1273,6 +1304,14 @@ tools of a daemon that has the mode:
   minutes the first time and within 2.5 the second. A staged session was
   fetched within 10 s of such a start and a conflict was on screen within
   20 s, so a pull does not wait for the units.
+- **The iPad locks itself with the probe app in front.** The app was brought
+  forward on the rig and left there while its tree was read every 20 s for
+  the end of its unit sync, with no touch. A quarter of an hour later the
+  iPad was on its lock screen and wanted its passcode. WebDriverAgent still
+  answered: ready, `GET /wda/locked` true, the Home Screen as the app in
+  front. AUM keeps the screen awake, the app does not. That is why a failed
+  pull now brings AUM back and the iPad tools say when they leave another
+  app in front.
 
 **Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
 (108 BPM), each a little over a minute, were played from the session's
@@ -1288,6 +1327,9 @@ Not yet measured:
   that `calibrate` therefore leaves as written;
 - `audition_sound` in a song's own session with `presets: all`, `set_sound`,
   and `load_song` on a daemon that cannot bring the probe app to the front;
+- AUM brought back after a failed pull, and `load_song`, `check_song` and
+  the iPad tools on a locked iPad (the tests run them against the stand-in;
+  on the rig only the locked iPad's answer to `/wda/locked` was read);
 - `get_song_playback` against AUM's own position display (it was measured
   against the sound);
 - a sequenced song on a host that dozes;

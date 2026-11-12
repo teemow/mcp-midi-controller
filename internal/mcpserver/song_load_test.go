@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -365,7 +366,191 @@ func TestLoadSongNamesAConflict(t *testing.T) {
 			if r.wda.Gestures() != 0 {
 				t.Errorf("AUM was touched (%d gestures) although the session never arrived", r.wda.Gestures())
 			}
+			// The side is picked in the probe app, which is not left in front.
+			if got := r.wda.Fronted(); len(got) < 2 || got[len(got)-1] != ipad.AUMBundleID || got[len(got)-2] != rigProbeBundle {
+				t.Errorf("the iPad saw %q come forward, want the probe app and AUM after it", got)
+			}
+			if want := `and load_song again. AUM is in front again, so the AUv3 Probe app has to be opened again for this: ipad_launch with app "` + rigProbeBundle + `"`; !strings.Contains(text, want) {
+				t.Errorf("report lacks %q:\n%s", want, text)
+			}
 		})
+	}
+}
+
+// TestLoadSongFailedPullBringsAUMBack checks a pull that fails does not leave
+// the probe app in front: it does not keep the iPad awake as AUM does, and an
+// iPad left with it in front locks itself. AUM comes back, the step says so,
+// and what to do next says that the app has to be opened again.
+func TestLoadSongFailedPullBringsAUMBack(t *testing.T) {
+	// start readies a song whose session the probe app does not fetch.
+	start := func(t *testing.T) *songRig {
+		r := newSongRig(t)
+		songPullTimeout = 300 * time.Millisecond // restored by the rig's cleanup
+		app := r.probeApp(map[string][]ipadtest.ProbeFile{"Songs": {{Name: "Night Drive.aumproj"}}})
+		app.Set(func(p *ipadtest.ProbeApp) { p.Cycle = true }) // a sync cycle that never ends
+		if res := call(t, r.s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+			t.Fatalf("save: %s", resultText(res))
+		}
+		return r
+	}
+	args := map[string]any{"song": "night_drive", "confirm": true}
+	contains := func(t *testing.T, text string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(text, want) {
+				t.Errorf("report lacks %q:\n%s", want, text)
+			}
+		}
+	}
+
+	t.Run("timed out", func(t *testing.T) {
+		r := start(t)
+		res := call(t, r.s.handleLoadSong, args)
+		text := resultText(res)
+		if !res.IsError {
+			t.Fatalf("a load without a pull succeeded: %s", text)
+		}
+		contains(t, text,
+			"2. pull    FAIL  the iPad did not pull the session within 300ms (the probe app was brought to the front",
+			"). AUM is in front again: the probe app does not keep the iPad awake, so the daemon does not leave it in front",
+			"next: open the AUv3 Probe app on the iPad (it pulls staged sessions while it is in front and reaches the daemon), then load_song again. "+
+				`AUM is in front again, so the AUv3 Probe app has to be opened again for this: ipad_launch with app "`+rigProbeBundle+`" (ipad_ui_tree and ipad_tap take the same app). `+
+				"It syncs only while it is in front. Bring AUM back when done (ipad_launch without app): left in front, the app lets the iPad lock itself.",
+		)
+		if got, want := r.wda.Fronted(), []string{rigProbeBundle, ipad.AUMBundleID}; !slices.Equal(got, want) {
+			t.Errorf("the iPad saw %q come forward, want %q", got, want)
+		}
+		if r.wda.Gestures() != 0 {
+			t.Errorf("AUM was touched (%d gestures): it is only brought to the front", r.wda.Gestures())
+		}
+		if n := r.wda.OpenSessions(); n != 0 {
+			t.Errorf("%d WebDriverAgent sessions left open", n)
+		}
+	})
+
+	// A call that ends while the app is in front leaves AUM there all the same.
+	t.Run("the call ends", func(t *testing.T) {
+		r := start(t)
+		songPullTimeout = 20 * time.Second
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			// Once the app's window is read, the app is in front.
+			inFront := func() bool {
+				for _, req := range r.wda.Requests() {
+					if strings.HasSuffix(req.Path, "/source") {
+						return true
+					}
+				}
+				return false
+			}
+			for !inFront() && ctx.Err() == nil {
+				time.Sleep(5 * time.Millisecond)
+			}
+			cancel()
+		}()
+		raw, _ := json.Marshal(args)
+		res, err := r.s.handleLoadSong(ctx, &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: raw}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		contains(t, resultText(res),
+			"the iPad did not pull the session (the call ended while the probe app was in front). AUM is in front again",
+		)
+		if got, want := r.wda.Fronted(), []string{rigProbeBundle, ipad.AUMBundleID}; !slices.Equal(got, want) {
+			t.Errorf("the iPad saw %q come forward, want %q", got, want)
+		}
+	})
+
+	// AUM does not come back: the step says that the probe app is still in
+	// front, and getting AUM there is the first thing to do.
+	t.Run("AUM does not come back", func(t *testing.T) {
+		r := start(t)
+		r.wda.FailSession, r.wda.FailBundle = "unknown error", ipad.AUMBundleID
+		res := call(t, r.s.handleLoadSong, args)
+		contains(t, resultText(res),
+			"). The probe app is still in front: AUM could not be brought back (WebDriverAgent: unknown error: cannot create session)",
+			"next: bring AUM to the front (ipad_launch without app): the probe app does not keep the iPad awake, and left in front the iPad locks itself. Then: open the AUv3 Probe app on the iPad",
+		)
+		if got, want := r.wda.Fronted(), []string{rigProbeBundle}; !slices.Equal(got, want) {
+			t.Errorf("the iPad saw %q come forward, want %q", got, want)
+		}
+	})
+}
+
+// TestLoadSongLockedIPad checks a locked iPad is named as that, at once and
+// with what to do, where the load would otherwise wait for a pull that cannot
+// come or fail on WebDriverAgent's "Unable to launch". Nothing tries to
+// unlock it.
+func TestLoadSongLockedIPad(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	r.probeApp(map[string][]ipadtest.ProbeFile{"Songs": {{Name: "Night Drive.aumproj"}}})
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	args := map[string]any{"song": "night_drive", "confirm": true, "check": false}
+	const unlock = "next: unlock the iPad on the device, with its passcode if it asks for one (the daemon never unlocks it and never types a code), then load_song again"
+
+	// The session is not on the iPad yet: the pull step ends the load.
+	r.wda.SetLocked(true)
+	start := time.Now()
+	res := call(t, s.handleLoadSong, args)
+	text := resultText(res)
+	if !res.IsError {
+		t.Fatalf("a load on a locked iPad succeeded: %s", text)
+	}
+	for _, want := range []string{
+		"1. author  ok",
+		"2. pull    FAIL  the iPad is locked: it pulls no session, and AUM cannot be brought to the front to load one",
+		unlock,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report lacks %q:\n%s", want, text)
+		}
+	}
+	if took := time.Since(start); took > songPullTimeout/2 {
+		t.Errorf("the load took %s on a locked iPad: it waited for a pull", took)
+	}
+	if got := r.wda.Fronted(); len(got) != 0 {
+		t.Errorf("apps were brought forward on a locked iPad: %q", got)
+	}
+
+	// Unlocked by hand, the session loads.
+	r.wda.SetLocked(false)
+	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+	if res := call(t, s.handleLoadSong, args); res.IsError {
+		t.Fatalf("load on the unlocked iPad: %s", resultText(res))
+	}
+
+	// Locked again, with the session on the iPad: the load step says it, and
+	// check_song says it of AUM's screen.
+	r.wda.SetLocked(true)
+	res = call(t, s.handleLoadSong, args)
+	text = resultText(res)
+	for _, want := range []string{
+		"2. pull    skip  the iPad already has this file",
+		"3. load    FAIL  the iPad is locked: AUM cannot be brought to the front to load the session",
+		unlock,
+	} {
+		if !res.IsError || !strings.Contains(text, want) {
+			t.Errorf("report lacks %q:\n%s", want, text)
+		}
+	}
+	res = call(t, s.handleCheckSong, map[string]any{"song": "night_drive", "sound": false})
+	text = resultText(res)
+	for _, want := range []string{
+		"aum     FAIL  AUM's screen could not be read: the iPad is locked (WebDriverAgent: unknown error: Unable to launch com.kymatica.AUM because the device was not, or could not be, unlocked.)",
+		"next: unlock the iPad on the device, with its passcode if it asks for one (the daemon never unlocks it and never types a code), then check_song again",
+	} {
+		if !res.IsError || !strings.Contains(text, want) {
+			t.Errorf("check report lacks %q:\n%s", want, text)
+		}
+	}
+	for _, req := range r.wda.Requests() {
+		if strings.Contains(req.Path, "unlock") {
+			t.Errorf("the daemon asked %s %s of the iPad: it never unlocks it", req.Method, req.Path)
+		}
 	}
 }
 

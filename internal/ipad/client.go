@@ -46,6 +46,10 @@ type Client struct {
 
 	appsMu sync.Mutex
 	apps   map[string]string // alias suffix -> resolved bundle ID
+
+	frontMu    sync.Mutex
+	front      string    // the app the last bound session brought to the front
+	frontSince time.Time // when the first of the sessions bound to it in a row did
 }
 
 // Option configures a Client.
@@ -227,6 +231,47 @@ func (c *Client) ActiveApp(ctx context.Context) (AppInfo, error) {
 	return AppInfo{BundleID: v.BundleID, PID: v.PID, Name: v.Name}, nil
 }
 
+// Locked reports whether the iPad shows its lock screen (WDA's /wda/locked).
+// It needs no session. A locked iPad brings no app to the front: WDA then
+// fails a session with "Unable to launch … because the device was not, or
+// could not be, unlocked". With a passcode set it stays locked until the code
+// is entered on the device, so this client only ever asks: it never calls
+// WDA's unlock and never types a code.
+func (c *Client) Locked(ctx context.Context) (bool, error) {
+	var locked bool
+	err := c.call(ctx, http.MethodGet, "/wda/locked", nil, &locked)
+	return locked, err
+}
+
+// Front is the app this client last brought to the front and when it did:
+// the first of the sessions bound to that app in a row. It is "" before the
+// first bound session. This is what the client did, not what the iPad shows:
+// a hand on the iPad or another WDA client may have changed it since, and
+// WDA's own answer (ActiveApp) is SpringBoard in windowed multitasking.
+//
+// It matters because of the iPad's auto-lock: AUM keeps the screen awake,
+// other apps need not, and an iPad left with one of those in front locks
+// itself.
+func (c *Client) Front() (bundleID string, since time.Time) {
+	c.frontMu.Lock()
+	defer c.frontMu.Unlock()
+	return c.front, c.frontSince
+}
+
+func (c *Client) noteFront(bundleID string) {
+	c.frontMu.Lock()
+	defer c.frontMu.Unlock()
+	if c.front != bundleID {
+		c.front, c.frontSince = bundleID, time.Now()
+	}
+}
+
+// BringToFront brings an app to the front, launching it when it is not
+// running, and does nothing else there.
+func (c *Client) BringToFront(ctx context.Context, bundleID string) error {
+	return c.WithApp(ctx, bundleID, func(*Session) error { return nil })
+}
+
 // Screenshot returns the screen as PNG bytes (device pixels; Retina iPads have
 // two pixels per point). It needs no session but still holds the client lock so
 // it never interleaves with a gesture.
@@ -290,6 +335,9 @@ func (c *Client) WithApp(ctx context.Context, bundleID string, fn func(*Session)
 		return &Error{Status: http.StatusOK, Message: "session reply carried no sessionId"}
 	}
 	s := &Session{c: c, id: created.SessionID, BundleID: bundleID}
+	if bundleID != "" {
+		c.noteFront(bundleID)
+	}
 	defer func() {
 		// Close on a fresh context: the caller's may already be done, and a
 		// leaked session would block the next one until WDA times it out.

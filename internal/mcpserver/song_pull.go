@@ -8,6 +8,11 @@ package mcpserver
 // staged files, and a file that changed on both sides since its last sync it
 // neither fetches nor sends: it shows the file as a conflict and waits for a
 // side to be picked. From the daemon that is a file nobody asks for.
+//
+// The app does not keep the iPad awake as AUM does. After a pull the load
+// step brings AUM forward; a pull that fails ends the load, so the step
+// itself brings AUM back then (aumBack). The probe app left in front let the
+// rig's iPad lock itself, and a locked iPad needs its passcode by hand.
 
 import (
 	"context"
@@ -23,6 +28,9 @@ import (
 type pullOutcome struct {
 	ok           bool
 	detail, next string
+	// app is the probe app's bundle id once the step set out to bring it
+	// forward.
+	app string
 }
 
 // pullOpenApp is what to do when the session did not arrive and nothing says
@@ -30,8 +38,70 @@ type pullOutcome struct {
 const pullOpenApp = "open the AUv3 Probe app on the iPad (it pulls staged sessions while it is in front and reaches the daemon), then load_song again"
 
 // pullWithProbeApp brings the probe app forward and waits for it to fetch the
-// staged session of a song.
+// staged session of a song. When that fails AUM is brought back to the front.
 func (s *Server) pullWithProbeApp(ctx context.Context, songID, outID string, rec songSessionRecord) pullOutcome {
+	out := s.pullInFront(ctx, songID, outID, rec)
+	if !out.ok {
+		s.aumBack(ctx, &out)
+	}
+	return out
+}
+
+// pullAUMBackTimeout bounds bringing AUM back after a failed pull.
+const pullAUMBackTimeout = 20 * time.Second
+
+// pullAUMBack is added to what to do after a failed pull once AUM is in front
+// again; the %q is the probe app's bundle id.
+const pullAUMBack = " AUM is in front again, so the AUv3 Probe app has to be opened again for this: ipad_launch with app %q (ipad_ui_tree and ipad_tap take the same app). " +
+	"It syncs only while it is in front. Bring AUM back when done (ipad_launch without app): left in front, the app lets the iPad lock itself."
+
+// aumBack brings AUM back to the front after a pull that failed with the probe
+// app in front, and says so in the outcome. Nothing else would: the load ends
+// with the failed pull, and the probe app does not keep the iPad awake, so
+// left there the iPad locks itself after its auto-lock time and needs its
+// passcode. The app's sync stops with it; what the reader is told to look at
+// or do in the app therefore starts with opening it again.
+func (s *Server) aumBack(ctx context.Context, out *pullOutcome) {
+	if s.ipad == nil || out.app == "" {
+		return
+	}
+	// The call may be over; AUM comes back all the same.
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pullAUMBackTimeout)
+	defer cancel()
+	if front, _ := s.ipad.Front(); front != out.app {
+		// The app did not come forward, as far as WebDriverAgent told. A call
+		// that ended while it was asked to may have brought it there unheard.
+		if ctx.Err() != nil {
+			_ = s.ipad.BringToFront(bctx, ipad.AUMBundleID)
+		}
+		return
+	}
+	detail := strings.TrimRight(out.detail, ".")
+	if err := s.ipad.BringToFront(bctx, ipad.AUMBundleID); err != nil {
+		why, locked := s.ipadFailure(bctx, err)
+		out.detail = fmt.Sprintf("%s. The probe app is still in front: AUM could not be brought back (%s)", detail, why)
+		first := "bring AUM to the front (ipad_launch without app): the probe app does not keep the iPad awake, and left in front the iPad locks itself"
+		if locked {
+			first = ipadUnlock
+		}
+		out.next = first + ". Then: " + out.next
+		return
+	}
+	out.detail = detail + ". AUM is in front again: the probe app does not keep the iPad awake, so the daemon does not leave it in front"
+	out.next = strings.TrimRight(out.next, ".") + "." + fmt.Sprintf(pullAUMBack, out.app)
+}
+
+// pullLocked is the pull step's end at a locked iPad.
+func pullLocked() pullOutcome {
+	return pullOutcome{
+		detail: ipadLockedText + ": it pulls no session, and AUM cannot be brought to the front to load one",
+		next:   ipadUnlock + ", then load_song again",
+	}
+}
+
+// pullInFront is the step itself: the probe app is brought forward and the
+// session waited for. A failure leaves the app in front.
+func (s *Server) pullInFront(ctx context.Context, songID, outID string, rec songSessionRecord) pullOutcome {
 	// blind waits without a look at the app.
 	blind := func(note string) pullOutcome {
 		if !s.waitPulled(ctx, songID, rec.SHA256, songPullTimeout) {
@@ -50,10 +120,17 @@ func (s *Server) pullWithProbeApp(ctx context.Context, songID, outID string, rec
 	w.folder, w.file = path.Split(outID)
 	w.folder, w.file = strings.Trim(w.folder, "/"), w.file+".aumproj"
 	err = s.ipad.WithApp(ctx, app, func(sess *ipad.Session) error { return w.run(ctx, sess) })
-	if w.out == nil {
-		return blind(fmt.Sprintf("the probe app could not be brought to the front: %v", err))
+	var out pullOutcome
+	switch {
+	case w.out != nil:
+		out = *w.out
+	case s.ipadLocked(ctx):
+		return pullLocked() // no app comes forward on a locked iPad
+	default:
+		out = blind(fmt.Sprintf("the probe app could not be brought to the front: %v", err))
 	}
-	return *w.out
+	out.app = app
+	return out
 }
 
 // pullWatch waits for one session's pull with the probe app in front.

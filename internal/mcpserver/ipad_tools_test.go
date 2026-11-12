@@ -351,3 +351,104 @@ func TestAUMToolsOverMCP(t *testing.T) {
 		t.Fatalf("wait_for_aum_ui: %v %s", err, resultText(res))
 	}
 }
+
+// TestIPadFrontNote checks a tool that leaves another app than AUM in front
+// says so, with why it matters and how AUM comes back, until AUM is in front
+// again: AUM keeps the iPad awake, the probe app does not, and an iPad left
+// with it in front locks itself.
+func TestIPadFrontNote(t *testing.T) {
+	w, s := newIPadServer(t)
+	const probe = "TEAM.com.teemow.auv3probe"
+	w.Apps = map[string]*ipadtest.ProbeApp{probe: {}}
+	const note = "Note: the AUv3 Probe app (" + probe + ") is in front on the iPad, not AUM (the daemon brought it there less than a minute ago). " +
+		"It does not keep the iPad awake as AUM does: left in front, the iPad locks itself after its auto-lock time, and then needs its passcode entered on the device. " +
+		"Bring AUM back as soon as you are done: ipad_launch without app."
+
+	if res := call(t, s.handleIPadStatus, map[string]any{}); strings.Contains(resultText(res), "Note:") {
+		t.Fatalf("status with AUM in front carries a note:\n%s", resultText(res))
+	}
+	res := call(t, s.handleIPadUITree, map[string]any{"app": probe})
+	if text := resultText(res); res.IsError || !strings.Contains(text, note) || !strings.Contains(text, `Button "audio units"`) {
+		t.Fatalf("tree of the probe app:\n%s", text)
+	}
+	if tree := res.StructuredContent.(ipadTree); tree.Note != note {
+		t.Errorf("structured note = %q", tree.Note)
+	}
+	for name, res := range map[string]*mcp.CallToolResult{
+		"ipad_tap":        call(t, s.handleIPadTap, map[string]any{"app": probe, "x": 10, "y": 20}),
+		"ipad_hold":       call(t, s.handleIPadHold, map[string]any{"app": probe, "x": 10, "y": 20, "duration_ms": 100}),
+		"ipad_launch":     call(t, s.handleIPadLaunch, map[string]any{"app": probe}),
+		"ipad_status":     call(t, s.handleIPadStatus, map[string]any{}),
+		"ipad_screenshot": call(t, s.handleIPadScreenshot, map[string]any{}),
+		// A failure in the app leaves it in front as well.
+		"a failed call": s.ipadError(context.Background(), &ipad.Error{Status: 500, Code: "unknown error", Message: "x"}),
+	} {
+		if !strings.Contains(resultText(res), note) {
+			t.Errorf("%s with the probe app in front lacks the note:\n%s", name, resultText(res))
+		}
+	}
+
+	// An app nothing is known of.
+	res = call(t, s.handleIPadLaunch, map[string]any{"app": "com.example.other"})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "Note: com.example.other is in front on the iPad, not AUM") ||
+		!strings.Contains(text, "Only AUM is known to keep the iPad awake: with another app left in front the iPad can lock itself after its auto-lock time") {
+		t.Fatalf("launch of another app:\n%s", text)
+	}
+	if out := res.StructuredContent.(map[string]any); out["note"] == nil {
+		t.Errorf("structured launch result has no note: %v", out)
+	}
+
+	// AUM comes back: nothing more to say.
+	res = call(t, s.handleIPadLaunch, map[string]any{})
+	if text := resultText(res); res.IsError || strings.Contains(text, "Note:") {
+		t.Fatalf("launch of AUM:\n%s", text)
+	}
+	if res := call(t, s.handleIPadStatus, map[string]any{}); strings.Contains(resultText(res), "Note:") {
+		t.Fatalf("status after AUM came back:\n%s", resultText(res))
+	}
+
+	// What WebDriverAgent names in front counts when the daemon brought
+	// nothing forward itself (a daemon just started).
+	w2, s2 := newIPadServer(t)
+	w2.BundleID = probe
+	if text := resultText(call(t, s2.handleIPadStatus, map[string]any{})); !strings.Contains(text, "Note: the AUv3 Probe app ("+probe+") is in front on the iPad, not AUM. It does not keep the iPad awake") {
+		t.Fatalf("status of a fresh daemon with the probe app in front:\n%s", text)
+	}
+}
+
+// TestIPadLocked checks a locked iPad is named: by ipad_status, and by every
+// tool in place of what WebDriverAgent makes of the call. The daemon asks for
+// the state only and never tries to unlock.
+func TestIPadLocked(t *testing.T) {
+	w, s := newIPadServer(t)
+	res := call(t, s.handleIPadStatus, map[string]any{})
+	if st := res.StructuredContent.(ipadStatus); st.Locked == nil || *st.Locked || strings.Contains(resultText(res), "LOCKED") {
+		t.Fatalf("status of an iPad that is not locked: %+v\n%s", st, resultText(res))
+	}
+
+	w.SetLocked(true)
+	const unlock = "unlock the iPad on the device, with its passcode if it asks for one (the daemon never unlocks it and never types a code)"
+	res = call(t, s.handleIPadStatus, map[string]any{})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "WebDriverAgent ready") || !strings.Contains(text, "the iPad is LOCKED: "+unlock) {
+		t.Fatalf("status of a locked iPad:\n%s", text)
+	}
+	if st := res.StructuredContent.(ipadStatus); st.Locked == nil || !*st.Locked || st.Hint != unlock {
+		t.Fatalf("structured status of a locked iPad: %+v", st)
+	}
+	for name, res := range map[string]*mcp.CallToolResult{
+		"get_aum_ui":   call(t, s.handleGetAUMUI, map[string]any{}),
+		"ipad_launch":  call(t, s.handleIPadLaunch, map[string]any{}),
+		"ipad_ui_tree": call(t, s.handleIPadUITree, map[string]any{"app": "com.example.other"}),
+	} {
+		text := resultText(res)
+		if !res.IsError || !strings.HasPrefix(text, "the iPad is locked: "+unlock+". WebDriverAgent said: WebDriverAgent: unknown error: Unable to launch ") {
+			t.Errorf("%s on a locked iPad:\n%s", name, text)
+		}
+	}
+	for _, req := range w.Requests() {
+		if strings.Contains(req.Path, "unlock") {
+			t.Errorf("the daemon asked %s %s of the iPad: it never unlocks it", req.Method, req.Path)
+		}
+	}
+}
