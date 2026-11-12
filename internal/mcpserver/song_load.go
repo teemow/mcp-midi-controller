@@ -830,6 +830,9 @@ func (s *Server) checkFiles(ctx context.Context, cs *compiledSong, c *checkRepor
 	}
 	var absent, unread, odd []string
 	loaded := 0
+	// The files' lengths in beats, to tell takes of one length from takes of
+	// several: a take ends a few frames short of its bar line, and not every
+	// take by the same few (on a device 4, 6 and 7), so frames are not it.
 	lengths := map[int64]bool{}
 	for _, tp := range cs.plan.Tracks {
 		file := tp.File()
@@ -856,8 +859,8 @@ func (s *Server) checkFiles(ctx context.Context, cs *compiledSong, c *checkRepor
 			var take stemTake
 			take.setLength(v, cs.timeline.Tempo)
 			row.Frames, row.Seconds, row.Beats, row.Whole, row.Format = take.Frames, take.Seconds, take.Beats, take.Whole, take.Format
-			if row.Frames > 0 {
-				lengths[row.Frames] = true
+			if row.Whole != nil {
+				lengths[int64(math.Round(row.Beats/(2*stemWholeBeat)))] = true
 			}
 			for _, sw := range [][2]string{{"Loop", v.Loop}, {"Sync", v.Sync}} {
 				if strings.EqualFold(sw[1], "ON") {

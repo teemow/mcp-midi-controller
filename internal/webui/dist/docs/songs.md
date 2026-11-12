@@ -1284,7 +1284,7 @@ panel of the File Player that has it loaded. So it is the mix's load that
 reports, for every stem, the frames, the seconds, the beats, and whether that
 is a whole number of beats; `get_song_stems` has it from then on. A take that
 began with the transport and ended on a bar line is whole beats long (on a
-device 7 frames short of them, 0.0003 of a beat). `mix_song_stems` does not
+device 4 to 7 frames short of them, 0.0003 of a beat at most). `mix_song_stems` does not
 play a mix in which a take is not whole beats long, or shorter than the
 lead-in, the song and the tail: that take did not start with the transport or
 lost its end, and the stems would not line up. It also refuses a stem without
@@ -1764,6 +1764,48 @@ controls were sent with `send_midi`, before the tools existed:
 - **AUM's list of a folder is not in the order of the takes.** Read after
   each take, it gave 002, 001; then 003, 001, 002; then 005, 004, 003.
 
+Then the same song went through the tools of a daemon that has them, one
+pass of the whole first, then its stems and their mix (two stems: one track,
+and two tracks; a hall and a limiter on the master):
+
+- **`record_song_stems`.** Both stems in 4:38: a session loaded for each
+  (about 40 and 80 s), a pass of 22 s, the take found in AUM's list each time. The
+  master was armed by its mapping alone, and no take needed the daemon's own
+  off. The takes were `Master - 120 bpm - 006.wav` in the folder of the first
+  stem's session, which held five earlier takes, and `- 001.wav` in the
+  second's.
+- **The takes' lengths**, read by `mix_song_stems` from the File Players of
+  the loaded mix: 1 055 994 and 1 055 996 frames at 48 kHz, 6 and 4 frames
+  short of 22 s. Both are 44 beats, the lead-in, the song and the tail; the
+  two differ by 0.04 ms.
+- **`mix_song_stems`.** It wrote the mix (two file tracks, the hall and the
+  limiter), loaded it in 81 s (the iPad pulled it in 27 s, AUM had it open
+  after 53 s more), found each File Player with its file, and played it from
+  the sequencer with the tap recording.
+- **The mix against the one pass**, both recorded at the master's tap, each
+  placed by its own first note:
+
+  | | One pass, rms / peak dBFS | Mix of the stems | Difference |
+  |-|---------------------------|------------------|------------|
+  | first stem alone, 2 bars | -32.3 / -14.8 | -32.2 / -14.6 | +0.1 / +0.2 |
+  | second stem alone, 2 bars | -33.1 / -13.8 | -33.0 / -13.6 | +0.0 / +0.2 |
+  | in turns, 2 bars | -32.6 / -12.9 | -32.6 / -13.0 | -0.1 / -0.1 |
+  | together, 2 bars | -24.2 / -7.4 | -24.2 / -7.4 | 0.0 / 0.0 |
+  | the whole | -28.7 / -7.4 | -28.6 / -7.4 | +0.0 / 0.0 |
+
+  So the limiter, which the together section drives, and the hall work on the
+  sum of the stems as they do on the instruments.
+- **Where the stems sit against each other.** Every note's onset in the mix
+  against the same note's in the one pass, 12 notes of each stem where it
+  plays alone or the two take turns: the first stem's -0.02 ms on average
+  (-0.17 to +0.08), the second's -0.07 (-0.40 to +0.38). The distance between
+  the two stems' notes differs between the mix and the one pass by 0.06 ms
+  where each plays alone and by 0.02 ms where they take turns. Where both
+  play at once the reading does not tell them apart.
+- **A full disk.** The first recording of the mix failed with "no space left
+  on device" on the daemon's host; the mix had played. Played again with room
+  on the disk, it was recorded.
+
 **Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
 (108 BPM), each a little over a minute, were played from the session's
 sequencer from the first bar to the last with their bars in place: the hats of
@@ -1771,19 +1813,18 @@ the 6/8 song sat on its eighth-note grid in its first bar and in its 35th.
 
 Not yet measured:
 
-- `record_song_stems` as it is now, and `mix_song_stems`, as tools on the
-  rig: the passes above were driven by hand, and the one run of the tool was
-  of the version that sent a second off. The tests run both against a
-  stand-in whose recorder latches by value, withdraws an end at a second off,
-  ends a take on a bar line and lists it the way AUM does, and whose File
-  Players show what the rig's showed;
-- the exact length of a take the sequence ended (4.0 MiB is 22 s to a tenth
-  of a second; the frames are read when a File Player has it), the daemon's
-  own off after a pass whose sequence sent none, a stem of many strips whose
-  master is off screen when its REC button is read, and a File Player whose
-  file is missing (the check reads its panel; what AUM shows there for an
-  empty player was not looked at);
-- how a mix made from stems compares with one pass of the same song;
+- of the stems tools: the daemon's own off after a pass whose sequence sent
+  none, `stop_song` during a pass, a take that is not whole beats long met by
+  `mix_song_stems`, a stem of many strips whose master is off screen when its
+  REC button is read, a File Player whose file is missing (the check reads
+  its panel; what AUM shows there for an empty player was not looked at), a
+  song long or heavy enough to need its stems, and a mix with a scene or a
+  ramp on its master. The tests run the first four against a stand-in whose
+  recorder latches by value, withdraws an end at a second off, ends a take
+  on a bar line and lists it the way AUM does, and whose File Players show
+  what the rig's showed;
+- `mix_song` and `check_song` called by themselves on a song of file tracks
+  (the check ran as part of the mix's load);
 - the check's note held for the catalogue's attack, its 1.5 s second try and
   its wait for a silent tap (the tests run them against a stand-in with a
   slow pad and a ringing reverb);
