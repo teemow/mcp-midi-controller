@@ -1226,19 +1226,34 @@ ended at silence stays there. What rings out in a stem is in its file.
 
 **A pass.** The daemon loads the stem's session (`load_song`'s steps, the
 check included; what the check finds is noted with the take and does not stop
-it), reads AUM's list of the session's recordings, and arms the master strip.
-It arms by the master's mapped Rec enable and then reads the REC button off
-AUM's screen, which it taps when the mapping did not arm it. Then it switches
-AUM's recorder on, which starts the transport: the sequencer plays the stem
-from the top. Half a beat before the tail's last bar line it switches the
-recorder off. AUM ends a take on the next bar line, so the take ends there,
-and the transport runs on a bar longer before it is stopped. Then the master
-is disarmed. `stop_song` ends a pass, and the whole recording, the same way.
+it). It switches AUM's recorder off, in case one was left on, reads AUM's list
+of the session's recordings, and arms the master strip: by the master's mapped
+Rec enable, and then it reads the REC button off AUM's screen, which it taps
+when the mapping did not arm it. Then it switches the recorder on, which
+starts the transport: the sequencer plays the stem from the top.
 
-**The take** is the file AUM's list has afterwards and had not before. AUM
-names it `<session>/Master - <tempo> bpm - <nnn>.wav`, counting up in the
-session's folder. The list gives a file's date, size and format, and no
-length.
+**One message ends the take, and the stem's own sequence sends it**: the
+recorder's off, half a beat before the tail's last bar line. AUM ends a take
+on the next bar line, so the take ends there, as long as the lead-in, the song
+and the tail. The daemon sends no off of its own meanwhile, because a second
+off before that bar line withdraws the first and the recorder runs on (see
+[Status](#status)). It also means a take ends by itself when the daemon that
+started it is gone: a recorder that nobody switches off records on through a
+stopped transport. The transport is stopped a bar after the stem's end, and
+the master disarmed.
+
+When AUM lists no new take a few seconds after that, the sequence has not
+ended it. The daemon then switches the recorder off itself, once, with the
+transport stopped. Such a take ran on after the stem and is not whole beats
+long: the report says so, and the mix is not played from it (below).
+`stop_song` ends a pass, and the whole recording: the transport stops and the
+recorder is switched off.
+
+**The take** is the file AUM's list has afterwards and had not before, the
+one with the highest number when there are several. AUM names it
+`<session>/Master - <tempo> bpm - <nnn>.wav`, counting up in the session's
+folder. The list gives a file's date, size and format, and no length, and is
+not always in the order of the takes.
 
 **What is kept.** The daemon notes down every take: the stem and its tracks,
 the file, and a fingerprint of the stem's session and of what its sequencer
@@ -1714,8 +1729,8 @@ controls were sent with `send_midi`, before the tools existed:
   message that started it, 20 ms after the end of the eleventh bar by the
   daemon's clock: the take was 1 151 993 frames at 48 kHz, 7 frames short of
   twelve bars (24 s, 48 beats). AUM had ended it on the bar line after the
-  one it was aimed at. The daemon therefore switches the recorder off half a
-  beat before the last bar line.
+  one it was aimed at. The recorder is therefore switched off half a beat
+  before the last bar line.
 - **The take's name and what AUM lists of it.** The takes were `Master - 120
   bpm - 001` and `- 002` in a folder named after the session, in FILES →
   Recordings. The list printed each as `12. Nov 2026 at 21:23:42 • 4.4 MiB •
@@ -1733,6 +1748,21 @@ controls were sent with `send_midi`, before the tools existed:
   (the written C2, read back at 65.5 Hz), through the hall and the limiter on
   the master. AUM showed 8 to 9 % DSP with the two players and the two master
   effects.
+- **A second off withdraws the first.** `record_song_stems` as first merged
+  had the daemon send the recorder's off about when the stem's sequence sends
+  its own. Run on the rig, its first pass left the recorder on: AUM listed no
+  new take, the tool said so and ended, and the record button was still lit
+  minutes later; switched off by hand the take was 33.2 MiB, three minutes
+  for 22 s of music. By hand in the same session: the off sent twice, 150 ms
+  apart, in the fifth bar of a pass, and the recorder was still on a bar and
+  a half later; the sequence's own off then ended that take at its end.
+- **The sequence's own off ends the take where the stem ends.** A pass with
+  the recorder switched on by hand and nothing sent after it: at 24.5 s the
+  record button was idle while the transport still ran, and the take was 4.0
+  MiB at 16 bit, 22 s: the lead-in, the song and the tail. The same in the
+  pass above, once its two offs had cancelled each other.
+- **AUM's list of a folder is not in the order of the takes.** Read after
+  each take, it gave 002, 001; then 003, 001, 002; then 005, 004, 003.
 
 **Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
 (108 BPM), each a little over a minute, were played from the session's
@@ -1741,12 +1771,15 @@ the 6/8 song sat on its eighth-note grid in its first bar and in its 35th.
 
 Not yet measured:
 
-- `record_song_stems` and `mix_song_stems` as tools on the rig: the passes
-  above were driven by hand. The tests run both against a stand-in whose
-  recorder latches by value, ends a take on a bar line and lists it the way
-  AUM does, and whose File Players show what the rig's showed;
-- a take ended half a beat before its last bar line (expected: it ends there,
-  as long as the lead-in, the song and the tail), a stem of many strips whose
+- `record_song_stems` as it is now, and `mix_song_stems`, as tools on the
+  rig: the passes above were driven by hand, and the one run of the tool was
+  of the version that sent a second off. The tests run both against a
+  stand-in whose recorder latches by value, withdraws an end at a second off,
+  ends a take on a bar line and lists it the way AUM does, and whose File
+  Players show what the rig's showed;
+- the exact length of a take the sequence ended (4.0 MiB is 22 s to a tenth
+  of a second; the frames are read when a File Player has it), the daemon's
+  own off after a pass whose sequence sent none, a stem of many strips whose
   master is off screen when its REC button is read, and a File Player whose
   file is missing (the check reads its panel; what AUM shows there for an
   empty player was not looked at);

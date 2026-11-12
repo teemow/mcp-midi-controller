@@ -22,8 +22,12 @@ package mcpserver
 // strip's Rec enable, mapped to a controller, latch by value as a mute does.
 // 127 starts the recorder, and the transport with it when it stands; a second
 // 127 changes nothing; 0 ends the take, on the next bar line while the
-// transport runs and at once when it stands. A recorder left on records on
-// through a stopped transport. The take is <session>/<strip> - <tempo> bpm -
+// transport runs and at once when it stands. A second 0 before that bar line
+// withdraws the first: the recorder runs on. A recorder left on records on
+// through a stopped transport. So one message ends a take, and it is the
+// stem's own sequence that sends it (song.RecorderOffBeats); the daemon
+// switches the recorder off only where it knows the sequence has not, with
+// the transport stopped. The take is <session>/<strip> - <tempo> bpm -
 // <nnn>.wav in AUM's Recordings; AUM's list of them gives each file's date,
 // size and format and no length. A File Player gives the length, in frames.
 
@@ -57,12 +61,15 @@ var (
 	// message that does it, before its screen is read for the arm.
 	stemArmSettle = 400 * time.Millisecond
 	// stemEndMargin is added to the bar the transport runs on for after the
-	// recorder was told to end the take, for AUM to end it in.
+	// stem's last bar line, where its sequence has the recorder end the take.
 	stemEndMargin = 500 * time.Millisecond
 	// stemListWait is how long a finished take is given to appear in AUM's
-	// list of recordings, which is read every stemListPoll.
+	// list of recordings, which is read every stemListPoll. A take that has
+	// not appeared after stemOffAfter was not ended by the stem's sequence:
+	// the daemon then switches the recorder off itself, once.
 	stemListWait = 20 * time.Second
 	stemListPoll = 2 * time.Second
+	stemOffAfter = 6 * time.Second
 	// stemLoadEstimate is what loading a stem's session is reckoned at when
 	// the job says how long it will take.
 	stemLoadEstimate = 75 * time.Second
@@ -403,28 +410,36 @@ func (t *stemTake) setLength(v filePlayerView, tempo float64) {
 	t.Whole = &whole
 }
 
+// reTakeNumber is the number AUM ends a take's name with ("Master - 120 bpm -
+// 004"), counting up in the session's folder.
+var reTakeNumber = regexp.MustCompile(`(\d+)(?:\.[A-Za-z0-9]+)?$`)
+
 // newRecording picks the take out of a folder's list: the file that was not
-// there before. Of several the master's is the one; none is "".
+// there before. Of several, the master's with the highest number is the one:
+// AUM's list is not always in the order of the takes.
 func newRecording(before, after []ipad.AUMFileEntry) (ipad.AUMFileEntry, bool) {
 	was := map[string]bool{}
 	for _, e := range before {
 		was[e.Name] = true
 	}
-	var fresh []ipad.AUMFileEntry
-	for _, e := range after {
-		if !was[e.Name] {
-			fresh = append(fresh, e)
+	number := func(e ipad.AUMFileEntry) int {
+		n := -1
+		if m := reTakeNumber.FindStringSubmatch(e.Name); m != nil {
+			n, _ = strconv.Atoi(m[1])
 		}
-	}
-	for _, e := range fresh {
 		if strings.HasPrefix(strings.ToLower(e.Name), "master") {
-			return e, true
+			n += 1 << 20 // the master's before any other strip's
+		}
+		return n
+	}
+	var take ipad.AUMFileEntry
+	found := false
+	for _, e := range after {
+		if !was[e.Name] && (!found || number(e) > number(take)) {
+			take, found = e, true
 		}
 	}
-	if len(fresh) > 0 {
-		return fresh[len(fresh)-1], true
-	}
-	return ipad.AUMFileEntry{}, false
+	return take, found
 }
 
 // recordingFile is a listed take as a File Player's file: its path in AUM's
@@ -868,6 +883,26 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	}
 	folder := path.Base(rec.Session)
 
+	cc := func(at song.Assignment, value int) song.Event {
+		return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
+	}
+	send := func(sctx context.Context, e song.Event) error { return s.sendBrain(sctx, songCommand(e)) }
+	p := cs.plan
+	record := p.Transport["Toggle Record"]
+	// recorderOff switches AUM's recorder off, with the transport stopped:
+	// the take then ends at once. It does not use the pass's context, which
+	// may be over.
+	recorderOff := func() {
+		octx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = send(octx, cc(record, 0))
+		_ = sleepContext(octx, stemArmSettle)
+	}
+
+	// A recorder left on from before would make the start no start, and its
+	// take would be found as this pass's: it is switched off before AUM's
+	// list is read. The transport stands (the load left it stopped).
+	recorderOff()
 	job.setPhase("%s: reading AUM's recordings of %q", label, folder)
 	before, err := deck.Recordings(ctx, folder)
 	if err != nil {
@@ -877,12 +912,6 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 		why, _ := s.ipadFailure(ctx, err)
 		return fail("AUM's list of recordings could not be read before the take: %s", why)
 	}
-
-	cc := func(at song.Assignment, value int) song.Event {
-		return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
-	}
-	send := func(sctx context.Context, e song.Event) error { return s.sendBrain(sctx, songCommand(e)) }
-	p := cs.plan
 
 	// Arm the master: by its mapping, and then by AUM's screen, which says
 	// whether the mapping armed it and arms it when not.
@@ -915,8 +944,10 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	}()
 
 	// The pass: the recorder starts the transport and the sequencer plays the
-	// stem; at the end the recorder is told to end the take, which it does on
-	// the next bar line, and only then the transport stops.
+	// stem. Half a beat before the stem's last bar line the sequence itself
+	// switches the recorder off, which ends the take on that bar line; the
+	// transport stops a bar later. The daemon sends no off of its own
+	// meanwhile: a second one would withdraw the first.
 	tap, _ := s.songTap(rec.Session)
 	var meter *tapMeter
 	mctx, stopMeter := context.WithCancel(context.Background())
@@ -931,24 +962,15 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 
 	seq := cs.timeline.Sequence()
 	bar := cs.timeline.TickTime(cs.timeline.BarTicks)
-	lead := time.Duration(song.RecorderOffBeats * float64(time.Minute) / cs.timeline.Tempo)
 	ended := make(chan song.Status, 1)
-	// The recorder latches by value: 127 is on, and starts the transport; 0
-	// is off, and ends the take on the next bar line. The stem's sequence
-	// sends that 0 itself, half a beat before its last bar line, with the
-	// transport's timing; the daemon sends it too, about then, for a
-	// sequencer that did not.
-	record := p.Transport["Toggle Record"]
+	// The recorder latches by value: 127 is on, and starts the transport.
 	job.setPhase("%s: recording, %s", label, clock(seq.Duration()))
 	_, err = s.player.StartSequenced(cs.id, cs.timeline, seq, song.SequencedOptions{
-		// A recorder left on from before would make the start no start.
-		Rewind:     []song.Event{cc(record, 0), cc(p.SequencerBypass, 0), cc(p.Transport["Rewind"], 127)},
-		Start:      []song.Event{cc(record, 127)},
-		Finish:     []song.Event{cc(record, 0)},
-		FinishLead: lead,
-		FinishWait: lead + bar + stemEndMargin,
-		Stop:       []song.Event{cc(p.Transport["Stop/Rewind"], 127), cc(p.Transport["Rewind"], 127)},
-		OnEnd:      func(st song.Status) { ended <- st },
+		Rewind: []song.Event{cc(p.SequencerBypass, 0), cc(p.Transport["Rewind"], 127)},
+		Start:  []song.Event{cc(record, 127)},
+		Tail:   bar + stemEndMargin,
+		Stop:   []song.Event{cc(p.Transport["Stop/Rewind"], 127), cc(p.Transport["Rewind"], 127)},
+		OnEnd:  func(st song.Status) { ended <- st },
 	}, send)
 	if err != nil {
 		return fail("the pass could not start: %v", err)
@@ -960,6 +982,11 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 		// stop_song stopped the player already; wait for its last messages.
 		s.player.Stop()
 		final = <-ended
+	}
+	if final.Outcome != "finished" {
+		// The pass did not reach the sequence's own off: the transport is
+		// stopped now, and the recorder must not record on.
+		recorderOff()
 	}
 	stopMetering()
 	if meter != nil {
@@ -977,21 +1004,33 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	// The take is the file AUM's list has now and did not have before.
 	job.setPhase("%s: finding the take in AUM's recordings", label)
 	var entry ipad.AUMFileEntry
-	found := false
+	found, nudged := false, false
 	var lerr error
-	for deadline := time.Now().Add(stemListWait); ; {
+	for looking := time.Now(); ; {
 		var after []ipad.AUMFileEntry
 		if after, lerr = deck.Recordings(ctx, folder); lerr == nil {
 			if entry, found = newRecording(before, after); found {
 				break
 			}
 		}
-		if time.Now().After(deadline) {
+		if time.Since(looking) > stemListWait {
 			break
+		}
+		if !nudged && time.Since(looking) > stemOffAfter {
+			// No take: the sequence did not end it, and the recorder may be
+			// recording on through the stopped transport. Switched off now it
+			// ends at once, later than the stem: such a take is not whole
+			// beats long, which the mix's load says.
+			nudged = true
+			recorderOff()
+			continue
 		}
 		if err := sleepContext(ctx, stemListPoll); err != nil {
 			return take, err
 		}
+	}
+	if found && nudged {
+		take.Notes = append(take.Notes, "AUM listed no take after the pass until the daemon switched its recorder off: the stem's sequence had not ended it, so the take ran on after the stem and is not whole beats long")
 	}
 	switch {
 	case lerr != nil && !found:

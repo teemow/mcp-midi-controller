@@ -70,17 +70,25 @@ type songRig struct {
 	Running, Bypassed bool
 	// Armed is the master strip's record-arm (the song's mapping of its Rec
 	// enable, CC 107 on the global channel) and Recording AUM's recorder
-	// (Toggle Record, CC 105 there). Both latch by value, as on a device: the
-	// recorder starts the transport when it stands, and ends its take on the
-	// next bar line after it was switched off (Bar long; 0 ends it at once).
-	// A finished take of an armed master is listed under the open session's
-	// name in Takes.
+	// (Toggle Record, CC 105 there). Both latch by value, as on a device. The
+	// recorder starts the transport when it stands. Switched off while the
+	// transport runs it ends its take on the next bar line (Bar long), and a
+	// second off before that line withdraws the first; switched off while the
+	// transport stands it ends the take at once. A finished take of an armed
+	// master is listed under the open session's name in Takes.
 	Armed, Recording bool
 	Bar              time.Duration
 	// TakeTempo is the tempo AUM prints in a take's name.
 	TakeTempo string
-	Takes     map[string][]rigTake
-	recStart  time.Time
+	// ClipOff is when the open session's sequencer switches the recorder
+	// off, counted from the transport's start, as a stem's own sequence
+	// does; 0 leaves the recorder to whoever started it.
+	ClipOff  time.Duration
+	Takes    map[string][]rigTake
+	recStart time.Time
+	// recEnd is the bar line a take ends on, zero while none is asked for.
+	recEnd   time.Time
+	clipSent bool
 	// Surfaces are the control surfaces the daemon pushed, in order, each with
 	// the brain connection it was pushed to (the first is 1).
 	Surfaces []rigSurface
@@ -137,27 +145,62 @@ type rigTake struct {
 	Frames int64
 }
 
-// endTake finishes the recorder's take: it ends on the next bar line, a few
-// frames short of it as on a device, and is listed when the master was armed.
-// r.mu must be held.
-func (r *songRig) endTake() {
-	if !r.Recording {
+// recorderOff is the recorder's mapped control at 0. r.mu must be held.
+func (r *songRig) recorderOff() {
+	switch {
+	case !r.Recording:
+	case !r.Running || r.Bar <= 0:
+		r.endTake(time.Since(r.recStart), false)
+	case !r.recEnd.IsZero():
+		// A second off before the bar line withdraws the first.
+		r.recEnd = time.Time{}
+	default:
+		bars := math.Floor(float64(time.Since(r.recStart))/float64(r.Bar)) + 1
+		r.recEnd = r.recStart.Add(time.Duration(bars) * r.Bar)
+	}
+}
+
+// recorder moves the recorder on with the clock: the session's sequencer
+// switches it off when its time has come, and a take that was asked to end
+// ends on its bar line. r.mu must be held.
+func (r *songRig) recorder() {
+	if !r.Recording || !r.Running {
 		return
 	}
-	r.Recording = false
+	if r.ClipOff > 0 && !r.clipSent && time.Since(r.recStart) >= r.ClipOff {
+		r.clipSent = true
+		r.recorderOff()
+	}
+	if !r.recEnd.IsZero() && !time.Now().Before(r.recEnd) {
+		r.endTake(r.recEnd.Sub(r.recStart), true)
+	}
+}
+
+// endTake finishes the recorder's take, length long: one that ended on a bar
+// line is a few frames short of it, as on a device. It is listed when the
+// master was armed. r.mu must be held.
+func (r *songRig) endTake(length time.Duration, barLine bool) {
+	r.Recording, r.recEnd, r.clipSent = false, time.Time{}, false
 	if !r.Armed {
 		return
 	}
-	length := time.Since(r.recStart)
-	if r.Bar > 0 {
-		length = time.Duration(math.Ceil(float64(length)/float64(r.Bar))) * r.Bar
+	if !barLine && r.Bar > 0 {
+		// A take ended while the transport stands ends wherever that is. The
+		// rig ends it between two beats (of four to the bar), so a test does
+		// not hang on where.
+		beat := r.Bar / 4
+		length = length/beat*beat + beat/2
+	}
+	frames := int64(length.Seconds() * rigSampleRate)
+	if barLine {
+		frames -= 7
 	}
 	if r.Takes == nil {
 		r.Takes = map[string][]rigTake{}
 	}
 	folder := r.Session[strings.LastIndexByte(r.Session, '/')+1:]
 	name := fmt.Sprintf("Master - %s bpm - %03d", r.TakeTempo, len(r.Takes[folder])+1)
-	r.Takes[folder] = append(r.Takes[folder], rigTake{Name: name, Frames: int64(length.Seconds()*rigSampleRate) - 7})
+	r.Takes[folder] = append(r.Takes[folder], rigTake{Name: name, Frames: frames})
 }
 
 // rigSurface is a control surface the rig's brain was sent.
@@ -463,8 +506,9 @@ func (r *songRig) read(c *websocket.Conn, brain int) {
 					switch on := cmd.Value >= 64; {
 					case on && !r.Recording:
 						r.Recording, r.recStart, r.Running = true, time.Now(), true
+						r.recEnd, r.clipSent = time.Time{}, false
 					case !on:
-						r.endTake()
+						r.recorderOff()
 					}
 				}
 			}
@@ -495,6 +539,7 @@ func (r *songRig) stream(stop <-chan struct{}) {
 		}
 		r.mu.Lock()
 		r.render()
+		r.recorder()
 		r.mu.Unlock()
 	}
 }

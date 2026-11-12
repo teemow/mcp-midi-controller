@@ -162,10 +162,15 @@ func stemsRig(t *testing.T) (*songRig, *rigDeck) {
 	t.Helper()
 	r := newSongRig(t)
 	stageSequencer(t)
-	arm, margin, wait, poll := stemArmSettle, stemEndMargin, stemListWait, stemListPoll
-	stemArmSettle, stemEndMargin, stemListWait, stemListPoll = 10*time.Millisecond, 30*time.Millisecond, 2*time.Second, 20*time.Millisecond
-	t.Cleanup(func() { stemArmSettle, stemEndMargin, stemListWait, stemListPoll = arm, margin, wait, poll })
-	r.Bar, r.TakeTempo = 800*time.Millisecond, "300"
+	arm, margin, wait, poll, off := stemArmSettle, stemEndMargin, stemListWait, stemListPoll, stemOffAfter
+	stemArmSettle, stemEndMargin, stemListWait, stemListPoll, stemOffAfter = 10*time.Millisecond, 30*time.Millisecond, 2*time.Second, 20*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() {
+		stemArmSettle, stemEndMargin, stemListWait, stemListPoll, stemOffAfter = arm, margin, wait, poll, off
+	})
+	// A bar is 0.8 s. A stem's sequence is a lead-in of two bars, two bars of
+	// song and a tail of one, and switches the recorder off half a beat (0.1
+	// s) before its end.
+	r.Bar, r.TakeTempo, r.ClipOff = 800*time.Millisecond, "300", 3900*time.Millisecond
 	// Something sounds while the transport runs, as a stem does.
 	r.SelfPlay = func(ch int) float64 {
 		if ch == 1 {
@@ -312,9 +317,11 @@ func TestRecordSongStems(t *testing.T) {
 		t.Errorf("the master was armed and disarmed with %d tap(s): its mapped control did not do it", deck.armTaps)
 	}
 
-	// What the rig was sent, per stem: arm, recorder on, recorder off before
-	// the transport stops, disarm.
-	one := []int{107127, 105000, 105127, 105000, 103127, 107000}
+	// What the rig was sent, per stem: the recorder off before anything (one
+	// left on), arm, recorder on, the transport's stop, disarm. The off that
+	// ends the take is the sequence's own: the daemon sends none meanwhile, a
+	// second one would withdraw it.
+	one := []int{105000, 107127, 105127, 103127, 107000}
 	cmds := r.waitCommands(func(cmds []midicontrol.Command) bool { return len(globalCCs(cmds, 103, 105, 107)) >= 2*len(one) })
 	if got := globalCCs(cmds, 103, 105, 107); !slices.Equal(got, append(slices.Clone(one), one...)) {
 		t.Errorf("the recorder's controls = %v, want twice %v", got, one)
@@ -560,6 +567,44 @@ func TestRecordSongStemsFailures(t *testing.T) {
 	if recording || armed || running {
 		t.Errorf("after a stopped recording: recorder %v, master armed %v, transport %v; want all off", recording, armed, running)
 	}
+
+	// A sequencer that does not switch the recorder off: AUM lists no take
+	// after the pass, so the daemon switches the recorder off itself, with
+	// the transport stopped. The take ran on after the stem: the report says
+	// so, and the mix, whose load reads the take's length, is not played.
+	r.mu.Lock()
+	r.ClipOff = 0
+	r.mu.Unlock()
+	r.opens("Stem Song stem bass", stemBassStrips)
+	// The stopped pass above left a take in the folder: the next session is
+	// loaded when this run's take has been found, not when that one is seen.
+	deck.mu.Lock()
+	deck.seen = nil
+	deck.mu.Unlock()
+	deck.afterTake = func(folder string) {
+		if folder == "Stem Song stem bass" {
+			r.opens("Stem Song stem band", stemBandStrips)
+		}
+	}
+	if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1}); res.IsError {
+		t.Fatalf("record: %s", resultText(res))
+	}
+	rep, text := stemsReportOfJob(t, s)
+	if !rep.Ready || len(rep.Stems[0].Notes) == 0 || !strings.Contains(text, "until the daemon switched its recorder off") {
+		t.Fatalf("report of takes the sequence did not end = %+v\n%s", rep, text)
+	}
+	// The recorder was switched off once more than a pass with a sequence
+	// that ends its take: after the transport's stop.
+	cmds := r.waitCommands(func(cmds []midicontrol.Command) bool { return len(globalCCs(cmds, 103, 105)) >= 4 })
+	if cc := globalCCs(cmds, 103, 105); !slices.Equal(cc[len(cc)-4:], []int{105000, 105127, 103127, 105000}) {
+		t.Errorf("the recorder's controls of the last pass = %v, want off, on, the stop, off", cc[len(cc)-4:])
+	}
+	r.opens("Stem Song mix", stemMixStrips)
+	res = call(t, s.handleMixSongStems, map[string]any{"song": "stem_song", "confirm": true, "record": false})
+	if text := resultText(res); !res.IsError || !strings.Contains(text, "not whole beats: it did not begin with the transport or did not end on a bar line") ||
+		!strings.Contains(text, "not played") || s.player.Status().Playing {
+		t.Errorf("a mix of takes that are not whole beats long: %s", text)
+	}
 }
 
 // TestParseFilePlayer reads the rows of AUM's FILE PLAYER panel as a device
@@ -621,5 +666,11 @@ func TestRecordingFile(t *testing.T) {
 	}
 	if _, ok := newRecording(after, after); ok {
 		t.Error("a list that did not grow has a new recording")
+	}
+	// AUM's list is not always in the order of the takes: the new take with
+	// the highest number is the pass's.
+	unordered := []ipad.AUMFileEntry{{Name: "Master - 120 bpm - 003"}, {Name: "Master - 120 bpm - 005"}, {Name: "Master - 120 bpm - 004"}, {Name: "Master - 120 bpm - 001"}}
+	if e, ok := newRecording(before, unordered); !ok || e.Name != "Master - 120 bpm - 005" {
+		t.Errorf("the new recording of an unordered list = %+v, %v; want take 005", e, ok)
 	}
 }
