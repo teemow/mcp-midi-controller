@@ -260,3 +260,166 @@ func TestClickButtonAt(t *testing.T) {
 		t.Errorf("the app was asked %q, want %q", got, want)
 	}
 }
+
+// TestParseProbeScreenIdentifiers reads an app that names its conflicts and
+// its folder in accessibility identifiers: a conflict's row has its file's
+// path and its button's identifier, the browser its folder's whole path. The
+// bar's identifier counts only when the bar's title bears it out.
+func TestParseProbeScreenIdentifiers(t *testing.T) {
+	files := map[string][]ipadtest.ProbeFile{
+		"Sets/Old/Live": {
+			{Name: "Then.aumproj", State: ipadtest.ProbeConflictState},
+			{Name: "Now.aumproj"},
+			{Name: "Soon.aumproj", State: ipadtest.ProbeConflictState},
+		},
+		"Sets/Live": {{Name: "Tour.aumproj"}},
+	}
+	ctx := context.Background()
+	app := &ipadtest.ProbeApp{Files: files, Tab: ProbeSessionsTab, Path: []string{"Sets", "Old", "Live"}, IDs: true}
+	c := probeFake(t, app)
+	inProbe(t, c, func(s *Session) {
+		scr, err := s.ProbeScreen(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !scr.FolderNamed || scr.FolderPath != "Sets/Old/Live" || scr.Folder != "Live" || scr.Back == nil {
+			t.Errorf("folder read as %q (named %v), title %q, back %v", scr.FolderPath, scr.FolderNamed, scr.Folder, scr.Back)
+		}
+		then, now, soon := scr.File("Then.aumproj"), scr.File("Now.aumproj"), scr.File("Soon.aumproj")
+		if then == nil || now == nil || soon == nil {
+			t.Fatalf("rows = %+v", scr.Files)
+		}
+		if then.Path != "Sets/Old/Live/Then.aumproj" || then.KeepControllerID != ProbeKeepControllerID("Sets/Old/Live/Then.aumproj") || then.KeepController == nil {
+			t.Errorf("conflict row = %+v", *then)
+		}
+		if soon.KeepControllerID != "keep-controller:Sets/Old/Live/Soon.aumproj" {
+			t.Errorf("second conflict's button = %q", soon.KeepControllerID)
+		}
+		if now.Path != "" || now.KeepControllerID != "" || now.KeepController != nil {
+			t.Errorf("a row in sync has a conflict's parts: %+v", *now)
+		}
+	})
+
+	// The root has no navigation bar, and so no identifier to go by.
+	app.Set(func(p *ipadtest.ProbeApp) { p.Path = nil })
+	inProbe(t, c, func(s *Session) {
+		if scr, _ := s.ProbeScreen(ctx); scr.FolderNamed || scr.FolderPath != "" || scr.Back != nil {
+			t.Errorf("root read as %q (named %v), back %v", scr.FolderPath, scr.FolderNamed, scr.Back)
+		}
+	})
+
+	// A bar that names a folder its title does not end in is not believed.
+	app.Set(func(p *ipadtest.ProbeApp) { p.Path, p.StaleBar = []string{"Sets", "Old", "Live"}, "Sets/Old" })
+	inProbe(t, c, func(s *Session) {
+		scr, _ := s.ProbeScreen(ctx)
+		if scr.FolderNamed || scr.FolderPath != "" || scr.Folder != "Live" {
+			t.Errorf("a bar named %q under the title %q read as %q (named %v)", "Sets/Old", scr.Folder, scr.FolderPath, scr.FolderNamed)
+		}
+		// The rows' own identifiers stand.
+		if then := scr.File("Then.aumproj"); then == nil || then.Path != "Sets/Old/Live/Then.aumproj" {
+			t.Errorf("conflict row under a stale bar = %+v", then)
+		}
+	})
+}
+
+// TestProbeOpenFolderByIdentifier checks a browser that names its folder's
+// whole path is taken as it is at any depth, and walked when the path is
+// another folder's of the same name.
+func TestProbeOpenFolderByIdentifier(t *testing.T) {
+	files := map[string][]ipadtest.ProbeFile{
+		"Sets/Live":     {{Name: "Tour.aumproj"}},
+		"Sets/Old/Live": {{Name: "Then.aumproj"}},
+		"Live":          {{Name: "Top.aumproj"}},
+	}
+	ctx := context.Background()
+
+	t.Run("there already, two levels down", func(t *testing.T) {
+		app := &ipadtest.ProbeApp{Files: files, Tab: ProbeSessionsTab, Path: []string{"Sets", "Live"}, IDs: true}
+		inProbe(t, probeFake(t, app), func(s *Session) {
+			if scr, err := s.ProbeOpenFolder(ctx, "Sets/Live", true); err != nil || scr.File("Tour.aumproj") == nil {
+				t.Fatalf("open Sets/Live: %v, files %+v", err, scr.Files)
+			}
+		})
+		if got := app.Actions(); len(got) != 0 {
+			t.Errorf("the app was asked %q although it named the folder it showed", got)
+		}
+	})
+
+	t.Run("a namesake one level down", func(t *testing.T) {
+		// "Live" is wanted; the browser shows Sets/Live and says so. An app
+		// without identifiers would be taken at its title here.
+		app := &ipadtest.ProbeApp{Files: files, Tab: ProbeSessionsTab, Path: []string{"Sets", "Live"}, IDs: true}
+		inProbe(t, probeFake(t, app), func(s *Session) {
+			if scr, err := s.ProbeOpenFolder(ctx, "Live", true); err != nil || scr.File("Top.aumproj") == nil {
+				t.Fatalf("open Live: %v, files %+v", err, scr.Files)
+			}
+		})
+		if got, want := app.Actions(), []string{"back", "back", "folder Live"}; !slices.Equal(got, want) {
+			t.Errorf("the app was asked %q, want %q", got, want)
+		}
+	})
+
+	t.Run("without trust", func(t *testing.T) {
+		app := &ipadtest.ProbeApp{Files: files, Tab: ProbeSessionsTab, Path: []string{"Sets", "Live"}, IDs: true}
+		inProbe(t, probeFake(t, app), func(s *Session) {
+			if _, err := s.ProbeOpenFolder(ctx, "Sets/Live", false); err != nil {
+				t.Fatalf("open Sets/Live: %v", err)
+			}
+		})
+		if got, want := app.Actions(), []string{"back", "back", "folder Sets", "folder Sets/Live"}; !slices.Equal(got, want) {
+			t.Errorf("the app was asked %q, want the walk from the root %q", got, want)
+		}
+	})
+}
+
+// TestClickButtonID checks a conflict's button is clicked by the identifier
+// that names its file, wherever its row lies, and nothing is clicked for an
+// identifier no button carries.
+func TestClickButtonID(t *testing.T) {
+	var songs []ipadtest.ProbeFile
+	for _, name := range strings.Fields("A B C D E F G H I J K L") {
+		songs = append(songs, ipadtest.ProbeFile{Name: name + ".aumproj", State: ipadtest.ProbeConflictState})
+	}
+	files := map[string][]ipadtest.ProbeFile{"Songs": songs}
+	ctx := context.Background()
+
+	app := &ipadtest.ProbeApp{Tab: ProbeSessionsTab, Path: []string{"Songs"}, Files: files, IDs: true}
+	inProbe(t, probeFake(t, app), func(s *Session) {
+		scr, err := s.ProbeScreen(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k := scr.File("K.aumproj")
+		if k == nil || k.KeepController == nil || k.KeepController.Y < 834 {
+			t.Fatalf("row K = %+v, want it below the window's edge with its button", k)
+		}
+		if ok, err := s.ClickButtonID(ctx, k.KeepControllerID); err != nil || !ok {
+			t.Fatalf("click K's keep controller: %v, %v", ok, err)
+		}
+		// K is in sync now: its button is gone, and no other answers to it.
+		if ok, err := s.ClickButtonID(ctx, k.KeepControllerID); err != nil || ok {
+			t.Fatalf("click K's button again: %v, %v, want nothing clicked", ok, err)
+		}
+		// The label alone is no identifier: eleven buttons carry it.
+		if ok, err := s.ClickButtonID(ctx, ProbeKeepController); err != nil || ok {
+			t.Fatalf("click by the label: %v, %v, want nothing clicked", ok, err)
+		}
+		if ok, err := s.ClickButtonID(ctx, ProbeKeepControllerID("Other/K.aumproj")); err != nil || ok {
+			t.Fatalf("click a file of another folder: %v, %v, want nothing clicked", ok, err)
+		}
+	})
+	if got, want := app.Actions(), []string{"keep controller Songs/K.aumproj"}; !slices.Equal(got, want) {
+		t.Errorf("the app was asked %q, want %q", got, want)
+	}
+
+	// An app without identifiers has no button of that name.
+	old := &ipadtest.ProbeApp{Tab: ProbeSessionsTab, Path: []string{"Songs"}, Files: files}
+	inProbe(t, probeFake(t, old), func(s *Session) {
+		if ok, err := s.ClickButtonID(ctx, ProbeKeepControllerID("Songs/K.aumproj")); err != nil || ok {
+			t.Fatalf("click by identifier in an app without: %v, %v, want nothing clicked", ok, err)
+		}
+	})
+	if got := old.Actions(); len(got) != 0 {
+		t.Errorf("the app without identifiers was asked %q", got)
+	}
+}

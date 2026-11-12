@@ -87,6 +87,10 @@ type songRig struct {
 	trackTaps map[int]*audiotap.Store
 	taps      int
 	pulling   bool
+	// lan is the daemon's LAN receiver as the probe app reaches it, started
+	// by the first sync report (song_pull_report_test.go).
+	lan     *httptest.Server
+	lanOnce sync.Once
 }
 
 const rigSampleRate = 48000
@@ -225,7 +229,10 @@ func fastSongWaits(t *testing.T) {
 	songNoteHold, songNoteTail, songFloorWait = 150*time.Millisecond, 150*time.Millisecond, 60*time.Millisecond
 	songTapNameGrace = 100 * time.Millisecond
 	songNoteHoldMax, songQuietWait = 600*time.Millisecond, 200*time.Millisecond
+	pullSettle := songPullSettle
+	songPullSettle = 60 * time.Millisecond
 	t.Cleanup(func() {
+		songPullSettle = pullSettle
 		songPullGrace, songPullTimeout, songDialTimeout = old[0], old[1], old[2]
 		songPresetWait, songSettleWait = old[3], old[4]
 		songNoteHold, songNoteTail, songFloorWait = old[5], old[6], old[7]

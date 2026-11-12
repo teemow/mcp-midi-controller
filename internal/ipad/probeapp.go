@@ -2,9 +2,12 @@ package ipad
 
 // This file reads the AUv3 Probe app's window: its "aum sessions" tab, where
 // the app lists the files of AUM's folder with what its sync made of each, and
-// what the "audio units" tab says of the app's other sync. The app tells the
-// daemon nothing about a file it does not pull (it just never asks for it),
-// so its screen is the only place that says why.
+// what the "audio units" tab says of the app's other sync. An app with the
+// sync report (POST /aum-session/sync) tells the daemon what it made of a
+// file; its screen is still where a conflict's copy in AUM's folder is
+// described and where a side is picked. An app from before the report tells
+// nothing about a file it does not pull (it just never asks for it), and its
+// screen is the only place that says why.
 //
 // The shapes follow the app's accessibility tree as WebDriverAgent serves it:
 //
@@ -25,6 +28,13 @@ package ipad
 //
 // The browser lists a folder whole: a row scrolled out of sight is in the tree
 // with its frame.
+//
+// An app with the sync report also names what its labels cannot tell apart, in
+// accessibility identifiers (WDA's rawIdentifier): a conflict's buttons carry
+// "keep-device:<file path>" and "keep-controller:<file path>", the browser's
+// navigation bar "aum-folder:<folder path>". The paths are relative to AUM's
+// folder, as the app's sync report gives them. Where they are found they are
+// gone by; the labels and frames are for an app without them.
 
 import (
 	"context"
@@ -51,6 +61,18 @@ const (
 	ProbeOffline = "controller offline — browsing device copy"
 )
 
+// The app's accessibility identifiers: each is followed by a path below AUM's
+// folder.
+const (
+	probeKeepControllerID = "keep-controller:"
+	probeKeepDeviceID     = "keep-device:"
+	probeFolderID         = "aum-folder:"
+)
+
+// ProbeKeepControllerID is the accessibility identifier of the "keep
+// controller" button of the conflict at path ("Songs/A.aumproj").
+func ProbeKeepControllerID(path string) string { return probeKeepControllerID + path }
+
 // ProbeFile is one file row of the probe app's session browser.
 type ProbeFile struct {
 	// Name is the file's name with its extension.
@@ -68,6 +90,12 @@ type ProbeFile struct {
 	// KeepController is the frame of the row's own "keep controller" button,
 	// nil unless the row is a conflict.
 	KeepController *Rect
+	// Path is the file's path below AUM's folder ("Songs/A.aumproj") and
+	// KeepControllerID the accessibility identifier of its "keep controller"
+	// button, as a conflict's buttons give them; both are empty for a row
+	// that is no conflict and in an app without identifiers.
+	Path             string
+	KeepControllerID string
 }
 
 // Conflict reports a file the app holds as a conflict.
@@ -116,6 +144,12 @@ type ProbeScreen struct {
 	// Back is the frame of the button that leaves it.
 	Folder string
 	Back   *Rect
+	// FolderPath is that folder's whole path below AUM's folder ("" at the
+	// root), known only when FolderNamed: the navigation bar carries the path
+	// as its accessibility identifier and its title is the path's last part.
+	// An app without identifiers names the last part alone.
+	FolderPath  string
+	FolderNamed bool
 	// Folders and Files are the rows of that folder.
 	Folders []ProbeFolder
 	Files   []ProbeFile
@@ -180,13 +214,32 @@ func ParseProbeScreen(root *Element) ProbeScreen {
 			}
 		case "NavigationBar":
 			p.Browser = true
+			back, title := false, ""
 			for _, c := range e.Children {
 				switch {
-				case c.Type == "Button" && p.Back == nil:
-					r := c.Rect
-					p.Back = &r
-				case c.Type == "StaticText" && p.Folder == "":
-					p.Folder = c.Label
+				case c.Type == "Button" && !back:
+					back = true
+					if p.Back == nil {
+						r := c.Rect
+						p.Back = &r
+					}
+				case c.Type == "StaticText" && title == "":
+					title = c.Label
+					if p.Folder == "" {
+						p.Folder = title
+					}
+				}
+			}
+			// The bar's identifier is taken only with the bar itself to bear it
+			// out: below the root its title is the path's last part and there
+			// is a way back, at the root there is no way back.
+			if folder, ok := strings.CutPrefix(e.Identifier, probeFolderID); ok && !p.FolderNamed {
+				folder = strings.Trim(folder, "/")
+				switch {
+				case folder == "":
+					p.FolderNamed = !back && p.Back == nil
+				case back && title == folder[strings.LastIndex(folder, "/")+1:] && p.Folder == title:
+					p.FolderPath, p.FolderNamed = folder, true
 				}
 			}
 		}
@@ -216,9 +269,22 @@ func ParseProbeScreen(root *Element) ProbeScreen {
 }
 
 // rows collects the folder and file rows among one element's children. A
-// conflict's two buttons follow its row as siblings, up to the next row.
+// conflict's two buttons are siblings of its row: they name its file in their
+// identifiers, or, in an app without those, follow it up to the next row.
 func (p *ProbeScreen) rows(parent *Element) {
-	file := -1
+	first, file := len(p.Files), -1
+	// named finds the row among this element's that a button's identifier
+	// names by its path.
+	named := func(path string) *ProbeFile {
+		name := path[strings.LastIndex(path, "/")+1:]
+		for i := first; i < len(p.Files); i++ {
+			if p.Files[i].Name == name {
+				p.Files[i].Path = path
+				return &p.Files[i]
+			}
+		}
+		return nil
+	}
 	for _, c := range parent.Children {
 		if c.Type != "Button" {
 			continue
@@ -247,6 +313,17 @@ func (p *ProbeScreen) rows(parent *Element) {
 		if name, ok := probeFolderRow(c); ok {
 			p.Folders = append(p.Folders, ProbeFolder{Name: name, Label: c.Label, Rect: c.Rect})
 			file = -1
+			continue
+		}
+		if path, ok := strings.CutPrefix(c.Identifier, probeKeepControllerID); ok {
+			if f := named(path); f != nil {
+				r := c.Rect
+				f.KeepController, f.KeepControllerID = &r, c.Identifier
+			}
+			continue
+		}
+		if path, ok := strings.CutPrefix(c.Identifier, probeKeepDeviceID); ok {
+			named(path)
 			continue
 		}
 		if c.Label == ProbeKeepController && file >= 0 && p.Files[file].KeepController == nil {
@@ -297,10 +374,10 @@ var ProbeSettle = 600 * time.Millisecond
 
 // ProbeOpenFolder shows the probe app's sessions tab with the browser at
 // folder, a slash-separated path below AUM's folder ("" is the root), and
-// returns that screen. The browser names only the last part of the folder it
-// shows, so it is walked there from its root, unless the folder is one level
-// deep and trust is set: then a browser that shows a folder of that name is
-// taken as it is.
+// returns that screen. The browser is walked there from its root, unless trust
+// is set and it says that it shows the folder already: by its whole path where
+// the app gives that (ProbeScreen.FolderNamed), else by its name for a folder
+// one level deep, which is all an app without identifiers tells.
 func (s *Session) ProbeOpenFolder(ctx context.Context, folder string, trust bool) (ProbeScreen, error) {
 	// read gives the browser time to redraw after a tap, and reads it again
 	// while it does not show what the tap leads to.
@@ -345,8 +422,11 @@ func (s *Session) ProbeOpenFolder(ctx context.Context, folder string, trust bool
 	if folder = strings.Trim(folder, "/"); folder != "" {
 		parts = strings.Split(folder, "/")
 	}
-	if trust && len(parts) == 1 && scr.Folder == parts[0] {
-		return scr, nil
+	if trust {
+		named := scr.FolderNamed && scr.FolderPath == folder
+		if named || !scr.FolderNamed && len(parts) == 1 && scr.Folder == parts[0] {
+			return scr, nil
+		}
 	}
 	// Up to the root: the navigation bar is there only below it.
 	for depth := 0; scr.Back != nil; depth++ {
@@ -418,6 +498,25 @@ func (s *Session) ClickButtonAt(ctx context.Context, label string, rect Rect) (b
 		return err == nil, err
 	}
 	return false, nil
+}
+
+// ClickButtonID clicks the button whose accessibility identifier is id, as an
+// element: WebDriverAgent scrolls it into sight first. It clicks nothing and
+// returns false unless exactly one button carries the identifier.
+func (s *Session) ClickButtonID(ctx context.Context, id string) (bool, error) {
+	var found []map[string]string
+	// WebDriverAgent's "name" is an element's identifier where it has one,
+	// and its label only where it has none.
+	pred := "type == 'XCUIElementTypeButton' AND name == " + strconv.Quote(id)
+	if err := s.c.call(ctx, http.MethodPost, s.path("/elements"),
+		map[string]any{"using": "predicate string", "value": pred}, &found); err != nil {
+		return false, err
+	}
+	if len(found) != 1 || elementID(found[0]) == "" {
+		return false, nil
+	}
+	err := s.c.call(ctx, http.MethodPost, s.path("/element/"+elementID(found[0])+"/click"), map[string]any{}, nil)
+	return err == nil, err
 }
 
 // sameRect compares two frames to the point.

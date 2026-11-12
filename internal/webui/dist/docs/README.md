@@ -178,7 +178,9 @@ listener carries three surfaces, none of which touch hardware:
 
 - **AUv3 probe** dumps POSTed by the probe app (staged as JSON for the
   `list_auv3_probes` / `get_auv3_probe` tools).
-- **AUM sessions** ferried in/out for the `aum` tools.
+- **AUM sessions** ferried in/out for the `aum` tools, and the app's report
+  of what its sync made of each file (`POST /aum-session/sync`), which
+  `load_song` goes by when it waits for the iPad to fetch a session.
 - **Audio tap** — a `GET /audio-stream` **WebSocket** that terminates the
   ProbeAudioTap AUv3's stream (decimated mono PCM + RMS/peak features). It keeps
   the latest levels and a short rolling window **in memory** (audio is a

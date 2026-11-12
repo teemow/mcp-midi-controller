@@ -23,6 +23,7 @@
 //	POST /aum-session?name=<file> stage one uploaded .aumproj (raw bplist bytes)
 //	GET  /aum-session             manifest of stageable sessions/midimaps (JSON)
 //	GET  /aum-session/{file}      download a staged .aumproj / .aum_midimap
+//	POST /aum-session/sync        the app's report of what its sync made of each file
 //	GET  /healthz                 liveness, so the app can test connectivity first
 package main
 
@@ -79,7 +80,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
 	auv3.Register(mux, *probes, nil)
-	aumreceiver.Register(mux, *sessions, nil, nil)
+	// Nothing here reads the app's sync reports; they are kept so that the
+	// log says what the app's sync is at (without its paths).
+	var reports aumreceiver.SyncReports
+	aumreceiver.Register(mux, *sessions, nil, nil, reports.Keep)
 
 	log.Printf("auv3-probe receiver listening on %s (auv3 probes -> %s, aum sessions -> %s)", *listen, *probes, *sessions)
 	log.Printf("POST your AUParameterTree dump to http://<this-host>%s/auv3-probe", *listen)

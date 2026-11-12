@@ -54,6 +54,13 @@ type ProbeApp struct {
 	Cycle bool
 	// Unlinked draws the sessions tab without its browser: no AUM folder.
 	Unlinked bool
+	// IDs draws the accessibility identifiers of an app with the sync report:
+	// "keep-device:<path>" and "keep-controller:<path>" on a conflict's
+	// buttons, "aum-folder:<path>" on the browser's navigation bar. StaleBar,
+	// when set, is the folder path the bar names instead of the one shown (a
+	// bar that kept the identifier of another screen).
+	IDs      bool
+	StaleBar string
 	// Path is the folder the browser shows, nil at its root.
 	Path []string
 	// Files are the files by folder ("" is AUM's folder itself, "Songs" a
@@ -116,8 +123,10 @@ func (p *ProbeApp) file(path string) *ProbeFile {
 // probeTarget is something on the app's screen that answers a tap or a click.
 type probeTarget struct {
 	label string
-	rect  [4]float64
-	do    func()
+	// id is the button's accessibility identifier, "" without one.
+	id   string
+	rect [4]float64
+	do   func()
 }
 
 func (p *ProbeApp) tab() string {
@@ -132,8 +141,16 @@ func (p *ProbeApp) draw() (node, []probeTarget) {
 	const W, H = 1210.0, 834.0
 	var targets []probeTarget
 	button := func(label string, x, y, w, h float64, do func(), kids ...node) node {
-		targets = append(targets, probeTarget{label, [4]float64{x, y, w, h}, do})
+		targets = append(targets, probeTarget{label: label, rect: [4]float64{x, y, w, h}, do: do})
 		return el("Button", label, x, y, w, h, kids...)
+	}
+	// identify gives the button drawn last its accessibility identifier.
+	identify := func(b node, id string) node {
+		if !p.IDs {
+			return b
+		}
+		targets[len(targets)-1].id = id
+		return b.with("rawIdentifier", id).with("name", id)
 	}
 	logf := func(format string, a ...any) { p.Log = append(p.Log, fmt.Sprintf(format, a...)) }
 
@@ -188,7 +205,7 @@ func (p *ProbeApp) draw() (node, []probeTarget) {
 			button("open file", 1062, 204, 133, 37, func() { logf("open file") }),
 			el("StaticText", status, 16, 228, 177, 14))
 		if !p.Unlinked {
-			content = append(content, p.browser(button, logf))
+			content = append(content, p.browser(button, identify, logf))
 		} else {
 			content = append(content, el("StaticText", "sessions on device", 16, 270, 200, 16))
 		}
@@ -224,18 +241,26 @@ func (p *ProbeApp) draw() (node, []probeTarget) {
 }
 
 // browser draws the folder browser at p.Path.
-func (p *ProbeApp) browser(button func(string, float64, float64, float64, float64, func(), ...node) node, logf func(string, ...any)) node {
+func (p *ProbeApp) browser(button func(string, float64, float64, float64, float64, func(), ...node) node, identify func(node, string) node, logf func(string, ...any)) node {
 	const W = 1210.0
 	here := strings.Join(p.Path, "/")
 	var parts []node
 	y := 270.0
 	if len(p.Path) > 0 {
-		parts = append(parts, el("NavigationBar", "", 0, 254, W, 50,
+		bar := el("NavigationBar", "", 0, 254, W, 50,
 			button("Back", 0, 257, 73, 44, func() {
 				logf("back")
 				p.Path = p.Path[:len(p.Path)-1]
 			}),
-			el("StaticText", p.Path[len(p.Path)-1], 580, 269, 50, 21)))
+			el("StaticText", p.Path[len(p.Path)-1], 580, 269, 50, 21))
+		if p.IDs {
+			shown := here
+			if p.StaleBar != "" {
+				shown = p.StaleBar
+			}
+			bar.with("rawIdentifier", "aum-folder:"+shown)
+		}
+		parts = append(parts, bar)
 		y = 332
 	}
 
@@ -324,9 +349,9 @@ func (p *ProbeApp) browser(button func(string, float64, float64, float64, float6
 		}
 		if f.State == probeConflict {
 			rows = append(rows,
-				button(probeKeepDevice, 27, y+67, 152, 35, func() { logf("keep device %s", path) },
-					el("StaticText", probeKeepDevice, 42, y+75, 125, 19)),
-				button(probeKeepController, 186, y+67, 194, 34, func() {
+				identify(button(probeKeepDevice, 27, y+67, 152, 35, func() { logf("keep device %s", path) },
+					el("StaticText", probeKeepDevice, 42, y+75, 125, 19)), "keep-device:"+path),
+				identify(button(probeKeepController, 186, y+67, 194, 34, func() {
 					logf("keep controller %s", path)
 					if file := p.file(path); file != nil {
 						file.State = ""
@@ -334,7 +359,7 @@ func (p *ProbeApp) browser(button func(string, float64, float64, float64, float6
 					if hook := p.OnKeepController; hook != nil {
 						p.after = append(p.after, func() { hook(path) })
 					}
-				}, el("StaticText", probeKeepController, 200, y+75, 168, 19)))
+				}, el("StaticText", probeKeepController, 200, y+75, 168, 19)), "keep-controller:"+path))
 			y += 46
 		}
 		y += 80
@@ -386,6 +411,20 @@ func (p *ProbeApp) buttons(label string, fold bool) [][4]float64 {
 		}
 	}
 	return out
+}
+
+// named lists the buttons WDA's "name" finds under name, with their labels:
+// a button's name is its identifier, and its label only when it has none.
+func (p *ProbeApp) named(name string) (labels []string, rects [][4]float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, targets := p.draw()
+	for _, t := range targets {
+		if t.id == name || t.id == "" && t.label == name {
+			labels, rects = append(labels, t.label), append(rects, t.rect)
+		}
+	}
+	return labels, rects
 }
 
 // click acts on a click on the button labelled label at rect: WDA scrolls an

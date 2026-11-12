@@ -97,6 +97,9 @@ type Manifest struct {
 // downloads a file — the surest signal that session is about to be loaded into
 // AUM, which the daemon uses to track its "current session" and auto-import
 // the session rig. Both run synchronously after the response is served.
+// onSync (may be nil) is invoked with every sync report the app posts, stamped
+// with the time it arrived, before the request is answered; a SyncReports
+// keeps the last one (its Keep is such a callback).
 //
 // Routes:
 //
@@ -106,24 +109,27 @@ type Manifest struct {
 //	GET    /aum-session/{file...}  download a staged .aumproj / .aum_midimap
 //	DELETE /aum-session/{file...}  remove one staged file
 //	DELETE /aum-session            clear all staged files
+//	POST   /aum-session/sync       the app's report of what its sync made of each
+//	                               file (JSON, see SyncReport); answers 204
 //
 // {file...} is a staging-dir-relative path, so files staged in subfolders
 // (mirroring the iPad's AUM tree) are addressable too.
-func Register(mux *http.ServeMux, outDir string, onStaged func(Result), onDownloaded func(file string)) {
+func Register(mux *http.ServeMux, outDir string, onStaged func(Result), onDownloaded func(file string), onSync func(SyncReport)) {
 	mux.HandleFunc("POST /aum-session", handleUpload(outDir, onStaged))
 	mux.HandleFunc("GET /aum-session", handleManifest(outDir))
 	mux.HandleFunc("GET /aum-session/{file...}", handleDownload(outDir, onDownloaded))
 	mux.HandleFunc("DELETE /aum-session/{file...}", handleDelete(outDir))
 	mux.HandleFunc("DELETE /aum-session", handleDeleteAll(outDir))
+	mux.HandleFunc("POST /aum-session/sync", handleSync(onSync))
 }
 
 // Handler builds the standalone receiver: the AUM-session routes plus a
-// /healthz liveness endpoint. Sessions are staged in outDir. onStaged and
-// onDownloaded behave as documented on Register.
-func Handler(outDir string, onStaged func(Result), onDownloaded func(file string)) http.Handler {
+// /healthz liveness endpoint. Sessions are staged in outDir. onStaged,
+// onDownloaded and onSync behave as documented on Register.
+func Handler(outDir string, onStaged func(Result), onDownloaded func(file string), onSync func(SyncReport)) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", lanhttp.Healthz)
-	Register(mux, outDir, onStaged, onDownloaded)
+	Register(mux, outDir, onStaged, onDownloaded, onSync)
 	return mux
 }
 
