@@ -304,7 +304,7 @@ func (s *Server) handleIPadDrag(ctx context.Context, req *mcp.CallToolRequest) (
 	if args.HoldMS != nil {
 		t.Hold = time.Duration(max(*args.HoldMS, 1)) * time.Millisecond
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -330,7 +330,7 @@ func (s *Server) handleIPadText(ctx context.Context, req *mcp.CallToolRequest) (
 	if res := decodeArgs(req, &args); res != nil {
 		return res, nil
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}

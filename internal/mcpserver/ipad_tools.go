@@ -309,7 +309,7 @@ func (s *Server) handleIPadUITree(ctx context.Context, req *mcp.CallToolRequest)
 	if args.Limit <= 0 {
 		args.Limit = ipadTreeLimit
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -370,7 +370,7 @@ func (s *Server) handleIPadTap(ctx context.Context, req *mcp.CallToolRequest) (*
 	default:
 		return textResult("gesture must be tap, double or twice", true), nil
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -459,7 +459,7 @@ func (s *Server) handleIPadHold(ctx context.Context, req *mcp.CallToolRequest) (
 	if args.DurationMS > 0 {
 		d = time.Duration(args.DurationMS) * time.Millisecond
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -489,7 +489,7 @@ func (s *Server) handleIPadSwipe(ctx context.Context, req *mcp.CallToolRequest) 
 	if args.DurationMS > 0 {
 		d = time.Duration(args.DurationMS) * time.Millisecond
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -509,7 +509,7 @@ func (s *Server) handleIPadLaunch(ctx context.Context, req *mcp.CallToolRequest)
 	if res := decodeArgs(req, &args); res != nil {
 		return res, nil
 	}
-	app, err := s.ipad.ResolveApp(ctx, args.App)
+	app, err := s.ipadApp(ctx, args.App)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -523,8 +523,8 @@ func (s *Server) handleIPadLaunch(ctx context.Context, req *mcp.CallToolRequest)
 		return s.ipadError(ctx, err), nil
 	}
 	if ipad.IsApp("probe", app) {
-		// A host without go-ios cannot look this id up; load_song needs it to
-		// bring the probe app forward.
+		// A host without go-ios cannot look this id up; the alias (app: probe)
+		// and load_song need it to bring the probe app forward.
 		rememberIPadApp("probe", app)
 	}
 	return structResult(fmt.Sprintf("%s is in front, window %gx%g points (%s)", app, win.Width, win.Height, win.Orientation()),

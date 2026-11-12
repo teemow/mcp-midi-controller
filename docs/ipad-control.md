@@ -34,7 +34,7 @@ The daemon needs nothing else when it runs on that host. In `config.yaml`:
 | Key | Default | Meaning |
 |---|---|---|
 | `ipad_wda_url` | `http://127.0.0.1:8100` | WebDriverAgent endpoint. Point it at the iPad's host when the daemon runs elsewhere; `""` removes the iPad tools. |
-| `ipad_go_ios` | `ios` | go-ios CLI, used read-only to diagnose a missing tunnel or disk image and to resolve AUv3 Probe's team-prefixed bundle ID. Give an absolute path when the service's `PATH` lacks it. |
+| `ipad_go_ios` | `ios` | go-ios CLI, used read-only to diagnose a missing tunnel or disk image and to resolve AUv3 Probe's team-prefixed bundle ID. Give an absolute path when the service's `PATH` lacks it. A host without it (a daemon that reaches WebDriverAgent on another host) resolves `app: probe` to the ID it remembers from the first `ipad_launch` with the full bundle ID. |
 
 Nothing is contacted at startup; an unplugged iPad only shows up when a tool is
 called. `ipad_status` then names the missing layer and the command that brings it
