@@ -40,6 +40,10 @@ type songSessionRecord struct {
 	// name, the latest last (servedKept of them): what a copy in AUM's folder
 	// that came from the daemon is as large as. See ownCopy.
 	Served []int64 `json:"served,omitempty"`
+	// Rev is the staging rev the session was staged at: a sync report of the
+	// probe app says what the app made of this file when its rev is this one
+	// or a later one. 0 in a record from before the rev was kept.
+	Rev int64 `json:"rev,omitempty"`
 	// Options are the options the session was authored with.
 	Options song.SessionSpec `json:"options,omitzero"`
 	// Sequencer is the probe id of the sequencer the session hosts and
@@ -288,8 +292,12 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 		return nil, fmt.Errorf("stage session: %w", err)
 	}
 	out := &authoredSong{OutID: outID, File: file, Path: path, SHA256: bytesSHA256(data), Options: opt, Report: rep, Sequencer: seq}
+	// The rev the staging gave the dir, read after it: that rev, or a later
+	// one when the app uploaded a file in the same moment. Later is safe: a
+	// report of that rev lists this file all the same.
+	rev := aum.StagingRev(config.AUMSessionsDir())
 	err = s.updateSongSessions(func(all map[string]songSessionRecord) bool {
-		rec := songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint, SHA256: out.SHA256, Options: opt, TapNames: true}
+		rec := songSessionRecord{Session: outID, Fingerprint: cs.timeline.Fingerprint, SHA256: out.SHA256, Rev: rev, Options: opt, TapNames: true}
 		if seq != nil {
 			rec.Sequencer, rec.Sequence = seq.ID, seq.fingerprint()
 		}

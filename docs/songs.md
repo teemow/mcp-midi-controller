@@ -686,7 +686,7 @@ and stops at the first one that fails, with what it saw and what to do:
 | Step | What happens |
 |------|--------------|
 | author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
-| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and reads the app's list of sessions while it waits, up to a minute. A session the app holds as a conflict ends the wait at once: see below. Skipped when the iPad already has this very file. When the step fails, the daemon brings AUM back to the front: the app is not left there. |
+| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and waits up to a minute: for the file, and for the app's report of what its sync made of it. A conflict or an error the app reports ends the wait at once: see below. The screen of an app that sends no report is read instead. Skipped when the iPad already has this very file. When the step fails, the daemon brings AUM back to the front: the app is not left there. |
 | load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM's main menu shows the session's name and AUM has finished restoring the plugins, up to 2 minutes in all. A heavy session can keep AUM's UI from answering for a minute, so the name is waited for as long as AUM shows that it is loading, and the menu is opened again when the load closed it; once the load is over the name gets 10 s more. The step fails, saying which session AUM shows, when AUM ends up with another session or none. |
 | connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. |
 | check | `check_song`, below. |
@@ -700,16 +700,48 @@ prefix. A daemon on the host the iPad is plugged into looks it up. Any other
 daemon remembers it from the first `ipad_launch` with the full id; from then
 on the iPad tools take `app: probe` there too.
 
-**A session the app does not pull.** The app tells the daemon nothing about a
-file it leaves alone: it simply never asks for it. The reason is on its
-screen, so the pull step reads that: the "aum sessions" tab, in the folder the
-session goes to, every few seconds.
+**A session the app does not pull.** After every sync cycle the app tells the
+daemon what it made of each file: it posts a sync report to the daemon's
+receiver (`POST /aum-session/sync`; the format is
+[docs/aum-sync-report.md](https://github.com/teemow/auv3-probe/blob/main/docs/aum-sync-report.md)
+in the app's repository). The report lists the files the app holds as
+conflicts, those it could not copy with the reason, the copies still queued,
+and the staging rev of the daemon's list of files that the cycle went by. The
+pull step waits for the report of a cycle that saw the session staged, one
+whose rev is the rev the session was staged at or a later one, and ends on
+what it says of the session:
+
+| The report lists the session | The pull step |
+|------------------------------|---------------|
+| as a conflict | ends as described below. |
+| with an error | fails with the app's text for it. The app tries the copy again at its next cycle. |
+| as a copy still queued | keeps waiting. When its time runs out it says that the app was on it. |
+| nowhere | takes the app to hold the staged file. That is the file the daemon has just seen the app download, as a rule. When it saw no download the step says so, and it fails when the staged file is no longer the one authored: the app has then sent the copy in AUM's folder over it. |
+
+A report that says the app copies no file at all (no AUM folder is linked, or
+the folder cannot be read) fails the step with the app's text. Only a report
+that arrives during the step counts: an earlier one may be from an app that
+has been out of sight since. The app's own uploads move the staging rev on
+too, so a report can be of an older rev than the daemon's current one and
+cover the session all the same. The daemon therefore keeps the rev each
+song's session was staged at and compares with that.
+
+A daemon that cannot bring the app forward (no iPad UI tools, an app whose
+bundle id it does not know) ends the step on the report as well, when somebody
+else has the app in front. It has no look at a conflict's row then, and names
+the conflict without picking a side.
+
+An app from before the report tells the daemon nothing about a file it leaves
+alone: it simply never asks for it. The reason is on its screen, so when no
+report arrives during the step the pull step reads that instead: the "aum
+sessions" tab, in the folder the session goes to, every few seconds.
 
 The usual reason is a conflict. The app keeps AUM's folder and the daemon's
 staged files alike, and a file that changed on both sides since it last synced
 it is copied neither way. Its row reads "conflict — both sides changed" and
 has two buttons, "keep device" and "keep controller". The pull step ends as
-soon as it sees that on the session's row:
+soon as the app reports the conflict, or its screen shows it on the session's
+row:
 
 - When the copy in AUM's folder is one the daemon staged, the daemon taps
   "keep controller" on that row, the app fetches the staged session, and the
@@ -725,18 +757,34 @@ soon as it sees that on the session's row:
   "keep controller" there by hand loses what AUM's folder holds, so save
   that under another name in AUM first if it is to be kept.
 
-The daemon walks the app's browser to the session's folder from its root
-before it taps, and taps the button that follows that one row. Other files
-the app holds as conflicts are never touched.
+Whose copy AUM's folder holds is on the session's row and nowhere else, so
+the row is read in either case, and the side is picked there. An app with the
+sync report names the file on the row's two buttons, in their accessibility
+identifiers (`keep-device:<file path>`, `keep-controller:<file path>`), and
+the daemon presses the button that names the session's file. In an app
+without them the daemon walks the browser to the session's folder from its
+root before it taps, and taps the button that follows that one row. The
+browser's navigation bar names its folder as well (`aum-folder:<folder
+path>`). The daemon goes by that to tell which folder is shown, and only when
+the bar's title is the path's last part; it never chooses a button by it.
+Other files the app holds as conflicts are never touched.
 
-When the wait runs out without a conflict, the step reports what the app
-showed instead: that it does not reach the daemon ("controller offline"), an
-error on the session's row, a browser that could not be read (no AUM folder
-linked), or the tab's status line. It also says when the app had only just
-been started. iPadOS drops the app while AUM is in front, and every start
-sends all its audio units to the daemon again (184 on the rig, a few
-minutes), which it does only while it is in front. Sessions are pulled while
-that runs: see Status.
+When the wait runs out, the step says what the app's last report said of the
+session: that its copy was still queued, or that the report was of a rev from
+before the session was staged. For an app without reports it says what the
+app showed instead: that it does not reach the daemon ("controller offline"),
+an error on the session's row, a browser that could not be read (no AUM
+folder linked), or the tab's status line.
+
+It also says how far the app's other sync was, the one that sends its audio
+units to the daemon, which runs only while the app is in front. The report
+has it as `audio_units`: `syncing` and `waiting` are named with their counts,
+`done` is not, and `done` does not need every unit to have been sent (a unit
+that does not instantiate fails at every attempt). For an app without reports
+the step reads "syncing 2/184…" off the app's first tab when the app comes
+forward. iPadOS drops the app while AUM is in front, and such an app sends
+all its audio units again at every start (184 on the rig, a few minutes).
+Sessions are pulled while that runs: see Status.
 
 **The probe app is not left in front.** AUM keeps the iPad awake; the probe
 app does not. An iPad left with the app in front locks itself after its
@@ -1341,6 +1389,18 @@ Not yet measured:
 - AUM brought back after a failed pull, and `load_song`, `check_song` and
   the iPad tools on a locked iPad (the tests run them against the stand-in;
   on the rig only the locked iPad's answer to `/wda/locked` was read);
+- the probe app's sync report, all of it. Nothing of it has run on the rig:
+  not the app's report arriving at the daemon, not a pull step that ends on
+  one, not the conflict buttons and the folder found by their accessibility
+  identifiers in the app's real tree (the navigation bar's identifier is the
+  least certain of them). The tests run the daemon's route against the
+  documents the app's own tests pin as its output, the pull step against a
+  stand-in app that posts its reports over HTTP, and the identifiers against
+  a stand-in tree. The rig's iPad still had the app from before the report
+  when this was written. Its tree was read once with the screen reader as it
+  is now, and nothing was pressed: no identifier of the new kind in it, the
+  navigation bar's identifier its title, and a folder's rows, five conflicts
+  and their "keep controller" buttons read by label and frame as before;
 - `get_song_playback` against AUM's own position display (it was measured
   against the sound);
 - a sequenced song on a host that dozes;

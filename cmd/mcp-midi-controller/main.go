@@ -272,6 +272,9 @@ func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server, a
 		// A session download is the signal it is about to be loaded into AUM:
 		// track it as the current session and (config-gated) auto-import its rig.
 		srv.OnAUMSessionDownloaded,
+		// The app's report of what its sync made of each file: load_song's
+		// pull step ends on it.
+		srv.OnAUMSyncReport,
 	)
 	audiotap.Register(mux, audioRegistry,
 		func(name, remote string) { srv.NotifyAudioTap(true, name, remote) },

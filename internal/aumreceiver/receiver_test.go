@@ -31,7 +31,7 @@ func TestUploadStagesSessionAndNotifies(t *testing.T) {
 	ts := httptest.NewServer(Handler(dir, func(r Result) {
 		gotRes = r
 		called++
-	}, nil))
+	}, nil, nil))
 	defer ts.Close()
 
 	resp, err := http.Post(ts.URL+"/aum-session?name=New%20Fast%20Forward.aumproj",
@@ -75,7 +75,7 @@ func TestUploadStagesSessionAndNotifies(t *testing.T) {
 
 func TestUploadWithPathMirrorsFolderStructure(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	// ?path= stages the file verbatim under its iPad-relative path.
@@ -135,7 +135,7 @@ func TestUploadWithPathMirrorsFolderStructure(t *testing.T) {
 
 func TestUploadRejectsTraversalPath(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	for _, p := range []string{"../escape.aumproj", "a/../../b.aumproj", ".hidden/x.aumproj", "x.txt"} {
@@ -153,7 +153,7 @@ func TestUploadRejectsTraversalPath(t *testing.T) {
 
 func TestDeleteNestedPrunesEmptyFolders(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	nested := filepath.Join(dir, "Live sets", "deep")
@@ -183,7 +183,7 @@ func TestDeleteNestedPrunesEmptyFolders(t *testing.T) {
 
 func TestDeleteAllClearsNestedFiles(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
@@ -215,7 +215,7 @@ func TestDeleteAllClearsNestedFiles(t *testing.T) {
 
 func TestUploadFallsBackToTitleForID(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	// No ?name=, so the id derives from the session title ("Template").
@@ -238,7 +238,7 @@ func TestUploadFallsBackToTitleForID(t *testing.T) {
 
 func TestUploadRejectsBadInput(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	t.Run("GET on upload route is the manifest, not 405", func(t *testing.T) {
@@ -290,7 +290,7 @@ func TestUploadRejectsBadInput(t *testing.T) {
 
 func TestManifestAndDownloadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	// Stage a session by writing it directly (as the aum tools do).
@@ -335,7 +335,7 @@ func TestManifestAndDownloadRoundTrip(t *testing.T) {
 // without a body.
 func TestManifestRevBumpsAndShortCircuits(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	manifestRev := func() int64 {
@@ -432,7 +432,7 @@ func TestDownloadInvokesOnDownloaded(t *testing.T) {
 	var downloaded []string
 	ts := httptest.NewServer(Handler(dir, nil, func(file string) {
 		downloaded = append(downloaded, file)
-	}))
+	}, nil))
 	defer ts.Close()
 
 	if err := os.WriteFile(filepath.Join(dir, "demo.aumproj"), templateBytes(t), 0o644); err != nil {
@@ -463,7 +463,7 @@ func TestDownloadInvokesOnDownloaded(t *testing.T) {
 
 func TestDownloadRejectsTraversalAndMissing(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(Handler(dir, nil, nil))
+	ts := httptest.NewServer(Handler(dir, nil, nil, nil))
 	defer ts.Close()
 
 	t.Run("missing file is 404", func(t *testing.T) {

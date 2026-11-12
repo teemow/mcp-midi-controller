@@ -34,12 +34,15 @@ var (
 	// without help: the probe app pulls by itself while it is in front.
 	songPullGrace = 4 * time.Second
 	// songPullTimeout bounds the wait once the probe app was brought forward.
-	// Its screen is read every songPullPoll for why the file does not come,
-	// and a file whose conflict the daemon resolved is given
-	// songPullResolved from then.
+	// Its screen is read every songPullPoll for why the file does not come
+	// (unless the app says so in a sync report), and a file whose conflict
+	// the daemon resolved is given songPullResolved from then.
 	songPullTimeout  = 60 * time.Second
 	songPullPoll     = 3 * time.Second
 	songPullResolved = 20 * time.Second
+	// songPullSettle is how long the daemon's own record of a download is
+	// given to catch up with a sync report that says the app holds the file.
+	songPullSettle = 2 * time.Second
 	// songDialTimeout bounds the wait for the loaded session's brain and tap.
 	songDialTimeout = 45 * time.Second
 	// songPresetWait follows the preset loads of a check, songSettleWait the
@@ -71,7 +74,7 @@ const songQuietPoll = 50 * time.Millisecond
 func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "load_song",
-		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself, and a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
+		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself; the step ends on the app's report of what its sync made of the session, or on its screen for an app that sends none: a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged, and a copy the app failed at is named with its error; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
 			"Each step is reported with what was seen; a step that fails ends the call and says what to do. A locked iPad is named as that: it has to be unlocked on the device, the daemon never does. Loading replaces the session open in AUM, so it needs confirm: true. " +
 			"Call it after save_song says the session is out of date, and again whenever a plugin failed.",
 		InputSchema: json.RawMessage(`{

@@ -531,7 +531,14 @@ POSTs dumps to the daemon's built-in **probe receiver** (a LAN listener
    LAN listener as the probe receiver — `auv3_receiver_addr`, default `:7800` —
    not the loopback MCP endpoint): `POST /aum-session` stages an upload, `GET
    /aum-session` is the manifest, `GET /aum-session/{file}` downloads a
-   generated/edited file back to AUM. The daemon stages files under the state
+   generated/edited file back to AUM, and `POST /aum-session/sync` takes the
+   app's report of what its sync made of each file after a sync cycle (the
+   files it holds as conflicts, those it could not copy, the copies still
+   queued, the staging rev the cycle went by; the format is
+   `docs/aum-sync-report.md` of auv3-probe). The body is bounded at 1 MiB,
+   keys the daemon does not know are ignored, the answer is `204`. The last
+   report is kept in memory with the time it arrived, never on disk, and
+   `load_song`'s pull step ends on it (see `docs/songs.md`, Loading). The daemon stages files under the state
    dir (`config.AUMSessionsDir()`, gitignored — sessions are private rig
    snapshots, never committed) and exposes them via MCP tools in
    `internal/mcpserver/aum_tools.go`: `list_aum_sessions`, `get_aum_session`

@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
+	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
@@ -144,6 +145,9 @@ type Server struct {
 	// See song_session.go.
 	pulls  sessionPulls
 	loaded loadedSession
+	// syncReports keeps the probe app's last report of what its session sync
+	// made of each file. See song_pull_report.go.
+	syncReports aumreceiver.SyncReports
 
 	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
 	// so two probes never overlap on the shared audio tap. This is what makes

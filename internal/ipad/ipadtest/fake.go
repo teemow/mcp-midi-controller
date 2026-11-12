@@ -352,16 +352,36 @@ func (w *WDA) serveApp(rw http.ResponseWriter, method, sid, sub string, body map
 		reply(rw, 200, nil, sid)
 	case sub == "elements" && body["using"] == "predicate string":
 		pred, _ := body["value"].(string)
+		found := []map[string]string{}
+		// Every button of the app is a target; a text is found by no query.
+		if !strings.HasPrefix(pred, "type == 'XCUIElementTypeButton'") {
+			reply(rw, 200, found, sid)
+			return true
+		}
+		add := func(label string, rect [4]float64) {
+			w.appEls = append(w.appEls, appElement{app, label, rect})
+			found = append(found, map[string]string{"ELEMENT": fmt.Sprintf("A%d", len(w.appEls)-1)})
+		}
+		if _, quoted, byName := strings.Cut(pred, "name =="); byName {
+			// A name is an identifier, or the label of a button without one.
+			if name, err := strconv.Unquote(strings.TrimSpace(quoted)); err == nil {
+				labels, rects := app.named(name)
+				w.appMu.Lock()
+				for i := range rects {
+					add(labels[i], rects[i])
+				}
+				w.appMu.Unlock()
+			}
+			reply(rw, 200, found, sid)
+			return true
+		}
 		_, quoted, _ := strings.Cut(pred, "label ==")
 		fold := strings.HasPrefix(quoted, "[c]")
 		label, err := strconv.Unquote(strings.TrimSpace(strings.TrimPrefix(quoted, "[c]")))
-		found := []map[string]string{}
-		// Every button of the app is a target; a text is found by no query.
-		if err == nil && strings.HasPrefix(pred, "type == 'XCUIElementTypeButton'") {
+		if err == nil {
 			w.appMu.Lock()
 			for _, rect := range app.buttons(label, fold) {
-				w.appEls = append(w.appEls, appElement{app, label, rect})
-				found = append(found, map[string]string{"ELEMENT": fmt.Sprintf("A%d", len(w.appEls)-1)})
+				add(label, rect)
 			}
 			w.appMu.Unlock()
 		}
