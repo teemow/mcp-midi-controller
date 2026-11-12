@@ -157,6 +157,10 @@ type NodePlan struct {
 	Slot  int `json:"slot"`
 	// MIDI routes the track's notes to the node.
 	MIDI bool `json:"midi,omitempty"`
+	// File is the recording a track's File Player plays, by its path in AUM's
+	// Recordings folder: the node is then AUM's own File Player and hosts no
+	// plugin, so it has no preset, parameter or bypass a song could set.
+	File string `json:"file,omitempty"`
 
 	Bypass  Assignment   `json:"-"`
 	Presets []PresetPlan `json:"presets,omitempty"`
@@ -238,6 +242,9 @@ type Plan struct {
 	ControlChannels []int `json:"control_channels"`
 	// Transport is the transport actions the session maps, by AUM target.
 	Transport map[string]Assignment `json:"-"`
+	// MasterRec arms (127) and disarms (0) the master strip for AUM's own
+	// recorder, which the transport's Toggle Record then starts and ends.
+	MasterRec Assignment `json:"-"`
 	// SequencerBypass switches the session's sequencer off (127) and on (0),
 	// in a session that hosts one.
 	SequencerBypass Assignment `json:"-"`
@@ -261,9 +268,28 @@ const BrainStrip = 0
 // session's sequencer. It sits with the transport's (102..105, 108).
 const sequencerBypassCC = 106
 
+// masterRecCC is the controller on the global channel that arms the master
+// strip for AUM's recorder. It sits with the transport's and the sequencer's.
+const masterRecCC = 107
+
 // firstInsertSlot is the slot of an audio strip's first insert: slot 0 is the
 // strip's source and slot 1 its output node.
 const firstInsertSlot = 2
+
+// FilePlayerName is what a track's File Player is called where a plugin has
+// its name.
+const FilePlayerName = "File Player"
+
+// IsFile reports whether the node is a File Player and no plugin.
+func (n *NodePlan) IsFile() bool { return n != nil && n.File != "" }
+
+// File is the recording the track plays, "" for a track with an instrument.
+func (tp *TrackPlan) File() string {
+	if len(tp.Nodes) == 0 {
+		return ""
+	}
+	return tp.Nodes[0].File
+}
 
 // midiReservedCC reports the controllers MIDI itself gives a meaning the pool
 // must not borrow: bank select, data entry, the (N)RPN selectors and the
@@ -359,8 +385,15 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			tp.homeLevel = *t.Level
 		}
 		// AUM stores a strip as [source, output, inserts…]: the instrument is
-		// slot 0, the output slot 1, and the effects follow from slot 2.
-		tp.Nodes = append(tp.Nodes, newNode(at+"/instrument", t.ID, tp.Strip, 0, t.Instrument, ""))
+		// slot 0, the output slot 1, and the effects follow from slot 2. A File
+		// Player is a source like an instrument and sits where one would.
+		if t.IsFile() {
+			n := &NodePlan{Track: t.ID, Name: FilePlayerName, Strip: tp.Strip, Slot: 0, File: t.Instrument.File}
+			p.nodes[t.ID+"/"] = n
+			tp.Nodes = append(tp.Nodes, n)
+		} else {
+			tp.Nodes = append(tp.Nodes, newNode(at+"/instrument", t.ID, tp.Strip, 0, t.Instrument, ""))
+		}
 		for j, fx := range t.Effects {
 			tp.Nodes = append(tp.Nodes, newNode(fmt.Sprintf("%s/effects/%d", at, j), t.ID, tp.Strip, firstInsertSlot+j, fx, fx.EffectID()))
 		}
@@ -440,6 +473,8 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	}
 	p.SequencerBypass = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: sequencerBypassCC}
 	globalUsed[sequencerBypassCC] = true
+	p.MasterRec = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: masterRecCC}
+	globalUsed[masterRecCC] = true
 	var late []*TrackPlan // strips beyond the convention's eight
 	for i, tp := range p.Tracks {
 		vol, okV := device.ConventionMixerCC(i+1, "Volume")
@@ -468,6 +503,9 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	}
 
 	for _, n := range p.allNodes() {
+		if n.IsFile() {
+			continue // AUM maps no bypass for a File Player
+		}
 		var err error
 		if n.Bypass, err = pool.take(); err != nil {
 			return nil, err
@@ -1046,6 +1084,12 @@ func (p *Plan) Fingerprint() string {
 		}
 	}
 	for _, n := range p.allNodes() {
+		if n.IsFile() {
+			// The file is in the node's saved state: another file is another
+			// session.
+			fmt.Fprintf(&b, "F%s:%d:%d:%s|", n.Track, n.Strip, n.Slot, n.File)
+			continue
+		}
 		fmt.Fprintf(&b, "N%s/%s:%s:%d:%d:%v:%s|", n.Track, n.Effect, n.Plugin, n.Strip, n.Slot, n.MIDI, n.Bypass)
 		for _, pr := range n.Presets {
 			fmt.Fprintf(&b, "P%s:%d:%d|", pr.Name, pr.Number, pr.Program)

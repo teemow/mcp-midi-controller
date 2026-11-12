@@ -91,6 +91,10 @@ func (p *Plan) voicing(tp *TrackPlan, preset string) (Voicing, bool) {
 		return Voicing{}, false
 	}
 	n := tp.Nodes[0]
+	if n.IsFile() {
+		// A recording is what it is: nothing is measured of it or trimmed.
+		return Voicing{}, false
+	}
 	if p.sounds != nil {
 		if v, ok := p.sounds(n.Plugin, preset); ok {
 			return v, true
@@ -202,6 +206,9 @@ func (p *Plan) Calibration() []TrackVoicing {
 	}
 	var out []TrackVoicing
 	for _, tp := range p.Tracks {
+		if tp.Nodes[0].IsFile() {
+			continue
+		}
 		for _, preset := range p.presetsOf(tp) {
 			v, ok := p.voicing(tp, preset)
 			row := TrackVoicing{Track: tp.ID, Plugin: tp.Nodes[0].Name, Preset: preset, Measured: ok}

@@ -346,6 +346,9 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 		return textResult(fmt.Sprintf("name the track or the plugin to audition (tracks of %q: %s)", cs.id, trackIDs(cs)), true), nil
 	}
 	node := tp.Nodes[0]
+	if node.IsFile() {
+		return textResult(fmt.Sprintf("/track: %q plays a file (%s), not an instrument: there is no preset to audition", tp.ID, node.File), true), nil
+	}
 
 	// The presets to play.
 	names := append([]string(nil), args.Presets...)

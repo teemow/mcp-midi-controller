@@ -18,6 +18,7 @@ package song
 import (
 	"bytes"
 	"fmt"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -57,6 +58,10 @@ type Song struct {
 	// Session holds how the song's AUM session is built, beyond what the
 	// tracks say. nil is the plain session.
 	Session *SessionSpec `yaml:"session,omitempty" json:"session,omitempty"`
+
+	// stem marks a song derived to record a stem (StemSong): its sequence
+	// ends AUM's recorder itself. It is not part of a document.
+	stem bool
 }
 
 // SessionSpec is the song's own choice of session options. They are part of
@@ -75,6 +80,12 @@ type SessionSpec struct {
 	// plugin, so any of them can be auditioned in the loaded session and a
 	// song can change to another without a new session.
 	Presets string `yaml:"presets,omitempty" json:"presets,omitempty"`
+	// LeadBars is how many bars of lead-in the session's sequencer plays
+	// before bar 1, at the least; 0 takes what the opening sound needs
+	// (Timeline.Sequence). A song that plays recordings of other sessions
+	// says theirs: a recording begins with its session's lead-in, and plays
+	// from the transport's top.
+	LeadBars int `yaml:"lead_bars,omitempty" json:"lead_bars,omitempty"`
 }
 
 // AllPresets reports whether the session maps every factory preset.
@@ -113,6 +124,10 @@ type Track struct {
 	ControlChannels []int `yaml:"control_channels,omitempty" json:"control_channels,omitempty"`
 	// Transpose shifts every note of the track by semitones.
 	Transpose int `yaml:"transpose,omitempty" json:"transpose,omitempty"`
+	// Group names the stem the track is recorded into when the song is
+	// recorded a group at a time (stems.go). Tracks of one group are recorded
+	// together; a track without one is a stem of its own, named by its id.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
 
 	Instrument Plugin   `yaml:"instrument" json:"instrument"`
 	Effects    []Plugin `yaml:"effects,omitempty" json:"effects,omitempty"`
@@ -145,7 +160,13 @@ type Plugin struct {
 	// defaults to Plugin. An instrument needs none.
 	ID string `yaml:"id,omitempty" json:"id,omitempty"`
 	// Plugin is the staged AUv3 probe id of the audio unit to host.
-	Plugin string `yaml:"plugin" json:"plugin"`
+	Plugin string `yaml:"plugin,omitempty" json:"plugin,omitempty"`
+	// File makes a track's instrument a recording instead of a plugin: an
+	// audio file in AUM's Recordings folder, by its path there
+	// ("<session>/<name>.wav"), which the strip's File Player plays from its
+	// start whenever AUM's transport runs from the top. An instrument has a
+	// plugin or a file, not both; an effect has no file.
+	File string `yaml:"file,omitempty" json:"file,omitempty"`
 	// MIDI also routes the track's notes to this effect (for an effect that
 	// plays or follows notes).
 	MIDI bool `yaml:"midi,omitempty" json:"midi,omitempty"`
@@ -424,6 +445,7 @@ const (
 	maxPatternBars = 64
 	maxSectionBars = 256
 	maxArrangement = 256
+	maxLeadBars    = 16
 )
 
 // Validate checks the song's structure: that every reference resolves and
@@ -449,6 +471,9 @@ func (s *Song) Validate() error {
 		case "", "song", "all":
 		default:
 			e.addf("/session/presets: %q is not song or all", s.Session.Presets)
+		}
+		if s.Session.LeadBars < 0 || s.Session.LeadBars > maxLeadBars {
+			e.addf("/session/lead_bars: %d is not a lead-in (0..%d bars)", s.Session.LeadBars, maxLeadBars)
 		}
 	}
 
@@ -483,10 +508,16 @@ func (s *Song) Validate() error {
 			e.addf("%s/channel: MIDI channel %d is already track %q's", at, ch, other)
 		}
 		channels[ch] = t.ID
-		if t.Instrument.Plugin == "" {
-			e.addf("%s/instrument/plugin: a track needs an instrument", at)
+		switch {
+		case t.Instrument.File != "":
+			checkFileTrack(&e, at, t)
+		case t.Instrument.Plugin == "":
+			e.addf("%s/instrument/plugin: a track needs an instrument: a plugin, or a file (a recording in AUM's Recordings)", at)
 		}
-		if len(t.Instrument.Sequence) > 0 && err == nil {
+		if t.Group == MasterTrack {
+			e.addf("%s/group: %q is the master strip's name", at, MasterTrack)
+		}
+		if len(t.Instrument.Sequence) > 0 && err == nil && t.Instrument.File == "" {
 			checkStepSequence(&e, at+"/instrument/sequence", t.Instrument.Sequence, meter)
 		}
 		checkEffects(&e, at+"/effects", t.Effects)
@@ -535,6 +566,9 @@ func (s *Song) Validate() error {
 				}
 			} else if t := tracks[tid]; t != nil {
 				effects = t.Effects
+				if t.IsFile() && (st.Preset != "" || st.Bypass != nil || len(st.Params) > 0) {
+					e.addf("%s: %q plays a file: a scene can set its level, its mute and its effects, and nothing of a plugin", at, tid)
+				}
 			} else {
 				e.addf("%s: no track %q", at, tid)
 				continue
@@ -547,7 +581,7 @@ func (s *Song) Validate() error {
 		}
 	}
 
-	if len(s.Patterns) == 0 {
+	if len(s.Patterns) == 0 && !s.filesOnly() {
 		e.addf("/patterns: a song needs at least one pattern")
 	}
 	broken := map[string]bool{} // patterns already reported
@@ -627,6 +661,10 @@ func (s *Song) Validate() error {
 				e.addf("%s/play/%s: no track %q", at, tid, tid)
 				continue
 			}
+			if t.IsFile() {
+				e.addf("%s/play/%s: %q plays a file, from its start with AUM's transport, and no patterns; leave it out of play", at, tid, tid)
+				continue
+			}
 			if len(sec.Play[tid]) == 0 {
 				e.addf("%s/play/%s: name the pattern(s) the track plays", at, tid)
 			}
@@ -673,6 +711,8 @@ func (s *Song) Validate() error {
 				}
 			case r.Track == MasterTrack:
 				e.addf("%s/effect: name the master effect to automate", rat)
+			case t.IsFile() && !strings.EqualFold(r.Param, "level"):
+				e.addf("%s/param: %q plays a file: its level and its effects can be automated, and no parameter of a plugin", rat, r.Track)
 			}
 			if r.Bar < 0 || r.Bar > sec.Bars {
 				e.addf("%s/bar: %d is not a bar of the section (1..%d)", rat, r.Bar, sec.Bars)
@@ -701,6 +741,9 @@ func (s *Song) Validate() error {
 func checkEffects(e *errs, at string, effects []Plugin) {
 	seen := map[string]bool{}
 	for i, fx := range effects {
+		if fx.File != "" {
+			e.addf("%s/%d/file: only a track's instrument can be a file", at, i)
+		}
 		if fx.Plugin == "" {
 			e.addf("%s/%d/plugin: an effect needs a plugin", at, i)
 			continue
@@ -714,6 +757,78 @@ func checkEffects(e *errs, at string, effects []Plugin) {
 		}
 		seen[id] = true
 	}
+}
+
+// IsFile reports whether the track's instrument is a recording, played by a
+// File Player, and no plugin.
+func (t *Track) IsFile() bool { return t != nil && t.Instrument.File != "" }
+
+// filesOnly reports whether every track of the song plays a file: such a song
+// has no notes, and needs no pattern.
+func (s *Song) filesOnly() bool {
+	for i := range s.Tracks {
+		if !s.Tracks[i].IsFile() {
+			return false
+		}
+	}
+	return len(s.Tracks) > 0
+}
+
+// HasFiles reports whether any track of the song plays a file.
+func (s *Song) HasFiles() bool {
+	for i := range s.Tracks {
+		if s.Tracks[i].IsFile() {
+			return true
+		}
+	}
+	return false
+}
+
+// checkFileTrack checks a track whose instrument is a file: the path, and
+// that the track says nothing only a plugin or its notes could take.
+func checkFileTrack(e *errs, at string, t *Track) {
+	in := t.Instrument
+	if err := checkRecordingPath(in.File); err != nil {
+		e.addf("%s/instrument/file: %v", at, err)
+	}
+	no := func(set bool, field, why string) {
+		if set {
+			e.addf("%s/%s: %s", at, field, why)
+		}
+	}
+	no(in.Plugin != "", "instrument/plugin", "an instrument is a plugin or a file, not both")
+	no(in.Preset != "", "instrument/preset", "a file has no preset")
+	no(len(in.Params) > 0, "instrument/params", "a file has no parameters; its level is the track's")
+	no(in.Bypass != nil, "instrument/bypass", "a file is not bypassed; mute the track")
+	no(in.MIDI, "instrument/midi", "a file hears no notes")
+	no(len(in.Sequence) > 0, "instrument/sequence", "a file has no step sequence")
+	no(in.ID != "", "instrument/id", "an instrument needs no id")
+	no(t.Kind != "", "kind", "a track that plays a file has no notes, so no kind")
+	no(t.Transpose != 0, "transpose", "a file is not transposed")
+	no(len(t.ControlChannels) > 0, "control_channels", "a file hears no control notes")
+	no(len(t.DrumMap) > 0, "drum_map", "a file has no drum lanes")
+}
+
+// checkRecordingPath checks a file's path in AUM's Recordings folder: relative,
+// inside the folder, with a file name.
+func checkRecordingPath(file string) error {
+	switch {
+	case strings.TrimSpace(file) != file:
+		return fmt.Errorf("%q begins or ends with a blank", file)
+	case strings.HasPrefix(file, "/"):
+		return fmt.Errorf("%q is not a path relative to AUM's Recordings (\"<session>/<name>.wav\")", file)
+	case strings.Contains(file, "\\"):
+		return fmt.Errorf("%q: folders are separated by /", file)
+	}
+	for _, part := range strings.Split(file, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("%q is not a path inside AUM's Recordings (\"<session>/<name>.wav\")", file)
+		}
+	}
+	if !strings.Contains(path.Base(file), ".") {
+		return fmt.Errorf("%q has no file extension: name the file as AUM's Recordings lists it, .wav included", file)
+	}
+	return nil
 }
 
 // EffectID is the id scenes address the effect by: its ID, or its plugin.

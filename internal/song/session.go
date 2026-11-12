@@ -52,8 +52,10 @@ type SessionOptions struct {
 
 // SessionReport summarizes an authored session.
 type SessionReport struct {
-	Strips   int `json:"strips"`
-	Nodes    int `json:"nodes"`
+	Strips int `json:"strips"`
+	Nodes  int `json:"nodes"`
+	// Files is how many tracks play a recording from a File Player.
+	Files    int `json:"files,omitempty"`
 	Mappings int `json:"mappings"`
 	Presets  int `json:"presets"`
 	// Banked is how many further targets FullControl mapped, and Overflow how
@@ -107,6 +109,30 @@ func ParseTapName(name string) (session, strip string, ok bool) {
 type tapConfig struct {
 	Streaming bool   `json:"streaming"`
 	Name      string `json:"name,omitempty"`
+}
+
+// RecordingsFolder is AUM's Recordings folder as a File Player's saved state
+// names it: the folder a file's path starts with there, in the storage AUM
+// shares with AudioShare.
+const RecordingsFolder = "AUM Recordings"
+
+// filePlayerState is the saved state of a File Player that plays file, a path
+// in AUM's Recordings: enabled, so it plays whenever the transport runs, from
+// its start, once (no loop), at the file's own speed (no tempo sync, rate 1)
+// and level (no normalizing). They are the keys AUM saves for one; the
+// bookmark AUM keeps beside the path is left out, which names the same file by
+// a reference only the device can make.
+func filePlayerState(file string, tempo float64) map[string]any {
+	return map[string]any{
+		"FilePlayerPath":       RecordingsFolder + "/" + file,
+		"FilePlayerEnabled":    true,
+		"FilePlayerLoop":       false,
+		"FilePlayerSync":       false,
+		"FilePlayerNormalize":  false,
+		"FilePlayerUserRate":   float64(1),
+		"FilePlayerBeatOffset": float64(0),
+		"FilePlayerTempo":      tempo,
+	}
 }
 
 // emptyBrainProgram is a ProbeMidiBrain program that does nothing. The brain's
@@ -189,6 +215,13 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			ch.Tap, ch.TapNode = true, tap
 		}
 		for _, n := range tp.Nodes {
+			if n.IsFile() {
+				// AUM's own File Player is the strip's source; its file is
+				// written into the node once the session is built.
+				ch.Source = &aum.ChannelSource{Kind: aum.SourceFilePlayer}
+				rep.Files++
+				continue
+			}
 			ns, err := nodeSpec(n)
 			if err != nil {
 				return nil, rep, err
@@ -246,6 +279,18 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		return nil, rep, fmt.Errorf("build session: %w", err)
 	}
 	rep.Strips, rep.Nodes = built.Channels, built.Nodes
+	for _, tp := range p.Tracks {
+		n := tp.Nodes[0]
+		if !n.IsFile() {
+			continue
+		}
+		state := filePlayerState(n.File, p.song.Tempo)
+		for _, key := range sortedKeys(state) {
+			if err := sess.SetNodeParam(n.Strip, n.Slot, key, state[key]); err != nil {
+				return nil, rep, fmt.Errorf("the File Player of %s: %w", tp.ID, err)
+			}
+		}
+	}
 	if o.Sequence != nil {
 		if err := stampAtomVersion(sess, BrainStrip, SequencerSlot); err != nil {
 			return nil, rep, err
@@ -317,8 +362,15 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 	if err := tapToggle(p.MasterStrip, firstInsertSlot+len(p.Master)); err != nil {
 		return nil, rep, err
 	}
+	// The master can be armed for AUM's own recorder (stems are recorded so).
+	if _, err := assign(fmt.Sprintf("Channels/chan%d/Channel controls", p.MasterStrip), "Rec enable", p.MasterRec); err != nil {
+		return nil, rep, err
+	}
 
 	for _, n := range p.allNodes() {
+		if n.IsFile() {
+			continue
+		}
 		coll := slotCollection(n.Strip, n.Slot)
 		if _, err := assign(coll, "_AUMNode:Bypass", n.Bypass); err != nil {
 			return nil, rep, err

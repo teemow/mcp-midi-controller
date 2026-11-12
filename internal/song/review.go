@@ -94,6 +94,13 @@ func (s *Song) Palette(cat Catalog) []Voice {
 		}
 	}
 	for _, t := range s.Tracks {
+		if t.IsFile() {
+			// A recording is no sound of the rig's plugins.
+			for _, e := range t.Effects {
+				add(t.ID, e, false, e.Preset)
+			}
+			continue
+		}
 		presets := []string{t.Instrument.Preset}
 		for _, scene := range sortedKeys(s.Scenes) {
 			preset := s.Scenes[scene][t.ID].Preset

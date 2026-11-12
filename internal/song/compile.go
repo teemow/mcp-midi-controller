@@ -97,6 +97,13 @@ type Timeline struct {
 	Events []Event `json:"-"`
 	// Fingerprint is the plan's (see Plan.Fingerprint), "" without a plan.
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// LeadBars is the lead-in the song asks its session's sequencer for, at
+	// the least (SessionSpec.LeadBars); 0 leaves it to the opening sound.
+	LeadBars int `json:"-"`
+	// recorderOff is the control that switches AUM's recorder off, in the
+	// timeline of a stem's song: its sequence sends it RecorderOffBeats
+	// before its end. nil for any other song.
+	recorderOff *Assignment
 }
 
 // TickTime converts a tick position into time from the song's start.
@@ -137,9 +144,12 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 		return nil, err
 	}
 	m, _ := parseMeter(s.TimeSignature)
-	tl := &Timeline{Title: s.Title, Tempo: s.Tempo, MeterNum: m.num, MeterDen: m.den, BarTicks: m.barTicks}
+	tl := &Timeline{Title: s.Title, Tempo: s.Tempo, MeterNum: m.num, MeterDen: m.den, BarTicks: m.barTicks, LeadBars: s.SessionOptions().LeadBars}
 	if p != nil {
 		tl.Fingerprint = p.Fingerprint()
+		if at, ok := p.Transport["Toggle Record"]; ok && s.stem {
+			tl.recorderOff = &at
+		}
 	}
 
 	// Each (track, pattern) pair compiles once; a calibrated drum track once
@@ -521,6 +531,9 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 			}
 			st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlPreset},
 				Assignment{Kind: MsgPC, Channel: pr.Channel}, pr.Program)
+		}
+		if n.IsFile() {
+			continue // a File Player has nothing a song sets but its strip
 		}
 		st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlBypass}, n.Bypass, boolWire(w.bypass))
 		for _, pp := range n.Params {

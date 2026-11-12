@@ -37,10 +37,12 @@ import (
 // can write one from the tool listing alone. docs/songs.md is the long form.
 const songFormat = `A song is one YAML document:
 title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional), calibrate (optional, see the end).
-tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?,
-  instrument: {plugin, preset?, params?, sequence?},
+tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?, group?,
+  instrument: {plugin, preset?, params?, sequence?} or {file},
   effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1 (channel: another of 1..12). control_channels: [10, 11] lets the track's instrument also hear those channels, for control notes such as a drum machine's mutes; no other track may use them.
   sequence (UA Battalion only, no preset beside it): the drum machine's own pattern per voice, written into its saved state and played with AUM's transport - {1..8: {steps: drum grid ("x" a step, "." none), length? (1..64 steps), vel|shift|pitch|ratch|env|pan|var|prob|sends|macro2: values 0..1 as a list or a grid line ("." neutral) or {values, length?, mode?: sync|free|trig|retrig}}}. sync lanes repeat with the steps; a free lane of another length, or a trig one, comes round in another place every time. pitch is round((v-0.5)*48) semitones, ratch 1+round(6v) hits a step, prob 0 never and 0.5 always. Scenes cannot change it (a lane's length and mode are params too); docs/songs.md has the rest.
+  instrument: {file: "<session>/<name>.wav"} makes the track play a recording from AUM's Recordings folder instead of a plugin (AUM's File Player; effects, level, mute and level ramps as on any track, no notes, no preset or params). The file starts at the top of AUM's transport, so such a song plays from its session's sequencer, whole and from the top; session lead_bars says the lead-in the recording was made with. mix_song_stems writes such songs.
+  group: the stem the track is recorded into by record_song_stems, which records a song too heavy for one pass a group of tracks at a time with AUM's own recorder; tracks that share a group are recorded together, a track without one alone.
 master: [effects on the master strip].
 patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), velocity? (96),
   notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?, channel?}], pedal?: [{at, dur (beats)}], channel?}}
@@ -52,7 +54,7 @@ patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), 
 scenes: {id: {track: {level?, mute?, preset?, params?, effects: {effect id: {bypass?, preset?, params?}}}}} - "master" addresses the master effects.
 sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]}, automation?: [{track, effect?, param ("level" for the fader), from, to, bar?, bars?}]}} - patterns repeat until the section ends; a track left out is silent.
 arrangement: [section ids in playing order].
-session: {track_taps?, full_control?, hardware? (builtin|x32), presets? (song|all)} - how the song's AUM session is built (see author_song_session); optional. presets: all maps every factory preset, so audition_sound can play any of them in the song's session and the song can change presets without a new one.
+session: {track_taps?, full_control?, hardware? (builtin|x32), presets? (song|all), lead_bars?} - how the song's AUM session is built (see author_song_session); optional. lead_bars: the bars of lead-in the session's sequencer plays before bar 1, at the least (for a song that plays recordings). presets: all maps every factory preset, so audition_sound can play any of them in the song's session and the song can change presets without a new one.
 A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).
 calibrate: true compiles the song against the rig's sound catalogue (audition_sound fills it, list_sounds reads it): notes are written at the pitch they should SOUND at (each track is shifted by its preset's measured transposition, per section, so no transpose is needed to undo a preset's octave), a track's level is loudness (0 = the same reference level for every preset; the fader is trimmed per preset) and a drum track's lanes are its kit's measured pads (a lane the kit lacks is an error). A preset that is not measured plays as written and is listed.
 
@@ -154,13 +156,14 @@ func (s *Server) registerSongTools() {
 	s.registerSongLoadTools(songArg)
 	s.registerSoundTools()
 	s.registerSongMixTools(songArg)
+	s.registerSongStemTools(songArg)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "play_song",
 		Description: "Play a song. Returns at once; the song plays on (get_song_playback, stop_song) — listen with get_audio_tap meanwhile. The song's session must be the one loaded in AUM (load_song; check_song tells whether every track answers). " +
 			"Two modes. sequenced: the sequencer in the song's session plays it, locked to AUM's transport; the daemon only starts the transport from the top and stops it at the end. It is the whole song, as it was when the session was authored. " +
 			"live: the daemon sets the session to the opening section's sound, then sends every note and control change through the ProbeMidiBrain when it is due; it plays the song as it is stored now, from any section, for a number of sections, or only some tracks. " +
-			"Without mode, the whole song plays sequenced when its session holds the song as it is now, and live otherwise.",
+			"Without mode, the whole song plays sequenced when its session holds the song as it is now, and live otherwise. A song with a track that plays a file plays sequenced, whole, from the top: the file starts at the top of AUM's transport and nowhere else.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -180,7 +183,7 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "stop_song",
-		Description: "Stop the playing song: release every sounding note (live), or stop and rewind AUM's transport (sequenced). Also ends a running mix measurement (mix_song).",
+		Description: "Stop the playing song: release every sounding note (live), or stop and rewind AUM's transport (sequenced). Also ends a running mix measurement (mix_song) and a running stem recording (record_song_stems).",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, s.handleStopSong)
 
@@ -570,6 +573,10 @@ type songSummary struct {
 	// Review is what stands out in the song as a piece of music (its length,
 	// its ending, its repeats, its sounds): advice, not errors.
 	Review []song.Remark `json:"review,omitempty"`
+	// Stems are the groups the song is recorded in by record_song_stems, when
+	// it names any; Files counts the tracks that play a recording.
+	Stems []song.Stem `json:"stems,omitempty"`
+	Files int         `json:"file_tracks,omitempty"`
 }
 
 type songSectionRow struct {
@@ -595,6 +602,11 @@ type songTrackRow struct {
 	// saved state; NoBase that the rig has no state to write it over yet.
 	Sequence bool `json:"sequence,omitempty"`
 	NoBase   bool `json:"no_base_state,omitempty"`
+	// File is the recording a track plays instead of an instrument, by its
+	// path in AUM's Recordings.
+	File string `json:"file,omitempty"`
+	// Group is the stem the track is recorded into (record_song_stems).
+	Group string `json:"group,omitempty"`
 }
 
 // summarize renders a compiled song as text and as its structured summary.
@@ -626,9 +638,17 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 				row.Effects = append(row.Effects, n.Name)
 			}
 		}
+		row.File, row.Group = tp.File(), cs.song.Tracks[i].Group
 		fmt.Fprintf(&b, "  ch%-2d %-10s %s", tp.Channel, tp.ID, row.Instrument)
 		if len(row.Effects) > 0 {
 			fmt.Fprintf(&b, " > %s", strings.Join(row.Effects, " > "))
+		}
+		if row.File != "" {
+			// A file has no notes: it plays from its start with the transport.
+			sum.Files++
+			fmt.Fprintf(&b, "  (plays %q from AUM's Recordings, from its start with AUM's transport; no notes)\n", row.File)
+			sum.Tracks = append(sum.Tracks, row)
+			continue
 		}
 		fmt.Fprintf(&b, "  (%d notes", row.Notes)
 		if len(row.ControlChannels) > 0 {
@@ -653,6 +673,17 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 			names[i] = n.Name
 		}
 		fmt.Fprintf(&b, "  master: %s\n", strings.Join(names, " > "))
+	}
+	if sum.Files > 0 {
+		fmt.Fprintf(&b, "files: %d track(s) play a recording, which starts at the top of AUM's transport: the song plays from its session's sequencer and from the top only, with a lead-in of %d bar(s) before bar 1 (session lead_bars; a recording begins with the lead-in of the session it was made in)\n",
+			sum.Files, tl.Sequence().LeadBars)
+	}
+	if stems, err := cs.song.Stems(nil); err == nil && len(stems) < len(cs.song.Tracks) {
+		sum.Stems = stems
+		b.WriteString("stems (record_song_stems records each alone with AUM's recorder, mix_song_stems mixes the files):\n")
+		for _, st := range stems {
+			fmt.Fprintf(&b, "  %-10s %s\n", st.Name, strings.Join(st.Tracks, ", "))
+		}
 	}
 	if rows := cs.plan.Calibration(); rows != nil {
 		sum.Calibration, sum.Warnings = rows, cs.plan.Warnings()
@@ -902,6 +933,9 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if fail != nil {
 		return fail, nil
 	}
+	if busy := s.stemsBusy("play_song"); busy != nil {
+		return busy, nil
+	}
 	if s.midi == nil || !s.midi.Connected() {
 		return textResult("play_song: "+midicontrol.ErrNoBrain.Error()+" — load_song puts the song's session into AUM so its brain dials in", true), nil
 	}
@@ -927,7 +961,17 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
-	mode, note, err := songPlayMode(args.Mode, rec, cs.timeline, from != 0 || args.Sections > 0 || len(args.Tracks) > 0)
+	partial := from != 0 || args.Sections > 0 || len(args.Tracks) > 0
+	if cs.song.HasFiles() {
+		// A File Player starts its file at the transport's top and cannot be
+		// placed: only the sequencer, which runs with that transport, plays
+		// the song's control changes where the files are.
+		if strings.EqualFold(strings.TrimSpace(args.Mode), song.ModeLive) || partial {
+			return textResult("play_song: a track of this song plays a file, which starts at the top of AUM's transport and cannot be started anywhere else: the song plays from its session's sequencer, whole, from the top (leave out mode, from, sections and tracks)", true), nil
+		}
+		args.Mode = song.ModeSequenced
+	}
+	mode, note, err := songPlayMode(args.Mode, rec, cs.timeline, partial)
 	if err != nil {
 		return textResult("/mode: "+err.Error(), true), nil
 	}
@@ -1115,6 +1159,12 @@ func (s *Server) handleStopSong(_ context.Context, _ *mcp.CallToolRequest) (*mcp
 		s.mix.cancel()
 	}
 	s.mixMu.Unlock()
+	// So does a stem recording: end it, not only the pass that is playing.
+	s.stemsJobMu.Lock()
+	if s.stems != nil && !s.stems.finished() {
+		s.stems.cancel()
+	}
+	s.stemsJobMu.Unlock()
 	st := s.player.Stop()
 	return structResult(playbackText(st), map[string]any{"playback": st}), nil
 }

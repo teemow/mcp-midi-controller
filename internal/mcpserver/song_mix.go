@@ -65,6 +65,7 @@ func (s *Server) registerSongMixTools(songArg string) {
 		Description: "Measure a song's mix: play it (the whole song, or from a section for a number of sections) and read the master tap out for its whole length. The report is rms and sample peak per bar and per section, the loudest and the clipped bars, how much headroom is left, and where the tap's stream stalled. " +
 			"per_track: true adds the level of every track in every section — the table a balance is made from — and names a track that is silent where it has notes; a track without notes in a section that sounds by itself there (an instrument playing its own sequencer with the transport) has its row too. A session with a tap on every track (session: {track_taps: true}) has them read out in the same pass: each track at its own tap, after its fader and before the master's effects, over the whole section. Without those taps each section is played once per track (the first bars of it, solo) and measured at the master; solo: true asks for that although the taps are there. " +
 			"Every pass is played live and runs AUM's transport with it, the session's sequencer bypassed meanwhile (as play_song with transport: true), so instruments that follow the host clock sound as they do in the song; transport: false keeps the transport stopped, for less DSP load, when nothing in the session needs it. " +
+			"A song with a track that plays a file is played from its session's sequencer and from the top instead (the file starts at the top of the transport and nowhere else): from is refused, and per_track needs a tap on every track. " +
 			"Returns at once; get_song_mix gives the progress and the report (stop_song ends the measurement). The song's session must be loaded (load_song).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -420,6 +421,10 @@ type mixArgs struct {
 	// Transport runs AUM's transport through every pass; Sequencer says the
 	// session hosts the sequencer, which is bypassed meanwhile.
 	Transport, Sequencer bool
+	// Files says a track of the song plays a file: the song is then played
+	// from its session's sequencer, from the top, because a File Player
+	// starts its file at the transport's top and nowhere else.
+	Files bool
 }
 
 func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -451,6 +456,9 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 	if !ma.Whole && !ma.PerTrack {
 		return textResult("whole: false leaves nothing to measure without per_track: true", true), nil
 	}
+	if busy := s.stemsBusy("mix_song"); busy != nil {
+		return busy, nil
+	}
 	if s.midi == nil || !s.midi.Connected() {
 		return textResult("mix_song: "+midicontrol.ErrNoBrain.Error()+" — load_song puts the song's session into AUM", true), nil
 	}
@@ -470,6 +478,20 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 	case cur != "" && cur != rec.Session:
 		return textResult(fmt.Sprintf("mix_song: AUM has %q open, not this song's session %q; load_song first", cur, rec.Session), true), nil
 	}
+	// A song with a track that plays a file is played from its sequencer and
+	// from the top: the file starts there and cannot be placed.
+	if ma.Files = cs.song.HasFiles(); ma.Files {
+		switch {
+		case from != 0:
+			return textResult("mix_song: a track of this song plays a file, which starts at the top of AUM's transport: the song can only be measured from the top (leave out from; sections may end it early)", true), nil
+		case !ma.Transport:
+			return textResult("mix_song: a track of this song plays a file, which plays only while AUM's transport runs (leave out transport: false)", true), nil
+		case !rec.sequenceCurrent(cs.timeline):
+			return textResult(fmt.Sprintf("mix_song: the sequencer of %q does not hold the song as it is now, and a song with a file track plays from it; load_song first", rec.Session), true), nil
+		case ma.PerTrack && args.Solo:
+			return textResult("mix_song: a track of this song plays a file, so the tracks cannot be measured in solo passes of a section each (every pass would play the file's beginning); leave out solo and give the session a tap on every track (session: {track_taps: true})", true), nil
+		}
+	}
 	// The tracks' own taps, when every track has one: they are read out
 	// while the song plays, and no track needs a pass of its own.
 	tapNote := ""
@@ -481,6 +503,9 @@ func (s *Server) handleMixSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 		case len(taps) > 0 || rec.Options.TrackTaps:
 			tapNote = fmt.Sprintf("\nno tap is connected for %s, so the tracks are measured by solo passes at the master", strings.Join(missing, ", "))
 		}
+	}
+	if ma.Files && ma.PerTrack && ma.TrackTaps == nil {
+		return textResult("mix_song: a track of this song plays a file, so the tracks cannot be measured in solo passes of a section each (every pass would play the file's beginning); they are measured at their own taps, which this session lacks: session: {track_taps: true} in the song, then load_song"+tapNote, true), nil
 	}
 
 	s.mixMu.Lock()
@@ -692,14 +717,32 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 	// stopped or fails (the player sends that however it ends) — with the
 	// session's sequencer bypassed in between.
 	play := func(opts song.PlayOptions) error {
-		if a.Transport {
+		if a.Files {
+			// From the session's sequencer, as play_song plays such a song:
+			// the transport from the top, the files with it, the controls
+			// from the clip. The player counts the bars from the end of the
+			// lead-in.
+			cc := func(at song.Assignment, value int) song.Event {
+				return song.Event{Kind: song.Control, Channel: at.Channel, Data1: at.Number, Data2: value}
+			}
+			p := cs.plan
+			if _, err := s.player.StartSequenced(cs.id, tl, tl.Sequence(), song.SequencedOptions{
+				Rewind: []song.Event{cc(p.SequencerBypass, 0), cc(p.Transport["Rewind"], 127)},
+				Start:  []song.Event{cc(p.Transport["Start Play"], 127)},
+				Stop:   []song.Event{cc(p.Transport["Stop/Rewind"], 127), cc(p.Transport["Rewind"], 127)},
+			}, send); err != nil {
+				return err
+			}
+		} else if a.Transport {
 			var before []song.Event
 			opts.Rewind, before, opts.After = liveTransport(cs.plan, a.Sequencer)
 			opts.Before = append(opts.Before, before...)
 		}
-		opts.Preroll = mixPreroll
-		if _, err := s.player.Start(cs.id, tl, opts, send); err != nil {
-			return err
+		if !a.Files {
+			opts.Preroll = mixPreroll
+			if _, err := s.player.Start(cs.id, tl, opts, send); err != nil {
+				return err
+			}
 		}
 		zero := func(playedMS int64) {
 			for _, m := range meters {
@@ -769,6 +812,11 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 		}
 		if err := until(length, true); err != nil {
 			return rep, err
+		}
+		if a.Files {
+			// The sequencer plays on to the song's end; the range may end
+			// before it.
+			s.player.Stop()
 		}
 		if err := until(length+mixTail.Seconds(), false); err != nil {
 			return rep, err

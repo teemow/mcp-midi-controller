@@ -294,6 +294,10 @@ Global tools:
   or live through the brain;
   `mix_song` / `get_song_mix` measure the level of every bar, section and
   track at the master tap;
+  `record_song_stems` / `get_song_stems` / `mix_song_stems` record a song a
+  group of tracks at a time with AUM's own recorder and mix the groups from
+  their files, for a song too heavy for one pass (a track can play a file:
+  AUM's File Player in place of an instrument);
   and `export_song_midi` writes it as a Standard MIDI File. See
   `docs/songs.md`; `docs/song-authoring.md` is the design of the tools around
   writing a song.

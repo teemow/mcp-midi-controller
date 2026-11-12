@@ -36,6 +36,12 @@ DAW.
 a file, and `upload_recording` puts that file into Google Drive: see
 [Recording and Google Drive](recording.md).
 
+A song the iPad cannot compute in one pass is recorded a group of tracks at a
+time with AUM's own recorder and mixed from the recordings:
+`record_song_stems`, `get_song_stems` and `mix_song_stems`, see
+[Stems](#stems). The mix is a song whose tracks play files, see
+[A track that plays a file](#a-track-that-plays-a-file).
+
 ## A full song
 
 The document can hold any song. What comes out is still up to whoever writes
@@ -188,7 +194,10 @@ arrangement: [verse, chorus, verse, chorus]
   display name or a part of it. A name that fits several is an error that
   lists them. `kind: drums` makes it a drum track. `transpose` shifts all its
   notes, for a preset that does not sound at the written pitch (a
-  [calibrated](#calibration) song needs none).
+  [calibrated](#calibration) song needs none). `instrument: {file: …}` in
+  place of a plugin makes the track play a recording: see
+  [A track that plays a file](#a-track-that-plays-a-file). `group` names the
+  stem the track is recorded into: see [Stems](#stems).
 - **master** — effects on the master strip, after its fader.
 - **patterns** — the phrases; see [Notation](#notation).
 - **scenes** — named sound settings; see [Sound](#sound).
@@ -442,6 +451,72 @@ not measured.
 - **Another sequence, another session.** The sequence is in the session file,
   so a changed one makes `load_song` author the session again.
 
+## A track that plays a file
+
+A track's instrument can be a recording instead of a plugin:
+
+```yaml
+tracks:
+  - id: strings
+    level: -2
+    instrument: {file: "Night Drive stem strings/Master - 104 bpm - 001.wav"}
+    effects:
+      - {id: air, plugin: hall, params: {Mix: 0.2}}
+
+session:
+  lead_bars: 1
+```
+
+`file` is a path in AUM's Recordings folder: the folder, which AUM names after
+the session a take was recorded in, and the file with its extension. The
+strip's source is then AUM's own File Player with that file where an
+instrument would sit. Its effects, level, mute, scenes and level ramps are the
+strip's, as on any track.
+
+- **It plays with the transport.** The player is written enabled, with Loop
+  and Sync off, rate 1 and no normalizing: the file plays once, at its own
+  speed and level, from its first sample at the top of AUM's transport. It
+  cannot be started anywhere else. So a song with a file track plays from its
+  session's sequencer, whole and from the top: its session needs the
+  sequencer, and `play_song` refuses `mode: live`, `from`, `sections` and
+  `tracks` for it.
+- **No notes.** A file track is left out of every section's `play` and has no
+  preset, parameter, bypass, kind, transposition or control channel; a scene
+  sets its level, its mute and its effects. `save_song` names whatever a
+  document says beyond that. A song whose tracks all play files needs no
+  pattern, and its summary says which file each track plays.
+- **The lead-in.** A recording made of a song's session begins with that
+  session's lead-in (see [Playing](#playing)): its bar 1 is the transport's
+  bar 2. `session: {lead_bars: 2}` gives the song that plays it a lead-in of
+  at least that many bars, so its own control changes (a scene, a ramp of a
+  level) meet the bars they are written for. A song takes more bars when its
+  opening sound needs more.
+- **What is written.** A File Player node as the strip's source, whose saved
+  state names the file by its path alone (`AUM Recordings/<file>`) with the
+  switches above. AUM itself saves a bookmark beside the path, a reference to
+  the file only the device can make; it loads the file without one (see
+  [Status](#status)). Another file is another session: `load_song` authors it
+  again.
+- **A file that is not there.** AUM then loads the session with an empty
+  player, which plays nothing and says nothing. So `check_song`, and with it
+  `load_song`, opens every File Player and reads its panel: the file it has,
+  its length in frames, and whether Loop or Sync is on. A player without the
+  song's file fails the check, and so does one that loops or follows the
+  tempo. A file track is played no note: a recording of a session begins with
+  a bar of silence, so there is nothing to listen for.
+- **`mix_song`** plays such a song from the sequencer and from the top, as
+  `play_song` does, and reads its bars and sections out of that pass
+  (`sections` may end it early; `from` is refused). `per_track` needs a tap on
+  every track (`session: {track_taps: true}`): a solo pass per section would
+  play the file's beginning every time.
+
+AUM's Recordings folder is not in AUM's own Documents folder. It lies in the
+storage AUM shares with AudioShare (an app group's File Provider storage), and
+what `ios fsync --app=com.kymatica.AUM` reaches is the Documents folder alone.
+The daemon therefore cannot list, copy or check a recording by itself: what it
+knows of one it reads off AUM's screen (FILES → Recordings, a File Player's
+panel).
+
 ## Sounds
 
 A preset's name says little about its sound. One sounds at the written pitch,
@@ -558,6 +633,10 @@ problem with its place in the document:
 - plugins, against the staged AUv3 probes: an unknown plugin, preset or
   parameter (with the names that come close), a value outside a parameter's
   range;
+- a [file track](#a-track-that-plays-a-file): a plugin beside the file, a path
+  that is not inside AUM's Recordings or has no extension, a preset,
+  parameter, kind or transposition, a pattern to play, a scene or a ramp that
+  sets anything but its level, mute or effects;
 - a control a scene changes without a declaration on the track;
 - a [sequence](#a-drum-machines-own-sequence): a voice, step or value that is
   none, a length shorter than what is written, a mode the lane lacks, a
@@ -575,6 +654,7 @@ problem with its place in the document:
 ```
 Brain     ProbeMidiBrain, the sequencer (a MIDI strip)
 <track>   instrument > effects > fader          one strip per track
+<track>   File Player > effects > fader         a track that plays a file
 Master    master sum > fader > master effects > ProbeAudioTap
 ```
 
@@ -591,11 +671,13 @@ destinations through the same filters.
 |----------|-------|
 | 1…N | the tracks' notes, one channel each, their control notes and their sustain pedal |
 | N+1…14 | plugin bypasses and parameters, filled from 14 downwards; N is the highest channel a track plays or hears on |
-| 15 | strip levels and mutes, the transport and the sequencer's bypass (the convention's CCs), preset loads (Program Changes) |
+| 15 | strip levels and mutes, the transport, the sequencer's bypass (CC 106) and the master's record-arm (CC 107), preset loads (Program Changes) |
 | 16 | left to the rig: tap toggles and session switching |
 
 **Mappings.** Every strip's level and mute and every plugin's bypass are mapped,
-along with each parameter and each preset the song names. A preset becomes one
+along with each parameter and each preset the song names. So is the master's
+Rec enable, which arms it for AUM's own recorder ([Stems](#stems)); a File
+Player has no mapping. A preset becomes one
 of the plugin's "Preset Load" actions in AUM, fired by a Program Change. With
 `full_control: true` every other parameter of every plugin is mapped as well,
 around the song's own mappings.
@@ -664,7 +746,11 @@ session:
   full_control: true    # map every other parameter of every plugin as well
   hardware: x32         # the master's output profile; builtin is the default
   presets: all          # a Preset Load for every factory preset, not only the song's
+  lead_bars: 2          # the sequencer's lead-in before bar 1, at the least
 ```
+
+`lead_bars` is for a song that plays recordings: see
+[A track that plays a file](#a-track-that-plays-a-file).
 
 With `presets: all` every factory preset of every plugin gets a Program Change:
 the instruments' first, then the effects', filling channel 15 and then the
@@ -1074,6 +1160,146 @@ The bars' and sections' levels are what the master tap carries: after the
 master's effects, a limiter included. A peak is the highest sample, not an
 inter-sample estimate.
 
+## Stems
+
+Every instrument of a song is computed while the song plays. Past what the
+iPad computes in time, AUM drops audio: on the rig a piece for a piano and
+eleven modelled instruments read 93 to 100 % in AUM's DSP display in its
+tutti, and a pass of it came out with gaps. Such a song is recorded a group of
+tracks at a time, each group alone, and mixed from the recordings.
+
+| Step | Tool | |
+|------|------|-|
+| 1. Group | `group:` on the tracks, or `groups` as an argument | Tracks that share a group are one stem. A track without a group is a stem of its own, called by its id. |
+| 2. Record | `record_song_stems`, `get_song_stems` | Each stem from a session of its own, with AUM's own recorder. |
+| 3. Mix | `mix_song_stems` | Writes the mix as a song of [file tracks](#a-track-that-plays-a-file), loads it, plays and records it. |
+
+```yaml
+tracks:
+  - id: piano
+    instrument: {plugin: grand}
+  - id: violins
+    group: strings
+    instrument: {plugin: bowed, preset: Violins}
+  - id: cellos
+    group: strings
+    instrument: {plugin: bowed, preset: Cellos}
+    effects:
+      - {id: comp, plugin: compressor}
+master:
+  - {id: hall, plugin: hall, params: {Mix: 0.2}}
+  - {id: limiter, plugin: limiter}
+```
+
+```
+record_song_stems {song: night_drive, confirm: true}
+get_song_stems    {wait_ms: 55000}                     # until it is done
+mix_song_stems    {song: night_drive, confirm: true}
+```
+
+That records `piano` and `strings`, one after the other, and leaves three
+things: two files in AUM's Recordings, the song `night_drive_mix`, and a
+recording of the mix at the master's tap. `groups: {low: [piano, cellos]}` as
+an argument groups the tracks another way for that call.
+
+**A stem's session** hosts the stem's tracks and nothing else of the song, so
+the other tracks cost the iPad nothing while it is recorded. The tracks are as
+the whole song has them: plugins, effects, faders, scenes, ramps and MIDI
+channels, for the same bars. It is staged as `Songs/<title> stem <stem>`, has
+no tap on its tracks whatever the song's `session:` says, and needs the
+sequencer: the stem is played from it, locked to AUM's transport.
+
+**The master's effects are in the mix, all of them.** A stem's master strip is
+empty. A limiter has to see the sum of the stems, so it cannot be in a stem. A
+hall on the master is linear, and one on each stem would add up to the same
+sound; it is left to the mix all the same. It is then one reverb on the sum, as
+in the whole song, a scene or a ramp of it works as written, and the stems stay
+dry of it and can be mixed again another way.
+
+**Lead-in and tail.** Every stem's session and the mix's play the same
+lead-in: the bars a session takes whose opening sound loads presets (one bar at
+most tempos), or the song's own `lead_bars` when it asks for more. After the
+song's last bar every one of them runs on for the same tail, `tail_bars` (by
+default the bars that cover four seconds), in the last section's sound: its
+scenes, and every control it ramped held where the ramp ended, so a fade that
+ended at silence stays there. What rings out in a stem is in its file.
+
+**A pass.** The daemon loads the stem's session (`load_song`'s steps, the
+check included; what the check finds is noted with the take and does not stop
+it), reads AUM's list of the session's recordings, and arms the master strip.
+It arms by the master's mapped Rec enable and then reads the REC button off
+AUM's screen, which it taps when the mapping did not arm it. Then it switches
+AUM's recorder on, which starts the transport: the sequencer plays the stem
+from the top. Half a beat before the tail's last bar line it switches the
+recorder off. AUM ends a take on the next bar line, so the take ends there,
+and the transport runs on a bar longer before it is stopped. Then the master
+is disarmed. `stop_song` ends a pass, and the whole recording, the same way.
+
+**The take** is the file AUM's list has afterwards and had not before. AUM
+names it `<session>/Master - <tempo> bpm - <nnn>.wav`, counting up in the
+session's folder. The list gives a file's date, size and format, and no
+length.
+
+**What is kept.** The daemon notes down every take: the stem and its tracks,
+the file, and a fingerprint of the stem's session and of what its sequencer
+played. `record_song_stems` records the stems that have no take of the song as
+it is now, so after a change to one track only that track's stem is recorded
+again, and a recording that failed half way goes on where it stopped.
+`again: true` records a stem although its take is current, `stems` picks some.
+Takes made with another lead-in or tail are not kept beside new ones: they
+would not line up.
+
+**The report** of `get_song_stems` lists each stem with its tracks, the file's
+path in AUM's Recordings, what AUM's list says of it, the level the master's
+tap heard during the pass, and what the load's check found. With `song` and no
+recording running it reports the takes kept for that song, and whether each is
+still of the song as it is.
+
+**The mix.** `mix_song_stems` writes a song `<song>_mix` (`mix` names another
+id): one track per stem that plays the stem's file at unity, the whole song's
+master effects with their scenes and ramps, the same sections, lead-in and
+tail. It is a song like any other. A stem's level in the mix is its track's
+`level` there, and `load_song`, `play_song`, `check_song` and `mix_song` take
+it. Running `mix_song_stems` again writes it anew. Then the call loads it and
+plays it from its sequencer, recorded at the master's tap as `play_song` with
+`record: true` does (`record: false`, `play: false` and `upload` as there).
+
+**Length.** A take's exact length is read where the daemon can read it: in the
+panel of the File Player that has it loaded. So it is the mix's load that
+reports, for every stem, the frames, the seconds, the beats, and whether that
+is a whole number of beats; `get_song_stems` has it from then on. A take that
+began with the transport and ended on a bar line is whole beats long (on a
+device 7 frames short of them, 0.0003 of a beat). `mix_song_stems` does not
+play a mix in which a take is not whole beats long, or shorter than the
+lead-in, the song and the tail: that take did not start with the transport or
+lost its end, and the stems would not line up. It also refuses a stem without
+a take, and one whose take is of the song as it was before a change (`stale:
+true` mixes that one all the same).
+
+**What AUM's own recorder does that the tap does not:**
+
+| | AUM's recorder | A ProbeAudioTap |
+|-|----------------|-----------------|
+| Written | on the iPad, by AUM, into its Recordings | on the daemon's host, from a stream |
+| The way there | none: no wireless link, nothing to stall or arrive late | every sample over the wireless link; a tap on each of thirteen tracks was more than the link carried |
+| Begins | on the transport's first sample | when the stream is asked for; cut to the first sound afterwards |
+| Ends | on a bar line | when the tap has been silent for a while |
+| Format | WAV in the bit depth of AUM's Bit Depth setting (16 bit on the rig), at the session's rate | 32-bit float as streamed, stored as FLAC or WAV |
+| Reached | by AUM's File Player and file browser; not from outside (see [A track that plays a file](#a-track-that-plays-a-file)) | a file on the host, which `upload_recording` puts into Google Drive |
+
+So the stems are recorded in AUM, where they line up on the sample and no link
+is in the way, and the mix, which is light, is recorded at the tap, where the
+daemon can reach the file. The mix can lose audio to the link as any tap
+recording can; its record says so (see [recording.md](recording.md)).
+
+**AUM's settings are left alone.** Buffer size and bit depth are AUM's global
+settings, and nothing here changes them. A session's clock options are in its
+file: sessions are authored without a pre-roll.
+
+**Not done.** A stem is recorded at the master, as one file: the strips of a
+stem are not recorded one by one. A stem whose tracks alone are still too
+heavy has to be split into two groups.
+
 ## The sequencer's state
 
 A sequencer can only play a song the daemon wrote if its content can be
@@ -1467,6 +1693,47 @@ tools of a daemon that has the mode:
   possibly crashed" and left the Home Screen in front, where nothing keeps
   the iPad from locking itself. AUM had to be started again.
 
+Measured on a device with AUM's own recorder and its File Player (AUM
+1.4.8), in sessions authored from a song of two stems, eight bars at 120 BPM
+with a lead-in of one bar and a tail of two. The sessions were authored with
+the code that is in the daemon now and staged through its receiver; the
+controls were sent with `send_midi`, before the tools existed:
+
+- **The recorder's mappings latch by value.** The master's Rec enable, mapped
+  to a controller, armed the strip at 127, left it armed at a second 127 and
+  disarmed it at 0. The transport's Toggle Record is no toggle either: 127
+  switched the recorder on and started the stopped transport with it, a second
+  127 changed nothing, and 0 ended the take.
+- **A recorder left on records on.** With the recorder not switched off (the
+  second 127 above), stopping the transport ended nothing: the record button
+  stayed lit, the master's arm could not be changed by its mapping, and no
+  file was listed. Switched off three minutes later, with the transport
+  stopped, it left one take of 2:56.9, 353.909 beats: it had recorded through
+  the stopped transport, and ended at once, not on a bar line.
+- **A take ends on the next bar line.** Recorder on, and off 22.02 s after the
+  message that started it, 20 ms after the end of the eleventh bar by the
+  daemon's clock: the take was 1 151 993 frames at 48 kHz, 7 frames short of
+  twelve bars (24 s, 48 beats). AUM had ended it on the bar line after the
+  one it was aimed at. The daemon therefore switches the recorder off half a
+  beat before the last bar line.
+- **The take's name and what AUM lists of it.** The takes were `Master - 120
+  bpm - 001` and `- 002` in a folder named after the session, in FILES →
+  Recordings. The list printed each as `12. Nov 2026 at 21:23:42 • 4.4 MiB •
+  wav`: a date, a size, a format, the name without its extension, no length.
+  They were 16 bit, AUM's Bit Depth setting as it stood.
+- **A File Player written with a path alone loads its file.** A session
+  authored with two file tracks, each File Player's saved state naming its
+  take as `AUM Recordings/<session>/Master - 120 bpm - 00n.wav` and carrying
+  no bookmark, loaded with both files in place. The panel of each showed the
+  file's name with its extension, `Duration 1'151'993 frames · 00:23.9`,
+  `Format WAVE (LPCM) · 2 ch · 16 bit · 48000 Hz`, Loop OFF, Sync OFF, the
+  number of beats (47.9997), rate 1.000 and beat offset 0.
+- **It plays with the transport.** Started from the top, the master's tap was
+  silent through the lead-in and carried the take's notes from the second bar
+  (the written C2, read back at 65.5 Hz), through the hall and the limiter on
+  the master. AUM showed 8 to 9 % DSP with the two players and the two master
+  effects.
+
 **Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
 (108 BPM), each a little over a minute, were played from the session's
 sequencer from the first bar to the last with their bars in place: the hats of
@@ -1474,6 +1741,16 @@ the 6/8 song sat on its eighth-note grid in its first bar and in its 35th.
 
 Not yet measured:
 
+- `record_song_stems` and `mix_song_stems` as tools on the rig: the passes
+  above were driven by hand. The tests run both against a stand-in whose
+  recorder latches by value, ends a take on a bar line and lists it the way
+  AUM does, and whose File Players show what the rig's showed;
+- a take ended half a beat before its last bar line (expected: it ends there,
+  as long as the lead-in, the song and the tail), a stem of many strips whose
+  master is off screen when its REC button is read, and a File Player whose
+  file is missing (the check reads its panel; what AUM shows there for an
+  empty player was not looked at);
+- how a mix made from stems compares with one pass of the same song;
 - the check's note held for the catalogue's attack, its 1.5 s second try and
   its wait for a silent tap (the tests run them against a stand-in with a
   slow pad and a ringing reverb);
@@ -1547,6 +1824,7 @@ preset at a time.
 | The sound catalogue | `$XDG_CONFIG_HOME/mcp-midi-controller/sounds/<plugin id>.yaml` — measured per rig, and readable and correctable by hand |
 | Authored sessions | the AUM staging dir (state dir), like every authored session |
 | Which session a song was authored into | `song-sessions.json` in the state dir |
+| The takes of a song's stems | `song-stems.json` in the state dir; the files themselves are in AUM's Recordings on the iPad |
 | MIDI exports | `song-exports/` in the state dir |
 | Recordings | `recordings/` in the state dir ([recording.md](recording.md)) |
 
