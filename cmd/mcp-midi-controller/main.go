@@ -277,7 +277,13 @@ func serveLANReceiver(ctx context.Context, addr string, srv *mcpserver.Server, a
 		srv.OnAUMSyncReport,
 	)
 	audiotap.Register(mux, audioRegistry,
-		func(name, remote string) { srv.NotifyAudioTap(true, name, remote) },
+		func(name, remote string) {
+			srv.NotifyAudioTap(true, name, remote)
+			// A session's master tap dials in under the session's id: that
+			// session is the one AUM has open, and the daemon's current one
+			// from here on (async).
+			srv.OnAudioTapConnected(name)
+		},
 		func(name, remote string) { srv.NotifyAudioTap(false, name, remote) },
 	)
 	diagnostics.Register(mux, diagStore,

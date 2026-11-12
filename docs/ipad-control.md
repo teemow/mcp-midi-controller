@@ -221,6 +221,22 @@ own words after it ("Unable to launch … because the device was not, or could
 not be, unlocked"). The daemon never calls WDA's unlock and never types a
 code; the iPad is unlocked on the device.
 
+**An app that went away** leaves the Home Screen in front, and that keeps the
+iPad awake no more than another app does. WDA fails every further call of the
+session that drove the app ("The application under test with bundle id '…' is
+not running, possibly crashed"). A tool that gets this says what it means: the
+app crashed or was closed, what it had open went with it (in AUM the session,
+which has to be loaded again), the iPad is on its Home Screen and locks
+itself, and `ipad_launch` without `app` starts AUM. The tool's gestures are
+not made again. `ipad_status` and `ipad_screenshot` carry a note that the
+Home Screen is in front until AUM is brought forward. Every session bound to
+an app starts it when it is not running, so the next call that drives AUM
+finds it running, with no session loaded. `load_song` goes further at its
+load step: it starts AUM again and loads the session once more
+(`docs/songs.md`, "Loading"). An app that is not up after its start fails the
+new session instead ("Cannot launch … application"); what was in front before
+still is, and that error is passed on as it is.
+
 ## Verifying MIDI against AUM
 
 The loop is: read the baseline, send the MIDI, wait for AUM to show the result.

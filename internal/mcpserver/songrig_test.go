@@ -67,6 +67,9 @@ type songRig struct {
 	// channel starts it, Stop/Rewind stops it. Bypassed is the session's
 	// sequencer's bypass (CC 106 there).
 	Running, Bypassed bool
+	// Surfaces are the control surfaces the daemon pushed, in order, each with
+	// the brain connection it was pushed to (the first is 1).
+	Surfaces []rigSurface
 	// Programs are the Program Changes received, in order.
 	Programs []midicontrol.Command
 	// Commands is everything received.
@@ -86,7 +89,7 @@ type songRig struct {
 	// trackTaps are the taps of the session's tracks, by MIDI channel.
 	trackTaps map[int]*audiotap.Store
 	taps      int
-	pulling   bool
+	pulling   map[string]bool
 	// lan is the daemon's LAN receiver as the probe app reaches it, started
 	// by the first sync report (song_pull_report_test.go).
 	lan     *httptest.Server
@@ -110,6 +113,14 @@ const (
 	rigRewindCC = 104
 	rigBypassCC = 106
 )
+
+// rigSurface is a control surface the rig's brain was sent.
+type rigSurface struct {
+	// Brain counts the rig's brain connections: the session AUM loaded last
+	// has the highest.
+	Brain int
+	midicontrol.ControlSurface
+}
 
 // rigNote is a sounding note: the frames it started and was released at (-1
 // while it is held).
@@ -190,17 +201,24 @@ func (r *songRig) wantMuted(when string, want ...int) {
 }
 
 // newSongRig starts a server with the test plugins staged and a rig around
-// it. The brain and the tap are not connected yet.
-func newSongRig(t *testing.T) *songRig {
+// it. The brain and the tap are not connected yet. opts are further options
+// of the server, such as the automatic import of a session's rig.
+func newSongRig(t *testing.T, opts ...Option) *songRig {
 	t.Helper()
-	r := &songRig{t: t, hub: midicontrol.NewHub(), reg: audiotap.NewRegistry(), notes: map[[2]int]*rigNote{}}
+	r := &songRig{t: t, hub: midicontrol.NewHub(), reg: audiotap.NewRegistry(), notes: map[[2]int]*rigNote{}, pulling: map[string]bool{}}
 	r.wda = ipadtest.New(ipadtest.MixerAUM().Source())
 	t.Cleanup(r.wda.Close)
-	r.s = newSongServer(t, WithMidiControl(r.hub), WithAudioTap(r.reg), WithIPad(ipad.New(r.wda.URL)))
+	r.s = newSongServer(t, append([]Option{WithMidiControl(r.hub), WithAudioTap(r.reg), WithIPad(ipad.New(r.wda.URL))}, opts...)...)
+	// What a brain's or a tap's connect starts writes into the state dir.
+	waitBackgroundAtCleanup(t, r.s)
 
+	// The receivers' callbacks are the daemon's (cmd/mcp-midi-controller).
 	mux := http.NewServeMux()
 	midicontrol.Register(mux, r.hub, midicontrol.Callbacks{
-		OnConnect:    func(remote string) { r.s.NotifyMidiControl(true, remote) },
+		OnConnect: func(remote string) {
+			r.s.NotifyMidiControl(true, remote)
+			r.s.OnMidiControlConnected()
+		},
 		OnDisconnect: func(remote string) { r.s.NotifyMidiControl(false, remote) },
 	})
 	srv := httptest.NewServer(mux)
@@ -301,6 +319,7 @@ func (r *songRig) connect() {
 	old := r.brain
 	r.brain = c
 	r.taps++
+	brain := r.taps
 	if r.tap != nil {
 		r.tap.Disconnect()
 	}
@@ -308,6 +327,7 @@ func (r *songRig) connect() {
 		st.Disconnect()
 	}
 	r.trackTaps = map[int]*audiotap.Store{}
+	var dialled []string
 	dial := func(name string) *audiotap.Store {
 		source := name
 		if name == "" {
@@ -316,6 +336,7 @@ func (r *songRig) connect() {
 		}
 		st := r.reg.Connect(name, "ipad:1")
 		st.SetFormat(audiotap.Format{Encoding: "f32le", Channels: 2, SampleRate: rigSampleRate, Source: source})
+		dialled = append(dialled, name)
 		return st
 	}
 	r.tap = dial(names[master])
@@ -326,18 +347,24 @@ func (r *songRig) connect() {
 	}
 	r.notes = map[[2]int]*rigNote{}
 	r.mu.Unlock()
+	// The tap receiver's connect callbacks, as the daemon wires them.
+	for _, name := range dialled {
+		r.s.NotifyAudioTap(true, name, "ipad:1")
+		r.s.OnAudioTapConnected(name)
+	}
 	if old != nil {
 		_ = old.CloseNow()
 	}
 	r.t.Cleanup(func() { _ = c.CloseNow() })
-	go r.read(c)
+	go r.read(c, brain)
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !r.hub.Connected(); {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-// read takes the daemon's commands off one brain connection.
-func (r *songRig) read(c *websocket.Conn) {
+// read takes the daemon's commands off one brain connection, the rig's
+// brain-th.
+func (r *songRig) read(c *websocket.Conn, brain int) {
 	for {
 		_, data, err := c.Read(context.Background())
 		if err != nil {
@@ -345,6 +372,15 @@ func (r *songRig) read(c *websocket.Conn) {
 		}
 		var cmd midicontrol.Command
 		if json.Unmarshal(data, &cmd) != nil {
+			continue
+		}
+		if cmd.Type == midicontrol.ControlSurfaceType {
+			var cs midicontrol.ControlSurface
+			if json.Unmarshal(data, &cs) == nil {
+				r.mu.Lock()
+				r.Surfaces = append(r.Surfaces, rigSurface{brain, cs})
+				r.mu.Unlock()
+			}
 			continue
 		}
 		r.mu.Lock()
@@ -504,15 +540,42 @@ func (r *songRig) waitCommands(done func([]midicontrol.Command) bool) []midicont
 	}
 }
 
+// surface waits until the brain AUM started last was sent a control surface
+// and no other follows it for a moment, and returns the last one: the surface
+// the brain shows. It fails the test when none comes.
+func (r *songRig) surface() midicontrol.ControlSurface {
+	r.t.Helper()
+	r.s.waitBackground()
+	deadline := time.Now().Add(5 * time.Second)
+	for last, since := -1, time.Now(); ; time.Sleep(10 * time.Millisecond) {
+		r.mu.Lock()
+		n, brain := len(r.Surfaces), r.taps
+		var cs *rigSurface
+		if n > 0 && r.Surfaces[n-1].Brain == brain {
+			cs = &r.Surfaces[n-1]
+		}
+		r.mu.Unlock()
+		if n != last {
+			last, since = n, time.Now()
+		}
+		if cs != nil && time.Since(since) > 100*time.Millisecond {
+			return cs.ControlSurface
+		}
+		if time.Now().After(deadline) {
+			r.t.Fatalf("the brain of the session loaded last was sent no control surface (%d sent to earlier ones)", n)
+		}
+	}
+}
+
 // pullStaged plays the probe app in front: it fetches a staged session as
 // soon as its file is there or changes.
 func (r *songRig) pullStaged(file string) {
 	r.mu.Lock()
-	if r.pulling {
+	if r.pulling[file] {
 		r.mu.Unlock()
 		return
 	}
-	r.pulling = true
+	r.pulling[file] = true
 	r.mu.Unlock()
 	// The download hook writes into the state dir, so the cleanup waits for
 	// the goroutine to be gone: stopping it without waiting would let the
@@ -574,9 +637,16 @@ func (r *songRig) probeApp(files map[string][]ipadtest.ProbeFile) *ipadtest.Prob
 func (r *songRig) aumLoads(folder, name string, strips []ipadtest.Strip, notices ...string) {
 	r.wda.SetScreens() // restart the gesture count
 	r.wda.SourceFunc = ipadtest.OpenSessionScreens(folder, name, strips, 2, notices...)
-	stop := make(chan struct{})
-	r.t.Cleanup(func() { close(stop) })
+	// An AUM that went away and was started again shows its start screen. The
+	// row's tap is its fifth gesture then, and the brain and tap start with
+	// the sixth as well.
+	r.wda.AfterLaunch = ipadtest.FreshSessionScreens(folder, name, strips, 1, 2, notices...)
+	// The session's connects write into the state dir, so the cleanup waits
+	// for the goroutine to be gone, as pullStaged's does.
+	stop, done := make(chan struct{}), make(chan struct{})
+	r.t.Cleanup(func() { close(stop); <-done })
 	go func() {
+		defer close(done)
 		for r.wda.Gestures() < 6 {
 			select {
 			case <-stop:

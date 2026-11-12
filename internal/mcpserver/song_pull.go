@@ -71,7 +71,11 @@ func (s *Server) aumBack(ctx context.Context, out *pullOutcome) {
 	// The call may be over; AUM comes back all the same.
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pullAUMBackTimeout)
 	defer cancel()
-	if front, _ := s.ipad.Front(); front != out.app {
+	// The app is in front, or the Home Screen an app left there that went
+	// away (ipad.Client.Front): neither keeps the iPad awake.
+	front, _ := s.ipad.Front()
+	home := front == ipad.HomeScreenBundleID
+	if front != out.app && !home {
 		// The app did not come forward, as far as WebDriverAgent told. A call
 		// that ended while it was asked to may have brought it there unheard.
 		if ctx.Err() != nil {
@@ -82,15 +86,25 @@ func (s *Server) aumBack(ctx context.Context, out *pullOutcome) {
 	detail := strings.TrimRight(out.detail, ".")
 	if err := s.ipad.BringToFront(bctx, ipad.AUMBundleID); err != nil {
 		why, locked := s.ipadFailure(bctx, err)
-		out.detail = fmt.Sprintf("%s. The probe app is still in front: AUM could not be brought back (%s)", detail, why)
-		first := "bring AUM to the front (ipad_launch without app): the probe app does not keep the iPad awake, and left in front the iPad locks itself"
+		if !locked {
+			why = err.Error() // what an AUM that is not running means is said below
+		}
+		still, first := "The probe app is still in front", "bring AUM to the front (ipad_launch without app): the probe app does not keep the iPad awake, and left in front the iPad locks itself"
+		if home {
+			still, first = "The iPad is still on its Home Screen", "bring AUM to the front (ipad_launch without app): on its Home Screen nothing keeps the iPad awake, and it locks itself"
+		}
 		if locked {
 			first = ipadUnlock
 		}
+		out.detail = fmt.Sprintf("%s. %s: AUM could not be brought back (%s)", detail, still, why)
 		out.next = first + ". Then: " + out.next
 		return
 	}
-	out.detail = detail + ". AUM is in front again: the probe app does not keep the iPad awake, so the daemon does not leave it in front"
+	if home {
+		out.detail = detail + ". AUM is in front again: an app that went away had left the Home Screen there, where nothing keeps the iPad awake"
+	} else {
+		out.detail = detail + ". AUM is in front again: the probe app does not keep the iPad awake, so the daemon does not leave it in front"
+	}
 	out.next = strings.TrimRight(out.next, ".") + "." + fmt.Sprintf(pullAUMBack, out.app)
 }
 

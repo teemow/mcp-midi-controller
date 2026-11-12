@@ -76,6 +76,19 @@ type WDA struct {
 	// of these ids reads that app's tree and taps and clicks in it, and its
 	// gestures are not counted among AUM's. Set it before the first request.
 	Apps map[string]*ProbeApp
+	// AUMCrashAt and AUMCrashes make AUM go away under a session bound to
+	// it, as a crash does: the AUMCrashAt-th gesture since AUM was started
+	// takes it down, AUMCrashes times. That gesture is answered and not
+	// counted. Every later call of the session gets WDA's "is not running,
+	// possibly crashed", and the Home Screen is in front. A new session bound
+	// to AUM starts it again, with its gestures counted from 0.
+	AUMCrashAt, AUMCrashes int
+	// AUMStaysDown keeps an AUM that went away from starting again: a new
+	// session bound to it fails with WDA's "Cannot launch".
+	AUMStaysDown bool
+	// AfterLaunch, when set, replaces SourceFunc once a session has started
+	// AUM: a freshly started AUM shows its own screen, not the one it had.
+	AfterLaunch func(gestures, reads int) json.RawMessage
 
 	requests  []Request
 	mark      int // requests before the last SetScreens
@@ -86,6 +99,8 @@ type WDA struct {
 	open      map[string]bool
 	bound     map[string]string // session -> the bundle id it was opened with
 	fronted   []string          // the bundle ids of the bound sessions, in order
+	aumDown   bool              // AUM is not running
+	launches  int               // how often a session started AUM
 
 	appMu  sync.Mutex
 	appEls []appElement // the elements found in an app's window ("A<n>")
@@ -98,6 +113,12 @@ type appElement struct {
 	rect  [4]float64
 }
 
+// aumBundle is AUM's bundle id, homeScreen the Home Screen's.
+const (
+	aumBundle  = "com.kymatica.AUM"
+	homeScreen = "com.apple.springboard"
+)
+
 // New starts a fake WDA serving source as AUM's tree.
 func New(source json.RawMessage) *WDA {
 	w := &WDA{
@@ -105,7 +126,7 @@ func New(source json.RawMessage) *WDA {
 		Window:   [2]float64{1210, 834},
 		Scale:    2,
 		Labels:   map[string]int{},
-		BundleID: "com.kymatica.AUM",
+		BundleID: aumBundle,
 		open:     map[string]bool{},
 	}
 	w.Server = httptest.NewServer(http.HandlerFunc(w.serve))
@@ -133,6 +154,37 @@ func (w *WDA) Fronted() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]string(nil), w.fronted...)
+}
+
+// AUMDown reports whether AUM went away and was not started again: the Home
+// Screen is in front then, whatever Fronted lists last.
+func (w *WDA) AUMDown() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.aumDown
+}
+
+// Launches is how often a session started AUM because it was not running.
+func (w *WDA) Launches() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.launches
+}
+
+// StopAUM takes AUM down now, as when it was closed or crashed while no
+// session drove it: the next session bound to it starts it again.
+func (w *WDA) StopAUM() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.aumDown = true
+}
+
+// SetAUMCrashes makes AUM go away at its at-th gesture, times times (see
+// AUMCrashAt).
+func (w *WDA) SetAUMCrashes(at, times int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.AUMCrashAt, w.AUMCrashes = at, times
 }
 
 // SetLocked puts the iPad on its lock screen, or takes it off.
@@ -227,7 +279,11 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 		reply(rw, 200, map[string]any{"scale": w.Scale, "screenSize": map[string]any{"width": w.Window[0], "height": w.Window[1]}}, "")
 		return
 	case r.Method == http.MethodGet && path == "/wda/activeAppInfo":
-		reply(rw, 200, map[string]any{"bundleId": w.BundleID, "pid": 1214, "name": ""}, "")
+		front := w.BundleID
+		if w.aumDown {
+			front = homeScreen
+		}
+		reply(rw, 200, map[string]any{"bundleId": front, "pid": 1214, "name": ""}, "")
 		return
 	case r.Method == http.MethodGet && path == "/screenshot":
 		reply(rw, 200, base64.StdEncoding.EncodeToString(w.png()), "")
@@ -246,6 +302,19 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 		if w.Locked && bundle != "" {
 			wdaError(rw, 500, "unknown error", "Unable to launch "+bundle+" because the device was not, or could not be, unlocked.")
 			return
+		}
+		// Like WDA: a session starts its app when that is not running.
+		if w.aumDown && bundle == aumBundle {
+			if w.AUMStaysDown {
+				wdaError(rw, 500, "session not created", "Cannot launch "+bundle+" application. Make sure the correct bundle identifier has been provided in capabilities and check the device log for possible crash report occurrences")
+				return
+			}
+			w.aumDown = false
+			w.launches++
+			w.gestures, w.reads = 0, 0
+			if w.AfterLaunch != nil {
+				w.SourceFunc = w.AfterLaunch
+			}
 		}
 		w.sessions++
 		sid := fmt.Sprintf("S%d", w.sessions)
@@ -279,6 +348,10 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if w.aumDown && w.bound[sid] == aumBundle && (r.Method != http.MethodDelete || sub != "") {
+		wdaError(rw, 500, "invalid element state", "The application under test with bundle id '"+aumBundle+"' is not running, possibly crashed")
+		return
+	}
 	switch {
 	case r.Method == http.MethodDelete && sub == "":
 		delete(w.open, sid)
@@ -286,8 +359,7 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	case sub == "appium/settings":
 		reply(rw, 200, nil, sid)
 	case sub == "wda/tap", sub == "wda/doubleTap", sub == "wda/touchAndHold", sub == "actions", sub == "wda/keys":
-		w.gestures++
-		w.reads = 0
+		w.gesture(sid)
 		reply(rw, 200, nil, sid)
 	case sub == "window/size":
 		reply(rw, 200, map[string]any{"width": w.Window[0], "height": w.Window[1]}, sid)
@@ -336,6 +408,18 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	default:
 		wdaError(rw, 404, "unknown command", path)
 	}
+}
+
+// gesture counts a gesture of a session, or takes AUM down with it (see
+// AUMCrashAt). w.mu must be held.
+func (w *WDA) gesture(sid string) {
+	if w.AUMCrashes > 0 && w.bound[sid] == aumBundle && w.gestures+1 == w.AUMCrashAt {
+		w.AUMCrashes--
+		w.aumDown = true
+		return
+	}
+	w.gestures++
+	w.reads = 0
 }
 
 // serveApp answers what a session bound to another app asks of that app's
@@ -427,8 +511,7 @@ func (w *WDA) element(rw http.ResponseWriter, method, sid, rest string, body map
 	}
 	switch {
 	case op == "click":
-		w.gestures++
-		w.reads = 0
+		w.gesture(sid)
 		reply(rw, 200, nil, sid)
 	case op == "clear" && field >= 0:
 		w.Fields[field] = ""

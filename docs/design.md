@@ -394,13 +394,18 @@ this server controls. Its mixer strips and the AUv3 plugins hosted on them are
   previous session's devices. Mappings the model cannot express (PBEND/CHPRS)
   are reported, never silently dropped.
 - **The import runs automatically** (`aum_auto_import`, default on): when the
-  iPad downloads a staged `.aumproj` (the surest signal it is about to be
-  loaded) the daemon records it as its **current session** (persisted in the
+  iPad downloads a staged `.aumproj` (most often it is about to be loaded)
+  the daemon records it as its **current session** (persisted in the
   state dir), imports the rig, broadcasts an `aum-rig` notification, and pushes
   a **`controlSurface` manifest** to the in-host brain over the `/midi-control`
   WebSocket — per device, per control: a widget kind (`fader | toggle | trigger
   | enum | preset`) plus the exact wire message (`{type, channel, number}`).
-  A brain (re)connect re-runs the import and re-pushes the manifest. The brain
+  A brain (re)connect re-runs the import and re-pushes the manifest. The
+  session AUM has open has the last word: the master tap of a session the
+  daemon authored dials in under the session's id, and its connect makes that
+  session the current one and brings its rig and surface in, as `load_song`
+  does for the session it loaded. A session the iPad holds already is loaded
+  without a download. The brain
   caches the manifest in its AU `fullState` and renders it as an on-device
   control surface that emits into AUM locally — it keeps working with the
   daemon offline. Older brains silently drop the unknown frame type, so the

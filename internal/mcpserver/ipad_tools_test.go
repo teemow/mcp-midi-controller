@@ -562,6 +562,98 @@ func TestIPadFrontNote(t *testing.T) {
 	}
 }
 
+// TestIPadAppGone is AUM going away under a tool that drives it, as a crash
+// takes it: the tool says what WebDriverAgent's "is not running, possibly
+// crashed" means and what to do before the iPad locks itself, the tools that
+// follow say that the Home Screen is in front, and nothing is said any more
+// once AUM was brought forward again. The tool's gestures are not made again
+// in an AUM started anew: what they were to act on is gone.
+func TestIPadAppGone(t *testing.T) {
+	w, s := newIPadServer(t)
+	w.SetSources(ipadtest.MixerAUM().Source())
+	w.SetAUMCrashes(1, 1) // the tap on ☰ takes AUM down
+	const home = "the iPad is on its Home Screen, where nothing keeps it awake: it locks itself after its auto-lock time and then needs its passcode entered on the device"
+
+	res := call(t, s.aumHandler("aum_panel", s.ipad.AUMPanel), map[string]any{"action": "open", "panel": "menu"})
+	text := resultText(res)
+	want := "WebDriverAgent: invalid element state: The application under test with bundle id 'com.kymatica.AUM' is not running, possibly crashed. " +
+		"The app crashed or was closed, and what it had open went with it: in AUM that is the session, which has to be loaded again (load_song for a song). " +
+		"Now " + home + ". Bring AUM to the front before that: ipad_launch without app starts it."
+	if !res.IsError || text != want {
+		t.Fatalf("a tool in an AUM that went away:\n%s\nwant:\n%s", text, want)
+	}
+	if n := w.Launches(); n != 0 {
+		t.Errorf("AUM was started %d time(s) by the tool that lost it", n)
+	}
+
+	// The tools that open no session of their own say where the iPad is.
+	const note = "Note: the app the daemon last drove on the iPad was not running any more (it crashed or was closed), so " + home + ". Bring AUM to the front: ipad_launch without app starts it."
+	for name, res := range map[string]*mcp.CallToolResult{
+		"ipad_status":     call(t, s.handleIPadStatus, map[string]any{}),
+		"ipad_screenshot": call(t, s.handleIPadScreenshot, map[string]any{}),
+	} {
+		if !strings.Contains(resultText(res), note) {
+			t.Errorf("%s after AUM went away lacks the note:\n%s", name, resultText(res))
+		}
+	}
+	if text := resultText(call(t, s.handleIPadStatus, map[string]any{})); !strings.Contains(text, "foreground app: com.apple.springboard") {
+		t.Errorf("status after AUM went away:\n%s", text)
+	}
+
+	// ipad_launch starts AUM: it is in front again.
+	res = call(t, s.handleIPadLaunch, map[string]any{})
+	if text := resultText(res); res.IsError || strings.Contains(text, "Note:") || !strings.Contains(text, "com.kymatica.AUM is in front") {
+		t.Fatalf("launch of AUM:\n%s", text)
+	}
+	if n := w.Launches(); n != 1 || w.AUMDown() {
+		t.Errorf("AUM was started %d time(s), down %v, want it started once", n, w.AUMDown())
+	}
+	if res := call(t, s.handleIPadStatus, map[string]any{}); strings.Contains(resultText(res), "Note:") {
+		t.Fatalf("status after AUM came back:\n%s", resultText(res))
+	}
+
+	// An AUM that does not start is another matter: no session of it came
+	// up, so what was in front before still is, and nothing is said of the
+	// Home Screen.
+	w.StopAUM()
+	w.AUMStaysDown = true
+	res = call(t, s.handleIPadLaunch, map[string]any{})
+	if text := resultText(res); !res.IsError || !strings.HasPrefix(text, "WebDriverAgent: session not created: Cannot launch com.kymatica.AUM application.") || strings.Contains(text, "Home Screen") {
+		t.Fatalf("launch of an AUM that does not start:\n%s", text)
+	}
+}
+
+// TestAUMBackFromTheHomeScreen checks a failed pull brings AUM forward when
+// the Home Screen is in front as well: an app that went away left it there,
+// and the probe app did not come forward since.
+func TestAUMBackFromTheHomeScreen(t *testing.T) {
+	w, s := newIPadServer(t)
+	w.SetSources(ipadtest.MixerAUM().Source())
+	w.SetAUMCrashes(1, 1)
+	if res := call(t, s.aumHandler("aum_panel", s.ipad.AUMPanel), map[string]any{"action": "open", "panel": "menu"}); !res.IsError {
+		t.Fatalf("a tool in an AUM that went away succeeded: %s", resultText(res))
+	}
+	out := pullOutcome{detail: "the iPad did not pull the session", next: "open the AUv3 Probe app", app: rigProbeBundle}
+	s.aumBack(context.Background(), &out)
+	if want := "the iPad did not pull the session. AUM is in front again: an app that went away had left the Home Screen there, where nothing keeps the iPad awake"; out.detail != want {
+		t.Errorf("detail = %q, want %q", out.detail, want)
+	}
+	if w.Launches() != 1 || w.AUMDown() {
+		t.Errorf("AUM was not started again (%d start(s), down %v)", w.Launches(), w.AUMDown())
+	}
+
+	// AUM does not start: the step says where the iPad is left.
+	w.SetAUMCrashes(1, 1)
+	_ = call(t, s.aumHandler("aum_panel", s.ipad.AUMPanel), map[string]any{"action": "open", "panel": "menu"})
+	w.AUMStaysDown = true
+	out = pullOutcome{detail: "the iPad did not pull the session", next: "open the AUv3 Probe app", app: rigProbeBundle}
+	s.aumBack(context.Background(), &out)
+	if !strings.HasSuffix(out.detail, "The iPad is still on its Home Screen: AUM could not be brought back (WebDriverAgent: session not created: Cannot launch com.kymatica.AUM application. Make sure the correct bundle identifier has been provided in capabilities and check the device log for possible crash report occurrences)") ||
+		!strings.HasPrefix(out.next, "bring AUM to the front (ipad_launch without app): on its Home Screen nothing keeps the iPad awake, and it locks itself. Then: open the AUv3 Probe app") {
+		t.Errorf("detail = %q\nnext = %q", out.detail, out.next)
+	}
+}
+
 // TestIPadLocked checks a locked iPad is named: by ipad_status, and by every
 // tool in place of what WebDriverAgent makes of the call. The daemon asks for
 // the state only and never tries to unlock.

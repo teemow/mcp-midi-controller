@@ -136,7 +136,7 @@ further out, the north-star scriptable on-device host.
 | Session read/edit/author (`aum` in aum-session-go) | **strong** — channels, nodes, params, CC/Note/PC mappings |
 | Convention CC map (`aum.md`) | **done** — authoring tools bake it in by default; `instrument_aum_session` (and `full_control:true`) banks **every** mappable target collision-free across channels |
 | Session-derived rig (`DeriveRig` → `import_aum_session`) | **done** — devices/controls are read back from the session's *enabled mappings* (type/number/channel pinned per control), probe dumps enrich names/enums; re-import replaces the previous session's devices |
-| Automatic import + manifest push | **done** — on session download to the iPad and on brain connect (`aum_auto_import`, default on); broadcasts `aum-rig`, pushes the `controlSurface` frame |
+| Automatic import + manifest push | **done** — on session download to the iPad, on brain connect, and for the session AUM has open when its master tap connects under the session's id or `load_song` has loaded it (`aum_auto_import`, default on); broadcasts `aum-rig`, pushes the `controlSurface` frame |
 | Brain control surface UI (on-device, offline-capable) | **done** — the brain caches the manifest in its AU `fullState` and renders faders/toggles/triggers/enums/presets that emit locally into AUM, no daemon round-trip |
 | Scene engine driving the brain via the standard map | **not yet** — scenes exist; wiring them to a session-baked brain mapping is open |
 | Cross-session **Session Load** by the brain | **done** — the session-switch registry pins PCs on channel 16; `switch_aum_session` and the brain's switcher row both fire them (one-time AUM Learn wiring per session) |
@@ -163,6 +163,15 @@ further out, the north-star scriptable on-device host.
    locally, so the surface keeps working when the daemon is offline.
 4. A brain (re)connect re-runs the import for the current session and re-pushes
    the manifest, so a brain that was offline during the download still gets it.
+5. The session AUM has open has the last word. A download only tells what the
+   iPad fetched: a session it holds already is loaded without one, and the
+   current session then still names the one downloaded last. The master tap of
+   a session the daemon authored dials in under the session's id
+   (`<session id>/master`), so when such a tap connects and the session is
+   staged, the daemon makes it the current session and imports and pushes its
+   rig, unless that is in place since this brain connected. `load_song` does
+   the same for the session it loaded (a tap from before taps had names says
+   nothing). A session without such a tap is tracked by steps 1 to 4 alone.
 
 The same `DeriveRig` output drives the MCP `control_*` tools and the web UI, so
 all three surfaces (agent, browser, iPad) emit identical MIDI.

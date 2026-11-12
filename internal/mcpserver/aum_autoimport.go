@@ -4,18 +4,31 @@ package mcpserver
 // iPad into AUM and — without further tool calls — the daemon re-derives the
 // control rig and pushes the control-surface manifest to the ProbeMidiBrain.
 //
-// Two hook points drive it (no event bus):
+// Three hook points drive it (no event bus):
 //   - OnAUMSessionDownloaded: the aum receiver saw the iPad download a staged
-//     .aumproj — the surest signal that session is about to be loaded. The
-//     daemon tracks it as its "current session" (persisted in the state dir)
-//     and runs the import.
+//     .aumproj, which most often means that session is about to be loaded.
+//     The daemon tracks it as its "current session" (persisted in the state
+//     dir) and runs the import.
 //   - OnMidiControlConnected: the brain (re)connected — re-run the import for
 //     the current session and push the manifest, so a brain that was offline
 //     during the download still receives the surface.
+//   - OnAudioTapConnected: the master tap of a session the daemon authored
+//     dialled in. It does so under the session's id, so this is the session
+//     AUM has open, whatever was downloaded last: it becomes the current
+//     session, and its rig is imported and pushed unless it is there already
+//     (sessionOpen). load_song says the same of the session it loaded, for a
+//     tap that gives no name.
 //
-// Both are gated by the aum_auto_import config flag (WithAUMAutoImport);
-// current-session tracking itself is always on (it is cheap and the manual
-// import_aum_session path uses it too).
+// A download is a guess at what AUM will load, and the guess is wrong when a
+// session is loaded that the iPad holds already: load_song then skips the
+// pull, nothing is downloaded, and the marker still names the session
+// downloaded last. On the rig the brain of the session just loaded was sent
+// the control surface of another one that way. The tap is not a guess, which
+// is why it has the last word.
+//
+// The imports are gated by the aum_auto_import config flag
+// (WithAUMAutoImport); current-session tracking itself is always on (it is
+// cheap and the manual import_aum_session path uses it too).
 
 import (
 	"context"
@@ -24,11 +37,13 @@ import (
 	"log"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/lanhttp"
+	"github.com/teemow/mcp-midi-controller/internal/song"
 	"github.com/teemow/midi-device/device"
 	"github.com/teemow/midi-transport/midicontrol"
 )
@@ -58,7 +73,7 @@ func (s *Server) OnAUMSessionDownloaded(file string) {
 	if !s.aumAutoImport {
 		return
 	}
-	s.autoImportSession(id, "session downloaded")
+	s.importCurrentAUMSession("session downloaded")
 }
 
 // OnMidiControlConnected is the brain-connect callback: re-run the import for
@@ -75,23 +90,100 @@ func (s *Server) OnMidiControlConnected() {
 // reimportCurrentAUMSession is OnMidiControlConnected's body: a no-op when no
 // session was ever downloaded/imported.
 func (s *Server) reimportCurrentAUMSession() {
-	id := s.currentAUMSessionID()
-	if id == "" {
+	s.importCurrentAUMSession("brain connected")
+}
+
+// OnAudioTapConnected is the tap receiver's connect callback. The master tap
+// of a session the daemon authored dials in under the session's id
+// (song.TapName), so its connection says which session AUM has open, however
+// it came to be open: load_song, its file tapped in AUM, a session switch.
+// That session is the daemon's current one from then on (sessionOpen). Every
+// other tap says nothing: a track's, one without a name, and one whose name
+// is not a staged session's (a tap named by hand). The work runs in a
+// goroutine (tracked by s.bg), so the tap's stream is read meanwhile.
+func (s *Server) OnAudioTapConnected(name string) {
+	id, strip, ok := song.ParseTapName(name)
+	if !ok || strip != song.MasterTap {
 		return
 	}
-	s.autoImportSession(id, "brain connected")
+	if path, err := resolveAUMSessionPath("", id); err != nil || !isFile(path) {
+		return
+	}
+	s.bg.Go(func() { s.sessionOpen(id, "the session's tap connected") })
+}
+
+func isFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// sessionOpen takes note that AUM has the staged session id open: it is the
+// daemon's current session, and with auto-import its rig is the one imported
+// and its control surface the one the brain has. The import is left out when
+// the session was the current one already and its rig was imported since the
+// brain connected: at a load both the tap's connect and load_song say the
+// same thing, a moment after the brain's connect imported the rig.
+func (s *Server) sessionOpen(id, trigger string) {
+	s.currentMu.Lock()
+	defer s.currentMu.Unlock()
+	was := s.currentAUMSessionID()
+	if was != id {
+		log.Printf("current AUM session: %q, not %q (%s)", id, was, trigger)
+		s.setCurrentAUMSession(id)
+	}
+	if !s.aumAutoImport || (was == id && s.rig.is(id, s.loaded.generation())) {
+		return
+	}
+	s.autoImportSession(id, trigger)
+}
+
+// importCurrentAUMSession imports the rig of the current session, as the
+// marker names it when the import's turn comes, and pushes its control
+// surface. The marker is read under the lock that every automatic import
+// holds, so the import that runs last is the one of the session named last:
+// a brain's connect that read the marker before a tap's connect changed it
+// would otherwise push the older session's surface after the newer one's.
+func (s *Server) importCurrentAUMSession(trigger string) {
+	s.currentMu.Lock()
+	defer s.currentMu.Unlock()
+	if id := s.currentAUMSessionID(); id != "" {
+		s.autoImportSession(id, trigger)
+	}
+}
+
+// importedRig is the session whose rig the last automatic import brought in,
+// and the brain connection it was pushed to (loadedSession's count).
+type importedRig struct {
+	mu      sync.Mutex
+	session string
+	brain   uint64
+}
+
+func (r *importedRig) set(session string, brain uint64) {
+	r.mu.Lock()
+	r.session, r.brain = session, brain
+	r.mu.Unlock()
+}
+
+func (r *importedRig) is(session string, brain uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.session == session && r.brain == brain
 }
 
 // autoImportSession runs one auto-import for the staged session id: import the
 // rig, broadcast the aum-rig notification, push the control-surface manifest.
 // Failures are logged and broadcast (an agent watching the Activity feed sees
-// the rig did NOT change), never fatal.
+// the rig did NOT change), never fatal. Its callers hold currentMu.
 func (s *Server) autoImportSession(id, trigger string) {
 	path, err := resolveAUMSessionPath("", id)
 	if err != nil {
 		log.Printf("aum auto-import %q (%s): %v", id, trigger, err)
 		return
 	}
+	// A brain that connects from here on has not seen this push: it is not
+	// the one the rig is noted for.
+	brain := s.loaded.generation()
 	o, err := s.importSessionRig(path, false)
 	if err != nil {
 		log.Printf("aum auto-import %q (%s): %v", id, trigger, err)
@@ -106,6 +198,7 @@ func (s *Server) autoImportSession(id, trigger string) {
 		id, trigger, len(o.surface), o.rig.Controls(), len(o.replaced))
 	s.notifyAUMRig(trigger, o)
 	s.pushControlSurface(o)
+	s.rig.set(id, brain)
 }
 
 // notifyAUMRig broadcasts that the session rig changed (devices were created /
@@ -134,8 +227,11 @@ func (s *Server) notifyAUMRig(trigger string, o *aumImportOutcome) {
 // --- current-session tracking ------------------------------------------------
 
 // currentAUMSession is the persisted current-session marker (state dir): the
-// staged session id the iPad last downloaded (or the last import created a rig
-// for), so a brain connect after a daemon restart still re-imports it.
+// staged session AUM has open as far as the daemon knows, so a brain connect
+// after a daemon restart still re-imports it. That is the session whose
+// master tap dialled in last or that load_song loaded last, and since then
+// the one the iPad downloaded, a session switch named or an import created a
+// rig for.
 type currentAUMSession struct {
 	ID string `json:"id"`
 	At string `json:"at"` // RFC3339

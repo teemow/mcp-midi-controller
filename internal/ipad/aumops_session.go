@@ -21,6 +21,9 @@ type AUMLoaded struct {
 	Failed []string `json:"failed,omitempty"`
 	// LoadMS is how long AUM showed that it was loading.
 	LoadMS int64 `json:"load_ms,omitempty"`
+	// Restarted is set when AUM was not running at the load and was started
+	// again for it: what WebDriverAgent said of AUM before that.
+	Restarted string `json:"restarted,omitempty"`
 }
 
 // loadingLabel is the overlay AUM shows while it restores a session's
@@ -31,6 +34,10 @@ const loadingLabel = "LOADING STATE"
 // session of a dozen plugins takes 5 to 20 seconds.
 var aumLoadTimeout = 120 * time.Second
 
+// aumStartWait is how long a freshly started AUM is given to show its mixer
+// before it is driven.
+var aumStartWait = 15 * time.Second
+
 // AUMOpenSession loads a session from FILES and waits until AUM has finished
 // loading it. Unlike the bare load action it clears the screen first (FILES
 // does not open over a plugin window or another panel) and it does not return
@@ -39,9 +46,47 @@ var aumLoadTimeout = 120 * time.Second
 //
 // Loading replaces the open session; the caller is responsible for having
 // asked.
+//
+// AUM can go away under a load: on the rig it crashed while it replaced the
+// open session, in the system's own code. WebDriverAgent then fails the
+// session's next call (AppNotRunning) and the iPad shows its Home Screen,
+// where nothing keeps it awake. Of the session that was open nothing is left
+// that the load would not have replaced, and a new WebDriverAgent session
+// starts an app that is not running. So the load is made once more in a new
+// session: AUM starts and loads the session, and the result says so
+// (AUMLoaded.Restarted). An error that is still AppNotRunning means AUM went
+// away again, or did not start.
 func (c *Client) AUMOpenSession(ctx context.Context, path []string, name string) (AUMResult, error) {
+	res, err := c.aumOpenSession(ctx, path, name, false)
+	if !AppNotRunning(err) || ctx.Err() != nil {
+		return res, err
+	}
+	gone := err
+	res, err = c.aumOpenSession(ctx, path, name, true)
+	if err != nil {
+		return res, fmt.Errorf("%w (AUM had been started again after: %v)", err, gone)
+	}
+	if loaded, ok := res.Data.(AUMLoaded); ok {
+		loaded.Restarted = gone.Error()
+		res.Data = loaded
+	}
+	res.Message = fmt.Sprintf("AUM was not running (%v): the daemon started it again and loaded the session once more. %s", gone, res.Message)
+	return res, nil
+}
+
+// aumOpenSession is one go at AUMOpenSession. started says that the session
+// is expected to have started AUM, which then is given time to show its
+// mixer.
+func (c *Client) aumOpenSession(ctx context.Context, path []string, name string, started bool) (AUMResult, error) {
 	var res AUMResult
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
+		if started && !d.St.ready() {
+			// WebDriverAgent returns from the launch before AUM has drawn
+			// its screen. One that never shows is the load's to report.
+			if _, err := d.until(aumStartWait, AUMState.ready); err != nil {
+				return err
+			}
+		}
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
@@ -82,6 +127,12 @@ func (c *Client) AUMOpenSession(ctx context.Context, path []string, name string)
 		return nil
 	})
 	return res, err
+}
+
+// ready reports whether the tree read is AUM's own screen: its top bar with
+// the tempo is there once AUM has come up.
+func (st AUMState) ready() bool {
+	return st.TempoBPM != nil || st.TempoBar || st.StartScreen || st.MenuOpen
 }
 
 // AUMSession reads which session AUM has open without changing it: it opens
