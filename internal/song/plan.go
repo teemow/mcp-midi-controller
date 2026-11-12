@@ -343,6 +343,44 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
+	if s.StemsOnly() {
+		// A plan is one session's layout, and this song is several sessions.
+		return nil, fmt.Errorf("/tracks: %d tracks, and one session hosts %d at most: the song has no session of its own and plays as its stems and their mix (record_song_stems, mix_song_stems)", len(s.Tracks), maxTracks)
+	}
+	p, err := resolve(s, cat, o)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.address(); err != nil {
+		return nil, err
+	}
+	if err := p.calibrate(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Check resolves every plugin, preset and parameter a song names against the
+// plugins in cat, as NewPlan does, and lays no session out. It is the check
+// of a song of more tracks than a session hosts (StemsOnly), which has no
+// plan: every problem is reported with its place in the whole document, where
+// the plan of a stem (StemSong) would name the place in the stem's.
+//
+// What only a session's layout can tell is left to the stems' plans: controls
+// or preset loads beyond what a session's channels hold, and what a calibrated
+// song's presets were measured as.
+func Check(s *Song, cat Catalog) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	_, err := resolve(s, cat, PlanOptions{})
+	return err
+}
+
+// resolve is the first half of a plan: every node the song hosts, with the
+// presets and parameters the song sets on it, checked against the plugins. s
+// is a valid song.
+func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	var e errs
 	p := &Plan{song: s, nodes: map[string]*NodePlan{}, Transport: map[string]Assignment{}, sounds: o.Sounds, notes: map[string]bool{}}
 
@@ -452,10 +490,15 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	if err := e.err(); err != nil {
 		return nil, err
 	}
+	return p, nil
+}
 
-	// Addresses. Strips and transport take the convention's CCs on the global
-	// channel; presets take its Program Changes; bypasses and parameters fill
-	// the pool, which starts above every channel a track plays or hears on.
+// address is the second half of a plan: the MIDI address of every control.
+// Strips and transport take the convention's CCs on the global channel;
+// presets take its Program Changes; bypasses and parameters fill the pool,
+// which starts above every channel a track plays or hears on.
+func (p *Plan) address() error {
+	s := p.song
 	lowest := 1
 	for _, tp := range p.Tracks {
 		for _, ch := range tp.Hears() {
@@ -508,19 +551,19 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 		}
 		var err error
 		if n.Bypass, err = pool.take(); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if s.SessionOptions().AllPresets() {
 		if err := p.mapAllPresets(lowest); err != nil {
-			return nil, err
+			return err
 		}
 	} else {
 		program := 0
 		for _, n := range p.allNodes() {
 			for i := range n.Presets {
 				if program > 127 {
-					return nil, fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them (session presets: all spreads them over every control channel)")
+					return fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them (session presets: all spreads them over every control channel)")
 				}
 				n.Presets[i].Program, n.Presets[i].Channel = program, GlobalChannel
 				program++
@@ -531,7 +574,7 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 		for i := range n.Params {
 			var err error
 			if n.Params[i].At, err = pool.take(); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
@@ -539,10 +582,7 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	for ch := lowest; ch <= 16; ch++ {
 		p.ControlChannels = append(p.ControlChannels, ch)
 	}
-	if err := p.calibrate(); err != nil {
-		return nil, err
-	}
-	return p, nil
+	return nil
 }
 
 // mapAllPresets gives every factory preset of every node a Program Change:

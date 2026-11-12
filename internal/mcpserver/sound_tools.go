@@ -163,6 +163,9 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 	if len(args.Plugins) == 0 {
 		return textResult("/plugins: name the instruments to host (list_song_plugins kind=instrument)", true), nil
 	}
+	if len(args.Plugins) > song.MaxSessionTracks {
+		return textResult(fmt.Sprintf("/plugins: %d instruments, and one session hosts %d at most", len(args.Plugins), song.MaxSessionTracks), true), nil
+	}
 	if s.ipad != nil && !args.Confirm {
 		return textResult("open_sound_lab needs confirm: true: loading replaces the session open in AUM, and unsaved changes there are lost", true), nil
 	}

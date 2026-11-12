@@ -34,6 +34,11 @@ type Stem struct {
 //
 // groups, when it is not nil, replaces the document's grouping: stem name to
 // track ids. A track it leaves out is a stem of its own.
+//
+// A stem is recorded from one session and the mix has a track per stem, so a
+// stem holds at most maxTracks tracks and a song at most maxTracks stems. A
+// song of no more tracks than that fits however it is grouped; one of more
+// (StemsOnly) is an error here unless its grouping fits.
 func (s *Song) Stems(groups map[string][]string) ([]Stem, error) {
 	var e errs
 	of := map[string]string{} // track id -> stem name
@@ -112,7 +117,41 @@ func (s *Song) Stems(groups map[string][]string) ([]Stem, error) {
 		}
 		out[j].Tracks = append(out[j].Tracks, id)
 	}
+	where, how := "/tracks", "give tracks a group: of their own"
+	if groups != nil {
+		where, how = "/groups", "list tracks under a group of their own"
+	}
+	for _, st := range out {
+		if len(st.Tracks) > maxTracks {
+			e.addf("%s: the stem %q has %d tracks (%s), and one session hosts %d at most: split it (%s)",
+				where, st.Name, len(st.Tracks), strings.Join(st.Tracks, ", "), maxTracks, how)
+		}
+	}
+	if len(out) > maxTracks {
+		how = "put tracks into a group together (group: on a track)"
+		if groups != nil {
+			how = "list more tracks under one group"
+		}
+		e.addf("%s: %d tracks in %d stems (%s). One session hosts %d tracks at most, so a song of more is recorded a stem at a time and played as the mix of the recordings (record_song_stems, mix_song_stems). The mix has a track per stem, so %d stems fit at most: %s",
+			where, len(s.Tracks), len(out), stemList(out), maxTracks, maxTracks, how)
+	}
+	if err := e.err(); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// stemList names stems for a message, each of more than one track with how
+// many it has.
+func stemList(stems []Stem) string {
+	names := make([]string, len(stems))
+	for i, st := range stems {
+		names[i] = st.Name
+		if len(st.Tracks) > 1 {
+			names[i] = fmt.Sprintf("%s of %d", st.Name, len(st.Tracks))
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // trackIDs lists the song's track ids in order.
@@ -254,6 +293,11 @@ func (s *Song) derive(title string, l StemLayout, keepScene func(track string) b
 // after the last bar. Its session hosts those tracks and no others, so the
 // rest of the song costs the iPad nothing while the stem is recorded.
 //
+// A track keeps the channel it has in the whole song. In a song of more
+// tracks than a session hosts (StemsOnly) there is no such channel: a track
+// plays on the one it names, or on its position in the stem, and the stem's
+// own check says when two of its tracks meet on one.
+//
 // The master's effects are left to the mix, all of them: a limiter must see
 // the sum, and a reverb on the sum of the stems is the reverb the whole song
 // has, whatever it does.
@@ -273,9 +317,18 @@ func (s *Song) StemSong(st Stem, title string, l StemLayout) (*Song, error) {
 			continue
 		}
 		t := s.Tracks[i]
-		// The channel the track has in the whole song: its control channels
-		// were checked against that layout.
-		t.Channel, t.Group = s.TrackChannel(i), ""
+		switch {
+		case t.Channel != 0:
+		case s.StemsOnly():
+			// Channels are counted in the stem: st may be another grouping
+			// than the document's, which TrackChannel goes by.
+			t.Channel = len(out.Tracks) + 1
+		default:
+			// The channel the track has in the whole song: its control
+			// channels were checked against that layout.
+			t.Channel = s.TrackChannel(i)
+		}
+		t.Group = ""
 		out.Tracks = append(out.Tracks, t)
 	}
 	if len(out.Tracks) != len(st.Tracks) {
