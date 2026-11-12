@@ -22,8 +22,10 @@ import (
 //     read still has it. A press that wrote nothing leaves it open.
 //   - FILES reopens in the view it last showed, at the top of its list. Every
 //     folder of Sessions is titled "SESSIONS" and named in a header row ("/"
-//     for the root); the back arrow goes up one folder, then to the FILES
-//     root, whose Sessions row opens the root folder.
+//     for the root); the back arrow goes up one folder, and the FILES root's
+//     Sessions row opens the root folder. (From the root folder the back
+//     arrow takes the stand-in to the FILES root; that step was not tried on
+//     the iPad and nothing here relies on it.)
 //   - A list has only the rows on screen, and follows a drag by nearly its
 //     length.
 type SessionsAUM struct {

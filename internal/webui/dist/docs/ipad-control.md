@@ -191,8 +191,8 @@ session file for a look at its size and content.
 
 - Every folder of Sessions is titled `SESSIONS`. The folder is named in a
   header row above the list: `/` for the root, the folder's name inside one.
-  A folder's row opens it, the back arrow goes up one folder and from the
-  root to FILES, whose Sessions row opens the root.
+  A folder's row opens it and the back arrow goes up one folder. The house
+  icon above the list goes to FILES, whose Sessions row opens the root.
 - FILES opened from the menu shows the folder it showed last, from the top.
   A panel that is left open stays scrolled where it was.
 - So the tool goes up to `/` and down the folder SAVE names, checking the
