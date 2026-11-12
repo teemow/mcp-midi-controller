@@ -514,7 +514,8 @@ func (s *Song) Validate() error {
 		case t.Instrument.Plugin == "":
 			e.addf("%s/instrument/plugin: a track needs an instrument: a plugin, or a file (a recording in AUM's Recordings)", at)
 		}
-		if t.Group == MasterTrack {
+		// The stem is the group as Stems trims it.
+		if strings.TrimSpace(t.Group) == MasterTrack {
 			e.addf("%s/group: %q is the master strip's name", at, MasterTrack)
 		}
 		if len(t.Instrument.Sequence) > 0 && err == nil && t.Instrument.File == "" {

@@ -37,18 +37,21 @@ type Stem struct {
 func (s *Song) Stems(groups map[string][]string) ([]Stem, error) {
 	var e errs
 	of := map[string]string{} // track id -> stem name
+	known := map[string]bool{}
+	for i := range s.Tracks {
+		known[s.Tracks[i].ID] = true
+	}
+	grouped := map[string]bool{} // the tracks a group takes in
 	if groups == nil {
 		for i := range s.Tracks {
 			t := &s.Tracks[i]
 			of[t.ID] = t.ID
 			if g := strings.TrimSpace(t.Group); g != "" {
-				of[t.ID] = g
+				of[t.ID], grouped[t.ID] = g, true
 			}
 		}
 	} else {
-		known := map[string]bool{}
 		for i := range s.Tracks {
-			known[s.Tracks[i].ID] = true
 			of[s.Tracks[i].ID] = s.Tracks[i].ID
 		}
 		listed := map[string]string{}
@@ -72,10 +75,26 @@ func (s *Song) Stems(groups map[string][]string) ([]Stem, error) {
 					e.addf("%s/%d: track %q is in group %q already", at, i, tid, other)
 				default:
 					listed[tid] = name
-					of[tid] = name
+					of[tid], grouped[tid] = name, true
 				}
 			}
 		}
+	}
+	// A track in no group is a stem of its own, called by its id: a group of
+	// that name would take it in unasked.
+	clash := map[string]bool{}
+	for i := range s.Tracks {
+		id := s.Tracks[i].ID
+		name := of[id]
+		if !grouped[id] || name == id || !known[name] || grouped[name] || clash[name] {
+			continue
+		}
+		clash[name] = true
+		at := "/groups/" + name
+		if groups == nil {
+			at = fmt.Sprintf("/tracks/%d/group", i)
+		}
+		e.addf("%s: %q is the id of the track %q, which is in no group and so a stem of its own: name the group otherwise, or put %q in it", at, name, name, name)
 	}
 	if err := e.err(); err != nil {
 		return nil, err

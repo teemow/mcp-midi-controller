@@ -1170,7 +1170,7 @@ tracks at a time, each group alone, and mixed from the recordings.
 
 | Step | Tool | |
 |------|------|-|
-| 1. Group | `group:` on the tracks, or `groups` as an argument | Tracks that share a group are one stem. A track without a group is a stem of its own, called by its id. |
+| 1. Group | `group:` on the tracks, or `groups` as an argument | Tracks that share a group are one stem. A track without a group is a stem of its own, called by its id, and no group may have that name. |
 | 2. Record | `record_song_stems`, `get_song_stems` | Each stem from a session of its own, with AUM's own recorder. |
 | 3. Mix | `mix_song_stems` | Writes the mix as a song of [file tracks](#a-track-that-plays-a-file), loads it, plays and records it. |
 

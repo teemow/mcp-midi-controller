@@ -276,6 +276,12 @@ func TestRecordSongStems(t *testing.T) {
 		"mix_song_stems": func() string {
 			return resultText(call(t, s.handleMixSongStems, map[string]any{"song": "stem_song", "confirm": true}))
 		},
+		"open_sound_lab": func() string {
+			return resultText(call(t, s.handleOpenSoundLab, map[string]any{"plugins": []string{"syn1"}, "confirm": true}))
+		},
+		"audition_sound": func() string {
+			return resultText(call(t, s.handleAuditionSound, map[string]any{"song": "stem_song", "track": "bass"}))
+		},
 	} {
 		if text := h(); !strings.Contains(text, "are being recorded") {
 			t.Errorf("%s while the stems are recorded: %s", name, text)

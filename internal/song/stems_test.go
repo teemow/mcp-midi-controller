@@ -84,6 +84,7 @@ func TestFileTrackChecks(t *testing.T) {
 		{"a file as an effect", "{id: echo, plugin: delay, params: {Mix: 0.2}}", `{id: echo, plugin: delay, file: "a/b.wav", params: {Mix: 0.2}}`, "only a track's instrument can be a file"},
 		{"a lead-in that is none", "session: {lead_bars: 2}", "session: {lead_bars: 99}", "/session/lead_bars"},
 		{"a group called master", "  - id: winds\n", "  - id: winds\n    group: master\n", "/tracks/1/group"},
+		{"a group called master with a blank", "  - id: winds\n", "  - id: winds\n    group: \" master\"\n", "/tracks/1/group"},
 	} {
 		doc := strings.Replace(fileSong, tc.old, tc.new, 1)
 		if doc == fileSong {
@@ -298,10 +299,24 @@ func TestStems(t *testing.T) {
 		{map[string][]string{"a": {"bass", "bass"}}, "listed twice"},
 		{map[string][]string{"a": {}}, "list the tracks"},
 		{map[string][]string{"master": {"bass"}}, "the master strip's name"},
+		// lead, left out, is a stem of its own: a group of its name would
+		// take it in.
+		{map[string][]string{"lead": {"bass"}}, `/groups/lead: "lead" is the id of the track "lead", which is in no group`},
 	} {
 		if _, err := s.Stems(tc.groups); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("Stems(%v): err = %v, want %q", tc.groups, err, tc.want)
 		}
+	}
+	// A group may take in the track it is named after.
+	stems, err = s.Stems(map[string][]string{"lead": {"lead", "bass"}})
+	if err != nil || len(stems) != 2 || stems[0].Name != "lead" || !slices.Equal(stems[0].Tracks, []string{"bass", "lead"}) {
+		t.Errorf("stems of a group named after one of its tracks = %+v, %v", stems, err)
+	}
+
+	// So in the document: bass names no group and is a stem of its own.
+	s.Tracks[2].Group = "bass" // drums
+	if _, err := s.Stems(nil); err == nil || !strings.Contains(err.Error(), `/tracks/2/group: "bass" is the id of the track "bass", which is in no group`) {
+		t.Errorf("a group named after a track in none: err = %v", err)
 	}
 }
 
