@@ -206,6 +206,10 @@ session file for a look at its size and content.
   therefore an error, not "no such session".
 - A row cut by the list's edge shows one of its two lines; such a row counts
   once both can be read.
+- A folder's row carries a chevron at its right; a session's does not, and
+  a tap on it loads that session at once. A folder and a session can share a
+  name, so the tool taps only rows with the chevron on its way down, and
+  reads the saved time only from a row without one.
 - The FILES root has a row "Restore Previous State". The tool taps rows by
   their text and never that one.
 
