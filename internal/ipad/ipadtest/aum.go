@@ -94,6 +94,51 @@ type AUM struct {
 	Notices []string
 	// Save opens the SAVE side panel.
 	Save *SavePanel
+	// Files opens the FILES side panel as AUM draws it. (An Overlay of kind
+	// "panel" with Cells is a simpler list for tests that only read one.)
+	Files *FilesPanel
+}
+
+// FilesPanel is AUM's FILES side panel: its root (title "FILES": Sessions,
+// Recordings, Restore Previous State) or a folder of Sessions. AUM titles
+// every folder "SESSIONS" and names the folder in a header row above the
+// list, which scrolls away with the list's first rows.
+type FilesPanel struct {
+	// Title is "FILES" or "SESSIONS".
+	Title string
+	// Folder is the header row: "/" for the root of Sessions, a folder's
+	// name inside it; "" draws none (the FILES root has none).
+	Folder string
+	// Cells are the list's rows from the first one on screen.
+	Cells []FileCell
+	// Scrolled says the list is scrolled down: the sort bar and the header
+	// row are out of sight and the rows begin at the list's top.
+	Scrolled bool
+}
+
+// FileCell is one row of a FILES list.
+type FileCell struct {
+	// Name and Detail are the row's two lines (a session's detail is the
+	// time it was saved).
+	Name, Detail string
+	// Folder draws the chevron of a row that opens a folder or a view.
+	Folder bool
+}
+
+// FilesRows is how many rows a FILES list shows whole: below its sort bar
+// and header row, and once those are scrolled away. A table holds a few more
+// below its edge, in the tree and not visible.
+const (
+	FilesRowsTop      = 12
+	FilesRowsScrolled = 14
+)
+
+// FilesRowY is the top of row i (from the first on screen) of a FILES list.
+func FilesRowY(i int, scrolled bool) float64 {
+	if scrolled {
+		return 60 + float64(i)*50
+	}
+	return 175 + float64(i)*50
 }
 
 // SavePanel is AUM's SAVE side panel: the session's name in a text field,
@@ -215,7 +260,7 @@ func (a AUM) Source() json.RawMessage {
 	mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
 	mixerView := el("ScrollView", "", 0, 60, W, 774, mixer...)
 	// Under a side panel or the routing matrix AUM marks the mixer invisible.
-	covered := a.Session != "" || a.Routing != nil || a.Save != nil
+	covered := a.Session != "" || a.Routing != nil || a.Save != nil || a.Files != nil
 	for _, o := range a.Overlays {
 		covered = covered || o.Kind == "panel"
 	}
@@ -240,6 +285,9 @@ func (a AUM) Source() json.RawMessage {
 	}
 	if a.Save != nil {
 		main = append(main, savePanel(*a.Save))
+	}
+	if a.Files != nil {
+		main = append(main, filesPanel(*a.Files))
 	}
 	if a.Keyboard {
 		main = append(main, el("Other", "", 0, 666, W, 168,
@@ -370,6 +418,59 @@ func savePanel(p SavePanel) node {
 				el("StaticText", p.Folder, 966, 221, 210, 50),
 				el("Button", "chevron", 1183, 239, 11, 14).with("traits", "NotEnabled, Button")).with("traits", "Button"),
 			el("Button", p.Button, b[0], b[1], b[2], b[3], el("StaticText", p.Button, 1038, 312, 84, 17).with("isVisible", "0"))))
+}
+
+// filesPanel follows WDA's source of AUM 1.4.8's FILES panel: a table with
+// the EDIT and home buttons, the sort control and, inside it, the header row
+// naming the folder, then a cell per row with its two texts. The FILES root
+// has three cells and none of the bar.
+func filesPanel(p FilesPanel) node {
+	const x, w = 810.0, 400.0
+	var rows []node
+	root := p.Title == "FILES"
+	if !root && !p.Scrolled {
+		rows = append(rows,
+			el("Button", "EDIT", 1144, 76, 50, 28, el("StaticText", "EDIT", 1157, 83, 24, 14).with("isVisible", "0")),
+			el("Button", "", 1096, 76, 32, 28))
+		sort := el("Button", "", 826, 60, 270, 60).with("value", "LAST OPENED").with("traits", "Adjustable")
+		if p.Folder != "" {
+			sort["children"] = []node{el("StaticText", p.Folder, x, 120, w, 56).with("traits", "Header, StaticText")}
+		}
+		rows = append(rows, sort)
+	}
+	whole := FilesRowsScrolled
+	if !p.Scrolled {
+		whole = FilesRowsTop
+	}
+	for i, c := range p.Cells {
+		y := FilesRowY(i, p.Scrolled)
+		if root {
+			y = 95 + float64(i)*85
+		}
+		kids := []node{el("StaticText", c.Name, x+65, y+7, 180, 20)}
+		if c.Detail != "" {
+			kids = append(kids, el("StaticText", c.Detail, x+65, y+29, 114, 14))
+		}
+		cell := el("Cell", "", x, y, w, 51, kids...)
+		if c.Folder {
+			cell["children"] = append(kids, el("Button", "chevron", 1183, y+18, 11, 15).with("traits", "NotEnabled, Button"))
+			cell = cell.with("traits", "Button")
+		}
+		if !root && i >= whole {
+			if i >= whole+2 {
+				break
+			}
+			hide(cell)
+		}
+		rows = append(rows, cell)
+	}
+	return el("Other", "", x, 0, w, 834,
+		el("Other", "", x, 0, w, 60,
+			el("Button", "MIDI CTRL, SETTINGS, ABOUT, CLEAR, FILES, SESSION: Old, DSP:  0 %, -∞", x, 0, 60, 60),
+			el("StaticText", p.Title, x+40, 0, 320, 60)),
+		el("Table", "", x, 60, w, 714, rows...),
+		el("Button", "Manage recordings in AudioShare.", x, 774, w, 60,
+			el("StaticText", "Manage recordings in AudioShare.", 987, 787, 104, 34)))
 }
 
 func overlay(o Overlay) []node {

@@ -168,6 +168,12 @@ func (d *AUMDriver) ensureMenu() (bool, error) {
 		if _, err := d.closeTop(); err != nil {
 			return false, err
 		}
+		// A panel that had closed by itself since the last read leaves the
+		// menu button under its close icon's spot: that tap opened the menu,
+		// and a second one would close it again.
+		if d.St.Panel() == "MENU" {
+			return true, nil
+		}
 	}
 	x, y, _ := AUMTarget("menu", d.win)
 	if err := d.tap(x, y, "menu ☰"); err != nil {

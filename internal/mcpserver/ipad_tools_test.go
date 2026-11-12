@@ -697,7 +697,7 @@ func TestIPadLocked(t *testing.T) {
 // verified, whatever session name the menu shows.
 func TestAUMFilesSaveOverMCP(t *testing.T) {
 	old := ipad.AUMSaveSettle
-	ipad.AUMSaveSettle = 10 * time.Millisecond
+	ipad.AUMSaveSettle = 50 * time.Millisecond
 	t.Cleanup(func() { ipad.AUMSaveSettle = old })
 	const was = "12. Nov 2026 at 21:38:05"
 	w, s := newIPadServer(t)
@@ -735,7 +735,7 @@ func TestAUMFilesSaveOverMCP(t *testing.T) {
 	saved, _ := aum.Saved("scratch save")
 	data, _ := out["data"].(map[string]any)
 	if !strings.HasPrefix(text, "save: verified — saved over \"scratch save\"") || out["verified"] != true ||
-		data["saved_before"] != was || data["saved_after"] != saved || data["existed"] != true || data["folder"] != "/Songs" {
+		data["saved_before"] != was || data["saved_after"] != saved || data["existed"] != true || data["folder"] != "/Songs" || data["panel_closed"] != true {
 		t.Fatalf("a save over the session:\n%s\n%v", text, data)
 	}
 	if aum.Writes() != 1 || saved == was {

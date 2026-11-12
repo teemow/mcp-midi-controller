@@ -138,40 +138,76 @@ or the ` (mcp test)` copies ([AGENTS.md](../AGENTS.md)), never an original.
 ### Saving a session
 
 `aum_files save` saves the open session under `name` and says whether AUM
-wrote the file.
+wrote the file. What AUM 1.4.8 does, as seen on the iPad:
 
-- AUM saves into the folder its SAVE panel shows (`/Songs`), under the name
-  in the panel's field. The tool types `name` there when the field holds
-  another, and reads the field in the panel again before it presses anything.
+- AUM saves into the folder its SAVE panel shows (`/Songs` for a session
+  loaded from there, `/` after CLEAR), under the name in the panel's field.
 - **A name the folder does not hold** is written by the first press of SAVE
   SESSION.
-- **A name it holds** makes the button read `OVERWRITE?` for about a second.
-  A press within that second writes the file. After it the button reads SAVE
-  SESSION again, nothing was written, and the next press is a first one
-  again. Return in the name field is a press of the button, with the same
-  second.
-- One read of AUM's tree takes 0.5 to 2 s, so reading the label and then
-  tapping comes too late. The tool therefore reads the session's row in FILES
-  → Sessions → the folder *before* it saves, going through the whole list, and
-  knows from that which it will be: one press for a new name, both presses as
-  one gesture half a second apart (`ipad_tap gesture: twice`) for one that
-  exists.
-- **The proof is the row's saved time.** The second line of a session's row
-  is the time its file was written, to the second (`12. Nov 2026 at
-  21:38:05`). The tool opens FILES again after the press and reads it:
-  `verified: true` means the row is new or its time has moved. `data` holds
-  `folder`, `existed`, `saved_before` and `saved_after`.
-- When the time has not moved the result is `verified: false` and begins
-  "NOT saved", with the time that stayed and what the button read after the
-  press. Save again, and look at the SAVE panel (`aum_panel open save`,
-  `ipad_screenshot`) when it repeats.
+- **A name it holds** makes the button read `OVERWRITE?` for a second or two
+  (it still did 1.2 s after the press and no longer at 3.0 s). A press in
+  that time writes the file. After it the button reads SAVE SESSION again,
+  nothing was written, and the next press is a first one again. Return in the
+  name field is a press of the button, with the same second.
+- **After it has written, AUM closes the SAVE panel by itself.** After a
+  press that wrote nothing the panel stays open.
 - **The session's name in the main menu proves nothing.** Saving the open
   session over itself leaves it as it was, whether AUM wrote or not.
-- A name AUM asks to overwrite although the list did not show it is left
-  unanswered and reported: what it would overwrite is not known.
-- From the host the iPad is plugged into, `ios fsync --app=com.kymatica.AUM
-  pull --srcPath="/Documents/Songs/<name>.aumproj" --dstPath=<dir>` fetches
-  the session file for a look at its size and content.
+
+One read of AUM's tree takes 0.5 to 2 s, so reading the button's label and
+then tapping comes too late. The tool does this instead:
+
+1. It opens SAVE and reads the folder.
+2. It reads the session's row in that folder of FILES → Sessions, going
+   through the whole list. Now it knows whether the name exists.
+3. It opens SAVE again, types `name` when the field holds another, and reads
+   the field in the panel once more before it presses anything.
+4. One press of SAVE SESSION for a new name; for one that exists both
+   presses as one gesture, half a second apart (`ipad_tap gesture: twice`).
+5. It waits for the panel to close, opens FILES again and reads the row.
+
+**The proof is the row's saved time**: the second line of a session's row is
+the time its file was written, to the second (`12. Nov 2026 at 21:38:05`).
+`verified: true` means the time has moved, or that the row is new and the
+panel closed. `data` holds `folder`, `existed`, `saved_before`, `saved_after`
+and `panel_closed`. When the time has not moved the result is `verified:
+false` and begins "NOT saved", with the time that stayed and what the button
+read. Save again, and look at the SAVE panel (`aum_panel open save`,
+`ipad_screenshot`) when it repeats.
+
+The tool leaves these cases alone and says so, since pressing on would
+overwrite something it has not seen:
+
+- a name AUM asks to overwrite although the list did not show it,
+- a list it could not read whole (below), which stops the save before
+  anything is pressed.
+
+A save takes 35 to 80 s, most of it the two readings of the list. From the
+host the iPad is plugged into, `ios fsync --app=com.kymatica.AUM pull
+--srcPath="/Documents/Songs/<name>.aumproj" --dstPath=<dir>` fetches the
+session file for a look at its size and content.
+
+#### FILES → Sessions, as the tool reads it
+
+- Every folder of Sessions is titled `SESSIONS`. The folder is named in a
+  header row above the list: `/` for the root, the folder's name inside one.
+  A folder's row opens it, the back arrow goes up one folder and from the
+  root to FILES, whose Sessions row opens the root.
+- FILES opened from the menu shows the folder it showed last, from the top.
+  A panel that is left open stays scrolled where it was.
+- So the tool goes up to `/` and down the folder SAVE names, checking the
+  header at each step, every time it reads a row.
+- A list has only the rows on screen in its tree (twelve below the header,
+  fourteen or fifteen further down), in the order picked above it (name, last
+  saved, last opened). The tool drags it 420 points in 0.9 s for the next
+  page, which moved it by 404 to 406 points: six rows are read twice. A drag
+  of 584 points in 0.5 s ran on after the finger lifted (674 points) and
+  carried a row past unread. A page that shares no row with the one before is
+  therefore an error, not "no such session".
+- A row cut by the list's edge shows one of its two lines; such a row counts
+  once both can be read.
+- The FILES root has a row "Restore Previous State". The tool taps rows by
+  their text and never that one.
 
 ### Reading AUM
 
@@ -232,7 +268,8 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **FILES** lists cells: a name and a detail line below it (for a session
   the time it was saved, to the second). It reopens on the view last shown,
   and a list holds only the rows on screen: `aum_files save` scrolls it to
-  find a row, `list` reads the page that shows.
+  find a row, `list` and `load` read the page that shows (see
+  [Saving a session](#saving-a-session) for how Sessions names its folder).
 - **MIDI routing connections** are not in the tree: `aum_midi_routing` reads
   them from a screenshot (a connected cell's fill is lighter).
 - Opening something from the top bar (Navigator, Engine Info, routing, tempo

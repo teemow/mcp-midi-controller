@@ -11,15 +11,23 @@ import (
 )
 
 // saveFake is an AUM whose SAVE SESSION button asks OVERWRITE? as AUM's does,
-// with the session open loaded and sessions in the folder "Songs".
-func saveFake(t *testing.T, open string, sessions ...[2]string) (*ipadtest.WDA, *ipadtest.SessionsAUM, *Client) {
+// with the session open loaded and sessions in folder, where SAVE saves ("" is
+// the root of Sessions).
+func saveFake(t *testing.T, folder, open string, sessions ...[2]string) (*ipadtest.WDA, *ipadtest.SessionsAUM, *Client) {
 	t.Helper()
 	old := AUMSaveSettle
-	AUMSaveSettle = 10 * time.Millisecond
+	AUMSaveSettle = 50 * time.Millisecond
 	t.Cleanup(func() { AUMSaveSettle = old })
 	w := ipadtest.New(ipadtest.MixerAUM().Source())
 	t.Cleanup(w.Close)
-	return w, ipadtest.NewSessionsAUM(w, "Songs", open, sessions...), New(w.URL)
+	aum := ipadtest.NewSessionsAUM(w, folder, open, sessions...)
+	t.Cleanup(func() {
+		// A save reads the list: it loads no session and restores no state.
+		if touched := aum.Touched(); len(touched) > 0 {
+			t.Errorf("the save tapped %v", touched)
+		}
+	})
+	return w, aum, New(w.URL)
 }
 
 func saveReport(t *testing.T, res AUMResult) AUMSave {
@@ -31,28 +39,39 @@ func saveReport(t *testing.T, res AUMResult) AUMSave {
 	return rep
 }
 
+func saveNow(t *testing.T, c *Client, name string) AUMResult {
+	t.Helper()
+	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: name, Confirm: true})
+	if err != nil {
+		t.Fatalf("save %q: %v", name, err)
+	}
+	return res
+}
+
+const (
+	savedWas  = "12. Nov 2026 at 21:38:05"
+	savePress = "tap 1080,320.5" // SAVE SESSION, at its centre
+)
+
 // A name the folder does not hold is saved by one press, and the proof is
 // its row in the list.
 func TestAUMFilesSaveNewName(t *testing.T) {
-	w, aum, c := saveFake(t, "Untitled", [2]string{"other", "11. Nov 2026 at 09:00:00"})
-	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: "scratch save", Confirm: true})
-	if err != nil || !res.Verified {
-		t.Fatalf("save: %+v, %v", res, err)
-	}
+	w, aum, c := saveFake(t, "Songs", "Untitled", [2]string{"other", "11. Nov 2026 at 09:00:00"})
+	res := saveNow(t, c, "scratch save")
 	saved, ok := aum.Saved("scratch save")
-	if !ok || aum.Writes() != 1 {
-		t.Fatalf("the stand-in holds %q (%v) after %d writes", saved, ok, aum.Writes())
+	if !res.Verified || !ok || aum.Writes() != 1 {
+		t.Fatalf("save: %+v; the stand-in holds %q (%v) after %d writes", res, saved, ok, aum.Writes())
 	}
 	rep := saveReport(t, res)
-	if rep.Existed || rep.SavedBefore != "" || rep.SavedAfter != saved || rep.Folder != "/Songs" {
+	if rep.Existed || rep.SavedBefore != "" || rep.SavedAfter != saved || rep.Folder != "/Songs" || !rep.PanelClosed {
 		t.Fatalf("report = %+v, saved %q", rep, saved)
 	}
 	if !strings.Contains(res.Message, "as a new session") || !strings.Contains(res.Message, saved) {
 		t.Fatalf("message = %q", res.Message)
 	}
-	// One press of the button, at its centre: a second would ask to
-	// overwrite what the first wrote.
-	if n := countGestures(w, "tap 1080,320.5"); n != 1 {
+	// One press of the button: a second would ask to overwrite what the
+	// first wrote.
+	if n := countGestures(w, savePress); n != 1 {
 		t.Fatalf("%d presses of SAVE SESSION in %v", n, w.GestureLog())
 	}
 }
@@ -60,24 +79,20 @@ func TestAUMFilesSaveNewName(t *testing.T) {
 // Over a session that exists SAVE SESSION asks OVERWRITE? for a second: both
 // presses go out together, and the row's saved time moves.
 func TestAUMFilesSaveOverExisting(t *testing.T) {
-	const was = "12. Nov 2026 at 21:38:05"
-	w, aum, c := saveFake(t, "scratch save", [2]string{"other", "11. Nov 2026 at 09:00:00"}, [2]string{"scratch save", was})
-	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: "scratch save", Confirm: true})
-	if err != nil || !res.Verified {
-		t.Fatalf("save: %+v, %v", res, err)
-	}
+	w, aum, c := saveFake(t, "Songs", "scratch save", [2]string{"other", "11. Nov 2026 at 09:00:00"}, [2]string{"scratch save", savedWas})
+	res := saveNow(t, c, "scratch save")
 	saved, _ := aum.Saved("scratch save")
-	if saved == was || aum.Writes() != 1 {
-		t.Fatalf("the stand-in holds %q after %d writes", saved, aum.Writes())
+	if !res.Verified || saved == savedWas || aum.Writes() != 1 {
+		t.Fatalf("save: %+v; the stand-in holds %q after %d writes", res, saved, aum.Writes())
 	}
 	rep := saveReport(t, res)
-	if !rep.Existed || rep.SavedBefore != was || rep.SavedAfter != saved {
+	if !rep.Existed || rep.SavedBefore != savedWas || rep.SavedAfter != saved || !rep.PanelClosed {
 		t.Fatalf("report = %+v, saved %q", rep, saved)
 	}
-	if !strings.Contains(res.Message, "saved over") || !strings.Contains(res.Message, was) || !strings.Contains(res.Message, saved) {
+	if !strings.Contains(res.Message, "saved over") || !strings.Contains(res.Message, savedWas) || !strings.Contains(res.Message, saved) {
 		t.Fatalf("message = %q", res.Message)
 	}
-	if n := countGestures(w, "tap 1080,320.5"); n != 2 {
+	if n := countGestures(w, savePress); n != 2 {
 		t.Fatalf("%d presses of SAVE SESSION in %v", n, w.GestureLog())
 	}
 	// The name was in the field already: nothing is typed, no Return.
@@ -88,14 +103,10 @@ func TestAUMFilesSaveOverExisting(t *testing.T) {
 
 // Saving over another session than the open one types its name first.
 func TestAUMFilesSaveOverAnotherName(t *testing.T) {
-	const was = "12. Nov 2026 at 21:38:05"
-	_, aum, c := saveFake(t, "Untitled", [2]string{"scratch save", was})
-	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: "scratch save", Confirm: true})
-	if err != nil || !res.Verified {
-		t.Fatalf("save: %+v, %v", res, err)
-	}
-	if saved, _ := aum.Saved("scratch save"); saved == was || aum.Open() != "scratch save" {
-		t.Fatalf("the stand-in holds %q, open %q", saved, aum.Open())
+	_, aum, c := saveFake(t, "Songs", "Untitled", [2]string{"scratch save", savedWas})
+	res := saveNow(t, c, "scratch save")
+	if saved, _ := aum.Saved("scratch save"); !res.Verified || saved == savedWas || aum.Open() != "scratch save" {
+		t.Fatalf("save: %+v; the stand-in holds %q, open %q", res, saved, aum.Open())
 	}
 }
 
@@ -103,47 +114,81 @@ func TestAUMFilesSaveOverAnotherName(t *testing.T) {
 // written, the session's name in the menu is what it was before, and the
 // tool says so instead of taking that name for proof.
 func TestAUMFilesSaveThatDidNotLand(t *testing.T) {
-	const was = "12. Nov 2026 at 21:38:05"
-	_, aum, c := saveFake(t, "scratch save", [2]string{"scratch save", was})
+	_, aum, c := saveFake(t, "Songs", "scratch save", [2]string{"scratch save", savedWas})
 	aum.SetWindow(50 * time.Millisecond) // shorter than the gap between the two presses
-	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: "scratch save", Confirm: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := saveNow(t, c, "scratch save")
 	if res.Verified {
 		t.Fatalf("verified a save that wrote nothing: %+v", res)
 	}
-	if saved, _ := aum.Saved("scratch save"); saved != was || aum.Writes() != 0 {
+	if saved, _ := aum.Saved("scratch save"); saved != savedWas || aum.Writes() != 0 {
 		t.Fatalf("the stand-in holds %q after %d writes", saved, aum.Writes())
 	}
 	rep := saveReport(t, res)
-	if !rep.Existed || rep.SavedBefore != was || rep.SavedAfter != was {
+	if !rep.Existed || rep.SavedBefore != savedWas || rep.SavedAfter != savedWas || rep.PanelClosed {
 		t.Fatalf("report = %+v", rep)
 	}
-	for _, want := range []string{"NOT saved", "still", was} {
+	for _, want := range []string{"NOT saved", "still", savedWas, "stayed open"} {
 		if !strings.Contains(res.Message, want) {
 			t.Fatalf("message %q lacks %q", res.Message, want)
 		}
 	}
 }
 
-// The session's row is found beyond the list's first page, before and after.
+// FILES reopens in the folder it last showed, and every folder is titled
+// SESSIONS: the list is taken up to the root and down the folder SAVE names,
+// and the session's row is found beyond its first page, before the save and
+// after.
 func TestAUMFilesSaveFindsARowDownTheList(t *testing.T) {
-	const was = "12. Nov 2026 at 21:38:05"
 	var sessions [][2]string
 	for i := 0; i < 40; i++ {
 		sessions = append(sessions, [2]string{fmt.Sprintf("song %02d", i), "10. Nov 2026 at 10:00:00"})
 	}
-	sessions = append(sessions, [2]string{"scratch save", was})
-	w, aum, c := saveFake(t, "scratch save", sessions...)
-	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: "scratch save", Confirm: true})
-	if err != nil || !res.Verified {
-		t.Fatalf("save: %+v, %v", res, err)
+	sessions = append(sessions, [2]string{"scratch save", savedWas})
+	w, aum, c := saveFake(t, "Songs", "scratch save", sessions...)
+	aum.ShowFolder(0)
+	res := saveNow(t, c, "scratch save")
+	if rep := saveReport(t, res); !res.Verified || rep.SavedBefore != savedWas || rep.SavedAfter == savedWas || rep.Folder != "/Songs" {
+		t.Fatalf("save: %+v", res)
 	}
-	if rep := saveReport(t, res); rep.SavedBefore != was || rep.SavedAfter == was {
-		t.Fatalf("report = %+v", rep)
+	if aum.Writes() != 1 || countGestures(w, "actions") < 4 {
+		t.Fatalf("%d writes, gestures %v", aum.Writes(), w.GestureLog())
 	}
-	if aum.Writes() != 1 || countGestures(w, "actions") == 0 {
+	// The back arrow, out of the folder FILES reopened in.
+	if countGestures(w, "tap 830,30") == 0 {
+		t.Fatalf("did not go up to the root: %v", w.GestureLog())
+	}
+}
+
+// A session in the root of Sessions (SAVE's folder reads "/").
+func TestAUMFilesSaveInTheRoot(t *testing.T) {
+	_, aum, c := saveFake(t, "", "scratch save", [2]string{"other", "11. Nov 2026 at 09:00:00"}, [2]string{"scratch save", savedWas})
+	res := saveNow(t, c, "scratch save")
+	rep := saveReport(t, res)
+	if !res.Verified || rep.Folder != "/" || rep.SavedBefore != savedWas || aum.Writes() != 1 {
+		t.Fatalf("save: %+v", res)
+	}
+	res = saveNow(t, c, "another name")
+	if rep := saveReport(t, res); !res.Verified || rep.Existed || aum.Writes() != 2 {
+		t.Fatalf("save as new: %+v", res)
+	}
+}
+
+// A list that runs on after a drag can carry rows past unread. That is seen
+// (a page shares no row with the one before) and stops the save before
+// anything is pressed: "not listed" would decide for one press, which over a
+// session that exists writes nothing.
+func TestAUMFilesSaveRefusesAListItCannotRead(t *testing.T) {
+	var sessions [][2]string
+	for i := 0; i < 80; i++ {
+		sessions = append(sessions, [2]string{fmt.Sprintf("song %02d", i), "10. Nov 2026 at 10:00:00"})
+	}
+	w, aum, c := saveFake(t, "Songs", "Untitled", sessions...)
+	aum.SetRunOn(8)
+	_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "save", Name: "not in the list", Confirm: true})
+	if err == nil || !strings.Contains(err.Error(), "scrolled past rows") || !strings.Contains(err.Error(), "not saving") {
+		t.Fatalf("err = %v", err)
+	}
+	if aum.Writes() != 0 || countGestures(w, savePress) != 0 {
 		t.Fatalf("%d writes, gestures %v", aum.Writes(), w.GestureLog())
 	}
 }
@@ -157,14 +202,16 @@ func TestAUMSaveMessages(t *testing.T) {
 		ok   bool
 		want string
 	}{
-		{AUMSave{Folder: "/Songs", SavedAfter: "t1"}, true, "as a new session"},
-		{AUMSave{Folder: "/Songs", Existed: true, SavedBefore: "t0", SavedAfter: "t1"}, true, `from "t0" to "t1"`},
+		{AUMSave{Folder: "/Songs", SavedAfter: "t1", PanelClosed: true}, true, "as a new session"},
+		{AUMSave{Folder: "/Songs", Existed: true, SavedBefore: "t0", SavedAfter: "t1", PanelClosed: true}, true, `from "t0" to "t1"`},
 		{AUMSave{Folder: "/Songs", Existed: true, SavedBefore: "t0", SavedAfter: "t0", Button: "SAVE SESSION"}, false, `still "t0"`},
-		{AUMSave{Folder: "/Songs", Existed: true, SavedBefore: "t0"}, false, "does not list it now"},
+		{AUMSave{Folder: "/Songs", Existed: true, SavedBefore: "t0", PanelClosed: true}, false, "does not list it now"},
 		{AUMSave{Folder: "/Songs", Button: "OVERWRITE?"}, false, "was not answered"},
-		// The list missed the row before; the button told.
+		// The list missed the row before; the button told, or the panel
+		// that stayed open.
 		{AUMSave{Folder: "/Songs", SavedAfter: "t0", Button: "OVERWRITE?"}, false, "was not answered"},
-		{AUMSave{Folder: "/Songs", Button: "SAVE SESSION"}, false, `does not list "x" after`},
+		{AUMSave{Folder: "/Songs", SavedAfter: "t0", Button: "SAVE SESSION"}, false, "not taken for a save"},
+		{AUMSave{Folder: "/Songs", PanelClosed: true}, false, `does not list "x" after`},
 	} {
 		if got := tc.rep.saved(); got != tc.ok {
 			t.Errorf("%+v: saved = %v", tc.rep, got)
@@ -195,6 +242,22 @@ func TestSavePanelCaptured(t *testing.T) {
 		if shown, path, ok := saveFolder(st.Overlay("panel")); !ok || shown != in || len(path) != want {
 			t.Errorf("folder %q = %q %v %v", in, shown, path, ok)
 		}
+	}
+}
+
+// With the SAVE panel open, FILES is opened from the menu: SAVE is no FILES
+// view to back out of.
+func TestAUMFilesListFromTheSavePanel(t *testing.T) {
+	w, aum, c := saveFake(t, "", "scratch save", [2]string{"scratch save", savedWas})
+	if res, err := c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "save"}); err != nil || !res.Verified {
+		t.Fatalf("open save: %+v, %v", res, err)
+	}
+	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "list"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "1 entries: scratch save") {
+		t.Fatalf("list: %+v, %v (gestures %v)", res, err, w.GestureLog())
+	}
+	if aum.Writes() != 0 {
+		t.Fatalf("%d writes", aum.Writes())
 	}
 }
 
