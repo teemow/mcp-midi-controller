@@ -137,21 +137,31 @@ func rememberIPadApp(alias, id string) {
 	}
 }
 
+// ipadApp resolves an iPad tool's app argument to a bundle id: "aum" (the
+// default) and a bundle id as ipad.Client.ResolveApp gives them. The alias of
+// a sideloaded app ("probe") is looked up on the device when this host can
+// (go-ios), else it is the id seen before. Every tool that takes an app
+// resolves it here, so the alias works on any host that saw the full id once.
+func (s *Server) ipadApp(ctx context.Context, app string) (string, error) {
+	alias := strings.ToLower(strings.TrimSpace(app))
+	id, err := s.ipad.ResolveApp(ctx, app)
+	if err == nil {
+		if ipad.IsApp(alias, id) {
+			rememberIPadApp(alias, id)
+		}
+		return id, nil
+	}
+	// Only an alias fails to resolve: its lookup needs go-ios and the device.
+	if known := knownIPadApps()[alias]; known != "" {
+		return known, nil
+	}
+	return "", fmt.Errorf("%w; call ipad_launch once with the app's full bundle id and the daemon remembers it", err)
+}
+
 // probeApp resolves the probe app's bundle id: on the device when this host
 // can (go-ios), else the id seen before.
 func (s *Server) probeApp(ctx context.Context) (string, error) {
-	id, err := s.ipad.ResolveApp(ctx, "probe")
-	if err == nil && ipad.IsApp("probe", id) {
-		rememberIPadApp("probe", id)
-		return id, nil
-	}
-	if known := knownIPadApps()["probe"]; known != "" {
-		return known, nil
-	}
-	if err == nil {
-		err = errors.New("its bundle id is not known")
-	}
-	return "", fmt.Errorf("%w; call ipad_launch once with the app's full bundle id and the daemon remembers it", err)
+	return s.ipadApp(ctx, "probe")
 }
 
 // --- load_song ------------------------------------------------------------------

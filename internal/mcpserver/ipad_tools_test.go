@@ -3,6 +3,9 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -137,6 +140,149 @@ func TestIPadUITree(t *testing.T) {
 	tree := res.StructuredContent.(ipadTree)
 	if len(tree.Nodes) != 2 || !tree.Truncated || !strings.Contains(resultText(res), "cut at 2") {
 		t.Fatalf("filtered tree: %+v\n%s", tree, resultText(res))
+	}
+}
+
+// probeOnIPad puts the stand-in probe app on the fake iPad under a bundle id
+// with a signing-team prefix, as a sideloaded build carries it, and gives the
+// test a state directory of its own. newIPadServer's daemon has no go-ios, so
+// it cannot look that id up: the alias resolves from what it remembers.
+func probeOnIPad(t *testing.T, w *ipadtest.WDA) *ipadtest.ProbeApp {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	app := &ipadtest.ProbeApp{}
+	w.Apps = map[string]*ipadtest.ProbeApp{rigProbeBundle: app}
+	return app
+}
+
+// sessionApps lists the app of every session the fake was asked to open.
+func sessionApps(w *ipadtest.WDA) []string {
+	ids := []string{}
+	for _, r := range w.Requests() {
+		if r.Method != http.MethodPost || r.Path != "/session" {
+			continue
+		}
+		caps, _ := r.Body["capabilities"].(map[string]any)
+		match, _ := caps["alwaysMatch"].(map[string]any)
+		id, _ := match["bundleId"].(string)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ipadAppCalls is one call of every tool that takes an app argument.
+var ipadAppCalls = []struct {
+	tool string
+	args map[string]any
+}{
+	{"ipad_ui_tree", map[string]any{}},
+	{"ipad_tap", map[string]any{"x": 600, "y": 400}},
+	{"ipad_hold", map[string]any{"x": 600, "y": 400}},
+	{"ipad_swipe", map[string]any{"x1": 600, "y1": 400, "x2": 300, "y2": 400}},
+	{"ipad_drag", map[string]any{"points": []map[string]any{{"x": 600, "y": 400}, {"x": 300, "y": 400}}}},
+	{"ipad_text", map[string]any{"action": "fields"}},
+	{"ipad_launch", map[string]any{}},
+}
+
+func TestIPadUITreeOfProbeAlias(t *testing.T) {
+	w, s := newIPadServer(t)
+	probeOnIPad(t, w)
+
+	// Never seen: the alias cannot be resolved, and the error says how the
+	// daemon learns the id.
+	res := call(t, s.handleIPadUITree, map[string]any{"app": "probe"})
+	text := resultText(res)
+	if !res.IsError || !strings.Contains(text, `resolve "probe": go-ios`) ||
+		!strings.Contains(text, "call ipad_launch once with the app's full bundle id") {
+		t.Fatalf("unknown probe alias:\n%s", text)
+	}
+	if got := sessionApps(w); len(got) != 0 {
+		t.Fatalf("sessions opened for an unresolved app: %v", got)
+	}
+
+	// ipad_launch with the full id remembers it; from then on the alias
+	// reads the probe app's tree, not AUM's.
+	if res := call(t, s.handleIPadLaunch, map[string]any{"app": rigProbeBundle}); res.IsError {
+		t.Fatalf("launch by bundle id: %s", resultText(res))
+	}
+	for _, alias := range []string{"probe", " Probe "} {
+		res = call(t, s.handleIPadUITree, map[string]any{"app": alias})
+		text = resultText(res)
+		if res.IsError || !strings.HasPrefix(text, rigProbeBundle+": ") || !strings.Contains(text, `Button "aum sessions"`) ||
+			strings.Contains(text, `Button "MIDI 1"`) {
+			t.Fatalf("tree of %q:\n%s", alias, text)
+		}
+		if tree := res.StructuredContent.(ipadTree); tree.App != rigProbeBundle {
+			t.Fatalf("tree of %q is of app %q", alias, tree.App)
+		}
+	}
+}
+
+// Every tool that takes an app resolves the probe alias the same way: none
+// without the remembered id, all of them with it.
+func TestIPadToolsResolveProbeAlias(t *testing.T) {
+	w, s := newIPadServer(t)
+	probeOnIPad(t, w)
+	cs := connectClient(t, s)
+	callProbe := func(tool string, args map[string]any) (*mcp.CallToolResult, string) {
+		t.Helper()
+		with := map[string]any{"app": "probe"}
+		for k, v := range args {
+			with[k] = v
+		}
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: with})
+		if err != nil {
+			t.Fatalf("%s: %v", tool, err)
+		}
+		return res, resultText(res)
+	}
+
+	for _, c := range ipadAppCalls {
+		res, text := callProbe(c.tool, c.args)
+		if !res.IsError || !strings.Contains(text, "call ipad_launch once with the app's full bundle id") {
+			t.Errorf("%s with an unknown probe alias:\n%s", c.tool, text)
+		}
+	}
+	if got := sessionApps(w); len(got) != 0 {
+		t.Fatalf("sessions opened for an unresolved app: %v", got)
+	}
+
+	rememberIPadApp("probe", rigProbeBundle)
+	for _, c := range ipadAppCalls {
+		before := len(sessionApps(w))
+		res, text := callProbe(c.tool, c.args)
+		if res.IsError {
+			t.Errorf("%s: %s", c.tool, text)
+			continue
+		}
+		if got := sessionApps(w)[before:]; len(got) != 1 || got[0] != rigProbeBundle {
+			t.Errorf("%s opened %v, want one session in %s", c.tool, got, rigProbeBundle)
+		}
+	}
+}
+
+// A host with go-ios asks the device: its answer wins over an id remembered
+// from an earlier build of the app, and replaces it.
+func TestIPadProbeAliasPrefersTheDevice(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const installed = "NEWTEAM.com.teemow.auv3probe"
+	goios := filepath.Join(t.TempDir(), "ios")
+	script := "#!/bin/sh\necho '[{\"CFBundleIdentifier\":\"com.kymatica.AUM\"},{\"CFBundleIdentifier\":\"" + installed + "\"}]'\n"
+	if err := os.WriteFile(goios, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := ipadtest.New(ipadtest.DefaultAUM().Source())
+	t.Cleanup(w.Close)
+	w.Apps = map[string]*ipadtest.ProbeApp{installed: {}}
+	s := New(engine.New(device.NewRegistry(), fakeBLE{}), WithIPad(ipad.New(w.URL, ipad.WithGoIOS(ipad.NewGoIOS(goios)))))
+
+	rememberIPadApp("probe", rigProbeBundle)
+	res := call(t, s.handleIPadUITree, map[string]any{"app": "probe"})
+	if text := resultText(res); res.IsError || !strings.HasPrefix(text, installed+": ") {
+		t.Fatalf("tree:\n%s", text)
+	}
+	if got := knownIPadApps()["probe"]; got != installed {
+		t.Fatalf("remembered %q, want the installed app %q", got, installed)
 	}
 }
 

@@ -697,7 +697,8 @@ after the pull and names the session to load by hand.
 
 Bringing the probe app forward needs its bundle id, which carries a signing
 prefix. A daemon on the host the iPad is plugged into looks it up. Any other
-daemon remembers it from the first `ipad_launch` with the full id.
+daemon remembers it from the first `ipad_launch` with the full id; from then
+on the iPad tools take `app: probe` there too.
 
 **A session the app does not pull.** The app tells the daemon nothing about a
 file it leaves alone: it simply never asks for it. The reason is on its
