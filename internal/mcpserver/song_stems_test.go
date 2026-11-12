@@ -365,7 +365,7 @@ func TestRecordSongStems(t *testing.T) {
 		`wrote the mix of "Stem Song" as the song "stem_song_mix": 2 file track(s) under 1 master effect(s)`,
 		`"Stem Song mix" is loaded in AUM as Songs/Stem Song mix`,
 		"sound   ok    no track has a note to answer",
-		"files   ok    every File Player has its file",
+		"files   ok    every File Player has its file\n",
 		`bass       file "Stem Song stem bass/Master - 300 bpm - 001.wav": 191993 frames, 0:04.000, 19.999 beats (whole beats)`,
 		"the session's sequencer plays",
 	} {

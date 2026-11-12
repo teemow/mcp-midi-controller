@@ -193,7 +193,9 @@ func (r *songRig) endTake(length time.Duration, barLine bool) {
 	}
 	frames := int64(length.Seconds() * rigSampleRate)
 	if barLine {
-		frames -= 7
+		// A few frames short of the bar line, and not every take by the
+		// same few: on a device 4, 6 and 7.
+		frames -= 7 - int64(len(r.Takes)%2)*3
 	}
 	if r.Takes == nil {
 		r.Takes = map[string][]rigTake{}
