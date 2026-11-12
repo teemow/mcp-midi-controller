@@ -71,8 +71,8 @@ const songQuietPoll = 50 * time.Millisecond
 func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "load_song",
-		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself, and a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
-			"Each step is reported with what was seen; a step that fails ends the call and says what to do. Loading replaces the session open in AUM, so it needs confirm: true. " +
+		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself, and a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
+			"Each step is reported with what was seen; a step that fails ends the call and says what to do. A locked iPad is named as that: it has to be unlocked on the device, the daemon never does. Loading replaces the session open in AUM, so it needs confirm: true. " +
 			"Call it after save_song says the session is out of date, and again whenever a plugin failed.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -316,11 +316,19 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	}
 	rec = loadSongSessions()[cs.id]
 
+	// A locked iPad pulls nothing and brings no app to the front: that is
+	// said before either is waited for.
+	locked := s.ipadLocked(ctx)
+
 	// 2. The iPad pulls the file.
 	start = time.Now()
 	switch {
 	case rec.Pulled == rec.SHA256:
 		rep.skip("pull", "the iPad already has this file")
+	case locked:
+		pull := pullLocked()
+		rep.add("pull", false, time.Time{}, "%s", pull.detail)
+		return done(pull.next)
 	case s.waitPulled(ctx, cs.id, rec.SHA256, songPullGrace):
 		rep.add("pull", true, start, "the iPad pulled the session")
 	default:
@@ -336,6 +344,10 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 		rep.add("load", false, time.Time{}, "the iPad UI tools are not configured (ipad_wda_url), so AUM was not told to load it")
 		return done(fmt.Sprintf("load %q in AUM by hand, then check_song", outID))
 	}
+	if locked {
+		rep.add("load", false, time.Time{}, "%s: AUM cannot be brought to the front to load the session", ipadLockedText)
+		return done(ipadUnlock + ", then load_song again")
+	}
 	start = time.Now()
 	gen := s.loaded.generation()
 	dir, name := path.Split(outID)
@@ -345,8 +357,13 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	}
 	res, err := s.ipad.AUMOpenSession(ctx, folders, name)
 	if err != nil {
-		rep.add("load", false, start, "%v", err)
-		return done("look at the iPad (ipad_screenshot); AUM must be running and its mixer reachable, then load_song again")
+		why, nowLocked := s.ipadFailure(ctx, err)
+		rep.add("load", false, start, "%s", why)
+		if nowLocked {
+			return done(ipadUnlock + ", then load_song again")
+		}
+		// AUM did not come forward: the probe app may still be, after a pull.
+		return done(s.withFrontNote("look at the iPad (ipad_screenshot); AUM must be running and its mixer reachable, then load_song again"))
 	}
 	loaded, _ := res.Data.(ipad.AUMLoaded)
 	rep.loaded = &loaded
@@ -592,7 +609,11 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		}
 		res, err := read(ctx)
 		if err != nil {
-			c.find("aum", false, "AUM's screen could not be read: %v", err)
+			why, locked := s.ipadFailure(ctx, err)
+			c.find("aum", false, "AUM's screen could not be read: %s", why)
+			if locked {
+				c.Next = ipadUnlock + ", then check_song again"
+			}
 		} else if l, ok := res.Data.(ipad.AUMLoaded); ok {
 			loaded = &l
 		}

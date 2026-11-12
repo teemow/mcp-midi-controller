@@ -316,7 +316,7 @@ func (s *Server) handleIPadDrag(ctx context.Context, req *mcp.CallToolRequest) (
 	for _, p := range args.Points {
 		parts = append(parts, fmt.Sprintf("(%g,%g)", p.X, p.Y))
 	}
-	return textResult(fmt.Sprintf("dragged %s in %s", strings.Join(parts, " -> "), app), false), nil
+	return textResult(s.withFrontNote(fmt.Sprintf("dragged %s in %s", strings.Join(parts, " -> "), app)), false), nil
 }
 
 func (s *Server) handleIPadText(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -381,6 +381,7 @@ func (s *Server) handleIPadText(ctx context.Context, req *mcp.CallToolRequest) (
 		}
 		return textResult(err.Error(), true), nil
 	}
+	msg = s.withFrontNote(msg)
 	if fields != nil {
 		return structResultNoEmbed(msg, map[string]any{"fields": fields}), nil
 	}

@@ -184,3 +184,65 @@ func TestReadAndWaitAUM(t *testing.T) {
 		t.Fatal("session leaked")
 	}
 }
+
+// Locked asks WDA whether the iPad is on its lock screen, without a session.
+// A locked iPad fails a bound session, and nothing here tries to unlock it.
+func TestLocked(t *testing.T) {
+	w, c := newFake(t)
+	ctx := context.Background()
+	if locked, err := c.Locked(ctx); err != nil || locked {
+		t.Fatalf("Locked = %v, %v on an iPad that is not", locked, err)
+	}
+	w.SetLocked(true)
+	if locked, err := c.Locked(ctx); err != nil || !locked {
+		t.Fatalf("Locked = %v, %v on a locked iPad", locked, err)
+	}
+	err := c.BringToFront(ctx, AUMBundleID)
+	if err == nil || Unreachable(err) || !strings.Contains(err.Error(), "could not be, unlocked") {
+		t.Fatalf("a locked iPad brought AUM to the front: %v", err)
+	}
+	if app, _ := c.Front(); app != "" {
+		t.Fatalf("Front = %q after a session that did not open", app)
+	}
+	for _, r := range w.Requests() {
+		if r.Path != "/wda/locked" && r.Path != "/session" {
+			t.Fatalf("a locked iPad was asked %s %s: only its state is read", r.Method, r.Path)
+		}
+	}
+}
+
+// Front is the app the client brought to the front last, and since when.
+func TestFront(t *testing.T) {
+	w, c := newFake(t)
+	ctx := context.Background()
+	const other = "com.example.other"
+	if app, since := c.Front(); app != "" || !since.IsZero() {
+		t.Fatalf("Front = %q since %v before any session", app, since)
+	}
+	if err := c.BringToFront(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	app, since := c.Front()
+	if app != other || since.IsZero() {
+		t.Fatalf("Front = %q since %v, want %q", app, since, other)
+	}
+	// More sessions in the same app, and one bound to none, leave the time.
+	for _, bundle := range []string{other, ""} {
+		if err := c.WithApp(ctx, bundle, func(*Session) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if again, still := c.Front(); again != other || !still.Equal(since) {
+			t.Fatalf("after a session bound to %q: Front = %q since %v, want %q since %v", bundle, again, still, other, since)
+		}
+	}
+	if err := c.BringToFront(ctx, AUMBundleID); err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := c.Front(); app != AUMBundleID {
+		t.Fatalf("Front = %q, want AUM", app)
+	}
+	want := []string{other, other, AUMBundleID}
+	if got := w.Fronted(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("the iPad saw %q come forward, want %q", got, want)
+	}
+}
