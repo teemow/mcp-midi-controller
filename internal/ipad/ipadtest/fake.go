@@ -89,6 +89,12 @@ type WDA struct {
 	// AfterLaunch, when set, replaces SourceFunc once a session has started
 	// AUM: a freshly started AUM shows its own screen, not the one it had.
 	AfterLaunch func(gestures, reads int) json.RawMessage
+	// OnGesture, when set, is told every gesture AUM receives, before the
+	// gesture is counted. With SourceFunc it models a screen that answers
+	// what is touched where and when (SessionsAUM). Like SourceFunc it runs
+	// inside the fake: it may read and write Fields, and calls none of the
+	// fake's methods.
+	OnGesture func(Gesture)
 
 	requests  []Request
 	mark      int // requests before the last SetScreens
@@ -111,6 +117,55 @@ type appElement struct {
 	app   *ProbeApp
 	label string
 	rect  [4]float64
+}
+
+// Gesture is one gesture the fake received, as OnGesture is told it.
+type Gesture struct {
+	// Kind is "tap", "doubleTap", "hold", "drag" (a touch action), "click"
+	// (an element, such as a text field taking the focus) or "keys".
+	Kind string
+	// X and Y are where a tap, double-tap or long-press landed and where a
+	// drag began; DX and DY are how far the drag went.
+	X, Y, DX, DY float64
+}
+
+// gestureOf reads a gesture request's kind and points.
+func gestureOf(sub string, body map[string]any) Gesture {
+	num := func(m map[string]any, k string) float64 { v, _ := m[k].(float64); return v }
+	g := Gesture{X: num(body, "x"), Y: num(body, "y")}
+	switch sub {
+	case "wda/tap":
+		g.Kind = "tap"
+	case "wda/doubleTap":
+		g.Kind = "doubleTap"
+	case "wda/touchAndHold":
+		g.Kind = "hold"
+	case "wda/keys":
+		g.Kind = "keys"
+	case "actions":
+		g.Kind = "drag"
+		// The finger's first and last position of a W3C touch action.
+		first := true
+		actions, _ := body["actions"].([]any)
+		for _, a := range actions {
+			src, _ := a.(map[string]any)
+			steps, _ := src["actions"].([]any)
+			for _, st := range steps {
+				step, _ := st.(map[string]any)
+				if step["type"] != "pointerMove" {
+					continue
+				}
+				x, y := num(step, "x"), num(step, "y")
+				if first {
+					g.X, g.Y, first = x, y, false
+				}
+				g.DX, g.DY = x-g.X, y-g.Y
+			}
+		}
+	default:
+		g.Kind = "click"
+	}
+	return g
 }
 
 // aumBundle is AUM's bundle id, homeScreen the Home Screen's.
@@ -359,7 +414,7 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	case sub == "appium/settings":
 		reply(rw, 200, nil, sid)
 	case sub == "wda/tap", sub == "wda/doubleTap", sub == "wda/touchAndHold", sub == "actions", sub == "wda/keys":
-		w.gesture(sid)
+		w.gesture(sid, gestureOf(sub, body))
 		reply(rw, 200, nil, sid)
 	case sub == "window/size":
 		reply(rw, 200, map[string]any{"width": w.Window[0], "height": w.Window[1]}, sid)
@@ -412,11 +467,14 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 
 // gesture counts a gesture of a session, or takes AUM down with it (see
 // AUMCrashAt). w.mu must be held.
-func (w *WDA) gesture(sid string) {
+func (w *WDA) gesture(sid string, g Gesture) {
 	if w.AUMCrashes > 0 && w.bound[sid] == aumBundle && w.gestures+1 == w.AUMCrashAt {
 		w.AUMCrashes--
 		w.aumDown = true
 		return
+	}
+	if w.OnGesture != nil {
+		w.OnGesture(g)
 	}
 	w.gestures++
 	w.reads = 0
@@ -511,7 +569,7 @@ func (w *WDA) element(rw http.ResponseWriter, method, sid, rest string, body map
 	}
 	switch {
 	case op == "click":
-		w.gesture(sid)
+		w.gesture(sid, Gesture{Kind: "click"})
 		reply(rw, 200, nil, sid)
 	case op == "clear" && field >= 0:
 		w.Fields[field] = ""

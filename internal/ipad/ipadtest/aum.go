@@ -92,7 +92,24 @@ type AUM struct {
 	// "LOADING STATE" overlay of a session being restored, a line naming a
 	// plugin that failed.
 	Notices []string
+	// Save opens the SAVE side panel.
+	Save *SavePanel
 }
+
+// SavePanel is AUM's SAVE side panel: the session's name in a text field,
+// the folder it is saved into and the SAVE SESSION button.
+type SavePanel struct {
+	// Name is the name field's value.
+	Name string
+	// Folder is the folder as SAVE prints it ("/Songs", "/" for the root).
+	Folder string
+	// Button is the button's label: "SAVE SESSION", or "OVERWRITE?" for the
+	// second after it was pressed with the name of a session that exists.
+	Button string
+}
+
+// SaveButton is the SAVE panel's button, as x, y, w, h in points.
+var SaveButton = [4]float64{966, 302, 228, 37}
 
 // Routing is the MIDI routing matrix of a synthetic AUM screen.
 type Routing struct {
@@ -198,7 +215,7 @@ func (a AUM) Source() json.RawMessage {
 	mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
 	mixerView := el("ScrollView", "", 0, 60, W, 774, mixer...)
 	// Under a side panel or the routing matrix AUM marks the mixer invisible.
-	covered := a.Session != "" || a.Routing != nil
+	covered := a.Session != "" || a.Routing != nil || a.Save != nil
 	for _, o := range a.Overlays {
 		covered = covered || o.Kind == "panel"
 	}
@@ -220,6 +237,9 @@ func (a AUM) Source() json.RawMessage {
 	}
 	if a.Routing != nil {
 		main = append(main, routing(*a.Routing))
+	}
+	if a.Save != nil {
+		main = append(main, savePanel(*a.Save))
 	}
 	if a.Keyboard {
 		main = append(main, el("Other", "", 0, 666, W, 168,
@@ -330,6 +350,26 @@ func menuPanel(session string) node {
 	return el("Other", "", 950, 0, 260, 834,
 		el("Other", "", 950, 0, 260, 60, el("StaticText", "MENU", 990, 0, 180, 60)),
 		el("ScrollView", "", 950, 60, 260, 774, kids...))
+}
+
+// savePanel follows WDA's source of AUM 1.4.8's SAVE panel (testdata
+// aum-plugin-window-save.json of internal/ipad): a table with the name field
+// and the folder in a cell each under their headers, and the button, whose
+// own text is not visible.
+func savePanel(p SavePanel) node {
+	b := SaveButton
+	return el("Other", "", 950, 0, 260, 834,
+		el("Other", "", 950, 0, 260, 60,
+			el("Button", "MIDI CTRL, SETTINGS, ABOUT, CLEAR, FILES, SESSION: Old, DSP:  0 %, -∞", 950, 0, 60, 60),
+			el("StaticText", "SAVE", 990, 0, 180, 60)),
+		el("Table", "", 950, 60, 260, 774,
+			el("Other", "", 950, 60, 260, 56, el("StaticText", "SESSION NAME", 950, 60, 260, 56).with("traits", "Header, StaticText")),
+			el("Cell", "", 950, 115, 260, 51, el("TextField", "", 966, 115, 228, 45).with("value", p.Name)),
+			el("Other", "", 950, 183, 260, 38, el("StaticText", "FOLDER", 950, 183, 260, 38).with("traits", "Header, StaticText")),
+			el("Cell", "", 950, 221, 260, 50,
+				el("StaticText", p.Folder, 966, 221, 210, 50),
+				el("Button", "chevron", 1183, 239, 11, 14).with("traits", "NotEnabled, Button")).with("traits", "Button"),
+			el("Button", p.Button, b[0], b[1], b[2], b[3], el("StaticText", p.Button, 1038, 312, 84, 17).with("isVisible", "0"))))
 }
 
 func overlay(o Overlay) []node {

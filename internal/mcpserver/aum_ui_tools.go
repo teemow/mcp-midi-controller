@@ -59,7 +59,7 @@ func (s *Server) registerAUMUITools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "ipad_text",
 		Description: "Text entry in an app: fields lists the text fields, search fields and text views on screen with their values and frames; type clears field `field` (default 0, the first) and types text into it, reading the value back (enter true then presses Return); enter presses Return on the on-screen keyboard. " +
-			"AUM's name fields (SAVE, Edit Channel, bus names) and number dialogs (Set level, Edit Value) are text fields; Return applies the SAVE panel and the channel name, dialogs need their Set/OK button. Check with fields before saving under a typed name.",
+			"AUM's name fields (SAVE, Edit Channel, bus names) and number dialogs (Set level, Edit Value) are text fields; Return applies the channel name, dialogs need their Set/OK button. In the SAVE panel Return is a press of SAVE SESSION: it writes a new name, and for a name that exists it only makes the button ask OVERWRITE? for about a second, so save with aum_files save, which confirms in time and checks that the file was written.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -157,7 +157,9 @@ func (s *Server) registerAUMUITools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_files",
 		Description: "AUM's FILES, SAVE, CLEAR and NOTES: list (FILES → Sessions, with path for folders: each row and its saved time), recordings (FILES → Recordings; path into a session's folder lists its takes), load (confirm; taps the session: AUM loads it at once, then the menu's session name is checked), " +
-			"save (confirm; types name into SAVE and presses Return, which saves at once and overwrites a session of that name), rename (confirm; long-press → share sheet → Rename), clear (confirm; CLEAR → Sure?), notes (open the session notes)." + aumVerifyNote + aumCareNote,
+			"save (confirm; saves the open session under name into the folder SAVE shows, over a session of that name too. It reads the session's row in that folder of FILES → Sessions first: a new name is written by one press of SAVE SESSION; for a name that exists the button reads OVERWRITE? for about a second and writes only when pressed again in that time, so both presses go out as one gesture. " +
+			"It then reads the row again: verified is true only when the row is new or its saved time has moved, and data holds folder, existed, saved_before and saved_after. verified false means AUM wrote nothing, with what the row and the button read; the session name in the menu is no proof of a save and is not used), " +
+			"rename (confirm; long-press → share sheet → Rename), clear (confirm; CLEAR → Sure?), notes (open the session notes)." + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
