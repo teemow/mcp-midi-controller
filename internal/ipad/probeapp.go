@@ -316,6 +316,10 @@ func (s *Session) ProbeOpenFolder(ctx context.Context, folder string, trust bool
 		return scr, nil
 	}
 	scr, err := s.ProbeScreen(ctx)
+	if err == nil && scr.Tab == "" {
+		// An app that is only just starting has no window yet.
+		scr, err = read(func(p ProbeScreen) bool { return p.Tab != "" })
+	}
 	if err != nil {
 		return scr, err
 	}
