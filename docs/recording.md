@@ -194,6 +194,12 @@ on `play_song` or `start_recording`, which uploads that recording when it is
 finished. With `auto_upload` in the config every recording of a song is
 uploaded by itself.
 
+What the call says about `upload` decides, `false` as much as `true`:
+`play_song` with `record: true, upload: false` keeps that recording on the
+host although `auto_upload` is on, to look at a take before it goes anywhere.
+`upload_recording` sends it later. `auto_upload` only applies where the call
+leaves `upload` out.
+
 ### Where the secrets are
 
 | | Where | |
@@ -213,7 +219,7 @@ recordings_keep: 50      # recordings kept in the state dir; older ones are dele
 
 google_drive:
   folder: Songs          # Drive folder for uploads; "A/B" for a folder inside another. Unset: the top level
-  auto_upload: false     # upload every recording of a song once it is finished
+  auto_upload: false     # upload every recording of a song once it is finished (play_song with upload: false keeps one on the host)
 ```
 
 The config is read when a tool needs it; changing it needs no restart.

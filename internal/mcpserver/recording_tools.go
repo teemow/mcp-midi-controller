@@ -146,9 +146,22 @@ type recordOptions struct {
 	Format    string
 	Trim      *bool
 	SilenceDB *float64
-	Upload    bool
+	// Upload says whether the recording is uploaded once it is finished, as
+	// the call asked for it; nil when the call left it out.
+	Upload *bool
 	// Song and Title name the song being recorded (play_song).
 	Song, Title string
+}
+
+// uploadWhenFinished says whether the recording goes to Google Drive once it
+// is finished. What the call asked for decides, false as much as true. A call
+// that left it out gets the default: a song's recording goes by the config's
+// auto_upload, any other recording stays on the host.
+func (o recordOptions) uploadWhenFinished() bool {
+	if o.Upload != nil {
+		return *o.Upload
+	}
+	return o.Song != "" && loadConfig().GoogleDrive.AutoUpload
 }
 
 func (s *Server) recordings() *recording.Store { return recording.NewStore(config.RecordingsDir()) }
@@ -224,7 +237,7 @@ func (s *Server) beginRecording(opts recordOptions) (*activeRecording, error) {
 	ar := &activeRecording{
 		meta:    recording.Meta{Name: name, Song: opts.Song, Title: title, Tap: tap.Name(), RecordedAt: now},
 		capture: capture, format: format, trim: opts.Trim == nil || *opts.Trim,
-		upload:  opts.Upload || (opts.Song != "" && loadConfig().GoogleDrive.AutoUpload),
+		upload:  opts.uploadWhenFinished(),
 		seconds: opts.Seconds, forSong: opts.Song != "",
 		phase: "recording", stop: make(chan struct{}), done: make(chan struct{}),
 		awake: s.holdAwake(),
@@ -535,7 +548,7 @@ func (s *Server) registerRecordingTools() {
 				"format": {"type": "string", "enum": ["flac", "wav"], "description": "flac (default): 24 bit, lossless, about two thirds the size. wav: 32-bit float, the stream's own samples."},
 				"trim": {"type": "boolean", "description": "Cut the silence around the sound (default true)."},
 				"silence_db": {"type": "number", "minimum": -120, "maximum": 0, "description": "The level under which the recorder hears silence, in dBFS (default -60). Raise it for a session with a noise floor."},
-				"upload": {"type": "boolean", "description": "Upload the recording to Google Drive once it is finished (see upload_recording)."}
+				"upload": {"type": "boolean", "description": "Upload the recording to Google Drive once it is finished (see upload_recording). Default false."}
 			}
 		}`),
 	}, s.handleStartRecording)
@@ -566,7 +579,7 @@ func (s *Server) handleStartRecording(_ context.Context, req *mcp.CallToolReques
 		Format    string   `json:"format"`
 		Trim      *bool    `json:"trim"`
 		SilenceDB *float64 `json:"silence_db"`
-		Upload    bool     `json:"upload"`
+		Upload    *bool    `json:"upload"`
 	}
 	if len(req.Params.Arguments) > 0 {
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {

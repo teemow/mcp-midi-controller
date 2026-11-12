@@ -905,6 +905,100 @@ func TestRecordingUploadsItself(t *testing.T) {
 	}
 }
 
+// TestUploadAsTheCallSays: what a call says about upload decides, false as
+// much as true. A song recorded with upload: false stays on the host although
+// auto_upload is on; with upload left out it goes by auto_upload as before.
+func TestUploadAsTheCallSays(t *testing.T) {
+	hub := midicontrol.NewHub()
+	r := newDriveRig(t)
+	r.s.midi = hub
+	brain(t, hub, func(midicontrol.Command) {})
+	r.signIn()
+	if res := r.call(r.s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	// play starts the song and returns what play_song said; take ends it and
+	// returns the recording it made.
+	play := func(args map[string]any) string {
+		t.Helper()
+		r.feed.set(0.5)
+		args["song"], args["preroll_ms"] = "night_drive", 20
+		res := r.call(r.s.handlePlaySong, args)
+		if res.IsError {
+			t.Fatalf("play %v: %s", args, resultText(res))
+		}
+		return resultText(res)
+	}
+	take := func() *recordingResult {
+		t.Helper()
+		time.Sleep(100 * time.Millisecond)
+		r.call(r.s.handleStopSong, map[string]any{})
+		r.feed.set(0)
+		rec := lastRecording(t, r.s)
+		if rec.Error != "" {
+			t.Fatalf("recording: %s", rec.Error)
+		}
+		return rec
+	}
+	local := func(what string, rec *recordingResult, uploads int) {
+		t.Helper()
+		if rec.Upload != "" || rec.Meta.Drive != nil || len(r.uploads()) != uploads {
+			t.Fatalf("%s was uploaded: %+v (%d files in the Drive, want %d)", what, rec, len(r.uploads()), uploads)
+		}
+		if got, err := r.s.recordings().Get(rec.Meta.Name); err != nil || got.Drive != nil {
+			t.Errorf("%s: its record holds a link: %+v, %v", what, got.Drive, err)
+		}
+		if text := resultText(r.call(r.s.handleListRecordings, map[string]any{})); strings.Count(text, "Google Drive: ") != uploads {
+			t.Errorf("%s: list shows %d link(s), want %d: %s", what, strings.Count(text, "Google Drive: "), uploads, text)
+		}
+	}
+
+	writeConfig(t, "google_drive:\n  auto_upload: true\n")
+
+	// upload: false wins over auto_upload, and play_song says so.
+	said := play(map[string]any{"record": true, "upload": false})
+	if strings.Contains(said, "then uploaded") || !strings.Contains(said, "not uploaded to Google Drive (upload: false)") {
+		t.Errorf("play with record and upload: false: %s", said)
+	}
+	local("a song recorded with upload: false", take(), 0)
+
+	// upload: false asks for no recording by itself.
+	said = play(map[string]any{"upload": false})
+	r.s.rec.mu.Lock()
+	cur := r.s.rec.current
+	r.s.rec.mu.Unlock()
+	if cur != nil || strings.Contains(said, "recording it") {
+		t.Fatalf("play with upload: false alone records: %s", said)
+	}
+	r.call(r.s.handleStopSong, map[string]any{})
+
+	// A recording made on its own never went by auto_upload; upload: false
+	// keeps it on the host all the same.
+	local("a recording started with upload: false", r.record(map[string]any{"upload": false}), 0)
+
+	// Left out, a song's recording goes by auto_upload, as it did before.
+	if said = play(map[string]any{"record": true}); !strings.Contains(said, "and then uploaded to Google Drive") {
+		t.Errorf("play with record and auto_upload: %s", said)
+	}
+	if rec := take(); rec.Upload != "uploaded" || rec.Meta.Drive == nil || len(r.uploads()) != 1 {
+		t.Fatalf("a song's recording with auto_upload: %+v (%d files in the Drive)", rec, len(r.uploads()))
+	}
+
+	// Without auto_upload a song's recording stays on the host, unless the
+	// call says upload: true, which records the song too.
+	writeConfig(t, "google_drive:\n  auto_upload: false\n")
+	if said = play(map[string]any{"record": true}); strings.Contains(said, "uploaded") {
+		t.Errorf("play with record, auto_upload off: %s", said)
+	}
+	local("a song's recording without auto_upload", take(), 1)
+	if said = play(map[string]any{"upload": true}); !strings.Contains(said, "and then uploaded to Google Drive") {
+		t.Errorf("play with upload: true: %s", said)
+	}
+	if rec := take(); rec.Upload != "uploaded" || rec.Meta.Drive == nil || len(r.uploads()) != 2 {
+		t.Fatalf("a song played with upload: true: %+v (%d files in the Drive)", rec, len(r.uploads()))
+	}
+}
+
 // TestRecordingHoldsTheHostAwake: the host is held awake from the start of a
 // recording until its file is written, and a recording that never starts
 // holds nothing.

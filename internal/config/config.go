@@ -76,7 +76,8 @@ type GoogleDrive struct {
 
 	// AutoUpload uploads every recording of a song by itself once it is
 	// finished. Default false: a recording is uploaded when upload_recording
-	// is called, or when the recording was started with upload set.
+	// is called, or when the recording was started with upload set. A
+	// recording started with upload: false stays on the host either way.
 	AutoUpload bool `yaml:"auto_upload"`
 }
 

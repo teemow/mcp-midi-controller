@@ -172,7 +172,7 @@ func (s *Server) registerSongTools() {
 				"transport": {"type": "boolean", "description": "Live: also start AUM's transport with the first note and stop it at the end, for plugins that follow the host clock. Sequenced playing always runs the transport."},
 				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Live: wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."},
 				"record": {"type": "boolean", "description": "Record the song at the audio tap while it plays, into a file (list_recordings). The recording ends by itself once the song is over and its tail has rung out, with the silence before the first note cut."},
-				"upload": {"type": "boolean", "description": "Record the song and upload the recording to Google Drive when it is finished (see upload_recording)."}
+				"upload": {"type": "boolean", "description": "true: record the song and upload the recording to Google Drive when it is finished (see upload_recording). false: a recording asked for with record stays on the host, also when the config's auto_upload is on. Left out: a recording asked for with record is uploaded when auto_upload is on."}
 			},
 			"required": ["song"]
 		}`),
@@ -893,7 +893,7 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		Transport bool     `json:"transport"`
 		PrerollMS int      `json:"preroll_ms"`
 		Record    bool     `json:"record"`
-		Upload    bool     `json:"upload"`
+		Upload    *bool    `json:"upload"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
@@ -935,8 +935,11 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	// song to its end (recording_tools.go). Played live, the first note the
 	// daemon sends marks where the music starts in it; sequenced, no note
 	// passes through here and the recording goes by the playback's clock.
+	// upload: true asks for a recording too. upload: false asks for none; it
+	// keeps the recording that record asks for on the host, whatever the
+	// config's auto_upload says.
 	var take *activeRecording
-	if args.Record || args.Upload {
+	if args.Record || (args.Upload != nil && *args.Upload) {
 		take, err = s.beginRecording(recordOptions{Song: cs.id, Title: cs.song.Title, Upload: args.Upload, Tap: s.songRecordingTap(rec)})
 		if err != nil {
 			return textResult("play_song: cannot record: "+err.Error(), true), nil
@@ -1013,8 +1016,11 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 		rs := take.status()
 		out["recording"] = rs
 		fmt.Fprintf(&b, "recording it as %q from the tap %q: the file is written once the song and its tail have ended (list_recordings)", rs.Name, rs.Tap)
-		if rs.Upload {
+		switch {
+		case rs.Upload:
 			b.WriteString(", and then uploaded to Google Drive")
+		case args.Upload != nil:
+			b.WriteString(", and not uploaded to Google Drive (upload: false)")
 		}
 		b.WriteByte('\n')
 	}
