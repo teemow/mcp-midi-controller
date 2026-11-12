@@ -172,7 +172,7 @@ func (s *Server) registerSongTools() {
 				"transport": {"type": "boolean", "description": "Live: also start AUM's transport with the first note and stop it at the end, for plugins that follow the host clock. Sequenced playing always runs the transport."},
 				"preroll_ms": {"type": "integer", "minimum": 0, "description": "Live: wait between setting the opening sound and the first note (default 1200 when presets load, else 150)."},
 				"record": {"type": "boolean", "description": "Record the song at the audio tap while it plays, into a file (list_recordings). The recording ends by itself once the song is over and its tail has rung out, with the silence before the first note cut."},
-				"upload": {"type": "boolean", "description": "true: record the song and upload the recording to Google Drive when it is finished (see upload_recording). false: keep the recording on the host, also when the config's auto_upload is on. Default: the config's auto_upload."}
+				"upload": {"type": "boolean", "description": "true: record the song and upload the recording to Google Drive when it is finished (see upload_recording). false: a recording asked for with record stays on the host, also when the config's auto_upload is on. Left out: a recording asked for with record is uploaded when auto_upload is on."}
 			},
 			"required": ["song"]
 		}`),
