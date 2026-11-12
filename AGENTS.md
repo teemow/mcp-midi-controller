@@ -50,9 +50,11 @@ opens its App Store page on the iPad and prints the name, developer, price and
 whether it has in-app purchases. Without confirmations it only looks. Show that to
 the person who pays. Run it with `--confirm-name` and `--confirm-price` only after
 they have confirmed that app and that total in their own words, for this purchase:
-an earlier yes does not carry over to another app or price. When the App Store
-asks for a password, Face ID or Touch ID, the person does that step on the iPad;
-never ask for or pass a credential. No in-app purchases or subscriptions (a
+an earlier yes does not carry over to another app or price. The buy itself runs
+in a terminal, like `unlock`: the script asks the person for the Apple ID password
+at its own hidden prompt and types it into Apple's sheet once. Ask the person to
+run the command there; never ask for the password in chat, and never type, store
+or pass it. Face ID, Touch ID or the top button need someone at the iPad. No in-app purchases or subscriptions (a
 plugin's sound packs included) unless the person asks for them separately. Like
 `unlock`, it takes the iPad lock `~/.cache/go-ios/ipad.lock` itself; a session
 that holds the lock already runs it with `IPAD_LOCK_HELD=1`. Its use is described
