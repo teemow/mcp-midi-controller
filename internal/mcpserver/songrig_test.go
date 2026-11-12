@@ -213,13 +213,14 @@ func newSongRig(t *testing.T) *songRig {
 // fastSongWaits shortens the waits of load_song and check_song.
 func fastSongWaits(t *testing.T) {
 	t.Helper()
-	pause := ipad.AUMLoadPause
-	ipad.AUMLoadPause = 10 * time.Millisecond
-	t.Cleanup(func() { ipad.AUMLoadPause = pause })
-	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait, songTapNameGrace, songNoteHoldMax, songQuietWait}
+	pause, settle := ipad.AUMLoadPause, ipad.ProbeSettle
+	ipad.AUMLoadPause, ipad.ProbeSettle = 10*time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { ipad.AUMLoadPause, ipad.ProbeSettle = pause, settle })
+	old := []time.Duration{songPullGrace, songPullTimeout, songDialTimeout, songPresetWait, songSettleWait, songNoteHold, songNoteTail, songFloorWait, songTapNameGrace, songNoteHoldMax, songQuietWait, songPullPoll, songPullResolved}
 	// The stand-ins answer within milliseconds; the timeouts only bound a
 	// test on a machine too busy to run them.
 	songPullGrace, songPullTimeout, songDialTimeout = 300*time.Millisecond, 20*time.Second, 20*time.Second
+	songPullPoll, songPullResolved = 20*time.Millisecond, 20*time.Second
 	songPresetWait, songSettleWait = 20*time.Millisecond, 20*time.Millisecond
 	songNoteHold, songNoteTail, songFloorWait = 150*time.Millisecond, 150*time.Millisecond, 60*time.Millisecond
 	songTapNameGrace = 100 * time.Millisecond
@@ -230,6 +231,7 @@ func fastSongWaits(t *testing.T) {
 		songNoteHold, songNoteTail, songFloorWait = old[5], old[6], old[7]
 		songTapNameGrace = old[8]
 		songNoteHoldMax, songQuietWait = old[9], old[10]
+		songPullPoll, songPullResolved = old[11], old[12]
 	})
 }
 
@@ -525,6 +527,39 @@ func (r *songRig) pullStaged(file string) {
 			}
 		}
 	}()
+}
+
+// rigProbeBundle is the bundle id the rig's probe app is known under.
+const rigProbeBundle = "TEAM.com.teemow.auv3probe"
+
+// probeApp puts the AUv3 Probe app on the rig's iPad, with files in AUM's
+// folder, and lets the daemon bring it forward. Like the app it fetches a
+// staged session when its sync is started, or when "keep controller" is
+// tapped on the session's row, but not a file it holds as a conflict.
+func (r *songRig) probeApp(files map[string][]ipadtest.ProbeFile) *ipadtest.ProbeApp {
+	r.t.Helper()
+	rememberIPadApp("probe", rigProbeBundle)
+	app := &ipadtest.ProbeApp{Files: files}
+	app.OnKeepController = r.s.OnAUMSessionDownloaded
+	app.OnSync = func() {
+		var fetch []string
+		app.Set(func(p *ipadtest.ProbeApp) {
+			for folder, fs := range p.Files {
+				for _, f := range fs {
+					if f.State == "" {
+						fetch = append(fetch, strings.TrimPrefix(folder+"/"+f.Name, "/"))
+					}
+				}
+			}
+		})
+		for _, file := range fetch {
+			if _, err := os.Stat(stagedSessionPath(strings.TrimSuffix(file, ".aumproj"))); err == nil {
+				r.s.OnAUMSessionDownloaded(file)
+			}
+		}
+	}
+	r.wda.Apps = map[string]*ipadtest.ProbeApp{rigProbeBundle: app}
+	return app
 }
 
 // aumLoads plays AUM loading the session the daemon taps in FILES: the

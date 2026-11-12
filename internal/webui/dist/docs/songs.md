@@ -686,7 +686,7 @@ and stops at the first one that fails, with what it saw and what to do:
 | Step | What happens |
 |------|--------------|
 | author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
-| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward and starts its sync. Skipped when the iPad already has this very file. |
+| pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and reads the app's list of sessions while it waits, up to a minute. A session the app holds as a conflict ends the wait at once: see below. Skipped when the iPad already has this very file. |
 | load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM's main menu shows the session's name and AUM has finished restoring the plugins, up to 2 minutes in all. A heavy session can keep AUM's UI from answering for a minute, so the name is waited for as long as AUM shows that it is loading, and the menu is opened again when the load closed it; once the load is over the name gets 10 s more. The step fails, saying which session AUM shows, when AUM ends up with another session or none. |
 | connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. |
 | check | `check_song`, below. |
@@ -698,6 +698,44 @@ after the pull and names the session to load by hand.
 Bringing the probe app forward needs its bundle id, which carries a signing
 prefix. A daemon on the host the iPad is plugged into looks it up. Any other
 daemon remembers it from the first `ipad_launch` with the full id.
+
+**A session the app does not pull.** The app tells the daemon nothing about a
+file it leaves alone: it simply never asks for it. The reason is on its
+screen, so the pull step reads that: the "aum sessions" tab, in the folder the
+session goes to, every few seconds.
+
+The usual reason is a conflict. The app keeps AUM's folder and the daemon's
+staged files alike, and a file that changed on both sides since it last synced
+it is copied neither way. Its row reads "conflict — both sides changed" and
+has two buttons, "keep device" and "keep controller". The pull step ends as
+soon as it sees that on the session's row:
+
+- When the copy in AUM's folder is one the daemon staged, the daemon taps
+  "keep controller" on that row, the app fetches the staged session, and the
+  step says that it did. Nothing but an older file of the daemon's own is
+  replaced. The daemon goes by the copy's size, which is all the row gives
+  of it: it keeps the sizes of the last files the iPad fetched under the
+  session's name, and the row's size must be one of them.
+- Any other copy is left alone and the step fails, naming the session, what
+  the row says of the copy, and what to do. That is a session saved in AUM
+  (AUM writes every plugin's state out again, so the file is larger: one
+  authored at 105 KB came back at 156 KB), a file of the same name the iPad
+  never fetched from the daemon, and any session outside `Songs/`. Picking
+  "keep controller" there by hand loses what AUM's folder holds, so save
+  that under another name in AUM first if it is to be kept.
+
+The daemon walks the app's browser to the session's folder from its root
+before it taps, and taps the button that follows that one row. Other files
+the app holds as conflicts are never touched.
+
+When the wait runs out without a conflict, the step reports what the app
+showed instead: that it does not reach the daemon ("controller offline"), an
+error on the session's row, a browser that could not be read (no AUM folder
+linked), or the tab's status line. It also says when the app had only just
+been started. iPadOS drops the app while AUM is in front, and every start
+sends all its audio units to the daemon again (184 on the rig, a few
+minutes), which it does only while it is in front. Sessions are pulled while
+that runs: see Status.
 
 `check_song` answers whether the song will sound if it is played now:
 
@@ -1205,6 +1243,36 @@ tools of a daemon that has the mode:
   sequenced `play_song` began at the top, the lead-in silent (-88 dB where the
   song had read -20 dB) and the fade-in after it; and after a verse played
   live with the transport, AUM's transport stood at the top.
+- **A session the probe app holds as a conflict.** A two-bar song was
+  authored, fetched and loaded; its session was then saved in AUM and the
+  song authored again. The app listed it as "conflict — both sides changed",
+  its copy at 156 KB against the 105 KB the daemon had staged, and `load_song`
+  failed at "pull" after 66 s saying only that the app had been brought to
+  the front. Read with the code that is in the daemon now, the app's tree
+  gave that row, its state, its size and its "keep controller", in a list
+  where the button lay 1200 points below the window's edge. The browser was
+  walked from its root into the folder, and a click on that button's
+  element, found by its frame, made the app fetch the file: the row was in
+  sync at the next look, 1.5 s later, and the six conflicts the app held in
+  other folders were as before. Those were the pieces, driven from outside
+  the daemon. The pull step as a whole, and the choice among several
+  conflicts in one folder, have been run against the stand-in app only.
+- **The app's own conflicts.** Earlier runs on the rig had met such a
+  conflict three times, each on a song's session with nothing saved in AUM.
+  What the daemon saw of the app while the above was measured: after three
+  of four pulls the app uploaded the session it had just fetched back to the
+  daemon (the one compared had the same bytes), and it uploaded six files of
+  other folders in every sync cycle, 20 s apart, for as long as it was in
+  front. A copy the app takes for changed is therefore not always one
+  somebody changed, which is why the daemon resolves a conflict whose copy is
+  its own file and no other.
+- **The app is started again and again.** Each of the three times AUM had
+  been in front and the app was brought forward again, it came up on its
+  audio units tab, sending its units from the start ("syncing 2/184…"):
+  iPadOS had dropped it. All 184 had been sent again within 7
+  minutes the first time and within 2.5 the second. A staged session was
+  fetched within 10 s of such a start and a conflict was on screen within
+  20 s, so a pull does not wait for the units.
 
 **Other metres.** Songs in 6/8 (92 BPM), 7/8 (148 BPM, grouped 2+2+3) and 3/4
 (108 BPM), each a little over a minute, were played from the session's
