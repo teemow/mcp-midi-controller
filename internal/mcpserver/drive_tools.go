@@ -203,7 +203,7 @@ func (s *Server) handleGetGoogleDrive(ctx context.Context, _ *mcp.CallToolReques
 	}
 	fmt.Fprintf(&b, "  uploads go to %s (google_drive.folder in config.yaml)\n", folderText(cfg.Folder))
 	if cfg.AutoUpload {
-		b.WriteString("  recordings of songs are uploaded by themselves (google_drive.auto_upload)\n")
+		b.WriteString("  recordings of songs are uploaded by themselves (google_drive.auto_upload); play_song with upload: false keeps one on the host\n")
 	} else {
 		b.WriteString("  a recording is uploaded when upload_recording is called, or when it was started with upload\n")
 	}
