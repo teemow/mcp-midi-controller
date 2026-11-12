@@ -568,6 +568,61 @@ func TestRecordSongStemsFailures(t *testing.T) {
 		t.Errorf("after a stopped recording: recorder %v, master armed %v, transport %v; want all off", recording, armed, running)
 	}
 
+	// Stopped after the pass, while its take is looked for, and the sequencer
+	// did not switch the recorder off: the daemon does, before it disarms, so
+	// the recorder does not record on through the stopped transport. Its own
+	// off after a pass is held back here, so that the stop comes first.
+	r.mu.Lock()
+	r.ClipOff = 0
+	r.mu.Unlock()
+	wait, off := stemListWait, stemOffAfter
+	stemListWait, stemOffAfter = 10*time.Second, time.Minute
+	r.opens("Stem Song stem bass", stemBassStrips)
+	if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1, "stems": []string{"bass"}}); res.IsError {
+		t.Fatalf("record: %s", resultText(res))
+	}
+	for deadline, started := time.Now().Add(30*time.Second), false; ; time.Sleep(10 * time.Millisecond) {
+		r.mu.Lock()
+		recording, running := r.Recording, r.Running
+		r.mu.Unlock()
+		started = started || (recording && running)
+		if started && recording && !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the pass did not end with the recorder still on")
+		}
+	}
+	if res := call(t, s.handleStopSong, map[string]any{}); res.IsError {
+		t.Fatalf("stop: %s", resultText(res))
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		res = call(t, s.handleGetSongStems, map[string]any{})
+		if out, _ := res.StructuredContent.(map[string]any); out["done"] == true {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the recording stopped after its pass did not end: %s", resultText(res))
+		}
+	}
+	stemListWait, stemOffAfter = wait, off
+	if text := resultText(res); res.IsError || !strings.Contains(text, "the recording ended early: stopped") {
+		t.Errorf("a recording stopped after its pass: %s", text)
+	}
+	sent := r.waitCommands(func(cmds []midicontrol.Command) bool {
+		cc := globalCCs(cmds, 103, 105, 107)
+		return len(cc) >= 4 && cc[len(cc)-1] == 107000
+	})
+	if cc := globalCCs(sent, 103, 105, 107); !slices.Equal(cc[len(cc)-4:], []int{105127, 103127, 105000, 107000}) {
+		t.Errorf("the controls of a pass stopped while its take was looked for = %v, want on, the stop, off, disarm", cc[len(cc)-4:])
+	}
+	r.mu.Lock()
+	recording = r.Recording
+	r.mu.Unlock()
+	if recording {
+		t.Error("a recording stopped after its pass left AUM's recorder on")
+	}
+
 	// A sequencer that does not switch the recorder off: AUM lists no take
 	// after the pass, so the daemon switches the recorder off itself, with
 	// the transport stopped. The take ran on after the stem: the report says

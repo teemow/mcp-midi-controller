@@ -995,6 +995,12 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 		}
 	}
 	if ctx.Err() != nil {
+		if final.Outcome == "finished" {
+			// Stopped after the pass, before its take was found: a take the
+			// sequence did not end would record on through the stopped
+			// transport. The off changes nothing when the sequence ended it.
+			recorderOff()
+		}
 		return take, ctx.Err()
 	}
 	if final.Outcome != "finished" {
@@ -1026,6 +1032,11 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 			continue
 		}
 		if err := sleepContext(ctx, stemListPoll); err != nil {
+			if !nudged {
+				// Stopped while the take was looked for: as above, the
+				// recorder must not record on.
+				recorderOff()
+			}
 			return take, err
 		}
 	}
