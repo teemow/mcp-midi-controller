@@ -1,7 +1,6 @@
 package song
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -487,89 +486,5 @@ func TestStemSong(t *testing.T) {
 	}
 	if _, err := s.MixSong(stems, map[string]string{"bass": files["bass"]}, "Test Song mix", l); err == nil || !strings.Contains(err.Error(), `"band" has no recording`) {
 		t.Errorf("a mix without a stem's file: err = %v", err)
-	}
-}
-
-// TestPlayerSequencedFinish checks what ends a recording with a sequenced
-// playback: the finish goes out ahead of the song's end, the stop a wait
-// after it, and a playback stopped before its start finishes nothing.
-func TestPlayerSequencedFinish(t *testing.T) {
-	tl, _ := fastSong(t)
-	q := tl.Sequence()
-	ev := func(n int) Event { return Event{Kind: Control, Channel: GlobalChannel, Data1: n, Data2: 127} }
-	opts := SequencedOptions{
-		Rewind: []Event{ev(104)}, Start: []Event{ev(105)},
-		Finish: []Event{{Kind: Control, Channel: GlobalChannel, Data1: 105}}, FinishLead: 50 * time.Millisecond, FinishWait: 80 * time.Millisecond,
-		Stop: []Event{ev(103)},
-	}
-	var p Player
-	rec := &recorder{}
-	if _, err := p.StartSequenced("song", tl, q, opts, rec.send); err != nil {
-		t.Fatalf("StartSequenced: %v", err)
-	}
-	st := waitDone(t, &p)
-	if st.Outcome != "finished" {
-		t.Fatalf("outcome = %q", st.Outcome)
-	}
-	var got []int
-	at := map[int]time.Time{}
-	rec.mu.Lock()
-	for i, e := range rec.events {
-		if e.Kind == Control && e.Channel == GlobalChannel {
-			got = append(got, e.Data1*1000+e.Data2)
-			at[e.Data1*1000+e.Data2] = rec.at[i]
-		}
-	}
-	rec.mu.Unlock()
-	if want := []int{104127, 105127, 105000, 103127}; !slices.Equal(got, want) {
-		t.Fatalf("sent %v, want rewind, start, finish, stop (%v)", got, want)
-	}
-	if run := at[105000].Sub(at[105127]); run < q.Duration()-150*time.Millisecond || run > q.Duration() {
-		t.Errorf("the finish came %s after the start, want just before the sequence's %s", run, q.Duration())
-	}
-	if wait := at[103127].Sub(at[105000]); wait < 80*time.Millisecond {
-		t.Errorf("the stop came %s after the finish, want 80 ms or more", wait)
-	}
-
-	// Stopped while it plays: the finish still goes out before the stop.
-	rec = &recorder{}
-	if _, err := p.StartSequenced("song", tl, q, opts, rec.send); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for started := false; !started && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		for _, e := range rec.snapshot() {
-			started = started || (e.Data1 == 105 && e.Data2 == 127)
-		}
-	}
-	p.Stop()
-	waitDone(t, &p)
-	got = got[:0]
-	for _, e := range rec.snapshot() {
-		if e.Kind == Control && e.Channel == GlobalChannel {
-			got = append(got, e.Data1*1000+e.Data2)
-		}
-	}
-	if want := []int{104127, 105127, 105000, 103127}; !slices.Equal(got, want) {
-		t.Errorf("stopped while playing: sent %v, want %v", got, want)
-	}
-
-	// Stopped before the start went out: there is nothing to finish.
-	rec = &recorder{}
-	slow := func(ctx context.Context, e Event) error {
-		if e.Data1 == 104 {
-			go p.Stop()
-			time.Sleep(20 * time.Millisecond)
-		}
-		return rec.send(ctx, e)
-	}
-	if _, err := p.StartSequenced("song", tl, q, opts, slow); err != nil {
-		t.Fatal(err)
-	}
-	waitDone(t, &p)
-	for _, e := range rec.snapshot() {
-		if e.Data1 == 105 {
-			t.Errorf("a playback stopped before its start sent the recorder's control: %+v", e)
-		}
 	}
 }

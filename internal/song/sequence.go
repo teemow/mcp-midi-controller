@@ -66,9 +66,11 @@ func (q *Sequence) Duration() time.Duration { return q.TickTime(q.Ticks) }
 // switches AUM's recorder off, in beats (quarter notes). AUM ends a take on
 // the next bar line after that, so the take ends where the sequence does, as
 // long as the lead-in, the song and the tail. The sequencer sends it, with
-// the transport's own timing: a take ends by itself, also when the daemon
-// that started it is gone, and a recorder that nobody switches off records on
-// through a stopped transport.
+// the transport's own timing, and nothing else does: a second off before
+// that bar line withdraws the first, and the recorder runs on (measured on a
+// device). So a take ends by itself, also when the daemon that started it is
+// gone; a recorder that nobody switches off records on through a stopped
+// transport.
 const RecorderOffBeats = 0.5
 
 // Sequence lays the whole song out for a sequencer.
