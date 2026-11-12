@@ -301,6 +301,34 @@ func TestAUMOpenSessionStartsAUMAgain(t *testing.T) {
 	}
 }
 
+// TestAUMOpenSessionStartedAUMNeverShows is an AUM started again that does
+// not draw its screen: the load ends on that before a gesture, which goes by
+// coordinates and would land on whatever is there instead.
+func TestAUMOpenSessionStartedAUMNeverShows(t *testing.T) {
+	old := aumStartWait
+	aumStartWait = 100 * time.Millisecond
+	t.Cleanup(func() { aumStartWait = old })
+	w, c := openFake(t, sessionScreens(1))
+	w.AfterLaunch = ipadtest.FreshSessionScreens("Songs", "Night Drive", []ipadtest.Strip{{Title: "4: Master"}}, 1<<30, 1)
+	w.SetAUMCrashes(6, 1) // ✕, ☰, FILES, Sessions, Songs, the row
+	res, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Night Drive")
+	if err == nil {
+		t.Fatalf("a load in an AUM that never showed its screen succeeded: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "did not show its screen within") {
+		t.Errorf("err = %q, want it to say AUM did not show its screen", err)
+	}
+	if n := w.Launches(); n != 1 {
+		t.Errorf("AUM was started %d time(s), want once", n)
+	}
+	if g := w.Gestures(); g != 0 {
+		t.Errorf("gestures in the started AUM = %d, want none", g)
+	}
+	if n := w.OpenSessions(); n != 0 {
+		t.Errorf("%d WebDriverAgent sessions left open", n)
+	}
+}
+
 // TestAUMOpenSessionAUMGoesAwayAgain checks the load is made once more and
 // no more often: an AUM that goes away at every load, or does not start, ends
 // the load with what WebDriverAgent said both times, and the Home Screen is

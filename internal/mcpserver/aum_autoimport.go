@@ -102,14 +102,48 @@ func (s *Server) reimportCurrentAUMSession() {
 // is not a staged session's (a tap named by hand). The work runs in a
 // goroutine (tracked by s.bg), so the tap's stream is read meanwhile.
 func (s *Server) OnAudioTapConnected(name string) {
+	if !s.stagedMasterTap(name) {
+		return
+	}
+	id, _, _ := song.ParseTapName(name)
+	s.bg.Go(func() {
+		s.currentMu.Lock()
+		defer s.currentMu.Unlock()
+		// The work may have waited behind an import meanwhile: the tap may
+		// have gone, or the master of a session loaded since dialled in.
+		// Only the newest master that is connected names the open session.
+		if newest, ok := s.newestMasterTap(); ok && newest != name {
+			log.Printf("current AUM session: %q's tap is no longer the newest connected master (%q), ignored", id, newest)
+			return
+		}
+		s.sessionOpenLocked(id, "the session's tap connected")
+	})
+}
+
+// newestMasterTap is the name of the most recently connected master tap of a
+// staged session that is streaming now ("" when none is). known is false
+// without a tap registry: there is nothing to ask, and the tap that connected
+// is taken at its word.
+func (s *Server) newestMasterTap() (name string, known bool) {
+	if s.audio == nil {
+		return "", false
+	}
+	for _, st := range s.audio.Connected() {
+		if s.stagedMasterTap(st.Name()) {
+			return st.Name(), true
+		}
+	}
+	return "", true
+}
+
+// stagedMasterTap reports whether name is the master tap of a staged session.
+func (s *Server) stagedMasterTap(name string) bool {
 	id, strip, ok := song.ParseTapName(name)
 	if !ok || strip != song.MasterTap {
-		return
+		return false
 	}
-	if path, err := resolveAUMSessionPath("", id); err != nil || !isFile(path) {
-		return
-	}
-	s.bg.Go(func() { s.sessionOpen(id, "the session's tap connected") })
+	path, err := resolveAUMSessionPath("", id)
+	return err == nil && isFile(path)
 }
 
 func isFile(path string) bool {
@@ -126,6 +160,11 @@ func isFile(path string) bool {
 func (s *Server) sessionOpen(id, trigger string) {
 	s.currentMu.Lock()
 	defer s.currentMu.Unlock()
+	s.sessionOpenLocked(id, trigger)
+}
+
+// sessionOpenLocked is sessionOpen for a caller that holds currentMu.
+func (s *Server) sessionOpenLocked(id, trigger string) {
 	was := s.currentAUMSessionID()
 	if was != id {
 		log.Printf("current AUM session: %q, not %q (%s)", id, was, trigger)
