@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,10 @@ type songSessionRecord struct {
 	// iPad has this very session.
 	SHA256 string `json:"sha256,omitempty"`
 	Pulled string `json:"pulled,omitempty"`
+	// Served are the sizes in bytes of the files the iPad fetched under that
+	// name, the latest last (servedKept of them): what a copy in AUM's folder
+	// that came from the daemon is as large as. See ownCopy.
+	Served []int64 `json:"served,omitempty"`
 	// Options are the options the session was authored with.
 	Options song.SessionSpec `json:"options,omitzero"`
 	// Sequencer is the probe id of the sequencer the session hosts and
@@ -113,6 +118,18 @@ func fileSHA256(path string) string {
 func bytesSHA256(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// servedKept is how many sizes of fetched files a record keeps.
+const servedKept = 6
+
+// addServed appends the size of a file the iPad fetched to a record's sizes.
+func addServed(sizes []int64, size int64) []int64 {
+	if size <= 0 || slices.Contains(sizes, size) {
+		return sizes
+	}
+	sizes = append(slices.Clone(sizes), size)
+	return sizes[max(0, len(sizes)-servedKept):]
 }
 
 // stagedSessionPath is where a session id is staged.
@@ -262,6 +279,10 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 	if _, err := aum.Open(data); err != nil {
 		return nil, fmt.Errorf("authored session failed re-decode: %w", err)
 	}
+	// The file this one replaces may be the one the iPad holds; its size is
+	// then one a copy in AUM's folder can have (also for a record from before
+	// sizes were kept).
+	held, _ := os.ReadFile(stagedSessionPath(outID))
 	path, file, err := stageAUMFile(outID, ".aumproj", data)
 	if err != nil {
 		return nil, fmt.Errorf("stage session: %w", err)
@@ -275,10 +296,13 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 		// What the iPad holds under this name stays what it fetched. It may
 		// have fetched this very file already, between its staging and now.
 		if prev, ok := all[cs.id]; ok && prev.Session == outID {
-			rec.Pulled = prev.Pulled
+			rec.Pulled, rec.Served = prev.Pulled, prev.Served
+			if prev.Pulled != "" && bytesSHA256(held) == prev.Pulled {
+				rec.Served = addServed(rec.Served, int64(len(held)))
+			}
 		}
 		if s.pulls.has(outID, out.SHA256) {
-			rec.Pulled = out.SHA256
+			rec.Pulled, rec.Served = out.SHA256, addServed(rec.Served, int64(len(data)))
 		}
 		all[cs.id] = rec
 		return true
@@ -438,14 +462,14 @@ func (p *sessionPulls) broadcast() {
 // noteSessionPulled records that the iPad fetched the staged session id: every
 // song authored into it now knows which file the iPad holds.
 func (s *Server) noteSessionPulled(id string) {
-	sha := fileSHA256(stagedSessionPath(id))
-	if sha != "" {
+	if data, err := os.ReadFile(stagedSessionPath(id)); err == nil {
+		sha, size := bytesSHA256(data), int64(len(data))
 		s.pulls.fetched(id, sha)
 		_ = s.updateSongSessions(func(all map[string]songSessionRecord) bool {
 			changed := false
 			for song, rec := range all {
-				if rec.Session == id && rec.Pulled != sha {
-					rec.Pulled = sha
+				if rec.Session == id && (rec.Pulled != sha || !slices.Contains(rec.Served, size)) {
+					rec.Pulled, rec.Served = sha, addServed(rec.Served, size)
 					all[song] = rec
 					changed = true
 				}

@@ -34,7 +34,12 @@ var (
 	// without help: the probe app pulls by itself while it is in front.
 	songPullGrace = 4 * time.Second
 	// songPullTimeout bounds the wait once the probe app was brought forward.
-	songPullTimeout = 60 * time.Second
+	// Its screen is read every songPullPoll for why the file does not come,
+	// and a file whose conflict the daemon resolved is given
+	// songPullResolved from then.
+	songPullTimeout  = 60 * time.Second
+	songPullPoll     = 3 * time.Second
+	songPullResolved = 20 * time.Second
 	// songDialTimeout bounds the wait for the loaded session's brain and tap.
 	songDialTimeout = 45 * time.Second
 	// songPresetWait follows the preset loads of a check, songSettleWait the
@@ -66,7 +71,7 @@ const songQuietPoll = 50 * time.Millisecond
 func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "load_song",
-		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
+		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself, and a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
 			"Each step is reported with what was seen; a step that fails ends the call and says what to do. Loading replaces the session open in AUM, so it needs confirm: true. " +
 			"Call it after save_song says the session is out of date, and again whenever a plugin failed.",
 		InputSchema: json.RawMessage(`{
@@ -147,26 +152,6 @@ func (s *Server) probeApp(ctx context.Context) (string, error) {
 		err = errors.New("its bundle id is not known")
 	}
 	return "", fmt.Errorf("%w; call ipad_launch once with the app's full bundle id and the daemon remembers it", err)
-}
-
-// syncProbeApp brings the probe app to the front and starts its session
-// sync: the app pulls staged sessions only while it is in front.
-func (s *Server) syncProbeApp(ctx context.Context) error {
-	app, err := s.probeApp(ctx)
-	if err != nil {
-		return err
-	}
-	return s.ipad.WithApp(ctx, app, func(sess *ipad.Session) error {
-		// The sessions tab holds the sync button; either may be missing in
-		// another version of the app, and being in front is what counts.
-		_, _ = sess.TapLabel(ctx, "AUM Sessions", 2*time.Second)
-		for _, label := range []string{"Sync", "Resync"} {
-			if _, err := sess.TapLabel(ctx, label, time.Second); err == nil {
-				break
-			}
-		}
-		return nil
-	})
 }
 
 // --- load_song ------------------------------------------------------------------
@@ -339,17 +324,11 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	case s.waitPulled(ctx, cs.id, rec.SHA256, songPullGrace):
 		rep.add("pull", true, start, "the iPad pulled the session")
 	default:
-		note := "the probe app was brought to the front"
-		if s.ipad == nil {
-			note = "the iPad UI tools are not configured, so the probe app was not brought forward"
-		} else if err := s.syncProbeApp(ctx); err != nil {
-			note = "the probe app could not be brought to the front: " + err.Error()
+		pull := s.pullWithProbeApp(ctx, cs.id, outID, rec)
+		rep.add("pull", pull.ok, start, "%s", pull.detail)
+		if !pull.ok {
+			return done(pull.next)
 		}
-		if !s.waitPulled(ctx, cs.id, rec.SHA256, songPullTimeout) {
-			rep.add("pull", false, start, "the iPad did not pull the session (%s)", note)
-			return done("open the AUv3 Probe app on the iPad (it pulls staged sessions while it is in front and reaches the daemon), then load_song again")
-		}
-		rep.add("pull", true, start, "the iPad pulled the session (%s)", note)
 	}
 
 	// 3. AUM loads it.

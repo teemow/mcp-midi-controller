@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -65,6 +66,10 @@ type WDA struct {
 	// BrightScreens, when set, replaces Bright after each gesture like
 	// Screens: BrightScreens[n] after n gestures.
 	BrightScreens [][][4]float64
+	// Apps are other apps' windows by bundle id: a session opened with one
+	// of these ids reads that app's tree and taps and clicks in it, and its
+	// gestures are not counted among AUM's. Set it before the first request.
+	Apps map[string]*ProbeApp
 
 	requests  []Request
 	mark      int // requests before the last SetScreens
@@ -73,6 +78,17 @@ type WDA struct {
 	gestures  int
 	reads     int // source reads since the last gesture
 	open      map[string]bool
+	bound     map[string]string // session -> the bundle id it was opened with
+
+	appMu  sync.Mutex
+	appEls []appElement // the elements found in an app's window ("A<n>")
+}
+
+// appElement is a button found in an app's window.
+type appElement struct {
+	app   *ProbeApp
+	label string
+	rect  [4]float64
 }
 
 // New starts a fake WDA serving source as AUM's tree.
@@ -202,6 +218,10 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 		sid := fmt.Sprintf("S%d", w.sessions)
 		// Like WDA: one session at a time, a new one ends the previous.
 		w.open = map[string]bool{sid: true}
+		caps, _ := body["capabilities"].(map[string]any)
+		match, _ := caps["alwaysMatch"].(map[string]any)
+		bundle, _ := match["bundleId"].(string)
+		w.bound = map[string]string{sid: bundle}
 		reply(rw, 200, map[string]any{"sessionId": sid, "capabilities": map[string]any{}}, sid)
 		return
 	}
@@ -215,6 +235,16 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	if !w.open[sid] {
 		wdaError(rw, 404, "invalid session id", "session "+sid+" does not exist")
 		return
+	}
+	if app := w.Apps[w.bound[sid]]; app != nil {
+		// The app keeps its own state, and what a click starts in it may
+		// take a while: it is served without the fake's lock.
+		w.mu.Unlock()
+		served := w.serveApp(rw, r.Method, sid, sub, body, app)
+		w.mu.Lock()
+		if served {
+			return
+		}
 	}
 	switch {
 	case r.Method == http.MethodDelete && sub == "":
@@ -273,6 +303,65 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 	default:
 		wdaError(rw, 404, "unknown command", path)
 	}
+}
+
+// serveApp answers what a session bound to another app asks of that app's
+// window: its tree, a tap, the buttons a predicate finds and a button's frame
+// or click. It reports false for what the fake answers the same for any app.
+func (w *WDA) serveApp(rw http.ResponseWriter, method, sid, sub string, body map[string]any, app *ProbeApp) bool {
+	switch {
+	case sub == "source":
+		reply(rw, 200, app.source(), sid)
+	case sub == "wda/tap":
+		x, _ := body["x"].(float64)
+		y, _ := body["y"].(float64)
+		app.tap(x, y)
+		reply(rw, 200, nil, sid)
+	case sub == "elements" && body["using"] == "predicate string":
+		pred, _ := body["value"].(string)
+		_, quoted, _ := strings.Cut(pred, "label ==")
+		fold := strings.HasPrefix(quoted, "[c]")
+		label, err := strconv.Unquote(strings.TrimSpace(strings.TrimPrefix(quoted, "[c]")))
+		found := []map[string]string{}
+		// Every button of the app is a target; a text is found by no query.
+		if err == nil && strings.HasPrefix(pred, "type == 'XCUIElementTypeButton'") {
+			w.appMu.Lock()
+			for _, rect := range app.buttons(label, fold) {
+				w.appEls = append(w.appEls, appElement{app, label, rect})
+				found = append(found, map[string]string{"ELEMENT": fmt.Sprintf("A%d", len(w.appEls)-1)})
+			}
+			w.appMu.Unlock()
+		}
+		reply(rw, 200, found, sid)
+	case strings.HasPrefix(sub, "element/A"):
+		id, op, _ := strings.Cut(strings.TrimPrefix(sub, "element/A"), "/")
+		n, err := strconv.Atoi(id)
+		w.appMu.Lock()
+		known := err == nil && n >= 0 && n < len(w.appEls)
+		var e appElement
+		if known {
+			e = w.appEls[n]
+		}
+		w.appMu.Unlock()
+		switch {
+		case !known:
+			wdaError(rw, 404, "no such element", id)
+		case op == "rect":
+			reply(rw, 200, map[string]any{"x": e.rect[0], "y": e.rect[1], "width": e.rect[2], "height": e.rect[3]}, sid)
+		case op == "click" && method == http.MethodPost:
+			// The element is the one found: gone when its row has moved.
+			if !e.app.click(e.label, e.rect) {
+				wdaError(rw, 404, "stale element reference", e.label)
+				return true
+			}
+			reply(rw, 200, nil, sid)
+		default:
+			wdaError(rw, 404, "unknown command", sub)
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 // element answers …/element/<id>/<op>: click, clear, value (type), rect and

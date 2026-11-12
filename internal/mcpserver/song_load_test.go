@@ -3,6 +3,9 @@ package mcpserver
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +184,337 @@ func TestLoadSongNotPulled(t *testing.T) {
 	}
 	if r.wda.Gestures() != 0 {
 		t.Errorf("AUM was touched (%d gestures) although the session never arrived", r.wda.Gestures())
+	}
+}
+
+// nightDriveSize is how the probe app writes the size of the staged session
+// of toolSong.
+func nightDriveSize(t *testing.T) string {
+	t.Helper()
+	info, err := os.Stat(stagedSessionPath("Songs/Night Drive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ipad.ProbeByteLabel(info.Size())
+}
+
+// TestLoadSongResolvesItsOwnConflict checks a session the probe app holds as
+// a conflict is fetched all the same when the copy in AUM's folder is a file
+// the daemon staged: the daemon taps "keep controller" on that row, on no
+// other, and says so.
+func TestLoadSongResolvesItsOwnConflict(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	app := r.probeApp(map[string][]ipadtest.ProbeFile{
+		"Songs": {{Name: "Aardvark.aumproj", State: ipadtest.ProbeConflictState}, {Name: "Night Drive.aumproj"}, {Name: "Zebra.aumproj", State: ipadtest.ProbeConflictState}},
+		"Sets":  {{Name: "Night Drive.aumproj", State: ipadtest.ProbeConflictState}},
+	})
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+
+	// The first load: the app is brought forward and fetches the file.
+	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+	res := call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true, "check": false})
+	if text := resultText(res); res.IsError || !strings.Contains(text, "2. pull    ok    the iPad pulled the session (the probe app was brought to the front)") {
+		t.Fatalf("first load: %s", text)
+	}
+	if got, want := app.Actions(), []string{"tab aum sessions", "folder Songs", "sync"}; !slices.Equal(got, want) {
+		t.Fatalf("for the first pull the app was asked %q, want %q", got, want)
+	}
+	served := nightDriveSize(t)
+	if rec := loadSongSessions()["night_drive"]; len(rec.Served) != 1 || ipad.ProbeByteLabel(rec.Served[0]) != served {
+		t.Fatalf("the record keeps %v as fetched, want the staged file's size (%s)", rec.Served, served)
+	}
+
+	// The song changes; the app holds its session as a conflict, with the
+	// file it fetched before in AUM's folder.
+	edited := strings.Replace(toolSong, "params: {Cutoff: 0.3}", "params: {Cutoff: 0.3, Resonance: 0.6}", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": edited}); res.IsError {
+		t.Fatalf("save with a new control: %s", resultText(res))
+	}
+	app.Set(func(p *ipadtest.ProbeApp) {
+		p.Log = nil
+		p.Files["Songs"][1].State = ipadtest.ProbeConflictState
+		p.Files["Songs"][1].Info = "session · " + served + " · 12. Nov 2026 at 02:06"
+	})
+	r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+	res = call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true, "check": false})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("load with a conflict of the daemon's own: %s", text)
+	}
+	for _, want := range []string{
+		"2. pull    ok    the iPad pulled the session. The AUv3 Probe app held Songs/Night Drive.aumproj as a conflict",
+		"was the size of a file the daemon had staged (" + served + ")",
+		`tapped "keep controller" on that row, and the staged session replaced it`,
+		`3. load    ok    AUM has "Night Drive" open`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("load report lacks %q:\n%s", want, text)
+		}
+	}
+	// The browser was walked from its root before the tap, and one row was
+	// tapped: not the conflicts beside it, not its namesake in another folder.
+	var keeps []string
+	for _, a := range app.Actions() {
+		if strings.HasPrefix(a, "keep ") {
+			keeps = append(keeps, a)
+		}
+	}
+	if want := []string{"keep controller Songs/Night Drive.aumproj"}; !slices.Equal(keeps, want) {
+		t.Errorf("sides picked = %q, want %q (the app was asked %q)", keeps, want, app.Actions())
+	}
+	if got := app.Actions(); !slices.Contains(got, "back") || got[len(got)-1] != keeps[0] {
+		t.Errorf("the app was asked %q, want the browser walked from its root and the tap last", got)
+	}
+	if rec := loadSongSessions()["night_drive"]; rec.Pulled != rec.SHA256 {
+		t.Errorf("after the load the iPad holds %s, the session is %s", rec.Pulled, rec.SHA256)
+	}
+}
+
+// TestLoadSongNamesAConflict checks the conflicts the daemon leaves alone end
+// the pull step at once, by the session's name and with what to do: a copy in
+// AUM's folder that was saved there, one the iPad never fetched from the
+// daemon, and a session outside Songs/.
+func TestLoadSongNamesAConflict(t *testing.T) {
+	const savedInAUM = "session · 9.9 MB · 12. Nov 2026 at 02:06"
+	for name, c := range map[string]struct {
+		outID string
+		// loaded: the iPad fetched the session once before the conflict.
+		loaded bool
+		info   string
+		want   []string
+	}{
+		"saved in AUM": {
+			outID: "Songs/Night Drive", loaded: true, info: savedInAUM,
+			want: []string{
+				`2. pull    FAIL  the iPad did not pull the session: the AUv3 Probe app holds Songs/Night Drive.aumproj as a conflict ("conflict — both sides changed") and copies it neither way until a side is picked.`,
+				`The copy in AUM's folder ("` + savedInAUM + `") is not the size of a file the daemon staged for it (`,
+				"it was saved in AUM",
+				`next: what AUM's folder holds under this name is lost when the staged session replaces it: save it under another name in AUM first if it is to be kept.`,
+				`in the AUv3 Probe app (the "aum sessions" tab, folder "Songs"), tap "keep controller" on the row "Night Drive.aumproj" and on no other, and load_song again`,
+			},
+		},
+		"never fetched": {
+			outID: "Songs/Night Drive", info: savedInAUM,
+			want: []string{
+				"the AUv3 Probe app holds Songs/Night Drive.aumproj as a conflict",
+				"The daemon has no record of a file the iPad fetched under this name",
+			},
+		},
+		"outside Songs": {
+			outID: "Sets/Night Drive", loaded: true,
+			want: []string{
+				"the AUv3 Probe app holds Sets/Night Drive.aumproj as a conflict",
+				"The daemon picks a side by itself only for a song's session under Songs/.",
+				`folder "Sets"`,
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newSongRig(t)
+			s := r.s
+			folder, title := path.Split(c.outID)
+			folder = strings.Trim(folder, "/")
+			app := r.probeApp(map[string][]ipadtest.ProbeFile{
+				folder:  {{Name: "Aardvark.aumproj", State: ipadtest.ProbeConflictState}, {Name: title + ".aumproj"}},
+				"Other": {{Name: title + ".aumproj", State: ipadtest.ProbeConflictState}},
+			})
+			if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+				t.Fatalf("save: %s", resultText(res))
+			}
+			args := map[string]any{"song": "night_drive", "confirm": true, "check": false, "out_id": c.outID}
+			if c.loaded {
+				r.aumLoads(folder, title, nightDriveStrips)
+				if res := call(t, s.handleLoadSong, args); res.IsError {
+					t.Fatalf("first load: %s", resultText(res))
+				}
+				edited := strings.Replace(toolSong, "params: {Cutoff: 0.3}", "params: {Cutoff: 0.3, Resonance: 0.6}", 1)
+				if res := call(t, s.handleSaveSong, map[string]any{"yaml": edited}); res.IsError {
+					t.Fatalf("save with a new control: %s", resultText(res))
+				}
+			}
+			app.Set(func(p *ipadtest.ProbeApp) {
+				p.Log = nil
+				p.Files[folder][1].State = ipadtest.ProbeConflictState
+				p.Files[folder][1].Info = c.info
+			})
+			r.wda.SetScreens() // AUM's gestures count from here
+
+			start := time.Now()
+			res := call(t, s.handleLoadSong, args)
+			text := resultText(res)
+			if !res.IsError {
+				t.Fatalf("a load with a conflict the daemon leaves alone succeeded: %s", text)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("report lacks %q:\n%s", want, text)
+				}
+			}
+			// The wait ended with the conflict, not with its timeout.
+			if took := time.Since(start); took > songPullTimeout/2 {
+				t.Errorf("the pull step took %s of its %s although the conflict was on screen", took, songPullTimeout)
+			}
+			for _, a := range app.Actions() {
+				if strings.HasPrefix(a, "keep ") {
+					t.Errorf("the daemon picked a side: %q", a)
+				}
+			}
+			if r.wda.Gestures() != 0 {
+				t.Errorf("AUM was touched (%d gestures) although the session never arrived", r.wda.Gestures())
+			}
+		})
+	}
+}
+
+// TestLoadSongPullSaysWhatTheAppShows checks a pull that times out without a
+// conflict reports what the probe app's screen said meanwhile.
+func TestLoadSongPullSaysWhatTheAppShows(t *testing.T) {
+	for name, c := range map[string]struct {
+		app  func(p *ipadtest.ProbeApp)
+		want []string
+	}{
+		"offline, just started": {
+			app: func(p *ipadtest.ProbeApp) { p.Units, p.Status, p.Cycle = "syncing 2/184…", ipad.ProbeOffline, true },
+			want: []string{
+				`2. pull    FAIL  the iPad did not pull the session within 400ms (the probe app was brought to the front; its sessions tab says "controller offline — browsing device copy": it does not reach the daemon`,
+				"it had just been started and was sending its audio units to the daemon again (2/184 when it came forward), which it does only while it is in front",
+				"next: check which daemon the AUv3 Probe app has found",
+			},
+		},
+		"an error on the row": {
+			app: func(p *ipadtest.ProbeApp) {
+				p.Tab, p.Path, p.Cycle = ipad.ProbeSessionsTab, []string{"Songs"}, true
+				p.Files["Songs"][0].State = "the request timed out"
+			},
+			want: []string{
+				`(the probe app was brought to the front; it lists Night Drive.aumproj as "the request timed out")`,
+				"next: open the AUv3 Probe app on the iPad",
+			},
+		},
+		"no folder linked": {
+			app: func(p *ipadtest.ProbeApp) { p.Unlinked = true },
+			want: []string{
+				"its list of sessions could not be read: the AUv3 Probe app's session browser is not shown: AUM's folder is not linked in the app",
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newSongRig(t)
+			s := r.s
+			songPullTimeout = 400 * time.Millisecond // restored by the rig's cleanup
+			app := r.probeApp(map[string][]ipadtest.ProbeFile{"Songs": {{Name: "Night Drive.aumproj"}}})
+			app.Set(c.app)
+			if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+				t.Fatalf("save: %s", resultText(res))
+			}
+			res := call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true})
+			text := resultText(res)
+			if !res.IsError {
+				t.Fatalf("a load without a pull succeeded: %s", text)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("report lacks %q:\n%s", want, text)
+				}
+			}
+		})
+	}
+}
+
+// TestFetchedSizes checks the record of a song's session keeps the sizes of
+// the files the iPad fetched under its name: every download's, and for a
+// record from before sizes were kept the one the iPad holds, taken from the
+// staged file the next authoring replaces.
+func TestFetchedSizes(t *testing.T) {
+	s := newSongServer(t)
+	stagedSize := func() int64 {
+		t.Helper()
+		info, err := os.Stat(stagedSessionPath("Songs/Night Drive"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Size()
+	}
+	save := func(doc string) {
+		t.Helper()
+		if res := call(t, s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
+			t.Fatalf("save: %s", resultText(res))
+		}
+		if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "night_drive"}); res.IsError {
+			t.Fatalf("author: %s", resultText(res))
+		}
+	}
+	save(toolSong)
+	if rec := loadSongSessions()["night_drive"]; len(rec.Served) != 0 {
+		t.Fatalf("a session nobody fetched has %v as fetched", rec.Served)
+	}
+	s.OnAUMSessionDownloaded("Songs/Night Drive.aumproj")
+	first := stagedSize()
+	if rec := loadSongSessions()["night_drive"]; !slices.Equal(rec.Served, []int64{first}) {
+		t.Fatalf("after a download the record keeps %v, want %d", rec.Served, first)
+	}
+
+	// A record from before sizes were kept: the next authoring finds the file
+	// the iPad holds still staged.
+	if err := s.updateSongSessions(func(all map[string]songSessionRecord) bool {
+		rec := all["night_drive"]
+		rec.Served = nil
+		all["night_drive"] = rec
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	save(strings.Replace(toolSong, "params: {Cutoff: 0.3}", "params: {Cutoff: 0.3, Resonance: 0.6}", 1))
+	second := stagedSize()
+	if second == first {
+		t.Fatal("the edited song's session is as large as the first: the test tells nothing")
+	}
+	rec := loadSongSessions()["night_drive"]
+	if !slices.Equal(rec.Served, []int64{first}) || rec.Pulled == rec.SHA256 {
+		t.Fatalf("after the next authoring the record keeps %v (pulled %v), want the size the iPad holds (%d) and a pull owed", rec.Served, rec.Pulled == rec.SHA256, first)
+	}
+	s.OnAUMSessionDownloaded("Songs/Night Drive.aumproj")
+	if rec := loadSongSessions()["night_drive"]; !slices.Equal(rec.Served, []int64{first, second}) {
+		t.Fatalf("after the second download the record keeps %v, want %v", rec.Served, []int64{first, second})
+	}
+	// No more than a few are kept, the latest last.
+	sizes := []int64{}
+	for n := int64(1); n <= servedKept+3; n++ {
+		sizes = addServed(sizes, n)
+	}
+	if len(sizes) != servedKept || sizes[len(sizes)-1] != servedKept+3 {
+		t.Errorf("kept %v, want the last %d", sizes, servedKept)
+	}
+}
+
+// TestOwnCopy checks whose a copy in AUM's folder is taken to be.
+func TestOwnCopy(t *testing.T) {
+	rec := songSessionRecord{Session: "Songs/Night Drive", Served: []int64{98000, 107067}}
+	row := func(info string) ipad.ProbeFile {
+		return ipad.ProbeFile{Name: "Night Drive.aumproj", Info: info, State: ipad.ProbeConflict}
+	}
+	for _, c := range []struct {
+		outID string
+		rec   songSessionRecord
+		info  string
+		own   bool
+		why   string
+	}{
+		{"Songs/Night Drive", rec, "session · 105 KB · 12. Nov 2026 at 02:06", true, ""},
+		// The file fetched before the last one: a pull the app did not finish.
+		{"Songs/Night Drive", rec, "session · 96 KB", true, ""},
+		{"Songs/Night Drive", rec, "session · 156 KB · 12. Nov 2026 at 02:06", false, "is not the size of a file the daemon staged for it (96 KB, 105 KB): it was saved in AUM"},
+		{"Songs/Night Drive", rec, "session", false, "gives no size"},
+		{"Songs/Night Drive", songSessionRecord{Session: "Songs/Night Drive"}, "session · 105 KB", false, "no record of a file the iPad fetched"},
+		{"Live/Night Drive", rec, "session · 105 KB", false, "only for a song's session under Songs/"},
+	} {
+		own, why := ownCopy(c.outID, c.rec, row(c.info))
+		if own != c.own || !strings.Contains(why, c.why) {
+			t.Errorf("ownCopy(%q, %v, %q) = %v, %q; want %v, %q", c.outID, c.rec.Served, c.info, own, why, c.own, c.why)
+		}
 	}
 }
 
