@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,19 @@ type songRig struct {
 	// channel starts it, Stop/Rewind stops it. Bypassed is the session's
 	// sequencer's bypass (CC 106 there).
 	Running, Bypassed bool
+	// Armed is the master strip's record-arm (the song's mapping of its Rec
+	// enable, CC 107 on the global channel) and Recording AUM's recorder
+	// (Toggle Record, CC 105 there). Both latch by value, as on a device: the
+	// recorder starts the transport when it stands, and ends its take on the
+	// next bar line after it was switched off (Bar long; 0 ends it at once).
+	// A finished take of an armed master is listed under the open session's
+	// name in Takes.
+	Armed, Recording bool
+	Bar              time.Duration
+	// TakeTempo is the tempo AUM prints in a take's name.
+	TakeTempo string
+	Takes     map[string][]rigTake
+	recStart  time.Time
 	// Surfaces are the control surfaces the daemon pushed, in order, each with
 	// the brain connection it was pushed to (the first is 1).
 	Surfaces []rigSurface
@@ -111,8 +125,40 @@ const (
 	rigStartCC  = 102
 	rigStopCC   = 103
 	rigRewindCC = 104
+	rigRecordCC = 105
 	rigBypassCC = 106
+	rigArmCC    = 107
 )
+
+// rigTake is a recording AUM's recorder made: its name as AUM's list prints
+// it (no extension) and its length.
+type rigTake struct {
+	Name   string
+	Frames int64
+}
+
+// endTake finishes the recorder's take: it ends on the next bar line, a few
+// frames short of it as on a device, and is listed when the master was armed.
+// r.mu must be held.
+func (r *songRig) endTake() {
+	if !r.Recording {
+		return
+	}
+	r.Recording = false
+	if !r.Armed {
+		return
+	}
+	length := time.Since(r.recStart)
+	if r.Bar > 0 {
+		length = time.Duration(math.Ceil(float64(length)/float64(r.Bar))) * r.Bar
+	}
+	if r.Takes == nil {
+		r.Takes = map[string][]rigTake{}
+	}
+	folder := r.Session[strings.LastIndexByte(r.Session, '/')+1:]
+	name := fmt.Sprintf("Master - %s bpm - %03d", r.TakeTempo, len(r.Takes[folder])+1)
+	r.Takes[folder] = append(r.Takes[folder], rigTake{Name: name, Frames: int64(length.Seconds()*rigSampleRate) - 7})
+}
 
 // rigSurface is a control surface the rig's brain was sent.
 type rigSurface struct {
@@ -411,6 +457,15 @@ func (r *songRig) read(c *websocket.Conn, brain int) {
 					r.Running = false
 				case rigBypassCC:
 					r.Bypassed = cmd.Value >= 64
+				case rigArmCC:
+					r.Armed = cmd.Value >= 64
+				case rigRecordCC:
+					switch on := cmd.Value >= 64; {
+					case on && !r.Recording:
+						r.Recording, r.recStart, r.Running = true, time.Now(), true
+					case !on:
+						r.endTake()
+					}
 				}
 			}
 			strip, ok := r.Strips[[2]int{cmd.Channel, cmd.Controller}]

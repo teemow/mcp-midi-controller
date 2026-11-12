@@ -115,7 +115,7 @@ func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 		}
 		row := d.findText(folder, listArea(p))
 		if row == nil {
-			return p, fmt.Errorf("no folder %q in %s (entries: %s)", folder, p.Title, entryNames(p))
+			return p, &NoFolderError{Folder: folder, In: p.Title, Entries: entryNames(p)}
 		}
 		if err := d.openRow(row, p.Title); err != nil {
 			return nil, err
@@ -124,7 +124,18 @@ func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 	return d.filesPanel(), nil
 }
 
-// openRow taps a list row and waits for the panel to change.
+// NoFolderError says a FILES list has no folder of a name: a session's folder
+// of recordings that no take was made into yet, for one.
+type NoFolderError struct {
+	// Folder is the folder looked for, In the list's title and Entries what
+	// the list holds.
+	Folder, In, Entries string
+}
+
+func (e *NoFolderError) Error() string {
+	return fmt.Sprintf("no folder %q in %s (entries: %s)", e.Folder, e.In, e.Entries)
+}
+
 // openRow taps a row of the FILES panel titled title and waits for the
 // panel's title to change (the list slides in before its header does).
 func (d *AUMDriver) openRow(row *Element, title string) error {

@@ -19,6 +19,11 @@ A ProbeAudioTap streams its strip's audio to the daemon: every sample, as
 it arrives. Nothing is fetched in pieces and joined afterwards, so a recording
 has no seams.
 
+AUM has a recorder of its own, which writes on the iPad and needs no stream:
+`record_song_stems` uses it to record a song a group of tracks at a time. What
+it does that a tap does not, and why its files cannot be fetched from the
+iPad, is in [songs.md](songs.md#stems).
+
 `play_song` with `record: true` records the tap on the song's master strip:
 
 - The recording starts before the opening sound is set and follows the song.

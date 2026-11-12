@@ -130,6 +130,15 @@ type Server struct {
 	mixMu sync.Mutex
 	mix   *mixJob
 
+	// stems is the stem recording that runs or ran last (record_song_stems),
+	// guarded by stemsJobMu; stemsMu serializes the record of the takes kept.
+	// deck replaces AUM's screen as the stems tools read and tap it; nil
+	// drives the iPad. See song_stems.go.
+	stemsJobMu sync.Mutex
+	stems      *stemsJob
+	stemsMu    sync.Mutex
+	deck       stemDeck
+
 	// sounds is the rig's sound catalogue: what the presets of its plugins
 	// were measured to sound like. See sound_tools.go.
 	sounds *sound.Catalog

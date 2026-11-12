@@ -237,6 +237,13 @@ type SequencedOptions struct {
 	// Tail is how long the transport runs on after the last bar. 0 takes the
 	// default.
 	Tail time.Duration
+	// Finish is sent FinishLead before the song's end, or when the playback
+	// is stopped, and Stop FinishWait after it: what has to end while the
+	// transport still runs. AUM's recorder ends a take on the next bar line
+	// after it is told to, so told just before the last one it ends the take
+	// there, whole bars long, and the transport must run on until it has.
+	Finish                 []Event
+	FinishLead, FinishWait time.Duration
 	// OnEnd is PlayOptions.OnEnd for a sequenced playback.
 	OnEnd func(Status)
 }
@@ -295,7 +302,25 @@ func (pb *playback) deliver(ctx context.Context, send Sender, e Event) error {
 func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts SequencedOptions, send Sender) string {
 	// halt stops the transport. It runs when the playback is cut short too, so
 	// it must not depend on the cancelled context.
+	//
+	// Finish is a toggle where it ends a recording, so it is sent only once
+	// Start is out: before that there is nothing to finish, and it would
+	// start what it is meant to end.
+	running, finished := false, false
+	finish := func() {
+		if !running || finished || len(opts.Finish) == 0 {
+			return
+		}
+		finished = true
+		fctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+		for _, e := range opts.Finish {
+			_ = send(fctx, e)
+		}
+		cancel()
+		time.Sleep(opts.FinishWait)
+	}
 	halt := func() {
+		finish()
 		fctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 		defer cancel()
 		for _, e := range opts.Stop {
@@ -320,6 +345,8 @@ func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts Sequence
 		}
 	}
 	for _, e := range opts.Start {
+		// A start that may have gone out counts as one.
+		running = true
 		if err := pb.deliver(ctx, send, e); err != nil {
 			halt()
 			return err.Error()
@@ -334,11 +361,25 @@ func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts Sequence
 	if tail <= 0 {
 		tail = sequencedTail
 	}
+	end := start.Add(q.Duration() + tail)
+	if len(opts.Finish) > 0 {
+		// The finish goes out ahead of the end, and the stop FinishWait after
+		// the finish.
+		select {
+		case <-ctx.Done():
+			halt()
+			return "stopped"
+		case <-time.After(time.Until(start.Add(q.Duration() - opts.FinishLead))):
+			finish()
+		}
+		halt()
+		return "finished"
+	}
 	select {
 	case <-ctx.Done():
 		halt()
 		return "stopped"
-	case <-time.After(time.Until(start.Add(q.Duration() + tail))):
+	case <-time.After(time.Until(end)):
 		halt()
 		return "finished"
 	}

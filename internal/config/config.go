@@ -135,6 +135,12 @@ func SoundsDir() string { return filepath.Join(ConfigDir(), "sounds") }
 // sending a song at a session that no longer matches it. Volatile (state dir).
 func SongSessionsPath() string { return filepath.Join(StateDir(), "song-sessions.json") }
 
+// SongStemsPath records the stems a song was last recorded as with AUM's own
+// recorder: for each one the file in AUM's Recordings, its length and what it
+// was recorded from, which is what a mix of those files is written from.
+// Volatile (state dir): the files themselves are on the iPad.
+func SongStemsPath() string { return filepath.Join(StateDir(), "song-stems.json") }
+
 // IPadAppsPath is where the daemon remembers the bundle ids of sideloaded iPad
 // apps it has seen (state dir): a sideloaded app's id carries a signing-team
 // prefix, which only the host the iPad is plugged into can look up.

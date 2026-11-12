@@ -166,6 +166,9 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 	if s.ipad != nil && !args.Confirm {
 		return textResult("open_sound_lab needs confirm: true: loading replaces the session open in AUM, and unsaved changes there are lost", true), nil
 	}
+	if busy := s.stemsBusy("open_sound_lab"); busy != nil {
+		return busy, nil
+	}
 	cat := songCatalog()
 	doc := song.Song{
 		Title:       "Sound Lab",
@@ -346,6 +349,9 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 		return textResult(fmt.Sprintf("name the track or the plugin to audition (tracks of %q: %s)", cs.id, trackIDs(cs)), true), nil
 	}
 	node := tp.Nodes[0]
+	if node.IsFile() {
+		return textResult(fmt.Sprintf("/track: %q plays a file (%s), not an instrument: there is no preset to audition", tp.ID, node.File), true), nil
+	}
 
 	// The presets to play.
 	names := append([]string(nil), args.Presets...)
@@ -429,6 +435,9 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 	}
 
 	// The rig must be there, and the session the song's.
+	if busy := s.stemsBusy("audition_sound"); busy != nil {
+		return busy, nil
+	}
 	if st := s.player.Status(); st.Playing {
 		return textResult(fmt.Sprintf("audition_sound: %q is playing; stop_song first", st.Song), true), nil
 	}
