@@ -31,6 +31,11 @@ import (
 // AUMBundleID is AUM's bundle identifier (App Store, not account-specific).
 const AUMBundleID = "com.kymatica.AUM"
 
+// HomeScreenBundleID is the Home Screen's (SpringBoard): what the iPad shows
+// once the app in front has gone away, and what WDA names as the app in front
+// on a locked iPad and in windowed multitasking.
+const HomeScreenBundleID = "com.apple.springboard"
+
 // DefaultWDAURL is where scripts/ipad (auv3-probe) forwards WebDriverAgent.
 const DefaultWDAURL = "http://127.0.0.1:8100"
 
@@ -108,6 +113,31 @@ func Unreachable(err error) bool {
 func SessionLost(err error) bool {
 	var we *Error
 	return errors.As(err, &we) && we.Code == "invalid session id"
+}
+
+// AppWentAway reports whether err is WDA saying that the app a session is
+// bound to went away while the session drove it: "The application under test
+// with bundle id '…' is not running, possibly crashed", which every further
+// call of that session gets. The iPad then shows its Home Screen.
+func AppWentAway(err error) bool {
+	var we *Error
+	return errors.As(err, &we) && we.Status != 0 &&
+		strings.Contains(we.Message, "is not running, possibly crashed")
+}
+
+// AppNotRunning reports whether err is WDA saying that the app a session is
+// bound to is not there: it went away under the session (AppWentAway), or it
+// was not up after a new session started it ("Cannot launch … application").
+// In the second case whatever was in front before still is.
+//
+// A locked iPad is not this: WDA says "Unable to launch … because the device
+// was not, or could not be, unlocked" (see Locked).
+func AppNotRunning(err error) bool {
+	if AppWentAway(err) {
+		return true
+	}
+	var we *Error
+	return errors.As(err, &we) && we.Status != 0 && strings.HasPrefix(we.Message, "Cannot launch ")
 }
 
 // call performs one WDA request and decodes the "value" member of the reply
@@ -245,13 +275,16 @@ func (c *Client) Locked(ctx context.Context) (bool, error) {
 
 // Front is the app this client last brought to the front and when it did:
 // the first of the sessions bound to that app in a row. It is "" before the
-// first bound session. This is what the client did, not what the iPad shows:
-// a hand on the iPad or another WDA client may have changed it since, and
-// WDA's own answer (ActiveApp) is SpringBoard in windowed multitasking.
+// first bound session, and HomeScreenBundleID once WDA said of that app that
+// it went away (AppWentAway): an app that goes away leaves the Home Screen in
+// front. This is what the client did and was told, not what the
+// iPad shows: a hand on the iPad or another WDA client may have changed it
+// since, and WDA's own answer (ActiveApp) is SpringBoard in windowed
+// multitasking.
 //
 // It matters because of the iPad's auto-lock: AUM keeps the screen awake,
-// other apps need not, and an iPad left with one of those in front locks
-// itself.
+// other apps and the Home Screen do not, and an iPad left with one of those
+// in front locks itself.
 func (c *Client) Front() (bundleID string, since time.Time) {
 	c.frontMu.Lock()
 	defer c.frontMu.Unlock()
@@ -266,7 +299,7 @@ func (c *Client) noteFront(bundleID string) {
 	}
 }
 
-// BringToFront brings an app to the front, launching it when it is not
+// BringToFront brings an app to the front, starting it when it is not
 // running, and does nothing else there.
 func (c *Client) BringToFront(ctx context.Context, bundleID string) error {
 	return c.WithApp(ctx, bundleID, func(*Session) error { return nil })
@@ -308,7 +341,10 @@ type Session struct {
 // sees the Home Screen. The capabilities mirror scripts/ipad:
 //
 //   - forceAppLaunch=false brings a running app forward instead of relaunching
-//     it (and launches it when it is not running);
+//     it, and starts it when it is not running: WDA launches the app and fails
+//     the session ("Cannot launch … application") when it is not up after
+//     that. An app that goes away later fails every further call of its
+//     session (AppWentAway); only a new session starts it again;
 //   - shouldTerminateApp=false keeps WDA from killing the app when the session
 //     ends — its default would close AUM and drop the loaded session;
 //   - waitForIdleTimeout=0 / animationCoolOffTimeout=0: an endless animation
@@ -345,11 +381,16 @@ func (c *Client) WithApp(ctx context.Context, bundleID string, fn func(*Session)
 		defer cancel()
 		_ = c.call(cctx, http.MethodDelete, "/session/"+s.id, nil, nil)
 	}()
-	if err := c.call(ctx, http.MethodPost, s.path("/appium/settings"),
-		map[string]any{"settings": map[string]any{"waitForIdleTimeout": 0, "animationCoolOffTimeout": 0}}, nil); err != nil {
-		return err
+	err := c.call(ctx, http.MethodPost, s.path("/appium/settings"),
+		map[string]any{"settings": map[string]any{"waitForIdleTimeout": 0, "animationCoolOffTimeout": 0}}, nil)
+	if err == nil {
+		err = fn(s)
 	}
-	return fn(s)
+	if bundleID != "" && AppWentAway(err) {
+		// The app is gone, and with it what kept the iPad awake.
+		c.noteFront(HomeScreenBundleID)
+	}
+	return err
 }
 
 func (s *Session) path(p string) string { return "/session/" + s.id + p }

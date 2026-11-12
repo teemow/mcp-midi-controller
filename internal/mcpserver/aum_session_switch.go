@@ -151,9 +151,7 @@ func (s *Server) surfaceSessions() []midicontrol.SurfaceSession {
 // reaches the connected brain immediately. A no-op when no session was ever
 // downloaded/imported — the next import/connect push carries the registry.
 func (s *Server) repushControlSurface(trigger string) {
-	if id := s.currentAUMSessionID(); id != "" {
-		s.autoImportSession(id, trigger)
-	}
+	s.importCurrentAUMSession(trigger)
 }
 
 // aumSetupHint is the one-time AUM wiring instruction for one registry entry,
@@ -383,7 +381,7 @@ func (s *Server) handleSwitchAUMSession(ctx context.Context, req *mcp.CallToolRe
 	// target as the current session and re-derive its rig so the control_*
 	// tools, web UI and (re-pushed) brain surface all speak the NEW session.
 	s.setCurrentAUMSession(entry.ID)
-	s.autoImportSession(entry.ID, "session switch")
+	s.importCurrentAUMSession("session switch")
 	s.broadcast("aum-session-switch", map[string]any{
 		"session": entry.ID,
 		"name":    entry.Name,
@@ -420,7 +418,7 @@ func (s *Server) OnBrainSessionSwitch(program int) {
 		}
 		log.Printf("brain session switch: pc %d -> session %q", program, entry.ID)
 		s.setCurrentAUMSession(entry.ID)
-		s.autoImportSession(entry.ID, "brain session switch")
+		s.importCurrentAUMSession("brain session switch")
 		s.broadcast("aum-session-switch", map[string]any{
 			"session": entry.ID,
 			"name":    entry.Name,

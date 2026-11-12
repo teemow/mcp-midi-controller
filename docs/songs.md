@@ -687,8 +687,8 @@ and stops at the first one that fails, with what it saw and what to do:
 |------|--------------|
 | author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
 | pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and waits up to a minute: for the file, and for the app's report of what its sync made of it. A conflict or an error the app reports ends the wait at once: see below. The screen of an app that sends no report is read instead. Skipped when the iPad already has this very file. When the step fails, the daemon brings AUM back to the front: the app is not left there. |
-| load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM's main menu shows the session's name and AUM has finished restoring the plugins, up to 2 minutes in all. A heavy session can keep AUM's UI from answering for a minute, so the name is waited for as long as AUM shows that it is loading, and the menu is opened again when the load closed it; once the load is over the name gets 10 s more. The step fails, saying which session AUM shows, when AUM ends up with another session or none. |
-| connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. |
+| load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM's main menu shows the session's name and AUM has finished restoring the plugins, up to 2 minutes in all. A heavy session can keep AUM's UI from answering for a minute, so the name is waited for as long as AUM shows that it is loading, and the menu is opened again when the load closed it; once the load is over the name gets 10 s more. The step fails, saying which session AUM shows, when AUM ends up with another session or none. When AUM is not running any more (it crashed under the load, or was closed), the step starts it again and loads the session once more: see below. |
+| connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. The session is the daemon's current one from then on: see "The current session" below. |
 | check | `check_song`, below. |
 
 Loading replaces the session open in AUM, so `load_song` needs
@@ -817,6 +817,38 @@ iPad say that first, with WebDriverAgent's own words after it ("Unable to
 launch … because the device was not, or could not be, unlocked"). The daemon
 never unlocks the iPad and never types a code. It is unlocked on the device.
 
+**AUM goes away under the load.** AUM crashed on the rig once while it
+replaced the open session with the one to load, in the system's own code.
+WebDriverAgent then answers every further call of its session with "The
+application under test … is not running, possibly crashed", and the iPad shows
+its Home Screen. The Home Screen keeps the iPad awake no more than the probe
+app does.
+
+A new WebDriverAgent session starts an app that is not running, and of the
+session that was open nothing is left that the load would not have replaced.
+So the load step opens a new session, which starts AUM, waits until AUM has
+drawn its screen, and loads the session again. It does that once. The step's
+line then begins with "AUM was not running" and what WebDriverAgent said.
+
+When AUM is gone again, the step fails with "AUM crashed or is not running"
+and what WebDriverAgent said both times. The session is not loaded a third
+time. AUM is started once more with nothing loaded, so that it is in front
+and the iPad stays awake. `next` says to load the song again, and where AUM's
+crash report is on the iPad if AUM goes away at this session every time. When
+AUM does not start then either, the step says that the iPad is on its Home
+Screen and locks itself after its auto-lock time, and starting AUM comes first
+in `next`. Where AUM never came up at all, the step says that AUM is not in
+front instead: what was in front before still is.
+
+Only the load step starts AUM again. Any other tool that drives AUM when it
+goes away (the `aum_*` tools, `ipad_tap` and its kin, `check_song`'s look at
+the mixer) fails with WebDriverAgent's words, what they mean and what to do.
+It does not make its gestures again: the session they were meant for is gone,
+and an AUM started anew shows another screen. `ipad_status` and
+`ipad_screenshot` end with a note that the Home Screen is in front until AUM
+is brought forward again. The next call that drives AUM starts it, as every
+WebDriverAgent session bound to AUM does.
+
 `check_song` answers whether the song will sound if it is played now:
 
 - AUM has the song's session open. The session's master tap says so: it is
@@ -864,6 +896,31 @@ itself, and only until a new brain connects, which is what a session load in
 AUM looks like from outside. `play_song`, `mix_song` and `audition_sound`
 compare that session with the song's: `play_song` warns, the other two
 refuse. None of them says anything when the daemon does not know.
+
+**The current session.** The daemon keeps one session as its current one: the
+session whose mappings the `control_*` tools speak, and whose control surface
+the brain is sent when it connects (`aum_auto_import`, see
+`docs/aum-brain-control.md`). It was the session the iPad had downloaded
+last. A download is a guess at what AUM will load, and the guess is wrong
+when a session is loaded that the iPad holds already. On the rig a song was
+loaded, then a second one, which the iPad downloaded, then the first again,
+which it did not: the first song's brain was sent the second song's control
+surface.
+
+The open session decides now. When a master tap dials in under the id of a
+staged session, that session becomes the current one. Its rig is imported and
+its surface pushed, unless both are in place since this brain connected. The
+connect step of `load_song` does the same for the session it loaded, which
+covers a tap that gives no name. So after a load the current session, the rig
+and the brain's surface are the loaded session's, with or without a download.
+
+A download, a session switch and `import_aum_session` set the current session
+as before: for a session whose taps give no name they are all the daemon has.
+Two things follow. Between a brain's connect and its session's tap the brain
+can still be sent the surface of the session downloaded last; the tap's
+connect replaces it. And a session the iPad downloads while another one stays
+open and connected becomes the current one at once, until the open session's
+master tap dials in again or a session is loaded.
 
 ## Playing
 
@@ -1404,6 +1461,14 @@ Not yet measured:
 - `get_song_playback` against AUM's own position display (it was measured
   against the sound);
 - a sequenced song on a host that dozes;
+- AUM started again by the load step, and the current session taken from the
+  open session. Neither has run on the rig. The tests run a load against a
+  stand-in whose AUM goes away at the tap on the session's row and is started
+  by the next WebDriverAgent session, or is not; and three loads in a row,
+  the third without a download, against a stand-in whose taps dial in under
+  their sessions' ids, or under none. What an AUM that was just started shows
+  on the iPad, and how long it takes to draw it, was not looked at: the
+  stand-in shows AUM's start screen after two reads;
 - an edit made in the sequencer's window, and a session saved from AUM with
   the sequencer in it;
 - a song much longer than two minutes in the sequencer;

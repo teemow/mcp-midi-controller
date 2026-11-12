@@ -68,6 +68,15 @@ type Server struct {
 	// manifest to the brain. See aum_autoimport.go.
 	aumAutoImport bool
 
+	// currentMu makes one step of reading the current-session marker and
+	// importing that session's rig (and of setting the marker and importing,
+	// in sessionOpen): the automatic imports of a session download, a brain's
+	// connect and a tap's connect come close together at a load, and the one
+	// that runs last has to be the one of the session named last. rig is the
+	// session that import brought in. See aum_autoimport.go.
+	currentMu sync.Mutex
+	rig       importedRig
+
 	// aumImportMu serializes session-rig imports: the auto-import callbacks
 	// (session download, brain connect) can race a tool-driven
 	// import_aum_session, and the replace-then-create lifecycle must not

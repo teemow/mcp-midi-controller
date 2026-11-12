@@ -478,6 +478,249 @@ func TestLoadSongFailedPullBringsAUMBack(t *testing.T) {
 	})
 }
 
+// TestLoadSongAUMGoesAway is AUM going away under the load step, as it
+// crashed on a device while it replaced the open session: WebDriverAgent says
+// of the next call that AUM is not running, and the Home Screen is in front,
+// where nothing keeps the iPad awake. The step starts AUM again and loads the
+// session, once. An AUM that is gone again ends the load, saying so, and is
+// brought to the front once more with nothing loaded; where that fails too,
+// the step says that the iPad is on its Home Screen and locks itself.
+func TestLoadSongAUMGoesAway(t *testing.T) {
+	const notRunning = "WebDriverAgent: invalid element state: The application under test with bundle id 'com.kymatica.AUM' is not running, possibly crashed"
+	// start readies a song the iPad holds, in an AUM that goes away when the
+	// session's row is tapped: ✕, ☰, FILES, Sessions, Songs, the row.
+	start := func(t *testing.T) *songRig {
+		r := newSongRig(t)
+		if res := call(t, r.s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+			t.Fatalf("save: %s", resultText(res))
+		}
+		r.pullStaged("Songs/Night Drive.aumproj")
+		r.aumLoads("Songs", "Night Drive", nightDriveStrips)
+		r.wda.SetAUMCrashes(6, 1)
+		return r
+	}
+	args := map[string]any{"song": "night_drive", "confirm": true, "check": false}
+	contains := func(t *testing.T, text string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(text, want) {
+				t.Errorf("report lacks %q:\n%s", want, text)
+			}
+		}
+	}
+
+	t.Run("started again and loaded", func(t *testing.T) {
+		r := start(t)
+		res := call(t, r.s.handleLoadSong, args)
+		text := resultText(res)
+		if res.IsError {
+			t.Fatalf("load: %s", text)
+		}
+		contains(t, text,
+			"3. load    ok    AUM was not running ("+notRunning+`): the daemon started it again and loaded the session once more. AUM has "Night Drive" open: 5 strip(s)`,
+			"4. connect ok    brain and tap connected",
+		)
+		if n := r.wda.Launches(); n != 1 {
+			t.Errorf("AUM was started %d time(s), want once", n)
+		}
+		if r.wda.AUMDown() {
+			t.Error("AUM is not running after the load")
+		}
+		if got := r.s.loadedSessionID(); got != "Songs/Night Drive" {
+			t.Errorf("loaded session = %q, want the song's", got)
+		}
+		if note := r.s.frontNote(); note != "" {
+			t.Errorf("a note about the app in front after the load: %s", note)
+		}
+		if n := r.wda.OpenSessions(); n != 0 {
+			t.Errorf("%d WebDriverAgent sessions left open", n)
+		}
+	})
+
+	// AUM is not running when the step begins, as after a crash nobody saw:
+	// the step's session starts it, and nothing is said of it.
+	t.Run("not running before the load", func(t *testing.T) {
+		r := start(t)
+		r.wda.SetAUMCrashes(0, 0)
+		r.wda.StopAUM()
+		res := call(t, r.s.handleLoadSong, args)
+		text := resultText(res)
+		if res.IsError {
+			t.Fatalf("load: %s", text)
+		}
+		contains(t, text, `3. load    ok    AUM has "Night Drive" open: 5 strip(s)`, "4. connect ok    brain and tap connected")
+		if n := r.wda.Launches(); n != 1 || r.wda.AUMDown() {
+			t.Errorf("AUM was started %d time(s), down %v, want it started once", n, r.wda.AUMDown())
+		}
+	})
+
+	// AUM goes away whenever it loads the session: the load is not made a
+	// third time, but AUM is started once more so that it is in front.
+	t.Run("gone again at the load", func(t *testing.T) {
+		r := start(t)
+		fresh := r.wda.AfterLaunch
+		r.wda.AfterLaunch = func(g, reads int) json.RawMessage {
+			if g == 0 && reads == 0 && r.wda.AUMCrashAt == 6 {
+				// The started AUM goes away at the row's tap too, the fifth
+				// gesture there. The fake's lock is held here.
+				r.wda.AUMCrashAt, r.wda.AUMCrashes = 5, 1
+			}
+			return fresh(g, reads)
+		}
+		res := call(t, r.s.handleLoadSong, args)
+		text := resultText(res)
+		if !res.IsError {
+			t.Fatalf("a load in an AUM that went away twice succeeded: %s", text)
+		}
+		contains(t, text,
+			"3. load    FAIL  AUM crashed or is not running: it went away at the load, and when the daemon started it again to load the session once more it did not stay up ("+notRunning+" (AUM had been started again after: "+notRunning+")). "+
+				"The daemon then started AUM once more and loaded nothing, so the iPad is not left on its Home Screen, where nothing keeps it awake and it locks itself",
+			`next: AUM runs with no session loaded: load_song again. If AUM goes away whenever it loads "Songs/Night Drive", its crash report on the iPad says where it failed (Settings > Privacy & Security > Analytics & Improvements > Analytics Data, the newest entry of AUM)`,
+		)
+		if strings.Contains(text, "4. connect") {
+			t.Errorf("the load went on after AUM was gone:\n%s", text)
+		}
+		if n := r.wda.Launches(); n != 2 {
+			t.Errorf("AUM was started %d time(s), want twice: once for the load, once to be in front", n)
+		}
+		if r.wda.AUMDown() {
+			t.Error("AUM was left not running: the Home Screen is in front")
+		}
+		if app, _ := r.s.ipad.Front(); app != ipad.AUMBundleID {
+			t.Errorf("the daemon takes %q to be in front, want AUM", app)
+		}
+		// In the AUM started last nothing was tapped: no session was loaded.
+		if n := r.wda.Gestures(); n != 0 {
+			t.Errorf("%d gesture(s) in the AUM started to be in front", n)
+		}
+	})
+
+	// AUM does not start again: the iPad stays on its Home Screen, and the
+	// step says what that means.
+	t.Run("does not start again", func(t *testing.T) {
+		r := start(t)
+		r.wda.AUMStaysDown = true
+		const cannot = "WebDriverAgent: session not created: Cannot launch com.kymatica.AUM application. Make sure the correct bundle identifier has been provided in capabilities and check the device log for possible crash report occurrences"
+		res := call(t, r.s.handleLoadSong, args)
+		text := resultText(res)
+		if !res.IsError {
+			t.Fatalf("a load without AUM succeeded: %s", text)
+		}
+		contains(t, text,
+			"3. load    FAIL  AUM crashed or is not running: it went away at the load, and when the daemon started it again to load the session once more it did not stay up ("+cannot+" (AUM had been started again after: "+notRunning+")). "+
+				"The daemon could not bring it back to the front after that either ("+cannot+"), so the iPad is on its Home Screen, where nothing keeps it awake: it locks itself after its auto-lock time and then needs its passcode entered on the device",
+			`next: start AUM on the iPad before the iPad locks itself (ipad_launch without app, or by hand), then load_song again. If AUM goes away whenever it loads "Songs/Night Drive", its crash report on the iPad says where it failed`,
+		)
+		if n := r.wda.Launches(); n != 0 {
+			t.Errorf("AUM was started %d time(s) although it does not start", n)
+		}
+		// The tools after it say where the iPad is.
+		if note := r.s.frontNote(); !strings.Contains(note, "the iPad is on its Home Screen, where nothing keeps it awake") {
+			t.Errorf("no note that the Home Screen is in front: %q", note)
+		}
+	})
+
+	// AUM was not running and never starts: no session of it came up, so the
+	// step does not claim to know what is in front, only that AUM is not.
+	t.Run("never starts", func(t *testing.T) {
+		r := start(t)
+		r.wda.SetAUMCrashes(0, 0)
+		r.wda.StopAUM()
+		r.wda.AUMStaysDown = true
+		res := call(t, r.s.handleLoadSong, args)
+		text := resultText(res)
+		if !res.IsError {
+			t.Fatalf("a load without AUM succeeded: %s", text)
+		}
+		contains(t, text,
+			"3. load    FAIL  AUM crashed or is not running: it went away at the load, and when the daemon started it again to load the session once more it did not stay up (WebDriverAgent: session not created: Cannot launch com.kymatica.AUM application.",
+			"The daemon could not bring it to the front after that either (WebDriverAgent: session not created: Cannot launch com.kymatica.AUM application.",
+			"so AUM is not in front, and nothing else is known to keep the iPad awake: it locks itself after its auto-lock time and then needs its passcode entered on the device",
+			"next: start AUM on the iPad before the iPad locks itself (ipad_launch without app, or by hand), then load_song again.",
+		)
+		if strings.Contains(text, "Home Screen") {
+			t.Errorf("the step names the Home Screen although no session of AUM came up:\n%s", text)
+		}
+	})
+}
+
+// TestLoadSongMakesItsSessionCurrent is a load without a download. The
+// current-session marker used to follow the iPad's last download: after a
+// song, then another one, then the first again, which the iPad held already,
+// the marker still named the second, and the brain of the session just loaded
+// was sent the second one's control surface. The session AUM has open is the
+// current one: its master tap says so when it dials in under the session's
+// id, and the load step says so for a tap that gives no name.
+func TestLoadSongMakesItsSessionCurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		named bool
+	}{
+		{"the tap names the session", true},
+		{"the tap gives no name", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newSongRig(t, WithAUMAutoImport(true))
+			s := r.s
+			dayTrip := strings.Replace(toolSong, `title: "Night Drive"`, `title: "Day Trip"`, 1)
+			for _, yaml := range []string{toolSong, dayTrip} {
+				if res := call(t, s.handleSaveSong, map[string]any{"yaml": yaml}); res.IsError {
+					t.Fatalf("save: %s", resultText(res))
+				}
+			}
+			load := func(id, title string) string {
+				t.Helper()
+				if tc.named {
+					r.Session = "Songs/" + title
+				}
+				r.pullStaged("Songs/" + title + ".aumproj")
+				r.aumLoads("Songs", title, nightDriveStrips)
+				res := call(t, s.handleLoadSong, map[string]any{"song": id, "confirm": true, "check": false})
+				if res.IsError {
+					t.Fatalf("load %s: %s", id, resultText(res))
+				}
+				return resultText(res)
+			}
+			// current checks the marker, the rig imported and the surface the
+			// loaded session's brain shows.
+			current := func(when, want string) {
+				t.Helper()
+				surface := r.surface()
+				if id := s.currentAUMSessionID(); id != want {
+					t.Errorf("%s the current session is %q, want %q", when, id, want)
+				}
+				if surface.Session != want || len(surface.Devices) == 0 {
+					t.Errorf("%s the brain shows the control surface of %q (%d device(s)), want the one of %q", when, surface.Session, len(surface.Devices), want)
+				}
+				rig := 0
+				for _, d := range s.eng.Devices() {
+					if d.Session == "" {
+						continue
+					}
+					rig++
+					if d.Session != want {
+						t.Errorf("%s the device %q is of the session %q, want %q", when, d.Name, d.Session, want)
+					}
+				}
+				if rig == 0 {
+					t.Errorf("%s no rig is imported", when)
+				}
+			}
+
+			load("night_drive", "Night Drive")
+			current("after the first song's load", "Songs/Night Drive")
+			load("day_trip", "Day Trip")
+			current("after the second song's load", "Songs/Day Trip")
+
+			text := load("night_drive", "Night Drive")
+			if !strings.Contains(text, "2. pull    skip  the iPad already has this file") {
+				t.Fatalf("the first song was pulled again, so the load says nothing of one without a download:\n%s", text)
+			}
+			current("after a load without a download", "Songs/Night Drive")
+		})
+	}
+}
+
 // TestLoadSongLockedIPad checks a locked iPad is named as that, at once and
 // with what to do, where the load would otherwise wait for a pull that cannot
 // come or fail on WebDriverAgent's "Unable to launch". Nothing tries to

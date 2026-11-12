@@ -3,6 +3,7 @@ package ipad
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +233,156 @@ func TestAUMOpenSessionUnknown(t *testing.T) {
 	_, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Nowhere")
 	if err == nil || !strings.Contains(err.Error(), `no session "Nowhere" in Songs (entries: Night Drive)`) {
 		t.Fatalf("open of an unknown session: %v", err)
+	}
+}
+
+// freshScreens is AUM, just started, while "Night Drive" is opened from the
+// Songs folder: its screen is drawn after two reads.
+func freshScreens() func(gestures, reads int) json.RawMessage {
+	return ipadtest.FreshSessionScreens("Songs", "Night Drive", []ipadtest.Strip{
+		{Title: "MIDI 1"}, {Title: "2: bass", Level: "-4.0 dB"}, {Title: "3: pad", Level: "+0.0 dB"}, {Title: "4: Master", Level: "+0.0 dB"},
+	}, 2, 1)
+}
+
+// TestAUMOpenSessionStartsAUMAgain is AUM going away under the load, as it
+// crashed on a device while it replaced the open session: the tap on the
+// session's row takes it down, the session's next call says it is not
+// running, and the Home Screen is in front. The load is made once more in a
+// new session, which starts AUM, and says so.
+func TestAUMOpenSessionStartsAUMAgain(t *testing.T) {
+	w, c := openFake(t, sessionScreens(1))
+	// The started AUM has not drawn its screen at the first two reads: it is
+	// not tapped before it has.
+	fresh, drawn, early := freshScreens(), false, false
+	w.AfterLaunch = func(g, r int) json.RawMessage {
+		drawn = drawn || (g == 0 && r >= 2) // the fake's lock is held
+		early = early || (g > 0 && !drawn)
+		return fresh(g, r)
+	}
+	w.SetAUMCrashes(6, 1) // ✕, ☰, FILES, Sessions, Songs, the row
+	res, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Night Drive")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	got, ok := res.Data.(AUMLoaded)
+	if !ok || !res.Verified {
+		t.Fatalf("open: %+v", res)
+	}
+	if early || !drawn {
+		t.Errorf("the started AUM was tapped before its screen was drawn (drawn %v)", drawn)
+	}
+	if got.Session != "Night Drive" || len(got.Strips) != 4 {
+		t.Errorf("loaded = %+v", got)
+	}
+	const gone = "WebDriverAgent: invalid element state: The application under test with bundle id 'com.kymatica.AUM' is not running, possibly crashed"
+	if got.Restarted != gone {
+		t.Errorf("restarted = %q, want what WebDriverAgent said of AUM", got.Restarted)
+	}
+	if want := "AUM was not running (" + gone + `): the daemon started it again and loaded the session once more. AUM has "Night Drive" open: 4 strip(s)`; res.Message != want {
+		t.Errorf("message = %q, want %q", res.Message, want)
+	}
+	if n := w.Launches(); n != 1 {
+		t.Errorf("AUM was started %d time(s), want once", n)
+	}
+	if w.AUMDown() {
+		t.Error("AUM is not running after the load")
+	}
+	if app, _ := c.Front(); app != AUMBundleID {
+		t.Errorf("Front = %q, want AUM after it was started again", app)
+	}
+	if n := w.OpenSessions(); n != 0 {
+		t.Errorf("%d WebDriverAgent sessions left open", n)
+	}
+	// In the AUM that was started: ☰, FILES, Sessions, Songs, the row, ☰, the
+	// menu's close icon. Its start screen is not tapped: nothing of a last
+	// state is loaded on the way.
+	if g := w.Gestures(); g != 7 {
+		t.Errorf("gestures in the started AUM = %d, want 7", g)
+	}
+}
+
+// TestAUMOpenSessionAUMGoesAwayAgain checks the load is made once more and
+// no more often: an AUM that goes away at every load, or does not start, ends
+// the load with what WebDriverAgent said both times, and the Home Screen is
+// known to be in front.
+func TestAUMOpenSessionAUMGoesAwayAgain(t *testing.T) {
+	const first = "(AUM had been started again after: WebDriverAgent: invalid element state: The application under test with bundle id 'com.kymatica.AUM' is not running, possibly crashed)"
+	for _, tc := range []struct {
+		name string
+		// set makes the AUM that went away at the row's tap go away again.
+		set      func(w *ipadtest.WDA)
+		want     string
+		launches int
+	}{
+		{"at every load", func(w *ipadtest.WDA) {
+			fresh := freshScreens()
+			w.AfterLaunch = func(g, r int) json.RawMessage {
+				// In the started AUM the row is the fifth gesture. The
+				// fake's lock is held here.
+				w.AUMCrashAt, w.AUMCrashes = 5, 1
+				return fresh(g, r)
+			}
+		}, "WebDriverAgent: invalid element state: The application under test with bundle id 'com.kymatica.AUM' is not running, possibly crashed " + first, 1},
+		{"does not start", func(w *ipadtest.WDA) { w.AUMStaysDown = true },
+			"WebDriverAgent: session not created: Cannot launch com.kymatica.AUM application. Make sure the correct bundle identifier has been provided in capabilities and check the device log for possible crash report occurrences " + first, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, c := openFake(t, sessionScreens(1))
+			w.SetAUMCrashes(6, 1) // ✕, ☰, FILES, Sessions, Songs, the row
+			tc.set(w)
+			res, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Night Drive")
+			if err == nil {
+				t.Fatalf("a load in an AUM that went away succeeded: %+v", res)
+			}
+			if !AppNotRunning(err) {
+				t.Errorf("AppNotRunning(%v) = false", err)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("err = %q, want %q", err, tc.want)
+			}
+			if n := w.Launches(); n != tc.launches {
+				t.Errorf("AUM was started %d time(s), want %d", n, tc.launches)
+			}
+			if !w.AUMDown() {
+				t.Error("AUM runs: the test's AUM should have gone away")
+			}
+			if app, _ := c.Front(); app != HomeScreenBundleID {
+				t.Errorf("Front = %q, want the Home Screen once AUM went away", app)
+			}
+			if n := w.OpenSessions(); n != 0 {
+				t.Errorf("%d WebDriverAgent sessions left open", n)
+			}
+		})
+	}
+}
+
+// TestAppNotRunning checks which of WebDriverAgent's errors say that the app
+// is not there.
+func TestAppNotRunning(t *testing.T) {
+	went := &Error{Status: 500, Code: "invalid element state", Message: "The application under test with bundle id 'com.kymatica.AUM' is not running, possibly crashed"}
+	for _, tc := range []struct {
+		err error
+		// away: the app went away under its session; not: it is not running.
+		away, not bool
+	}{
+		{went, true, true},
+		{fmt.Errorf("%w (AUM had been started again after: x)", went), true, true},
+		// An app that was not up after its start left nothing behind: what
+		// was in front before still is.
+		{&Error{Status: 500, Code: "session not created", Message: "Cannot launch com.kymatica.AUM application. Make sure the correct bundle identifier has been provided in capabilities and check the device log for possible crash report occurrences"}, false, true},
+		// A locked iPad starts no app, and is not an app that went away.
+		{&Error{Status: 500, Code: "unknown error", Message: "Unable to launch com.kymatica.AUM because the device was not, or could not be, unlocked."}, false, false},
+		{&Error{Status: 404, Code: "invalid session id", Message: "session S1 does not exist"}, false, false},
+		{&Error{Message: "dial tcp 127.0.0.1:8100: connect: connection refused"}, false, false},
+		{context.DeadlineExceeded, false, false},
+		{nil, false, false},
+	} {
+		if got := AppWentAway(tc.err); got != tc.away {
+			t.Errorf("AppWentAway(%v) = %v, want %v", tc.err, got, tc.away)
+		}
+		if got := AppNotRunning(tc.err); got != tc.not {
+			t.Errorf("AppNotRunning(%v) = %v, want %v", tc.err, got, tc.not)
+		}
 	}
 }
 

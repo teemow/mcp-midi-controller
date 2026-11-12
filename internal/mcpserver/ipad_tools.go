@@ -201,6 +201,10 @@ func (s *Server) ipadError(ctx context.Context, err error) *mcp.CallToolResult {
 	if s.ipadLocked(ctx) {
 		return textResult(fmt.Sprintf("%s: %s. WebDriverAgent said: %v", ipadLockedText, ipadUnlock, err), true)
 	}
+	// So does an app that went away: it left the Home Screen in front.
+	if ipad.AppWentAway(err) {
+		return textResult(appGone(err), true)
+	}
 	return textResult(s.withFrontNote(err.Error()), true)
 }
 

@@ -1,9 +1,12 @@
 package mcpserver
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/teemow/mcp-midi-controller/internal/config"
@@ -116,6 +119,91 @@ func TestAUMAutoImportOnBrainConnect(t *testing.T) {
 	}
 	if count != 2 { // session device + gitarre node
 		t.Fatalf("after reconnect the session rig has %d device(s), want 2", count)
+	}
+}
+
+// TestAUMTapConnectNamesTheOpenSession checks the connect of a session's
+// master tap makes that session the current one, whatever was downloaded
+// last, and brings its rig in: the tap dials in under the session's id, so it
+// is the session AUM has open. Every other tap says nothing.
+func TestAUMTapConnectNamesTheOpenSession(t *testing.T) {
+	s := newAutoImportServer(t)
+	stageProbe(t)
+	authorConventionSession(t, s, "rig_a", "Gitarre")
+	authorConventionSession(t, s, "rig_b", "Keys")
+	tap := func(name string) {
+		s.OnAudioTapConnected(name)
+		s.waitBackground()
+	}
+
+	// The iPad downloads one session after the other: the second is current.
+	s.OnAUMSessionDownloaded("rig_a.aumproj")
+	s.OnAUMSessionDownloaded("rig_b.aumproj")
+	if id := s.currentAUMSessionID(); id != "rig_b" {
+		t.Fatalf("current session = %q after two downloads, want the second", id)
+	}
+
+	// A track's tap, a tap without a name, one named by hand and one of a
+	// session that is not staged leave it alone.
+	for _, name := range []string{"rig_a/bass", "192.0.2.7:51234", "my tap", "gone/master", "../rig_a/master"} {
+		tap(name)
+		if id := s.currentAUMSessionID(); id != "rig_b" {
+			t.Fatalf("the tap %q made %q the current session", name, id)
+		}
+	}
+	if _, ok := s.eng.DeviceFor("keys"); !ok {
+		t.Fatal("the second session's rig is gone although no session's master tap connected")
+	}
+
+	// The first session's master tap connects: AUM has that one open.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	tap("rig_a/master")
+	if id := s.currentAUMSessionID(); id != "rig_a" {
+		t.Fatalf("current session = %q, want the one whose master tap connected", id)
+	}
+	if d, ok := s.eng.DeviceFor("gitarre"); !ok || d.Session != "rig_a" {
+		t.Fatalf("the rig of the open session was not imported (ok=%t, %+v)", ok, d)
+	}
+	if _, ok := s.eng.DeviceFor("keys"); ok {
+		t.Fatal("the other session's device survived")
+	}
+	if n := strings.Count(buf.String(), `aum auto-import "rig_a"`); n != 1 {
+		t.Fatalf("%d import(s) at the tap's connect, want one:\n%s", n, buf.String())
+	}
+
+	// The same word again, from the tap or from load_song, imports nothing
+	// anew: the rig is that session's already.
+	buf.Reset()
+	tap("rig_a/master")
+	s.sessionOpen("rig_a", "load_song loaded the session")
+	if n := strings.Count(buf.String(), "aum auto-import"); n != 0 {
+		t.Fatalf("%d import(s) for the session whose rig is in place:\n%s", n, buf.String())
+	}
+	// A brain that connects since has not seen the surface: it is pushed.
+	s.NotifyMidiControl(true, "ipad:1")
+	s.sessionOpen("rig_a", "load_song loaded the session")
+	if n := strings.Count(buf.String(), `aum auto-import "rig_a"`); n != 1 {
+		t.Fatalf("%d import(s) for a brain that connected since, want one:\n%s", n, buf.String())
+	}
+}
+
+// TestAUMTapConnectWithoutAutoImport checks the marker follows the open
+// session with the automatic import off, and nothing is imported.
+func TestAUMTapConnectWithoutAutoImport(t *testing.T) {
+	s := newAUMServerWithBrain(t) // auto-import NOT enabled
+	stageProbe(t)
+	authorConventionSession(t, s, "rig_a", "Gitarre")
+	authorConventionSession(t, s, "rig_b", "Keys")
+	s.OnAUMSessionDownloaded("rig_b.aumproj")
+	s.OnAudioTapConnected("rig_a/master")
+	s.waitBackground()
+	if id := s.currentAUMSessionID(); id != "rig_a" {
+		t.Fatalf("current session = %q, want the one whose master tap connected", id)
+	}
+	if n := len(s.eng.Devices()); n != 0 {
+		t.Fatalf("the tap's connect created %d device(s) with the import off", n)
 	}
 }
 

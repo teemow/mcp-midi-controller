@@ -500,3 +500,27 @@ func OpenSessionScreens(folder, name string, strips []Strip, loadingReads int, n
 		}
 	}
 }
+
+// FreshSessionScreens is OpenSessionScreens in an AUM that was just started,
+// for WDA.AfterLaunch: for the first blankReads reads its screen is not drawn
+// yet, then it shows its start screen and no plugin window, so the menu is
+// the first gesture and the session's row the fifth.
+func FreshSessionScreens(folder, name string, strips []Strip, blankReads, loadingReads int, notices ...string) func(gestures, reads int) json.RawMessage {
+	open := OpenSessionScreens(folder, name, strips, loadingReads, notices...)
+	blank := AUM{}
+	start := AUM{Tempo: "120", Position: "001:1  00:00.0", StartScreen: true}
+	menu := start
+	menu.Session = "Untitled"
+	return func(gestures, reads int) json.RawMessage {
+		switch {
+		case gestures == 0 && reads < blankReads:
+			return blank.Source()
+		case gestures == 0:
+			return start.Source()
+		case gestures == 1: // ☰
+			return menu.Source()
+		default: // FILES and on, as in an AUM that was running
+			return open(gestures+1, reads)
+		}
+	}
+}

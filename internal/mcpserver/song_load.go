@@ -74,7 +74,7 @@ const songQuietPoll = 50 * time.Millisecond
 func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "load_song",
-		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself; the step ends on the app's report of what its sync made of the session, or on its screen for an app that sends none: a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged, and a copy the app failed at is named with its error; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading, wait for the session's brain and tap, then check that every track answers a note (see check_song). " +
+		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself; the step ends on the app's report of what its sync made of the session, or on its screen for an app that sends none: a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged, and a copy the app failed at is named with its error; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading (an AUM that is not running any more at that point, because it crashed under the load, is started again and loads the session once more; when it is gone again the step says so, and that the iPad is on its Home Screen and locks itself if AUM could not be brought back), wait for the session's brain and tap (the session is the daemon's current one from then on: its rig and control surface are in place whatever the iPad downloaded last), then check that every track answers a note (see check_song). " +
 			"Each step is reported with what was seen; a step that fails ends the call and says what to do. A locked iPad is named as that: it has to be unlocked on the device, the daemon never does. Loading replaces the session open in AUM, so it needs confirm: true. " +
 			"Call it after save_song says the session is out of date, and again whenever a plugin failed.",
 		InputSchema: json.RawMessage(`{
@@ -368,13 +368,22 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	if dir = strings.Trim(dir, "/"); dir != "" {
 		folders = strings.Split(dir, "/")
 	}
+	// An AUM that goes away under the load is started again and loads the
+	// session once more (AUMOpenSession); what is left to say here is an AUM
+	// that went away again.
 	res, err := s.ipad.AUMOpenSession(ctx, folders, name)
 	if err != nil {
 		why, nowLocked := s.ipadFailure(ctx, err)
-		rep.add("load", false, start, "%s", why)
-		if nowLocked {
+		switch {
+		case nowLocked:
+			rep.add("load", false, start, "%s", why)
 			return done(ipadUnlock + ", then load_song again")
+		case ipad.AppNotRunning(err):
+			detail, next := s.aumGone(ctx, outID, err)
+			rep.add("load", false, start, "%s", detail)
+			return done(next)
 		}
+		rep.add("load", false, start, "%s", why)
 		// AUM did not come forward: the probe app may still be, after a pull.
 		return done(s.withFrontNote("look at the iPad (ipad_screenshot); AUM must be running and its mixer reachable, then load_song again"))
 	}
@@ -401,6 +410,12 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 		return done("open the plugin's window in AUM and read its status line: it names the daemon it dials. A plugin AUM shows as failed needs the session loaded again (load_song)")
 	}
 	s.loaded.set(outID)
+	// AUM has this session open: it is the daemon's current one, whatever the
+	// iPad downloaded last, and its rig and control surface are the ones in
+	// place before the song is checked or played. A master tap that dialled
+	// in under the session's id has said so already (OnAudioTapConnected);
+	// for one that gives no name this is where the daemon learns it.
+	s.sessionOpen(outID, "load_song loaded the session")
 	if named {
 		rep.add("connect", true, start, "brain and tap connected; the tap dialled in as %q", tap.Name())
 	} else {
@@ -415,6 +430,40 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 		return done(check.Next)
 	}
 	return done("")
+}
+
+// aumGone ends a load step at an AUM that is not running although the load
+// started it again once (ipad.AUMOpenSession): err is what WebDriverAgent
+// said then. Left like that, the iPad is on its Home Screen, locks itself
+// after its auto-lock time and needs its passcode by hand. So AUM is brought
+// to the front one more time, with nothing loaded: an AUM that does not load
+// the session still keeps the iPad awake. Where that fails too, the step says
+// that the iPad is about to lock itself.
+func (s *Server) aumGone(ctx context.Context, outID string, err error) (detail, next string) {
+	const report = "its crash report on the iPad says where it failed (Settings > Privacy & Security > Analytics & Improvements > Analytics Data, the newest entry of AUM)"
+	detail = fmt.Sprintf("AUM crashed or is not running: it went away at the load, and when the daemon started it again to load the session once more it did not stay up (%v)", err)
+	if ctx.Err() != nil {
+		// AUMOpenSession starts nothing again for a call that is over.
+		detail = fmt.Sprintf("AUM crashed or is not running: it went away at the load (%v), and the call ended before the daemon started it again to load the session", err)
+	}
+	// The call may be over; AUM comes back all the same.
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pullAUMBackTimeout)
+	defer cancel()
+	if berr := s.ipad.BringToFront(bctx, ipad.AUMBundleID); berr != nil {
+		if s.ipadLocked(bctx) {
+			return fmt.Sprintf("%s. Now %s (%v)", detail, ipadLockedText, berr), ipadUnlock + ", then load_song again"
+		}
+		next = fmt.Sprintf("start AUM on the iPad before the iPad locks itself (ipad_launch without app, or by hand), then load_song again. If AUM goes away whenever it loads %q, %s", outID, report)
+		if front, _ := s.ipad.Front(); front != ipad.HomeScreenBundleID {
+			// AUM never came up for a session, so what was in front before
+			// still is: the probe app after a pull, which the note names.
+			return fmt.Sprintf("%s. The daemon could not bring it to the front after that either (%v), so AUM is not in front, and nothing else is known to keep the iPad awake: it locks itself after its auto-lock time and then needs its passcode entered on the device", detail, berr),
+				s.withFrontNote(next)
+		}
+		return fmt.Sprintf("%s. The daemon could not bring it back to the front after that either (%v), so %s", detail, berr, ipadHomeScreen), next
+	}
+	return detail + ". The daemon then started AUM once more and loaded nothing, so the iPad is not left on its Home Screen, where nothing keeps it awake and it locks itself",
+		fmt.Sprintf("AUM runs with no session loaded: load_song again. If AUM goes away whenever it loads %q, %s", outID, report)
 }
 
 // waitRig waits for a brain connection made after generation gen and for the
