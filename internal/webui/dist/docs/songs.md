@@ -1286,9 +1286,19 @@ tools of a daemon that has the mode:
   walked from its root into the folder, and a click on that button's
   element, found by its frame, made the app fetch the file: the row was in
   sync at the next look, 1.5 s later, and the six conflicts the app held in
-  other folders were as before. Those were the pieces, driven from outside
-  the daemon. The pull step as a whole, and the choice among several
-  conflicts in one folder, have been run against the stand-in app only.
+  other folders were as before.
+- **The pull step against a conflict, whole.** The same song, saved in AUM
+  again (164 KB) and authored again, with the daemon as it is now:
+  `load_song` failed at "pull" after 52 s with the conflict, the copy's 164
+  KB against the 105 KB staged, and what to do. Nothing was tapped in the app,
+  and AUM was in front again. Most of the 52 s went by before the app showed
+  the conflict at all: it had been started afresh and was sending its audio
+  units, so a slower start can run out the minute first, and the step then
+  ends with the reasons for a timeout instead. The step's resolving branch
+  was run from outside the daemon, with 164 KB counted as a size it had
+  staged: it walked the browser, tapped "keep controller" on that row, and
+  the iPad fetched the file, 49 s in all. The choice among several conflicts
+  in one folder has been run against the stand-in app only.
 - **The app's own conflicts.** Earlier runs on the rig had met such a
   conflict three times, each on a song's session with nothing saved in AUM.
   What the daemon saw of the app while the above was measured: after three
