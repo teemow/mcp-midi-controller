@@ -555,6 +555,15 @@ func (s *Song) Validate() error {
 		}
 	}
 	checkEffects(&e, "/master", s.Master)
+	// The grouping holds together: a song that cannot be taken apart into
+	// its stems says so when it is saved, not when its stems are recorded.
+	if _, serr := s.Stems(nil); serr != nil {
+		if list, ok := serr.(Errors); ok {
+			e.list = append(e.list, list...)
+		} else {
+			e.addf("/tracks: %v", serr)
+		}
+	}
 
 	for _, name := range sortedKeys(s.Scenes) {
 		for _, tid := range sortedKeys(s.Scenes[name]) {

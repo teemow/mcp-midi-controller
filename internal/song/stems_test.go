@@ -84,6 +84,7 @@ func TestFileTrackChecks(t *testing.T) {
 		{"a file as an effect", "{id: echo, plugin: delay, params: {Mix: 0.2}}", `{id: echo, plugin: delay, file: "a/b.wav", params: {Mix: 0.2}}`, "only a track's instrument can be a file"},
 		{"a lead-in that is none", "session: {lead_bars: 2}", "session: {lead_bars: 99}", "/session/lead_bars"},
 		{"a group called master", "  - id: winds\n", "  - id: winds\n    group: master\n", "/tracks/1/group"},
+		{"a group called as a track that is in none", "  - id: winds\n", "  - id: winds\n    group: strings\n", `"strings" is the id of the track "strings"`},
 		{"a group called master with a blank", "  - id: winds\n", "  - id: winds\n    group: \" master\"\n", "/tracks/1/group"},
 	} {
 		doc := strings.Replace(fileSong, tc.old, tc.new, 1)
