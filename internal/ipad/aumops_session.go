@@ -82,9 +82,14 @@ func (c *Client) aumOpenSession(ctx context.Context, path []string, name string,
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
 		if started && !d.St.ready() {
 			// WebDriverAgent returns from the launch before AUM has drawn
-			// its screen. One that never shows is the load's to report.
-			if _, err := d.until(aumStartWait, AUMState.ready); err != nil {
+			// its screen. One that never shows is not driven: the menu's
+			// gestures are taps at places of a screen that is not there.
+			ready, err := d.until(aumStartWait, AUMState.ready)
+			if err != nil {
 				return err
+			}
+			if !ready {
+				return fmt.Errorf("AUM did not show its screen within %s of its start (%s)", aumStartWait, d.St.overlaySummary())
 			}
 		}
 		if err := d.clearScreen(); err != nil {

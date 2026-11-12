@@ -109,7 +109,25 @@ func (s *Server) OnAudioTapConnected(name string) {
 	if path, err := resolveAUMSessionPath("", id); err != nil || !isFile(path) {
 		return
 	}
-	s.bg.Go(func() { s.sessionOpen(id, "the session's tap connected") })
+	s.bg.Go(func() { s.tapOpen(id, "the session's tap connected") })
+}
+
+// tapOpen is OnAudioTapConnected's body: sessionOpen, for a session whose
+// master tap is still the one that connected last when its turn comes. It
+// waits for currentMu behind the imports before it, and meanwhile the tap may
+// have dropped or another session's master may have dialled in: the older
+// word would then replace the marker, the rig and the surface of the session
+// AUM has open with its own.
+func (s *Server) tapOpen(id, trigger string) {
+	s.currentMu.Lock()
+	defer s.currentMu.Unlock()
+	if s.audio != nil {
+		if open := s.tapSession(); open != id {
+			log.Printf("current AUM session: %q's tap is not the newest master (that is %q): left as is", id, open)
+			return
+		}
+	}
+	s.sessionOpenLocked(id, trigger)
 }
 
 func isFile(path string) bool {
@@ -126,6 +144,11 @@ func isFile(path string) bool {
 func (s *Server) sessionOpen(id, trigger string) {
 	s.currentMu.Lock()
 	defer s.currentMu.Unlock()
+	s.sessionOpenLocked(id, trigger)
+}
+
+// sessionOpenLocked is sessionOpen for a caller that holds currentMu.
+func (s *Server) sessionOpenLocked(id, trigger string) {
 	was := s.currentAUMSessionID()
 	if was != id {
 		log.Printf("current AUM session: %q, not %q (%s)", id, was, trigger)
