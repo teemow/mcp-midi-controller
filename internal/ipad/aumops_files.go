@@ -162,7 +162,11 @@ func listArea(p *AUMOverlay) *Rect {
 type AUMFileEntry struct {
 	Name   string `json:"name"`
 	Detail string `json:"detail,omitempty"`
-	Frame  Rect   `json:"frame"`
+	// Folder is true for a row that opens a folder or a view (AUM draws a
+	// chevron at its right); a tap on any other row of Sessions loads that
+	// session at once.
+	Folder bool `json:"folder,omitempty"`
+	Frame  Rect `json:"frame"`
 }
 
 // fileEntries reads the cells of a FILES list: each holds the entry's name
@@ -177,17 +181,19 @@ func fileEntries(p *AUMOverlay) []AUMFileEntry {
 			return true
 		}
 		var texts []*Element
+		folder := false
 		e.Walk(func(t *Element, _ int) bool {
 			if t.Type == "StaticText" && t.Label != "" && !t.Hidden && !t.Rect.Empty() {
 				texts = append(texts, t)
 			}
+			folder = folder || (t.Type == "Button" && t.Label == "chevron")
 			return true
 		})
 		if len(texts) == 0 {
 			return false
 		}
 		sort.SliceStable(texts, func(i, j int) bool { return texts[i].Rect.Y < texts[j].Rect.Y })
-		fe := AUMFileEntry{Name: texts[0].Label, Frame: e.Rect}
+		fe := AUMFileEntry{Name: texts[0].Label, Folder: folder, Frame: e.Rect}
 		if len(texts) > 1 {
 			fe.Detail = texts[1].Label
 		}
@@ -566,15 +572,16 @@ func (d *AUMDriver) sessionEntry(path []string, name string) (*AUMFileEntry, err
 	for _, folder := range path {
 		p := d.filesPanel()
 		at, _ := filesFolder(p)
-		e, err := d.fileEntry(false, folder)
+		e, err := d.fileEntry(true, folder)
 		if err != nil {
 			return nil, err
 		}
 		if e == nil {
 			return nil, &NoFolderError{Folder: folder, In: "Sessions " + at, Entries: entryNames(d.filesPanel())}
 		}
-		// The folder's row is on screen now. Its name can be the header's
-		// too, so it is looked for below the header.
+		// The folder's row is on screen now, and it is a folder's: a
+		// session of that name would be loaded by this tap. The name can be
+		// the header's too, so it is looked for inside the row.
 		row := d.findText(e.Name, &e.Frame)
 		if row == nil {
 			return nil, fmt.Errorf("lost the row of folder %q in Sessions %s", folder, at)
@@ -594,7 +601,7 @@ func (d *AUMDriver) sessionEntry(path []string, name string) (*AUMFileEntry, err
 			return nil, fmt.Errorf("FILES → Sessions shows folder %q after a tap on %q in %q", now, folder, at)
 		}
 	}
-	return d.fileEntry(true, name, name+".aumproj")
+	return d.fileEntry(false, name, name+".aumproj")
 }
 
 // filesFolder is the folder a FILES list shows, from the header row above
@@ -638,9 +645,11 @@ const (
 // seen (one such page can be a drag the list did not follow). Pages overlap;
 // a page that shares no row with the one before means rows went by unread,
 // which is an error and not "no such entry".
-// With detail set, a row counts only once its second line (a session's saved
-// time) can be read: a row cut by the list's edge shows one of its lines.
-func (d *AUMDriver) fileEntry(detail bool, names ...string) (*AUMFileEntry, error) {
+// With folder set it finds a folder's row, else a session's: a folder and a
+// session can share a name, and only one of them may be tapped. A session's
+// row counts only once its second line, the saved time, can be read: a row
+// cut by the list's edge shows one of its lines.
+func (d *AUMDriver) fileEntry(folder bool, names ...string) (*AUMFileEntry, error) {
 	seen := map[string]bool{}
 	var prev map[string]bool
 	cut := ""
@@ -654,10 +663,10 @@ func (d *AUMDriver) fileEntry(detail bool, names ...string) (*AUMFileEntry, erro
 		fresh, overlap := 0, len(prev) == 0
 		for _, e := range entries {
 			for _, n := range names {
-				if e.Name != n {
+				if e.Name != n || e.Folder != folder {
 					continue
 				}
-				if !detail || e.Detail != "" {
+				if folder || e.Detail != "" {
 					return &e, nil
 				}
 				cut = e.Name

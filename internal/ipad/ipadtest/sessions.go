@@ -142,9 +142,9 @@ func (m *SessionsAUM) asking() bool {
 func (m *SessionsAUM) rows() []FileCell {
 	var out []FileCell
 	if m.dir != m.folder {
-		// The root, above the folder SAVE saves into: that folder and a
-		// session of the root's own.
-		return []FileCell{{Name: m.folder, Detail: "12. Nov 2026 at 20:00:00", Folder: true}, {Name: "root session", Detail: "1. Jan 2025 at 10:00:00"}}
+		// The root, above the folder SAVE saves into: a session of the
+		// root's own that has the folder's name, then the folder.
+		return []FileCell{{Name: m.folder, Detail: "1. Jan 2025 at 10:00:00"}, {Name: m.folder, Detail: "12. Nov 2026 at 20:00:00", Folder: true}}
 	}
 	for _, s := range m.sessions {
 		out = append(out, FileCell{Name: s.name, Detail: s.saved})
