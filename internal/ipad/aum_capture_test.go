@@ -339,3 +339,89 @@ func TestAUMMenuUnderCapturedPopoverAndAlert(t *testing.T) {
 		}
 	}
 }
+
+// The aum-node-*.json trees: a scratch strip with AUM's built-in Gain in
+// insert slot 1, on the wire and then bypassed by aum_node bypass, and a
+// session that holds an Audio Unit effect bypassed in insert slot 1 of
+// "kick" (no plugin window open). AUM slides a bypassed node's button 55
+// points left of its slot and leaves its inner button (value "1", Selected)
+// at the slot's place, beside the node in the slot's container, where it
+// draws the eject ⏏. A bypassed node is loaded, never an empty slot
+// (https://github.com/teemow/mcp-midi-controller/issues/214).
+func TestParseAUMCapturedBypassedNode(t *testing.T) {
+	for _, tc := range []struct {
+		file, strip, label string
+		bypassed           bool
+		x                  float64
+	}{
+		{"aum-node-gain.json", "CHAN 1", "GAIN", false, 435},
+		{"aum-node-gain-bypassed.json", "CHAN 1", "GAIN", true, 380},
+		{"aum-node-plugin-bypassed.json", "kick", "", true, 380},
+	} {
+		st := parseCaptured(t, tc.file)
+		ch, err := st.Channel(tc.strip)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.file, err)
+		}
+		n, err := ch.Node("1")
+		if err != nil || n.Empty || n.Bypassed != tc.bypassed || n.Label != tc.label || n.Frame.X != tc.x || !n.OnScreen {
+			t.Errorf("%s: slot 1 = %+v, %v; want %q loaded, bypassed %v, at x %v", tc.file, n, err, tc.label, tc.bypassed, tc.x)
+		}
+		// The strip's other nodes read as they did: nothing else is bypassed,
+		// and an empty source slot stays empty.
+		for _, m := range ch.Nodes {
+			if m.Slot == 1 {
+				continue
+			}
+			if want := tc.strip == "CHAN 1" && m.Role == "source"; m.Empty != want || m.Bypassed {
+				t.Errorf("%s: %s = %+v, want empty %v and not bypassed", tc.file, nodeName(m), m, want)
+			}
+		}
+	}
+	// The probe session's other strips: the brain's MIDI nodes and the
+	// master's insert are loaded and on the wire.
+	st := parseCaptured(t, "aum-node-plugin-bypassed.json")
+	for _, ch := range st.Channels {
+		for _, m := range ch.Nodes {
+			if ch.Title != "kick" && (m.Empty || m.Bypassed) {
+				t.Errorf("%q: %s = %+v", ch.Title, nodeName(m), m)
+			}
+		}
+	}
+	if got := st.Channels[1].nodeList(); got != "source, slot 1 bypassed, output \"A\"" {
+		t.Errorf("kick's nodes = %s", got)
+	}
+	// A MIDI node has the same shape: in aum-menu-closing.json the brain's
+	// second node sits 66 points left of its slot (x 118 in the
+	// aum-plugin-window*.json trees of that session) and its inner button is
+	// still at the slot. It read as an empty slot before.
+	if got := parseCaptured(t, "aum-menu-closing.json").Channels[0].nodeList(); got != `midi, midi "▷︎ EIG" bypassed` {
+		t.Errorf("the brain's nodes = %s", got)
+	}
+	if got := parseCaptured(t, "aum-plugin-window.json").Channels[0].nodeList(); got != `midi, midi "▷︎ EIG"` {
+		t.Errorf("the brain's nodes on the wire = %s", got)
+	}
+}
+
+// aum_node bypass and unbypass on AUM's captured trees: each swipe is read
+// back from the node's place, so both verify (on AUM 1.4.8 the bypass
+// answered "the node's bypass state did not change" before).
+func TestAUMNodeBypassCaptured(t *testing.T) {
+	onWire, bypassed := capturedTree(t, "aum-node-gain.json"), capturedTree(t, "aum-node-gain-bypassed.json")
+	for _, tc := range []struct {
+		action      string
+		from, after json.RawMessage
+		swipe, msg  string
+	}{
+		{"bypass", onWire, bypassed, `swipe slot 1 "GAIN" (472,258)->(382,258)`, `slot 1 "GAIN" of "CHAN 1" bypassed`},
+		{"unbypass", bypassed, onWire, `swipe slot 1 "GAIN" (417,258)->(507,258)`, `slot 1 "GAIN" of "CHAN 1" back on`},
+	} {
+		w := ipadtest.New(tc.from)
+		w.SetScreens(tc.from, tc.after)
+		res, err := New(w.URL).AUMNode(context.Background(), AUMRequest{Action: tc.action, Channel: "1", Node: "GAIN"})
+		w.Close()
+		if err != nil || !res.Verified || res.Message != tc.msg || len(res.Steps) != 1 || res.Steps[0] != tc.swipe {
+			t.Errorf("%s: %+v, %v", tc.action, res, err)
+		}
+	}
+}

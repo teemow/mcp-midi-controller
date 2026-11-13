@@ -32,8 +32,10 @@ type Strip struct {
 // Node is an insert slot.
 type Node struct {
 	// Label is the node's short name ("LP"); "" with Empty for a "+" slot.
-	Label    string
-	Empty    bool
+	Label string
+	Empty bool
+	// Bypassed slides the node's button BypassSlide points left, off the
+	// wire; its inner button stays at the slot's place (see nodeButton).
 	Bypassed bool
 }
 
@@ -541,10 +543,21 @@ func scrollBar(w, content, scroll float64) node {
 		el("Other", "", 28+(w-56-thumb)*pct/100, 828, thumb, 3)).with("value", fmt.Sprintf("%.0f %%", pct))
 }
 
-// nodeButton is a square node button and, when loaded, the inner button
-// over it (value "1", Selected).
-func nodeButton(label string, x, y, size float64, empty bool) []node {
-	out := []node{el("Button", label, x, y, size, size, el("StaticText", label, x+15, y+size-28, size-30, 14))}
+// BypassSlide is how far AUM slides a bypassed node's button left of its
+// slot, off the strip's wire.
+const BypassSlide = 55.0
+
+// nodeButton is a square node button at its slot (x, y) and, when loaded, the
+// inner button over it (value "1", Selected). A bypassed node's button sits
+// BypassSlide points left of the slot, and its inner button stays where it
+// was, at the slot's place on the wire (AUM 1.4.8 draws the eject ⏏ there):
+// the inner button lies right of the node then, no longer over it.
+func nodeButton(label string, x, y, size float64, empty, bypassed bool) []node {
+	nx := x
+	if bypassed {
+		nx -= BypassSlide
+	}
+	out := []node{el("Button", label, nx, y, size, size, el("StaticText", label, nx+15, y+size-28, size-30, 14))}
 	if !empty {
 		in := size - 30
 		if size < 80 {
@@ -562,13 +575,13 @@ func strip(x float64, s Strip) node {
 	if midi {
 		// AUM glues texts around a MIDI node into its label.
 		glued := "-∞, DSP:  2 %, -∞, " + s.Title + ", " + s.Title
-		kids = append(kids, el("Other", "", x, 127, 228, 88, nodeButton(glued, x+111, 127, 88, false)...))
+		kids = append(kids, el("Other", "", x, 127, 228, 88, nodeButton(glued, x+111, 127, 88, false, false)...))
 	} else {
 		src := s.Source
 		if src == "" {
 			src = s.Title
 		}
-		kids = append(kids, el("Other", "", x, 88, 199, 98, nodeButton(src, x+101, 88, 98, s.EmptySource)...))
+		kids = append(kids, el("Other", "", x, 88, 199, 98, nodeButton(src, x+101, 88, 98, s.EmptySource, false)...))
 		kids = append(kids, el("Button", "", x+193, 87, 41, 99))
 		if s.PlayEnable != nil {
 			// The toggle is a button at the strip's left edge, left of the
@@ -582,12 +595,8 @@ func strip(x float64, s Strip) node {
 		}
 		var ins []node
 		for k, n := range s.Inserts {
-			nx := x + 72
-			if n.Bypassed {
-				nx -= 55
-			}
 			y := 221 + float64(k)*84
-			ins = append(ins, el("Other", "", x, y, 146, 74, nodeButton(n.Label, nx, y, 74, n.Empty)...))
+			ins = append(ins, el("Other", "", x, y, 146, 74, nodeButton(n.Label, x+72, y, 74, n.Empty, n.Bypassed && !n.Empty)...))
 		}
 		if s.AddSlot {
 			ins = append(ins, el("Button", "+1", x+57, 221+float64(len(s.Inserts))*84, 42, 42))
@@ -607,7 +616,7 @@ func strip(x float64, s Strip) node {
 				el("Other", "SOLO", x+198, 630, 30, 30, el("StaticText", "S", x+210, 630, 7, 30)).with("traits", sel(s.Soloed)))
 		}
 		rec := el("Other", "REC", x+61, 700, 30, 30, el("StaticText", "R", x+72, 700, 8, 30), el("StaticText", "E", x+83, 714, 2, 2))
-		kids = append(kids, el("Other", "", x, 666, 228, 98, append([]node{rec.with("traits", sel(s.Armed))}, nodeButton("SPKR", x+101, 666, 98, false)...)...))
+		kids = append(kids, el("Other", "", x, 666, 228, 98, append([]node{rec.with("traits", sel(s.Armed))}, nodeButton("SPKR", x+101, 666, 98, false, false)...)...))
 	}
 	kids = append(kids, el("Button", s.Title, x+72, 764, 156, 50))
 	return el("Other", "", x, 65, 228, 764, kids...)

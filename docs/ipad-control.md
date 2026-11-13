@@ -491,9 +491,20 @@ How AUM shows state in its tree (AUM 1.4.8):
   from where the mixer is to its add tile and back to its first strip,
   where they leave it. `get_aum_ui` reads one screen and says when strips
   lie beyond it.
-- **Nodes**: a loaded node has an inner button (value `1`) over its square
-  button; an empty slot (`+`) has none. A bypassed node slides about 55 points
-  left of the strip's wire and leaves an eject `⏏` in its place.
+- **Nodes**: each node sits in a container of its own with its square button
+  and, when loaded, an inner button (value `1`, Selected) beside it, over the
+  node while it is on the wire; an empty slot (`+`) has no inner button. A
+  bypassed node is still loaded: AUM slides its button about 55 points left of
+  the strip's wire, and the inner button stays at the slot's place, where it
+  draws the eject `⏏` (insert container `(363,221 146x74)`, node `(380,221
+  74x74)`, inner button `(446,232 52x52)`; a MIDI node slides 66 points the
+  same way). So a node with its inner button right of it reads as loaded and
+  `bypassed`, for AUM's built-in nodes and Audio Unit effects alike: `aum_node
+  bypass` and `unbypass` read their swipe back from it, `select`, `reload` and
+  the other menu actions long-press the node where it sits, `eject` taps the
+  `⏏` at once, and `get_aum_ui` / `wait_for_aum_ui` see `bypassed: true`. The
+  failed-node check of `load_song` and `check_song` looks at a bypassed node
+  too.
 - **Popovers** are elements of type `Popover` titled by their navigation bar
   (a long-press menu has none); **side panels** (menu, Settings, MIDI Control,
   FILES) are a full-height column at the right edge with a 60-point header,

@@ -368,6 +368,64 @@ func TestAUMNodeBypassAndEject(t *testing.T) {
 	}
 }
 
+// A bypassed node is loaded. AUM slides its button 55 points left off the
+// wire and leaves its inner button, the ⏏, at the slot's place, outside the
+// node's frame (https://github.com/teemow/mcp-midi-controller/issues/214):
+// it was read as an empty slot, so unbypass, select and eject refused it.
+func TestAUMNodeOnABypassedNode(t *testing.T) {
+	byp := mixer()
+	byp.Strips[1].Inserts[0].Bypassed = true
+
+	// The state: slot 1 holds LP, bypassed; slot 2 is still empty.
+	_, c := opFake(t, byp)
+	st, err := c.ReadAUM(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := st.Channels[1]
+	if lp, err := ch.Node("1"); err != nil || lp.Label != "LP" || lp.Empty || !lp.Bypassed {
+		t.Fatalf("slot 1 = %+v, %v", lp, err)
+	}
+	if two, _ := ch.Node("2"); !two.Empty || two.Bypassed {
+		t.Fatalf("slot 2 = %+v", two)
+	}
+
+	// unbypass swipes the node right from where it sits and reads it back on
+	// the wire.
+	w, c := opFake(t, byp, mixer())
+	res, err := c.AUMNode(context.Background(), AUMRequest{Action: "unbypass", Channel: "2", Node: "LP"})
+	if err != nil || !res.Verified || len(res.Steps) != 1 || res.Steps[0] != `swipe slot 1 "LP" (303,258)->(393,258)` {
+		t.Fatalf("unbypass: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != "actions" {
+		t.Fatalf("unbypass gestures = %v", g)
+	}
+
+	// select long-presses the node where it sits.
+	menu := byp
+	menu.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "POST FADER", Buttons: []string{"POST FADER", "PRE FADER", "SELECT", "REPLACE", "RELOAD"}}}
+	w, c = opFake(t, byp, menu, byp)
+	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "select", Channel: "2", Node: "LP"})
+	if err != nil || !res.Verified {
+		t.Fatalf("select: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "hold 303,258" {
+		t.Fatalf("select gestures = %v", g)
+	}
+
+	// eject taps the ⏏ at once, at the slot's place.
+	gone := mixer()
+	gone.Strips[1].Inserts[0] = ipadtest.Node{Empty: true}
+	w, c = opFake(t, byp, gone)
+	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "eject", Channel: "2", Node: "1", Confirm: true})
+	if err != nil || !res.Verified {
+		t.Fatalf("eject: %+v, %v", res, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != "tap 358,258" {
+		t.Fatalf("eject gestures = %v", g)
+	}
+}
+
 func TestAUMNodeMenuAction(t *testing.T) {
 	menu := mixer()
 	menu.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "POST FADER", Buttons: []string{"POST FADER", "PRE FADER", "SELECT", "REPLACE", "RELOAD"}}}
