@@ -290,3 +290,352 @@ func TestFileEntriesMarkCutRows(t *testing.T) {
 		t.Fatalf("rows = %+v", es)
 	}
 }
+
+// takes are n takes of a session's folder of recordings, in a list's order.
+func takes(n int) [][2]string {
+	out := make([][2]string, n)
+	for i := range out {
+		out[i] = [2]string{fmt.Sprintf("Master - 120 bpm - %03d", i+1), fmt.Sprintf("13. Nov 2026 at 00:%02d:57 • 4.0 MiB • wav", i)}
+	}
+	return out
+}
+
+func recordingsNow(t *testing.T, c *Client, path ...string) (AUMResult, []AUMFileEntry) {
+	t.Helper()
+	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "recordings", Path: path})
+	if err != nil {
+		t.Fatalf("recordings %q: %v", path, err)
+	}
+	es, ok := res.Data.([]AUMFileEntry)
+	if !ok {
+		t.Fatalf("recordings %q: data = %#v", path, res.Data)
+	}
+	return res, es
+}
+
+func entryNamesOf(es []AUMFileEntry) []string {
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = e.Name
+	}
+	return out
+}
+
+// Every folder of Recordings is titled RECORDINGS. With FILES reopening
+// inside one, the root is still the root and another folder is found from
+// there: neither is the folder FILES happened to show.
+func TestAUMFilesRecordingsFromInsideAFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(3)...)
+	aum.AddRecordings("Night Drive", takes(2)...)
+	aum.AddRecordings("Other Song", [2]string{"Master - 90 bpm - 001", "12. Nov 2026 at 21:23:42 • 4.4 MiB • wav"})
+	aum.ShowRecordings("Other Song")
+
+	res, es := recordingsNow(t, c)
+	if !res.Verified || res.Action != "recordings" || !strings.Contains(res.Message, "FILES → Recordings → /, the whole list") || !strings.Contains(res.Message, "2 entries: Night Drive, Other Song") {
+		t.Fatalf("the root: %+v", res.Message)
+	}
+	if len(es) != 2 || !es[0].Folder || !es[1].Folder {
+		t.Fatalf("the root's entries = %+v", es)
+	}
+
+	// FILES now reopens in the root; then inside the folder just listed.
+	for range 2 {
+		res, es = recordingsNow(t, c, "Night Drive")
+		if !res.Verified || !strings.Contains(res.Message, "FILES → Recordings → /Night Drive, the whole list") || len(es) != 2 ||
+			es[0].Name != "Master - 120 bpm - 001" || es[0].Detail != "13. Nov 2026 at 00:00:57 • 4.0 MiB • wav" || es[0].Folder {
+			t.Fatalf("the folder: %+v, entries %+v", res.Message, es)
+		}
+	}
+	aum.ShowRecordings("Night Drive")
+	if res, es = recordingsNow(t, c, "Other Song"); len(es) != 1 || es[0].Name != "Master - 90 bpm - 001" {
+		t.Fatalf("the other folder: %+v, entries %+v", res.Message, es)
+	}
+	// No take was tapped on the way: a tap opens its PREVIEW.
+	wantTouched(t, w, aum)
+}
+
+// A folder of recordings is listed whole, page by page, each take once and
+// in the list's order.
+func TestAUMFilesRecordingsListsTheWholeFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	aum.AddRecordings("Night Drive", takes(40)...)
+	aum.SetCutRows(true)
+	res, es := recordingsNow(t, c, "Night Drive")
+	if !res.Verified || !strings.Contains(res.Message, "the whole list") || !strings.Contains(res.Message, "40 entries: Master - 120 bpm - 001, ") {
+		t.Fatalf("recordings: %+v", res.Message)
+	}
+	if len(es) != 40 {
+		t.Fatalf("%d entries: %q", len(es), entryNamesOf(es))
+	}
+	for i, e := range es {
+		if want := takes(40)[i]; e.Name != want[0] || e.Detail != want[1] || e.Folder {
+			t.Fatalf("entry %d = %+v, want %v", i, e, want)
+		}
+	}
+	if n := countGestures(w, "actions"); n < 4 {
+		t.Fatalf("%d drags for 40 rows: %v", n, w.GestureLog())
+	}
+	wantTouched(t, w, aum)
+}
+
+// A session's folder the root lists beyond its first page is found there,
+// with FILES left open and scrolled inside another folder.
+func TestAUMFilesRecordingsFolderBeyondTheFirstPage(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	for i := range 30 {
+		aum.AddRecordings(fmt.Sprintf("Song %02d", i), [2]string{fmt.Sprintf("Master - 120 bpm - %03d", i), "13. Nov 2026 at 00:12:57 • 4.0 MiB • wav"})
+	}
+	aum.AddRecordings("Long One", takes(40)...)
+	aum.LeaveRecordingsOpen("Long One", 20)
+	res, es := recordingsNow(t, c, "Song 25")
+	if !res.Verified || len(es) != 1 || es[0].Name != "Master - 120 bpm - 025" {
+		t.Fatalf("recordings: %+v, entries %q", res.Message, entryNamesOf(es))
+	}
+	// Up to the root, which the back arrow leaves headed by its directory's
+	// name, and on to FILES' own root, whose Recordings row heads it "/".
+	if countGestures(w, filesIcon) != 1 || countGestures(w, backArrow) != 2 {
+		t.Fatalf("FILES was not opened from the menu anew and left through its own root: %v", w.GestureLog())
+	}
+	wantTouched(t, w, aum)
+}
+
+// The root of Recordings is headed "/" only when FILES' own Recordings row
+// opened it. Reached by the back arrow, or with FILES reopening on it, its
+// header names the directory the recordings are kept in, as the header of a
+// session's folder of that name would: only "/" is taken for the root.
+func TestAUMFilesRecordingsRootNamedLikeAFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	aum.AddRecordings("Night Drive", takes(2)...)
+	aum.AddRecordings(ipadtest.RecordingsRoot, takes(3)...)
+	for _, last := range []string{"", ipadtest.RecordingsRoot, "Night Drive"} {
+		aum.ShowRecordings(last)
+		res, es := recordingsNow(t, c)
+		if !res.Verified || len(es) != 2 || !es[0].Folder || !es[1].Folder || !strings.Contains(res.Message, "2 entries: Night Drive, "+ipadtest.RecordingsRoot) {
+			t.Fatalf("FILES last in %q, the root: %+v, entries %q", last, res.Message, entryNamesOf(es))
+		}
+		if res, es = recordingsNow(t, c, ipadtest.RecordingsRoot); !res.Verified || len(es) != 3 {
+			t.Fatalf("FILES last in %q, the folder: %+v, entries %q", last, res.Message, entryNamesOf(es))
+		}
+	}
+	wantTouched(t, w, aum)
+}
+
+// A folder the root of Recordings does not hold is the error the stems tools
+// read as "no takes yet": it must come from the root, whatever folder FILES
+// showed last, and say what the root lists.
+func TestAUMFilesRecordingsNoSuchFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	aum.AddRecordings("Night Drive", takes(2)...)
+	aum.AddRecordings("Other Song", takes(1)...)
+	for _, last := range []string{"", "Other Song"} {
+		aum.ShowRecordings(last)
+		_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "recordings", Path: []string{"New Song"}})
+		var none *NoFolderError
+		if !errors.As(err, &none) || none.Folder != "New Song" || none.In != "FILES → Recordings → /" || none.Entries != "Night Drive, Other Song" {
+			t.Fatalf("FILES last in %q: err = %v (%+v)", last, err, none)
+		}
+	}
+	// A take of the folder's name is no folder.
+	aum.AddRecordings("", [2]string{"Loose Take", "13. Nov 2026 at 00:12:57 • 4.0 MiB • wav"})
+	_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "recordings", Path: []string{"Loose Take"}})
+	var none *NoFolderError
+	if !errors.As(err, &none) || none.Entries != "Night Drive, Other Song, Loose Take" {
+		t.Fatalf("err = %v (%+v)", err, none)
+	}
+	wantTouched(t, w, aum)
+}
+
+// From a folder of Sessions the way to Recordings is up to FILES' own root
+// and its Recordings row: a session called Recordings in that folder is not
+// that row, and a tap on it would load it.
+func TestAUMFilesRecordingsFromSessions(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", [2]string{"Recordings", "12. Nov 2026 at 21:00:00"}, [2]string{"song 01", "12. Nov 2026 at 20:00:00"})
+	aum.AddRecordings("Night Drive", takes(2)...)
+	aum.Show("Songs")
+	res, es := recordingsNow(t, c, "Night Drive")
+	if !res.Verified || len(es) != 2 {
+		t.Fatalf("recordings: %+v, entries %q", res.Message, entryNamesOf(es))
+	}
+	wantTouched(t, w, aum)
+	if aum.Open() != "Untitled" {
+		t.Fatalf("the open session is now %q", aum.Open())
+	}
+
+	// And back: list finds Sessions again from a folder of Recordings.
+	if res, es := listNow(t, c, "Songs"); !res.Verified || len(es) != 2 {
+		t.Fatalf("list after recordings: %+v, entries %q", res.Message, entryNamesOf(es))
+	}
+	wantTouched(t, w, aum)
+}
+
+func renameNow(t *testing.T, c *Client, name, to string, path ...string) AUMResult {
+	t.Helper()
+	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Path: path, Name: name, NewName: to, Confirm: true})
+	if err != nil {
+		t.Fatalf("rename %q to %q in %q: %v", name, to, path, err)
+	}
+	return res
+}
+
+func wantStrings(t *testing.T, what string, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) || (len(want) > 0 && !reflect.DeepEqual(got, want)) {
+		t.Fatalf("%s = %q, want %q", what, got, want)
+	}
+}
+
+// A session far down its folder is found on a later page; the row that is
+// long-pressed is its own, on screen whole, and the rename is proved by the
+// folder's list, which is read again.
+func TestAUMFilesRenameBeyondTheFirstPage(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(60)...)
+	aum.SetCutRows(true)
+	res := renameNow(t, c, "song 45", "song 45 b", "Songs")
+	if !res.Verified || !strings.Contains(res.Message, `renamed "song 45" to "song 45 b"`) || !strings.Contains(res.Message, "FILES → Sessions → /Songs") {
+		t.Fatalf("rename: %+v", res.Message)
+	}
+	wantStrings(t, "held", aum.Held(), "/Songs/song 45")
+	wantStrings(t, "renamed", aum.Renamed(), "/Songs/song 45 -> song 45 b")
+	if got := aum.Sessions("Songs"); got[45] != "song 45 b" || got[44] != "song 44" || len(got) != 60 {
+		t.Fatalf("the folder now: %q", got)
+	}
+	wantTouched(t, w, aum)
+}
+
+// FILES reopens in the folder it showed last, and every folder is titled
+// SESSIONS: the session renamed is the one in the folder that was asked for,
+// not one of its name in the folder FILES showed.
+func TestAUMFilesRenameFromAnotherFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(20)...)
+	aum.AddRoot(songs(3)...)
+	aum.AddFolder("Other", songs(10)...)
+	aum.Show("Other")
+	res := renameNow(t, c, "song 07", "song 07 b", "Songs")
+	if !res.Verified {
+		t.Fatalf("rename in the folder: %+v", res.Message)
+	}
+	wantStrings(t, "held", aum.Held(), "/Songs/song 07")
+
+	// The root's session of that name, with FILES left open and scrolled in
+	// a folder that holds one too.
+	aum.LeaveOpen("Songs", 5)
+	res = renameNow(t, c, "song 01", "song 01 b")
+	if !res.Verified {
+		t.Fatalf("rename in the root: %+v", res.Message)
+	}
+	wantStrings(t, "held", aum.Held(), "/Songs/song 07", "/song 01")
+	wantStrings(t, "renamed", aum.Renamed(), "/Songs/song 07 -> song 07 b", "/song 01 -> song 01 b")
+	if got := aum.Sessions("Other"); got[1] != "song 01" || got[7] != "song 07" {
+		t.Fatalf("the other folder's sessions were touched: %q", got)
+	}
+	wantTouched(t, w, aum)
+}
+
+// A session the folder does not hold is an error that lists the folder, and
+// no row is pressed: not a folder of that name either.
+func TestAUMFilesRenameUnknown(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(20)...)
+	_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Path: []string{"Songs"}, Name: "Nowhere", NewName: "Somewhere", Confirm: true})
+	if err == nil || !strings.Contains(err.Error(), `no session "Nowhere" in FILES → Sessions → /Songs (entries: song 00, song 01`) || !strings.Contains(err.Error(), "song 19)") {
+		t.Fatalf("err = %v", err)
+	}
+	aum.AddFolder("Lab")
+	_, err = c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Name: "Lab", NewName: "Bench", Confirm: true})
+	if err == nil || !strings.Contains(err.Error(), `no session "Lab" in FILES → Sessions → / (entries: Songs, Songs, Lab)`) {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Path: []string{"Nowhere"}, Name: "song 01", NewName: "x", Confirm: true})
+	var none *NoFolderError
+	if !errors.As(err, &none) || none.Folder != "Nowhere" {
+		t.Fatalf("err = %v", err)
+	}
+	wantStrings(t, "held", aum.Held())
+	wantStrings(t, "renamed", aum.Renamed())
+	wantTouched(t, w, aum)
+}
+
+// A rename AUM does not take is not a rename: the folder still lists the old
+// name and not the new one, and the result says so.
+func TestAUMFilesRenameThatDidNotHappen(t *testing.T) {
+	_, aum, c := filesFake(t, "Songs", "Untitled", songs(30)...)
+	aum.RefuseRenames()
+	res := renameNow(t, c, "song 20", "song 20 b", "Songs")
+	if res.Verified || !strings.Contains(res.Message, "NOT renamed") || !strings.Contains(res.Message, `still lists "song 20"`) {
+		t.Fatalf("rename: verified %v, %+v", res.Verified, res.Message)
+	}
+	wantStrings(t, "held", aum.Held(), "/Songs/song 20")
+	wantStrings(t, "renamed", aum.Renamed())
+}
+
+// The share sheet is drawn by another process and reports its cells from its
+// own corner. The tool taps the entry that unfolds its actions and then
+// Rename where they are on screen: a tap at a frame as the tree prints it
+// lands beside the sheet, which closes it, and a tap on another of its cells
+// sends the session somewhere.
+func TestAUMFilesRenameThroughTheShareSheet(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(8)...)
+	res := renameNow(t, c, "song 03", "song 03 b", "Songs")
+	if !res.Verified {
+		t.Fatalf("rename: %+v", res.Message)
+	}
+	steps := strings.Join(res.Steps, "\n")
+	for _, want := range []string{
+		"long-press session song 03",
+		"tap " + ipadtest.ShareMore + ", which unfolds the sheet's actions at (1132,606)",
+		"tap Rename in the share sheet of song 03 at (1004,456)",
+		`fill text field 0 with "song 03 b"`,
+	} {
+		if !strings.Contains(steps, want) {
+			t.Fatalf("no step %q in:\n%s", want, steps)
+		}
+	}
+	if aum.SheetOpen() {
+		t.Fatal("a sheet or dialog is left open")
+	}
+	wantTouched(t, w, aum)
+}
+
+// AUM answers a name another session of the folder has with an alert and
+// renames nothing. The tool reads the alert, presses its OK, and says what
+// AUM said: left open, the alert keeps FILES from opening.
+func TestAUMFilesRenameOntoAnExistingName(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(30)...)
+	res := renameNow(t, c, "song 20", "song 05", "Songs")
+	if res.Verified || !strings.Contains(res.Message, `NOT renamed: FILES → Sessions → /Songs still lists "song 20", and lists "song 05" as well`) ||
+		!strings.Contains(res.Message, `AUM answered "Sorry: `+ipadtest.NameExists+`"`) {
+		t.Fatalf("rename: verified %v, %+v", res.Verified, res.Message)
+	}
+	wantStrings(t, "renamed", aum.Renamed())
+	if got := aum.Sessions("Songs"); len(got) != 30 || got[20] != "song 20" || got[5] != "song 05" {
+		t.Fatalf("the folder now: %q", got)
+	}
+	if aum.SheetOpen() {
+		t.Fatal("the alert is left open")
+	}
+	wantTouched(t, w, aum)
+}
+
+// The share sheet names the file it is for, and the RENAME dialog opens
+// holding that name. A sheet or a dialog for another session than the one
+// that was held is closed, and nothing is typed or renamed.
+func TestAUMFilesRenameSheetOfAnotherSession(t *testing.T) {
+	for _, bare := range []bool{false, true} {
+		w, aum, c := filesFake(t, "Songs", "Untitled", songs(8)...)
+		aum.HoldSlips(bare)
+		_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Path: []string{"Songs"}, Name: "song 03", NewName: "song 03 b", Confirm: true})
+		want := `the share sheet that opened is for "song 04", not for "song 03": closed the share sheet, nothing renamed`
+		if bare {
+			// No caption to go by: the dialog's field is what tells.
+			want = `the RENAME dialog holds "song 04", not "song 03": cancelled the dialog, nothing renamed`
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("sheet without caption %v: err = %v", bare, err)
+		}
+		wantStrings(t, "held", aum.Held(), "/Songs/song 03")
+		wantStrings(t, "renamed", aum.Renamed())
+		if aum.SheetOpen() {
+			t.Fatalf("sheet without caption %v: a sheet or dialog is left open", bare)
+		}
+		wantTouched(t, w, aum)
+	}
+}

@@ -1489,10 +1489,14 @@ started it is gone: a recorder that nobody switches off records on through a
 stopped transport. The transport is stopped a bar after the stem's end, and
 the master disarmed.
 
-When AUM lists no new take a few seconds after that, the sequence has not
-ended it. The daemon then switches the recorder off itself, once, with the
-transport stopped. Such a take ran on after the stem and is not whole beats
-long: the report says so, and the mix is not played from it (below).
+When AUM's list holds no new take after that, the sequence has not ended it.
+The daemon then switches the recorder off itself, once, with the transport
+stopped, and reads the list again. Such a take ran on after the stem and is
+not whole beats long: the report says so, and the mix is not played from it
+(below). Each reading walks FILES → Recordings from its root to the session's
+folder and reads both whole: on an iPad whose Recordings held 90 folders one
+reading took 36 to 115 s, so the first one after the pass can end well after
+the stem, and a take the sequence did not end runs on that long.
 `stop_song` ends a pass, and the whole recording: the transport stops and the
 recorder is switched off.
 

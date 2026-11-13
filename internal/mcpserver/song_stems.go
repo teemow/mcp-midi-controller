@@ -67,7 +67,10 @@ var (
 	// stemListWait is how long a finished take is given to appear in AUM's
 	// list of recordings, which is read every stemListPoll. A take that has
 	// not appeared after stemOffAfter was not ended by the stem's sequence:
-	// the daemon then switches the recorder off itself, once.
+	// the daemon then switches the recorder off itself, once, and reads the
+	// list again. One reading can take longer than all of stemListWait (36
+	// to 115 s on an iPad whose Recordings held 90 folders): the recorder is
+	// switched off and the list read once more all the same.
 	stemListWait = 20 * time.Second
 	stemListPoll = 2 * time.Second
 	stemOffAfter = 6 * time.Second
@@ -363,6 +366,11 @@ func parseFilePlayer(rows []ipad.AUMRow) filePlayerView {
 // ipadDeck is the stemDeck that drives AUM over WebDriverAgent.
 type ipadDeck struct{ c *ipad.Client }
 
+// Recordings lists the takes of a session's folder in FILES → Recordings, all
+// of them. A folder the root of Recordings does not list holds no take yet:
+// AUM makes it with the session's first one. aum_files recordings walks to
+// the folder from the root whatever FILES showed last, so that answer is
+// about this folder and no other.
 func (d ipadDeck) Recordings(ctx context.Context, folder string) ([]ipad.AUMFileEntry, error) {
 	res, err := d.c.AUMFiles(ctx, ipad.AUMRequest{Action: "recordings", Path: []string{folder}})
 	// FILES stays open on the list it showed: close it, whatever it showed.
@@ -373,6 +381,9 @@ func (d ipadDeck) Recordings(ctx context.Context, folder string) ([]ipad.AUMFile
 		return nil, nil
 	case err != nil:
 		return nil, err
+	case !res.Verified:
+		// A list that was not read to its end cannot say which take is new.
+		return nil, errors.New(res.Message)
 	}
 	entries, _ := res.Data.([]ipad.AUMFileEntry)
 	return entries, nil
@@ -1051,17 +1062,19 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 				break
 			}
 		}
-		if time.Since(looking) > stemListWait {
-			break
-		}
 		if !nudged && time.Since(looking) > stemOffAfter {
 			// No take: the sequence did not end it, and the recorder may be
 			// recording on through the stopped transport. Switched off now it
 			// ends at once, later than the stem: such a take is not whole
-			// beats long, which the mix's load says.
+			// beats long, which the mix's load says. This comes before the
+			// wait is given up, which a single slow reading of the list can
+			// use up.
 			nudged = true
 			recorderOff()
 			continue
+		}
+		if time.Since(looking) > stemListWait {
+			break
 		}
 		if err := sleepContext(ctx, stemListPoll); err != nil {
 			if !nudged {

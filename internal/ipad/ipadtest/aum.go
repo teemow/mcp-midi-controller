@@ -109,17 +109,159 @@ type AUM struct {
 	// Files opens the FILES side panel as AUM draws it. (An Overlay of kind
 	// "panel" with Cells is a simpler list for tests that only read one.)
 	Files *FilesPanel
+	// Share opens iOS's share sheet over everything else, and Rename the
+	// RENAME dialog its Rename action opens.
+	Share  *ShareSheet
+	Rename *RenameDialog
+	// Sorry is the text of AUM's alert "Sorry", which stays until its OK:
+	// "" draws none.
+	Sorry string
+}
+
+// ShareSheet is iOS's share sheet as a long-press on a session's row of FILES
+// opens it on an iPad whose language is German, read off AUM 1.4.8: a popover
+// that another process draws. So its elements report their frames from the
+// popover's corner, not from the screen's, and a tap aimed at a frame as the
+// tree prints it lands beside the sheet and closes it.
+//
+// It is captioned with the file's name, offers apps to send the file to, and
+// has a row of actions that ends in an entry which unfolds the rest of them
+// as a list below, AUM's Rename first.
+type ShareSheet struct {
+	// Name captions the sheet: the session it is for. NoCaption leaves the
+	// caption out.
+	Name      string
+	NoCaption bool
+	// More says the row of actions was unfolded.
+	More bool
+}
+
+// The entry of a ShareSheet's row of actions that unfolds the list below it,
+// and the one that folds it again.
+const (
+	ShareMore = "Mehr anzeigen"
+	ShareLess = "Weniger anzeigen"
+)
+
+type shareCell struct {
+	name, id string
+	r        [4]float64 // from the popover's corner
+}
+
+// Frame is the sheet's popover on screen: unfolded it grows upwards.
+func (s ShareSheet) Frame() [4]float64 {
+	if s.More {
+		return [4]float64{816, 30, 375, 657}
+	}
+	return [4]float64{816, 282, 375, 405}
+}
+
+func (s ShareSheet) cells() []shareCell {
+	fold := ShareMore
+	if s.More {
+		fold = ShareLess
+	}
+	cells := []shareCell{
+		{"AirDrop", "shareCell", [4]float64{18, 106, 82, 118}},
+		{"Drive", "shareCell", [4]float64{103, 106, 83, 118}},
+		{"Messages", "shareCell", [4]float64{189, 106, 82, 118}},
+		{"Notizen", "shareCell", [4]float64{274, 106, 83, 118}},
+		{"Copy", "actionGroupCell", [4]float64{18, 257, 82, 134}},
+		{"Copy URL", "actionGroupCell", [4]float64{103, 257, 83, 134}},
+		{"Import Channels", "actionGroupCell", [4]float64{189, 257, 82, 134}},
+		{fold, "actionGroupCell", [4]float64{274, 257, 83, 134}},
+	}
+	if s.More {
+		cells = append(cells,
+			shareCell{"Rename", "actionGroupCell", [4]float64{16, 401, 343, 51}},
+			shareCell{"In Dateien sichern", "actionGroupCell", [4]float64{16, 471, 343, 51}},
+			shareCell{"In PDF Expert speichern", "actionGroupCell", [4]float64{16, 522, 343, 51}})
+	}
+	return cells
+}
+
+// Hit is what the screen's point (x, y) meets: the name of the sheet's cell
+// there ("" for a spot of the sheet that holds none), and whether the point
+// lies in the sheet at all. A touch beside the sheet closes it.
+func (s ShareSheet) Hit(x, y float64) (cell string, inside bool) {
+	f := s.Frame()
+	if x < f[0] || x >= f[0]+f[2] || y < f[1] || y >= f[1]+f[3] {
+		return "", false
+	}
+	for _, c := range s.cells() {
+		if x >= f[0]+c.r[0] && x < f[0]+c.r[0]+c.r[2] && y >= f[1]+c.r[1] && y < f[1]+c.r[1]+c.r[3] {
+			return c.name, true
+		}
+	}
+	return "", true
+}
+
+func shareSheet(s ShareSheet) []node {
+	f := s.Frame()
+	var cells []node
+	for _, c := range s.cells() {
+		// A cell is named by its own label; the text in it is hidden in the
+		// list and shows in the rows above it.
+		text := el("StaticText", c.name, c.r[0], c.r[1]+c.r[3]-47, c.r[2], 15).with("rawIdentifier", "cellTitleLabel")
+		if c.r[2] > 300 {
+			text = el("StaticText", c.name, c.r[0]+60, c.r[1]+15, 263, 21).with("rawIdentifier", "titleLabel").with("isVisible", "0")
+		}
+		cells = append(cells, el("Cell", c.name, c.r[0], c.r[1], c.r[2], c.r[3], text).with("rawIdentifier", c.id).with("traits", "Button"))
+	}
+	bar := el("NavigationBar", "", 0, 10, f[2], 97).with("rawIdentifier", "UIActivityContentView")
+	if !s.NoCaption {
+		bar = el("NavigationBar", "", 0, 10, f[2], 97,
+			el("Other", s.Name, 86, 39, 263, 19).with("rawIdentifier", "LP.CaptionBar.TopCaption"),
+			el("Other", "AUM Project · 13 KB", 86, 57, 263, 21).with("rawIdentifier", "LP.CaptionBar.BottomCaption")).with("rawIdentifier", "UIActivityContentView")
+	}
+	return []node{
+		el("Other", "dismiss popup", 0, 0, 1210, 834).with("rawIdentifier", "PopoverDismissRegion"),
+		el("Popover", "", f[0], f[1], f[2], f[3],
+			bar,
+			el("CollectionView", "", 0, 0, f[2], f[3], cells...).with("rawIdentifier", "activityCollectionView").with("isVisible", "0"),
+			el("Toolbar", "Symbolleiste", 0, 0, f[2], f[3]).with("rawIdentifier", "Toolbar")),
+	}
+}
+
+// RenameDialog is AUM's RENAME dialog, an alert over the mixer: a field that
+// holds the session's name when it opens, Cancel and OK side by side.
+type RenameDialog struct {
+	// Name is the field's value.
+	Name string
+}
+
+// Where RenameDialog draws its buttons, and the alert "Sorry" its OK.
+var (
+	RenameCancel = [4]float64{470, 233, 135, 44}
+	RenameOK     = [4]float64{605, 233, 135, 44}
+	SorryOK      = [4]float64{470, 423, 270, 44}
+)
+
+// NameExists is what AUM's alert "Sorry" says to a rename onto the name of
+// another file of the folder.
+const NameExists = "A file with that name already exists!"
+
+func renameDialog(r RenameDialog) node {
+	return el("Alert", "RENAME", 470, 129, 270, 148,
+		el("StaticText", "RENAME", 486, 149, 238, 21),
+		el("CollectionView", "", 470, 189, 270, 44,
+			el("Cell", "", 485, 189, 240, 32,
+				el("TextField", "", 492, 196, 226, 18,
+					el("Button", "Clear text", 697, 197, 16, 16)).with("value", r.Name))),
+		el("Button", "Cancel", RenameCancel[0], RenameCancel[1], RenameCancel[2], RenameCancel[3]),
+		el("Button", "OK", RenameOK[0], RenameOK[1], RenameOK[2], RenameOK[3]))
 }
 
 // FilesPanel is AUM's FILES side panel: its root (title "FILES": Sessions,
-// Recordings, Restore Previous State) or a folder of Sessions. AUM titles
-// every folder "SESSIONS" and names the folder in a header row above the
-// list, which scrolls away with the list's first rows.
+// Recordings, Restore Previous State) or a folder of Sessions or Recordings.
+// AUM titles every folder of a view with the view's name ("SESSIONS",
+// "RECORDINGS") and names the folder in a header row above the list, which
+// scrolls away with the list's first rows.
 type FilesPanel struct {
-	// Title is "FILES" or "SESSIONS".
+	// Title is "FILES", "SESSIONS" or "RECORDINGS".
 	Title string
-	// Folder is the header row: "/" for the root of Sessions, a folder's
-	// name inside it; "" draws none (the FILES root has none).
+	// Folder is the header row: "/" for the root of a view, a folder's name
+	// inside it; "" draws none (the FILES root has none).
 	Folder string
 	// Cells are the list's rows from the first one on screen.
 	Cells []FileCell
@@ -334,6 +476,18 @@ func (a AUM) Source() json.RawMessage {
 	}
 	for _, o := range a.Overlays {
 		main = append(main, overlay(o)...)
+	}
+	if a.Share != nil {
+		main = append(main, shareSheet(*a.Share)...)
+	}
+	if a.Rename != nil {
+		main = append(main, renameDialog(*a.Rename))
+	}
+	if a.Sorry != "" {
+		main = append(main, el("Alert", "Sorry", 470, 342, 270, 125,
+			el("StaticText", "Sorry", 486, 362, 238, 21),
+			el("StaticText", a.Sorry, 486, 386, 238, 16),
+			el("Button", "OK", SorryOK[0], SorryOK[1], SorryOK[2], SorryOK[3])))
 	}
 	for i, n := range a.Notices {
 		main = append(main, el("StaticText", n, 405, 380+float64(i)*30, 400, 24))
