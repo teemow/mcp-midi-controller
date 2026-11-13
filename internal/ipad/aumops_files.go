@@ -362,7 +362,7 @@ const (
 // as one gesture (tapTwice), like CLEAR's and REMOVE CHANNEL's.
 //
 // The session's name in the main menu proves nothing: it is that name before
-// a save over the open session, too. (Up to v0.19.2 this pressed Return, read
+// a save over the open session, too. (Up to v0.20.0 this pressed Return, read
 // the tree and tapped OVERWRITE? after it had gone, then took the menu's name
 // for proof: "verified" for saves that wrote nothing.)
 func (d *AUMDriver) saveSession(name string) (AUMResult, error) {
