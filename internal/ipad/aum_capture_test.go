@@ -360,6 +360,16 @@ func TestParseAUMCapturedBypassedNode(t *testing.T) {
 	if got := st.Channels[1].nodeList(); got != "source, slot 1 bypassed, output \"A\"" {
 		t.Errorf("kick's nodes = %s", got)
 	}
+	// A MIDI node has the same shape: in aum-menu-closing.json the brain's
+	// second node sits 66 points left of its slot (x 118 in the
+	// aum-plugin-window*.json trees of that session) and its inner button is
+	// still at the slot. It read as an empty slot before.
+	if got := parseCaptured(t, "aum-menu-closing.json").Channels[0].nodeList(); got != `midi, midi "▷︎ EIG" bypassed` {
+		t.Errorf("the brain's nodes = %s", got)
+	}
+	if got := parseCaptured(t, "aum-plugin-window.json").Channels[0].nodeList(); got != `midi, midi "▷︎ EIG"` {
+		t.Errorf("the brain's nodes on the wire = %s", got)
+	}
 }
 
 // aum_node bypass and unbypass on AUM's captured trees: each swipe is read

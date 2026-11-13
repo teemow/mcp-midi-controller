@@ -433,7 +433,8 @@ How AUM shows state in its tree (AUM 1.4.8):
   bypassed node is still loaded: AUM slides its button about 55 points left
   of the strip's wire, and the inner button stays at the slot's place, where
   it draws the eject `⏏` (insert container `(363,221 146x74)`, node
-  `(380,221 74x74)`, inner button `(446,232 52x52)`). So a node with its inner
+  `(380,221 74x74)`, inner button `(446,232 52x52)`; a MIDI node slides 66
+  points the same way). So a node with its inner
   button right of it reads as loaded and `bypassed`, for AUM's built-in nodes
   and Audio Unit effects alike: `aum_node bypass` and `unbypass` read their
   swipe back from it, `select`, `reload` and the other menu actions
