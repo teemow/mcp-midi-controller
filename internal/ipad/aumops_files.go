@@ -84,8 +84,12 @@ func (d *AUMDriver) filesPanel() *AUMOverlay {
 // to its root first when the view's row is not on screen.
 //
 // The folders of path are looked for among the rows on screen and told by the
-// panel's title, which is right for Recordings alone: every folder of Sessions
-// is titled SESSIONS. A folder of Sessions is opened with openSessions.
+// panel's title, which is wrong for both views: every folder of Sessions is
+// titled SESSIONS and every folder of Recordings RECORDINGS (AUM 1.4.8). A
+// folder of Recordings is therefore taken for its root and each folder step
+// waits aumWait for nothing
+// (https://github.com/teemow/mcp-midi-controller/issues/199). A folder of
+// Sessions is opened with openSessions.
 func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 	if d.filesPanel() == nil {
 		if ok, err := d.openFromMenu("files"); err != nil || !ok {
@@ -744,8 +748,9 @@ type fileKey struct {
 	folder bool
 }
 
-// readFiles reads the open FILES list from where it stands to its end. A
-// list holds only the rows on screen, so it is scrolled a page at a time
+// readFiles reads the open FILES list from where it stands to its end. Only
+// the rows on screen can be read (the tree's other cells are hidden, some with
+// another row's contents), so the list is scrolled a page at a time
 // until two pages in a row bring no row that was not seen (one such page can
 // be a drag the list did not follow). Pages overlap; a page that shares no
 // row with the one before means rows went by unread, which is an error and
