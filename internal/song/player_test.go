@@ -120,8 +120,13 @@ func TestPlayerPlaysAPart(t *testing.T) {
 	}
 	got := rec.snapshot()
 	// The chorus's own state opens the playback, so it sounds as it does in
-	// the song although the verse before it was skipped.
-	state := tl.Sections[1].State
+	// the song although the verse before it was skipped; the parameters of
+	// the echo it switches on follow (its Again), and the chorus's own
+	// sending of them after the un-bypass is not played.
+	state := append(append([]Event(nil), tl.Sections[1].State...), tl.Sections[1].Again...)
+	if len(tl.Sections[1].Again) == 0 {
+		t.Fatal("the chorus has no Again")
+	}
 	for i, e := range state {
 		if got[i] != e {
 			t.Fatalf("opening event %d = %s, want the chorus state's %s", i, describe(got[i]), describe(e))

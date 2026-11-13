@@ -11,6 +11,7 @@ package song
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"time"
 )
@@ -43,6 +44,10 @@ type Event struct {
 	// Section is the arrangement entry the event belongs to: the one a note
 	// sounds in, a control change leads into, or a ramp runs in.
 	Section int `json:"-"`
+	// again marks a parameter sent once more after its node's un-bypass (see
+	// unbypassSettle). A playback that opens with the section has it in the
+	// section's SectionSpan.Again.
+	again bool
 }
 
 // SustainPedal is the controller a pattern's pedal is sent as, on the channel
@@ -65,6 +70,11 @@ type SectionSpan struct {
 	// State is every control's value at the section's start: the messages
 	// that put the session into the section's sound from any state.
 	State []Event `json:"-"`
+	// Again is the parameters of every node that is on in State but off
+	// somewhere in the song, to be sent once more unbypassSettle after State:
+	// the node may be bypassed in AUM when State reaches it, and AUM loses the
+	// parameter changes that come with an un-bypass.
+	Again []Event `json:"-"`
 }
 
 // TrackSummary is one track's part in a compiled song.
@@ -132,6 +142,26 @@ func (t *Timeline) leadTicks() int64 {
 // the new preset. A load due before the song's start is sent at the start.
 const presetLead = 400 * time.Millisecond
 
+// settleTicks is unbypassSettle at the song's tempo, rounded up.
+func (t *Timeline) settleTicks() int64 {
+	return max(1, int64(math.Ceil(float64(unbypassSettle)*t.Tempo*PPQ/float64(time.Minute))))
+}
+
+// unbypassSettle is how long after a node's un-bypass its parameters are sent
+// again. AUM loses the parameter changes that reach a plugin while it is
+// bypassed, and those that come with its un-bypass: the switch takes effect a
+// little after the message. So a node a section switches back on gets every
+// parameter the song sets on it once more, this long after the un-bypass, the
+// way a preset load is followed by them; and so does every node that is on in
+// a section's opening state but off somewhere in the song.
+//
+// Measured on a device (docs/songs.md, Status): a reverb's mix sent 1 to 3 ms
+// after its un-bypass was lost in about half the tries, and from 10 ms on it
+// held. Played over the network, the un-bypass sometimes lands later: sent
+// again 50 ms after it, the mix was lost 2 times in 105, 100 ms after it once
+// in 115, 200 ms after it never in 43.
+const unbypassSettle = 200 * time.Millisecond
+
 // rampSpacingTicks is the closest two steps of a ramp are placed.
 const rampSpacingTicks = PPQ / 32
 
@@ -182,6 +212,7 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 	trackPedals := make([][]pedal, len(s.Tracks))
 
 	var current map[Target]int // each control's value as the timeline runs
+	var states []*state        // each section's, in the arrangement's order
 	var tick int64
 	for idx, name := range s.Arrangement {
 		sec := s.Sections[name]
@@ -276,14 +307,40 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 				}
 			}
 			span.State = want.events(0, 0)
+			states = append(states, want)
 			from := len(tl.Events)
+			var woken map[nodeKey]bool
 			if idx > 0 {
-				tl.Events = append(tl.Events, want.diff(current, start, tl.leadTicks())...)
+				woken = want.switchedOn(current)
+				tl.Events = append(tl.Events, want.diff(current, woken, start, tl.leadTicks())...)
 			}
 			current = want.values()
+			// again is when a node the section switches back on gets its
+			// parameters, within the section however short it is, and
+			// stepped the last step each ramp has sent by then.
+			again := min(start+tl.settleTicks(), end-1)
+			stepped := map[Target]Event{}
 			for _, r := range ramps {
-				tl.Events = append(tl.Events, r.events(current[r.target])...)
+				steps := r.events(current[r.target])
+				for _, e := range steps {
+					if e.Tick <= again {
+						stepped[r.target] = e
+					}
+				}
+				tl.Events = append(tl.Events, steps...)
 				current[r.target] = r.to
+			}
+			// A ramp that has moved the parameter by then is where it
+			// continues from, and one that steps right then sends it itself.
+			for _, e := range want.params(woken, again) {
+				if step, ok := stepped[e.target]; ok {
+					if step.Tick == again {
+						continue
+					}
+					e.Data2 = step.Data2
+				}
+				e.again = true
+				tl.Events = append(tl.Events, e.Event)
 			}
 			for i := from; i < len(tl.Events); i++ {
 				tl.Events[i].Section = idx
@@ -295,6 +352,34 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 	}
 	tl.Ticks = tick
 	tl.Bars = int(tick / m.barTicks)
+
+	// A section's opening state may find any node the song bypasses, at home
+	// (the session opens it bypassed) or in a section, still bypassed in AUM:
+	// where the state has it on, its parameters follow once more.
+	if p != nil {
+		home, err := p.sectionState("", Section{})
+		if err != nil {
+			return nil, err
+		}
+		off := home.off()
+		for _, st := range states {
+			for n := range st.off() {
+				off[n] = true
+			}
+		}
+		for i, st := range states {
+			here := st.off()
+			on := map[nodeKey]bool{}
+			for n := range off {
+				if !here[n] {
+					on[n] = true
+				}
+			}
+			for _, e := range st.params(on, 0) {
+				tl.Sections[i].Again = append(tl.Sections[i].Again, e.Event)
+			}
+		}
+	}
 
 	for ti := range s.Tracks {
 		t := &s.Tracks[ti]
@@ -426,13 +511,13 @@ func (st *state) events(presetTick, tick int64) []Event {
 // diff renders what must change to get from prev to this state at tick. A
 // preset load is sent a little early, and since loading a preset resets the
 // plugin's parameters, every parameter of a node whose preset changed is sent
-// again.
-func (st *state) diff(prev map[Target]int, tick, lead int64) []Event {
+// again. The parameters of the woken nodes, which the state switches back on,
+// are left out: they are sent after the un-bypass (see unbypassSettle).
+func (st *state) diff(prev map[Target]int, woken map[nodeKey]bool, tick, lead int64) []Event {
 	presetTick := tick - lead
 	if presetTick < 0 {
 		presetTick = 0
 	}
-	type nodeKey struct{ track, effect string }
 	reloaded := map[nodeKey]bool{}
 	var out []Event
 	for _, s := range st.settings {
@@ -441,20 +526,74 @@ func (st *state) diff(prev map[Target]int, tick, lead int64) []Event {
 		}
 		if old, ok := prev[s.target]; !ok || old != s.value {
 			out = append(out, s.event(presetTick))
-			reloaded[nodeKey{s.target.Track, s.target.Effect}] = true
+			reloaded[s.target.node()] = true
 		}
 	}
 	for _, s := range st.settings {
 		if s.target.Kind == ControlPreset {
 			continue
 		}
+		if s.target.Kind == ControlParam && woken[s.target.node()] {
+			continue
+		}
 		old, ok := prev[s.target]
 		changed := !ok || old != s.value
-		if s.target.Kind == ControlParam && reloaded[nodeKey{s.target.Track, s.target.Effect}] {
+		if s.target.Kind == ControlParam && reloaded[s.target.node()] {
 			changed = true
 		}
 		if changed {
 			out = append(out, s.event(tick))
+		}
+	}
+	return out
+}
+
+// nodeKey names a node: a track's instrument (effect "") or one of its
+// effects or modulators.
+type nodeKey struct{ track, effect string }
+
+func (t Target) node() nodeKey { return nodeKey{t.Track, t.Effect} }
+
+// bypassed reads a bypass's wire value as AUM does: 64 and above bypasses.
+func bypassed(wire int) bool { return wire >= 64 }
+
+// off lists the nodes the state bypasses.
+func (st *state) off() map[nodeKey]bool {
+	out := map[nodeKey]bool{}
+	for _, s := range st.settings {
+		if s.target.Kind == ControlBypass && bypassed(s.value) {
+			out[s.target.node()] = true
+		}
+	}
+	return out
+}
+
+// switchedOn lists the nodes the state has on and prev has bypassed.
+func (st *state) switchedOn(prev map[Target]int) map[nodeKey]bool {
+	out := map[nodeKey]bool{}
+	for _, s := range st.settings {
+		if s.target.Kind != ControlBypass || bypassed(s.value) {
+			continue
+		}
+		if old, ok := prev[s.target]; ok && bypassed(old) {
+			out[s.target.node()] = true
+		}
+	}
+	return out
+}
+
+// paramEvent is a parameter's message, with the parameter it sets.
+type paramEvent struct {
+	Event
+	target Target
+}
+
+// params renders, at tick, every parameter the state sets on the nodes.
+func (st *state) params(nodes map[nodeKey]bool, tick int64) []paramEvent {
+	var out []paramEvent
+	for _, s := range st.settings {
+		if s.target.Kind == ControlParam && nodes[s.target.node()] {
+			out = append(out, paramEvent{Event: s.event(tick), target: s.target})
 		}
 	}
 	return out
