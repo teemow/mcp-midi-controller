@@ -144,7 +144,7 @@ does: what FILES showed before, and where its list was scrolled to, makes no
 difference ([FILES → Sessions, as the tool reads
 it](#files--sessions-as-the-tool-reads-it)).
 
-**`list` returns the whole folder.** A list holds only the rows on screen, so
+**`list` returns the whole folder.** Only the rows on screen can be read, so
 the tool reads it a page at a time, from the top to the end, and returns
 every row once, in the order AUM shows them (the sort picked above the list).
 With the sort on last opened a session moves up when it is loaded, so the
@@ -178,7 +178,10 @@ that shows. Recordings names its folders as Sessions does: the title stays
 `RECORDINGS` and a header row reads `/` or the folder's name. Its `path` is
 still walked by the title, so each folder costs a wait of 5 s for a title
 that does not change before its rows are listed (13 s for one folder on the
-iPad).
+iPad). For the same reason a FILES that reopens inside a folder of Recordings
+is taken for its root: `recordings` then lists that folder, or answers that
+the folder of `path` is missing (to be fixed:
+https://github.com/teemow/mcp-midi-controller/issues/199).
 
 ### Saving a session
 
