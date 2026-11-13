@@ -128,7 +128,8 @@ type AUMNode struct {
 	// Empty is true for a slot without a node (it shows "+").
 	Empty bool `json:"empty,omitempty"`
 	// Bypassed is true for a bypassed node: AUM slides it left off the
-	// strip's wire and shows an eject ⏏ where it was.
+	// strip's wire and shows an eject ⏏ where it was. It is still loaded
+	// (Empty is false); Frame is where it sits, off the wire.
 	Bypassed bool `json:"bypassed,omitempty"`
 	Frame    Rect `json:"frame"`
 	// OnScreen is false for an insert scrolled out of the insert column.
@@ -466,24 +467,34 @@ func parseStrip(n int, s *Element, window Size) AUMChannel {
 }
 
 // parseNodes finds the strip's node buttons by shape: square, 98 points for
-// source and output, 74 for inserts, 88 for MIDI nodes. A loaded node has an
-// inner button over it (68 or 52 points, value "1"), selected unless the
-// node is bypassed; an empty slot ("+") has none.
+// source and output, 74 for inserts, 88 for MIDI nodes. Each sits in a
+// container of its own. A loaded node has an inner button (68, 62 or 52
+// points, unlabelled, value "1", Selected) beside it in that container, over
+// the node while it is on the wire; an empty slot ("+") has none.
+//
+// A bypassed node is still loaded. AUM slides its button about 55 points
+// left off the wire, and the inner button stays at the slot's place, where it
+// shows the eject ⏏ (AUM 1.4.8: insert container (363,221 146x74), node
+// (380,221 74x74), inner button (446,232 52x52)). So the inner button of a
+// node is the one over it or, failing that, the one right of it in its
+// container, on its row.
 func parseNodes(s *Element, ch AUMChannel) []AUMNode {
+	type inBtn struct{ el, parent *Element }
 	var nodes []AUMNode
-	var inner []*Element
+	var parents []*Element // parents[i] holds nodes[i]
+	var inner []inBtn
 	mid := s.Rect.Y + s.Rect.Height/2
-	s.Walk(func(el *Element, _ int) bool {
+	visit := func(el, parent *Element) {
 		r := el.Rect
 		if el.Type != "Button" || math.Abs(r.Width-r.Height) > 2 {
-			return true
+			return
 		}
 		if r.Width >= 40 && r.Width < 70 && el.Label == "" {
-			inner = append(inner, el)
-			return true
+			inner = append(inner, inBtn{el, parent})
+			return
 		}
 		if r.Width < 70 || r.Width > 110 {
-			return true
+			return
 		}
 		n := AUMNode{Label: cleanLabel(el.Label), Frame: r, OnScreen: !el.Hidden}
 		if n.Label == "-∞" { // a silent meter's reading, not a name
@@ -504,8 +515,16 @@ func parseNodes(s *Element, ch AUMChannel) []AUMNode {
 			}
 		}
 		nodes = append(nodes, n)
-		return true
-	})
+		parents = append(parents, parent)
+	}
+	var walk func(el, parent *Element)
+	walk = func(el, parent *Element) {
+		visit(el, parent)
+		for _, c := range el.Children {
+			walk(c, el)
+		}
+	}
+	walk(s, nil)
 	// Inserts sit on the strip's wire 41 points left of the output node's
 	// centre (source and output share one axis); a bypassed node slides
 	// about 55 points further left and leaves an eject ⏏ in its place.
@@ -516,21 +535,32 @@ func parseNodes(s *Element, ch AUMChannel) []AUMNode {
 		}
 	}
 	for i := range nodes {
-		var in *Element
+		n := &nodes[i]
+		f := n.Frame
+		loaded, aside := false, false
 		for _, b := range inner {
-			if cx, cy := b.Rect.Center(); nodes[i].Frame.Contains(cx, cy) {
-				in = b
+			if cx, cy := b.el.Rect.Center(); f.Contains(cx, cy) {
+				loaded = true
 				break
 			}
 		}
-		n := &nodes[i]
-		n.Empty = in == nil
-		cx, _ := n.Frame.Center()
+		if !loaded {
+			for _, b := range inner {
+				if cx, cy := b.el.Rect.Center(); b.parent == parents[i] && cx > f.X+f.Width && cy >= f.Y && cy <= f.Y+f.Height {
+					loaded, aside = true, true
+					break
+				}
+			}
+		}
+		n.Empty = !loaded
+		cx, _ := f.Center()
 		switch n.Role {
 		case "insert":
-			n.Bypassed = !n.Empty && !math.IsNaN(axis) && cx < axis-41-25
+			n.Bypassed = aside || (loaded && !math.IsNaN(axis) && cx < axis-41-25)
 		case "source":
-			n.Bypassed = !n.Empty && !math.IsNaN(axis) && cx < axis-25
+			n.Bypassed = aside || (loaded && !math.IsNaN(axis) && cx < axis-25)
+		default:
+			n.Bypassed = aside
 		}
 	}
 	sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].Frame.Y < nodes[j].Frame.Y })
