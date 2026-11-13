@@ -148,13 +148,19 @@ func (t *Timeline) settleTicks() int64 {
 }
 
 // unbypassSettle is how long after a node's un-bypass its parameters are sent
-// again. AUM loses the parameter changes that reach a plugin in the same burst
-// of messages as its un-bypass, and one sent while the plugin is bypassed
-// (see docs/songs.md, Status). So a node a section switches back on gets every
+// again. AUM loses the parameter changes that reach a plugin while it is
+// bypassed, and those that come with its un-bypass: the switch takes effect a
+// little after the message. So a node a section switches back on gets every
 // parameter the song sets on it once more, this long after the un-bypass, the
 // way a preset load is followed by them; and so does every node that is on in
 // a section's opening state but off somewhere in the song.
-const unbypassSettle = 50 * time.Millisecond
+//
+// Measured on a device (docs/songs.md, Status): a reverb's mix sent 1 to 3 ms
+// after its un-bypass was lost in about half the tries, and from 10 ms on it
+// held. Played over the network, the un-bypass sometimes lands later: sent
+// again 50 ms after it, the mix was lost 2 times in 105, 100 ms after it once
+// in 115, 200 ms after it never in 43.
+const unbypassSettle = 200 * time.Millisecond
 
 // rampSpacingTicks is the closest two steps of a ramp are placed.
 const rampSpacingTicks = PPQ / 32
@@ -310,9 +316,9 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 			}
 			current = want.values()
 			// again is when a node the section switches back on gets its
-			// parameters, and stepped the last step each ramp has sent by
-			// then.
-			again := start + tl.settleTicks()
+			// parameters, within the section however short it is, and
+			// stepped the last step each ramp has sent by then.
+			again := min(start+tl.settleTicks(), end-1)
 			stepped := map[Target]Event{}
 			for _, r := range ramps {
 				steps := r.events(current[r.target])

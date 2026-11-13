@@ -111,6 +111,33 @@ func TestUnbypassSettleIsTime(t *testing.T) {
 	}
 }
 
+// TestUnbypassInAShortSection checks the parameters of a node switched back
+// on stay in their section when it is shorter than unbypassSettle: sent after
+// the next section's own changes, they would undo them.
+func TestUnbypassInAShortSection(t *testing.T) {
+	// A bar of 1/8 at 300 BPM lasts 100 ms.
+	doc := strings.Replace(unbypassSong, "tempo: 120", "tempo: 300\ntime_signature: \"1/8\"", 1)
+	doc = strings.Replace(doc, `notes: "C3 . . ."`, `notes: "C3 ."`, 1)
+	tl, p := compileTest(t, doc)
+	if bar := tl.TickTime(tl.BarTicks); bar >= unbypassSettle {
+		t.Fatalf("a bar lasts %v, not less than %v", bar, unbypassSettle)
+	}
+	mix := paramAt(t, p.Node("pad", "verb"), "Mix")
+	wet, held := tl.Sections[1], tl.Sections[2]
+	var got []string
+	for _, e := range tl.Events {
+		if e.Kind == Control && e.Channel == mix.Channel && e.Data1 == mix.Number {
+			got = append(got, describe(e))
+			if e.Section == 1 && (e.Tick < wet.Tick || e.Tick >= held.Tick) {
+				t.Errorf("the wet section's Mix is sent at tick %d, outside it (%d..%d)", e.Tick, wet.Tick, held.Tick)
+			}
+		}
+	}
+	if len(got) == 0 || !strings.HasSuffix(got[0], " 127") {
+		t.Errorf("Mix messages %v, want the wet section's 127 first", got)
+	}
+}
+
 // TestUnbypassWithPresetLoad checks a node that loads a preset and comes back
 // on in one section gets its parameters after the un-bypass, not with it.
 func TestUnbypassWithPresetLoad(t *testing.T) {

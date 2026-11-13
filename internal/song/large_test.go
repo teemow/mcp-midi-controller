@@ -70,7 +70,7 @@ func TestTwelveTracksKeepTheirSessions(t *testing.T) {
 		want      [4]string
 	}{
 		{"three tracks", strings.Replace(testSong, "  - id: lead\n", "  - id: lead\n    group: band\n", 1), 1,
-			[4]string{"119de2421092b0ff", "9be032de407d9590", "b63825b3e4590927", "ec6a7a9337a43ff9"}},
+			[4]string{"119de2421092b0ff", "2aabfb0cb655355c", "b63825b3e4590927", "ec6a7a9337a43ff9"}},
 		{"twelve tracks", twelve, 3,
 			[4]string{"0c550983f45beb4e", "75ac0150d19151f1", "d722d0632235de55", "79023091a8da8961"}},
 		{"eleven tracks and a control channel", eleven, 3,

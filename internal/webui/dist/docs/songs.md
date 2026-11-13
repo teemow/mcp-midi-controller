@@ -359,6 +359,16 @@ playback starts, it is sent as the playback starts. What that track plays in
 the 400 ms before the section is cut, lost or already played with the new
 preset.
 
+Switching a plugin back on is the same kind of change. AUM loses the
+parameter changes that reach a plugin while it is bypassed and those that come
+with its un-bypass, so where a section switches a plugin back on, every
+parameter the song sets on that plugin is sent again 200 ms after the
+un-bypass (see [Status](#status)); a ramp that starts there carries on from
+where it has got to. A playback that opens with a section does the same for
+every plugin that is on there and bypassed anywhere else in the song, since it
+may still be bypassed in AUM. Until then the plugin plays with the values it
+had.
+
 **Automation** moves a control within a section:
 
 ```yaml
@@ -1244,8 +1254,9 @@ sequencer once the session has been authored from the notes as they stand.
 
 **Sequenced.** The clip begins with a lead-in of whole bars, as many as it
 takes to cover 1.2 s (one bar at most tempos): the opening section's preset
-loads go out as the transport starts, every other control 600 ms later, and
-the song's first note on the bar line after. The song's bar 1 is therefore
+loads go out as the transport starts, every other control 600 ms later, the
+parameters of the plugins those switch back on 200 ms after that, and the
+song's first note on the bar line after. The song's bar 1 is therefore
 the transport's bar 2, bar lines stay on bar lines, and what follows is the
 timeline as it is played live, preset loads 400 ms early included. Because
 the opening sound is in the clip, the session plays the song by itself:
@@ -1264,8 +1275,9 @@ milliseconds after the message (see [Status](#status)), so the report runs
 ahead by that much: about a tenth of a second where it was measured.
 
 **Live.** `play_song` first sets the session to the opening section's whole
-sound — presets, then a pause for them to load, then everything else — and
-then sends the timeline.
+sound — presets, then a pause for them to load, then everything else, and
+200 ms later the parameters of the plugins that switched back on — and then
+sends the timeline.
 
 - `from` starts at a section (its id, or a 1-based position in the
   arrangement), `sections` limits how many are played.
@@ -1793,10 +1805,25 @@ a device, in sessions authored from a song:
   its un-bypass are lost: an LFOH bypassed by one section's state and
   brought back by the next, with its channel and its rate changed in the
   same messages, came back with neither, and took the channel when it was
-  sent again alone. Going into the bypass, a change sent with it held. A song
-  sends a node's bypass before its parameters, so a scene that switches an
-  effect back on and changes one of its parameters at once may lose the
-  change.
+  sent again alone. Going into the bypass, a change sent with it held. A
+  reverb (AUReverb2, its Dry/Wet Mix at 0 or 100, a short kick through it
+  read at the master tap: peak -9.0 dBFS dry, -17.7 dBFS wet) showed the
+  rest. Its mix sent with the un-bypass, or just before it in the same burst,
+  was lost every time (7 of 7); 1 to 3 ms after it, 7 times in 13; 5 ms after
+  it, once in 6; 10 to 100 ms after it, never (17 tries). A mix sent 300 ms
+  into the bypass was lost as well: un-bypassed alone 300 ms later, the
+  reverb came back with its old mix (5 of 5). Going into the bypass the mix
+  sent with it held (3 of 3). Played as a song by the daemon, a section that
+  switched the reverb on with a new mix stayed dry, and one that switched it
+  on after its mix had changed during the bypass came back wet. Over the
+  network the un-bypass sometimes takes effect later still: a mix sent again
+  50 ms after it was lost 2 times in 105, 100 ms after it once in 115, 200 ms
+  after it never in 43, and a mix changed with the reverb on never in 48. A
+  few readings whose clip of the tap began at the kick are left out. So a
+  song sends a plugin's parameters again 200 ms after its un-bypass (see
+  [Sound](#sound)). Replayed through `probe_sound` with the messages and the
+  timing the song compiles to, both sections sounded as written, the one
+  switched on with a new mix wet and the other dry (43 of 43).
 - **Parameters.** A parameter's CC runs linearly over the parameter's range:
   0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
 - **Modulators.** A scratch song of one NuSaw pad, whose Cutoff an LFOH
@@ -1811,7 +1838,9 @@ a device, in sessions authored from a song:
   cycle took two beats. AUM's bypass of the plugin also stopped it, and lifted
   alone it ran again; lifted together with the routing it stayed parked (see
   **Bypass and mute**), which is why the song parks a bypassed modulator and
-  leaves AUM's bypass off.
+  leaves AUM's bypass off. With the song parking a bypassed modulator and
+  leaving AUM's bypass off, the sweep stopped in the bypassed section and
+  came back at once at the next, with the rate its scene gave it.
 - **A preset load resets parameters.** Loading a reverb preset put its mix
   back to the preset's own value, and the song's value sent after it held.
 - **Parameters in groups.** Many plugins sort their parameters into groups,
@@ -2215,6 +2244,10 @@ the 6/8 song sat on its eighth-note grid in its first bar and in its 35th.
 
 Not yet measured:
 
+- the parameters a song sends again after an un-bypass, played by the
+  daemon's player or by the session's sequencer, and on a plugin other than a
+  reverb: they were replayed through `probe_sound` with the song's own
+  messages and timing (see **Bypass and mute**);
 - of the stems tools: the daemon's own off after a pass whose sequence sent
   none, `stop_song` during a pass, a take that is not whole beats long met by
   `mix_song_stems`, a stem of many strips whose master is off screen when its
@@ -2272,9 +2305,8 @@ Not yet measured:
   plugin's own sequencer were read during a sequenced `play_song`, not yet
   in a `mix_song`;
 - sessions authored with `track_taps` or `full_control`;
-- of [modulators](#modulators): a bypass that only parks, sent by the
-  song's own state (by hand it was), a scene's `depth`, a ramp of
-  a modulator's parameter, a modulator on an effect, several at once, what
+- of [modulators](#modulators): a scene's `depth`, a ramp of a
+  modulator's parameter, a modulator on an effect, several at once, what
   LFOH's factory presets hold for its routing, and the other steps of `Time
   Denominator`. The tests read the authored session back and compile the
   sections' states;
