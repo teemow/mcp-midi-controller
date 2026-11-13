@@ -225,10 +225,21 @@ func (o *AUMOverlay) menuItems() []string {
 
 func (d *AUMDriver) nodeMenuAction(action string, ch AUMChannel, n AUMNode) (AUMResult, error) {
 	item := nodeMenuItems[action]
+	var was int
+	var wasOK bool
 	switch action {
 	case "copy_here", "move_here", "remove_slot":
 		if !n.Empty {
 			return AUMResult{}, fmt.Errorf("%s works on an empty slot; %s is not empty", item, nodeName(n))
+		}
+	case "pre_fader", "post_fader":
+		if err := checkFaderNode(item, ch, n); err != nil {
+			return AUMResult{}, err
+		}
+		// Where the fader's wire leaves before the menu covers the strip.
+		var err error
+		if was, wasOK, err = d.faderWire(ch); err != nil {
+			return AUMResult{}, err
 		}
 	default:
 		if n.Empty {
@@ -286,11 +297,14 @@ func (d *AUMDriver) nodeMenuAction(action string, ch AUMChannel, n AUMNode) (AUM
 			return found && m.Label != n.Label
 		})
 		msg = verdict(ok, fmt.Sprintf("swapped into %s of %q", nodeName(n), ch.Title), "the node did not change (labels may match; check with ipad_screenshot)")
+	case "pre_fader", "post_fader":
+		// The tree does not change at all: the fader's wire is drawn only.
+		ok, msg, err = d.faderMoved(action, ch, n, was, wasOK)
 	default:
-		// SELECT, RELOAD, PRE/POST FADER leave no trace in the tree: the menu
-		// closing is all there is to see.
+		// SELECT and RELOAD leave no trace in the tree: the menu closing is
+		// all there is to see.
 		ok, err = d.until(aumWait, func(st AUMState) bool { return d.findText(item, nil) == nil })
-		msg = verdict(ok, fmt.Sprintf("%s on %s of %q (no further state in AUM's tree; the fader wire and selection glow show in ipad_screenshot)", item, nodeName(n), ch.Title), "the menu did not close")
+		msg = verdict(ok, fmt.Sprintf("%s on %s of %q (no further state in AUM's tree; the selection glow shows in ipad_screenshot)", item, nodeName(n), ch.Title), "the menu did not close")
 	}
 	return d.result(action, ok, msg, nil), err
 }
