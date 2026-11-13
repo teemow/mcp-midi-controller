@@ -88,11 +88,12 @@ func checkChannel(r AUMRequest) error {
 	return nil
 }
 
-// uncoverMixer closes what lies over the mixer before a strip or the add
-// tile is touched. While a side panel is open (the main menu, which a session
-// load leaves open, or FILES after a save) AUM takes a tap on the mixer to
-// close the panel and passes nothing on, and a swipe does nothing at all: the
-// dB label's tap opened no dialog, a tap on MUTE did not mute, a swipe on the
+// uncoverMixer closes what lies over the mixer before a strip, one of its
+// nodes or the add tile is touched (aum_channel, aum_node, aum_file_player).
+// While a side panel is open (the main menu, which a session load leaves
+// open, or FILES after a save) AUM takes a tap on the mixer to close the
+// panel and passes nothing on, and a swipe does nothing at all: the dB
+// label's tap opened no dialog, a tap on MUTE did not mute, a swipe on the
 // fader left the level where it was. A popover takes the tap that closes it
 // the same way; an alert and the routing matrix cover the strips. The tempo
 // bar and the built-in keyboard (the mixer shrinks above it) take nothing.
@@ -100,7 +101,12 @@ func checkChannel(r AUMRequest) error {
 // An EDIT CHANNEL left open is closed as well: it can belong to another strip
 // than the one the request names (edit leaves it open), and edit, rename,
 // bookmark, duplicate and remove act in it, so they open the named strip's
-// own (openEdit).
+// own (openEdit). The same holds for a FILE PLAYER left open
+// (openFilePlayer) and a node's long-press menu.
+//
+// A plugin window is none of these and stays. Under a side panel its bar is
+// not in the tree (parsePluginWindows), so the window is found again once the
+// panel is gone.
 func (d *AUMDriver) uncoverMixer() error {
 	return d.clearOverlays("")
 }

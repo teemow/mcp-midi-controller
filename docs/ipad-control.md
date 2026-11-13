@@ -124,13 +124,13 @@ a normal result, not a tool error.
 |---|---|
 | `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the Navigator by a tap on the mixer, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). |
 | `aum_channel` | `add_audio`, `add_midi` (the add tile: right of the last strip, or in the middle of the start screen that CLEAR leaves), `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`: a tap on the dB label opens the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
-| `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. |
+| `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
 | `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings; `path` into a session's folder; the page that shows), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹, `clear`¹ (CLEAR → Sure?), `notes`. |
 | `aum_midi_routing` | `read` (sources, destinations and the connected cells), `connect` / `disconnect` (`source`, `destination`), `destination` (its panel: MIDI sources, All Notes Off, the filter; `path` taps further). |
 | `aum_midi_control` | `read` (`path` walks into a collection or a control's mapping editor), `filter` (ALL, ASSIGNED, UNUSED), `learn`, `menu` (a section's `⋮`: Set MIDI Channels¹, Save, Load¹, Copy, Paste¹, Clear All¹, Delete All¹), `add` (ADD TEMPO, ADD PRESET), `main_parameter`. |
 | `aum_settings` | `read` every setting (scrolling the panel), `set` a `setting` to a `value` as AUM prints it (ON, INT 24, 48 kHz, …). Settings are global: set them back afterwards. |
-| `aum_file_player` | `open` / `read` (selected file, format, options), `set` (Loop, Sync, Normalize), `load` (`name`, `path` in SOUNDFILES), `play_enable`. |
+| `aum_file_player` | `open` / `read` (selected file, format, options), `set` (Loop, Sync, Normalize), `load` (`name`, `path` in SOUNDFILES), `play_enable`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 
 ¹ Changes or loses state: needs `confirm: true`. Iterate on a scratch session
 or the ` (mcp test)` copies ([AGENTS.md](../AGENTS.md)), never an original.
@@ -138,29 +138,55 @@ or the ` (mcp test)` copies ([AGENTS.md](../AGENTS.md)), never an original.
 ### Touching the mixer under a panel
 
 While a side panel is open, AUM does not pass touches on to the mixer beside
-it. Seen on the iPad (AUM 1.4.8) on a session of one empty channel:
+it. Seen on the iPad (AUM 1.4.8) on scratch sessions of one channel:
 
 - a tap on the mixer closes the panel and does nothing else. Under the main
   menu and under FILES the tap on the dB label opened no Set level dialog;
   the same tap sent again, with the panel gone, opened it. Under the main
-  menu a tap on MUTE did not mute;
+  menu a tap on MUTE did not mute and a tap on a File Player's node opened no
+  FILE PLAYER; under either panel a tap on a strip's `+1` added no slot;
 - a swipe on the fader under the main menu left the level where it was, and
-  the menu open.
+  the menu open;
+- the mixer is marked invisible, and what a tool finds by what is visible it
+  does not find: under the main menu a node counted as scrolled out of its
+  insert column, and a File Player's PLAY ENABLE toggle as missing.
 
 This is the state the file operations leave: `aum_files load` ends with the
 main menu open (it reads the session's name there) and `aum_files save` with
 FILES open (it reads the session's row there). `set_level` right after a save
 answered "the Set level dialog did not open", on a channel that had taken the
-same call twice before the save.
+same call twice before the save, and `aum_node add_slot` right after a save
+answered "no slot was added".
 
-So every `aum_channel` action first closes what lies over the mixer: a side
-panel by its close icon, a popover by a tap outside it, an alert by Cancel,
-the routing matrix by its top-bar button. The gestures are listed in the
-result. An EDIT CHANNEL left open is closed too, as `edit` leaves it: it can
-be another strip's, and `edit`, `rename`, `bookmark`, `duplicate` and `remove`
-act in the one that is open, so they open the named strip's own. The tempo
-bar and the built-in keyboard are left alone: with either open a tap on the
-dB label opened the dialog (the mixer shrinks above the keyboard).
+So every `aum_channel`, `aum_node` and `aum_file_player` action first closes
+what lies over the mixer: a side panel by its close icon, a popover by a tap
+outside it, an alert by Cancel, the routing matrix by its top-bar button. The
+gestures are listed in the result. A request that lacks `confirm` or an
+argument is answered before anything is closed.
+
+What an earlier call left open is closed too, since it can belong to another
+strip or node than the one the request names:
+
+- an EDIT CHANNEL, as `aum_channel edit` leaves it: `edit`, `rename`,
+  `bookmark`, `duplicate` and `remove` act in the one that is open, so they
+  open the named strip's own;
+- a FILE PLAYER, as `aum_file_player open` leaves it: its title names no
+  channel, so `read`, `set` and `load` open the named channel's own (a tap
+  outside it, then a tap on the channel's node);
+- a node's long-press menu, as `aum_node menu` leaves it: the actions that
+  tap in a menu long-press the named node for it themselves.
+
+What stays is the node that `select` marked, and a plugin window. SELECT
+leaves nothing open: with the main menu opened after it, `copy_here` on an
+empty slot closed the menu, found COPY HERE in the slot's menu and copied the
+node. A plugin window is no panel or popover and is not closed. While a side
+panel lies over it AUM marks its bar hidden and the window is not listed
+([Reading AUM](#reading-aum)), so `window_close` and `window_mode` had no
+window to act on there; they close the panel and find it then (shown on
+trees captured from AUM, not run on the iPad).
+
+The tempo bar and the built-in keyboard are left alone: with either open a
+tap on the dB label opened the dialog (the mixer shrinks above the keyboard).
 
 With `ipad_tap`, `ipad_swipe` and `ipad_drag` on the mixer nothing is closed
 for you: run `aum_panel close` first.
@@ -358,7 +384,8 @@ How AUM shows state in its tree (AUM 1.4.8):
   one with ‧ (`MAXIMIZED ✓`, `DEFAULT ‧`). A side panel or popover opened
   over the window marks its bar hidden: `get_aum_ui` lists the window only
   while nothing covers its bar. Side panels open over a plugin window, so
-  `aum_panel`, `aum_files` and `aum_midi_control` leave it open.
+  `aum_panel`, `aum_files` and `aum_midi_control` leave it open, and
+  `aum_node window_close` / `window_mode` close the panel to find the window.
 - **Under a side panel or the routing matrix** AUM marks the whole mixer
   invisible; its states still read. Its touches do not arrive ([Touching the
   mixer under a panel](#touching-the-mixer-under-a-panel)).
