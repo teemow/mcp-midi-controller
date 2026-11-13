@@ -230,10 +230,31 @@ scripts/deploy-mac.sh      # install both agents, build, install, restart
   It also reloads the daemon agent when its plist changed; a change to the
   update agent's own plist takes one manual `scripts/deploy-mac.sh` (the log
   says so).
+- It restarts the daemon only for a new daemon. A merge that changes nothing
+  the binary is built from (tests, `web/` without a rebuilt
+  `internal/webui/dist`) or only docs leaves it running on its older version.
+  The update compares a fingerprint of the build with the running one's and
+  logs `<version> builds the same daemon as the running <version>: not
+  restarting`. The fingerprint is the binary without its version, its VCS
+  stamp and the web UI's copy of `docs/` (`internal/webui/dist/docs`), so after
+  a docs-only merge the web UI's docs tab shows the docs of the running build
+  until the next restart.
+- It never cuts what the daemon is in the middle of. Before it builds, and
+  again before it swaps the binary in, it asks the daemon `GET /busy` on its
+  loopback address (`listen_addr`). That reports a song playing, a recording,
+  a stem recording, a mix measurement, a sound check or audition, and any tool
+  call that has not returned. While the daemon is busy, the update builds
+  nothing, logs `update to <version> waits: the daemon is busy` with one
+  `busy:` line for each thing it waits for, and asks again on the next run. It
+  waits at most an hour (`MCP_MIDI_UPDATE_MAX_WAIT_MIN`, 60), then restarts
+  anyway. A daemon that does not answer has nothing to wait for. The manual
+  `scripts/deploy-mac.sh` does not wait; it logs what its restart cuts.
 - It never touches a clone with local changes or on another branch, and a build
   that fails leaves the running daemon alone until `main` moves again.
-- Logs: `~/Library/Logs/mcp-midi-controller.log` (daemon, first line is the
-  version) and `~/Library/Logs/mcp-midi-controller-update.log` (updates).
+- Logs: `~/Library/Logs/mcp-midi-controller.log` (daemon; it starts each run
+  with a `mcp-midi-controller <version>` line, so the last such line is the
+  running version) and `~/Library/Logs/mcp-midi-controller-update.log`
+  (updates).
 
 Go and the Xcode command line tools are the only build requirements; the SPA
 in `internal/webui/dist` is committed.

@@ -477,7 +477,7 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	// A dozing host stalls the tap's stream and the waits between the notes.
-	defer s.holdAwake()()
+	defer s.hold(fmt.Sprintf("audition_sound %q track %q", cs.id, tp.ID))()
 	home, err := cs.plan.TrackHomeState(tp.ID)
 	if err != nil {
 		return textResult("audition_sound: "+err.Error(), true), nil

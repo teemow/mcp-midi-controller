@@ -930,7 +930,7 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	// A dozing host stalls the tap's stream and the waits between the notes.
-	defer s.holdAwake()()
+	defer s.hold(fmt.Sprintf("sound check of %q", cs.id))()
 	if tap == nil {
 		return nil, errors.New("no audio tap")
 	}
