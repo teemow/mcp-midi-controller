@@ -792,16 +792,18 @@ func TestIPadDeckRecordingsFromAnotherFolder(t *testing.T) {
 	// of the root, and its takes are not the keys'.
 	aum.ShowRecordings("Stem Song stem keys")
 	got, err := deck.Recordings(ctx, "Stem Song stem band")
-	if err != nil || len(got) != 2 || got[0].Name != "Master - 300 bpm - 002" || got[1].Name != "Master - 300 bpm - 001" || got[0].Detail != detail {
+	if err != nil || got.Missing || len(got.Takes) != 2 || got.Takes[0].Name != "Master - 300 bpm - 002" || got.Takes[1].Name != "Master - 300 bpm - 001" || got.Takes[0].Detail != detail {
 		t.Fatalf("the band's takes = %+v, %v", got, err)
 	}
 	// A stem that was not recorded yet has no folder: none, and no error,
-	// although FILES now reopens inside the band's folder.
-	if got, err := deck.Recordings(ctx, "Stem Song stem drums"); err != nil || len(got) != 0 {
+	// although FILES now reopens inside the band's folder. The root was read
+	// through to say so, and every folder of it comes back.
+	got, err = deck.Recordings(ctx, "Stem Song stem drums")
+	if err != nil || !got.Missing || len(got.Takes) != 0 || len(got.Root) != 22 || got.Root[0] != "Older Song 00" || got.Root[21] != "Stem Song stem keys" {
 		t.Fatalf("a stem without takes = %+v, %v", got, err)
 	}
 	// And the keys' single take is not taken for the drums' or the band's.
-	if got, err := deck.Recordings(ctx, "Stem Song stem keys"); err != nil || len(got) != 1 {
+	if got, err := deck.Recordings(ctx, "Stem Song stem keys"); err != nil || got.Missing || len(got.Takes) != 1 {
 		t.Fatalf("the keys' takes = %+v, %v", got, err)
 	}
 	if touched := aum.Touched(); len(touched) != 0 {

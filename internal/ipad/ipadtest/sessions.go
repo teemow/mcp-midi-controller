@@ -74,9 +74,10 @@ type SessionsAUM struct {
 	sorry    string    // the text of the alert "Sorry" on screen
 	held     []string
 	renamed  []string
-	closing  bool // the SAVE panel is about to close after a write
-	runOn    int  // rows a list runs on after a drag's finger lifts
-	cutRows  bool // a scrolled list rests between two rows
+	closing  bool   // the SAVE panel is about to close after a write
+	runOn    int    // rows a list runs on after a drag's finger lifts
+	cutRows  bool   // a scrolled list rests between two rows
+	sort     string // the value of the sort control above a list
 	writes   int
 	restored bool
 	loaded   []string
@@ -130,6 +131,15 @@ func (m *SessionsAUM) SetCutRows(on bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cutRows = on
+}
+
+// SetSort sets the value the sort control above a list shows (SortLastOpened
+// by default). The rows stay in the order they were added in: the test gives
+// them in the order the sort would show.
+func (m *SessionsAUM) SetSort(value string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sort = value
 }
 
 // AddFolder adds a folder to the root of Sessions, below the folders that
@@ -427,7 +437,7 @@ func (m *SessionsAUM) source() json.RawMessage {
 			}
 		}
 		first := min(m.first, len(rows))
-		a.Files = &FilesPanel{Title: title, Folder: header, Cells: rows[first:], Scrolled: first > 0}
+		a.Files = &FilesPanel{Title: title, Folder: header, Cells: rows[first:], Scrolled: first > 0, Sort: m.sort}
 		if m.cutRows && first > 0 {
 			a.Files.Cells, a.Files.Cut = rows[first-1:], true
 		}

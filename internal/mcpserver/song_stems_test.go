@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/teemow/aum-session-go/aum"
 	"github.com/teemow/mcp-midi-controller/internal/ipad"
 	"github.com/teemow/mcp-midi-controller/internal/ipad/ipadtest"
@@ -61,31 +63,88 @@ type rigDeck struct {
 	afterTake func(folder string)
 	// slow is how long a reading of a list takes.
 	slow time.Duration
+	// sorts are the sorts AUM's list shows at the readings, in turn, the last
+	// one repeating; none is ipadtest.SortLastOpened, the newest take first.
+	sorts []string
+	// older are the takes each folder held before the rig recorded, the
+	// newest first, and others the root's folders of other sessions.
+	older  map[string][]string
+	others []string
+	// readings lists the readings, in order: "top <folder>" for a folder's
+	// first page, "whole <folder>" for all of it, "root <folder>" for a root
+	// read through without the folder.
+	readings []string
 	// armTaps counts the taps on REC the daemon needed.
 	armTaps int
 	// missing are the strips whose File Player came up without its file.
 	missing map[string]bool
 }
 
-func (d *rigDeck) Recordings(ctx context.Context, folder string) ([]ipad.AUMFileEntry, error) {
+// rigTopRows is how many rows the first page of a folder of AUM's
+// Recordings shows.
+const rigTopRows = 12
+
+func (d *rigDeck) Recordings(ctx context.Context, folder string) (stemList, error) {
 	d.mu.Lock()
 	slow := d.slow
+	sort := ipadtest.SortLastOpened
+	if n := len(d.sorts); n > 0 {
+		sort, d.sorts = d.sorts[0], d.sorts[min(1, n-1):]
+	}
+	older := slices.Clone(d.older[folder])
+	others := slices.Clone(d.others)
 	d.mu.Unlock()
 	if slow > 0 {
 		select {
 		case <-time.After(slow):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return stemList{}, ctx.Err()
 		}
 	}
 	d.r.mu.Lock()
 	takes := slices.Clone(d.r.Takes[folder])
+	var root []string
+	for f := range d.r.Takes {
+		if len(d.r.Takes[f]) > 0 {
+			root = append(root, f)
+		}
+	}
 	d.r.mu.Unlock()
-	var out []ipad.AUMFileEntry
+	for f := range d.older {
+		if !slices.Contains(root, f) {
+			root = append(root, f)
+		}
+	}
+	slices.Sort(root)
+	var out stemList
+	var names []string
 	for i := len(takes) - 1; i >= 0; i-- { // the newest first, as AUM lists them
-		out = append(out, ipad.AUMFileEntry{Name: takes[i].Name, Detail: "12. Nov 2026 at 21:23:42 • 4.4 MiB • wav"})
+		names = append(names, takes[i].Name)
+	}
+	names = append(names, older...)
+	switch {
+	case len(names) == 0:
+		out = stemList{Missing: true, Root: append(others, root...)}
+	case sort == ipadtest.SortLastOpened:
+		out = stemList{Top: true, Sort: sort}
+		names = names[:min(len(names), rigTopRows)]
+	default:
+		// Sorted another way the takes are in no order of theirs: by name.
+		out = stemList{Sort: sort}
+		slices.Sort(names)
+	}
+	for _, n := range names {
+		out.Takes = append(out.Takes, ipad.AUMFileEntry{Name: n, Detail: "12. Nov 2026 at 21:23:42 • 4.4 MiB • wav"})
 	}
 	d.mu.Lock()
+	switch {
+	case out.Missing:
+		d.readings = append(d.readings, "root "+folder)
+	case out.Top:
+		d.readings = append(d.readings, "top "+folder)
+	default:
+		d.readings = append(d.readings, "whole "+folder)
+	}
 	had, read := d.seen[folder]
 	if d.seen == nil {
 		d.seen = map[string]int{}
@@ -97,6 +156,13 @@ func (d *rigDeck) Recordings(ctx context.Context, folder string) ([]ipad.AUMFile
 		next(folder)
 	}
 	return out, nil
+}
+
+// readingsOf lists the deck's readings since the n-th.
+func (d *rigDeck) readingsOf(n int) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.readings[min(n, len(d.readings)):])
 }
 
 func (d *rigDeck) Arm(_ context.Context, on bool) (bool, error) {
@@ -197,7 +263,7 @@ func stemsRigWith(t *testing.T, doc string, files ...string) (*songRig, *rigDeck
 		}
 		return 0
 	}
-	deck := &rigDeck{r: r}
+	deck := &rigDeck{r: r, older: map[string][]string{}}
 	r.s.deck = deck
 	if res := call(t, r.s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
 		t.Fatalf("save: %s", resultText(res))
@@ -685,6 +751,116 @@ func TestRecordSongStemsFailures(t *testing.T) {
 	if text := resultText(res); !res.IsError || !strings.Contains(text, "not whole beats: it did not begin with the transport or did not end on a bar line") ||
 		!strings.Contains(text, "not played") || s.player.Status().Playing {
 		t.Errorf("a mix of takes that are not whole beats long: %s", text)
+	}
+}
+
+// stemsDone waits for the running stem recording to end and returns
+// get_song_stems' last answer, a failed recording's too.
+func stemsDone(t *testing.T, s *Server) (*mcp.CallToolResult, string) {
+	t.Helper()
+	for deadline := time.Now().Add(90 * time.Second); ; {
+		res := call(t, s.handleGetSongStems, map[string]any{"wait_ms": 2000})
+		if out, _ := res.StructuredContent.(map[string]any); out["done"] == true || res.IsError {
+			return res, resultText(res)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the stem recording did not end: %s", resultText(res))
+		}
+	}
+}
+
+// TestRecordSongStemsReadsOnlyWhatTellsTheTake: a stem's take is looked for in
+// AUM's Recordings with as few readings as tell it. Each reading walks FILES
+// from the root of Recordings to the session's folder; on an iPad whose root
+// held 90 folders a folder that is not there took 113 s, since the root is
+// read through to say so, and the end of a folder's list two reads more.
+//
+//   - The root that was read through for one stem's missing folder answers
+//     for the later stems of the recording whose folders it did not hold:
+//     nothing else makes takes into them before their own pass.
+//   - A folder whose list shows the newest take first is read at its first
+//     page, before the pass and after it: the take is there. A folder sorted
+//     otherwise is read whole, before and after.
+//   - A folder read at its top before the pass and whole after it, its sort
+//     changed in between, says nothing of which take is new: rows below the
+//     first page were not read before. The stem is not taken from it, and the
+//     recorder is switched off.
+func TestRecordSongStemsReadsOnlyWhatTellsTheTake(t *testing.T) {
+	r, deck := stemsRig(t)
+	s := r.s
+	deck.mu.Lock()
+	for i := range 30 {
+		deck.others = append(deck.others, fmt.Sprintf("Older Song %02d", i))
+	}
+	deck.mu.Unlock()
+
+	r.opens("Stem Song stem bass", stemBassStrips)
+	deck.afterTake = func(folder string) {
+		if folder == "Stem Song stem bass" {
+			r.opens("Stem Song stem band", stemBandStrips)
+		}
+	}
+	if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1}); res.IsError {
+		t.Fatalf("record: %s", resultText(res))
+	}
+	rep, text := stemsReportOfJob(t, s)
+	if !rep.Ready || rep.Stems[0].File != "Stem Song stem bass/Master - 300 bpm - 001.wav" || rep.Stems[1].File != "Stem Song stem band/Master - 300 bpm - 001.wav" {
+		t.Fatalf("report = %+v\n%s", rep, text)
+	}
+	want := []string{"root Stem Song stem bass", "top Stem Song stem bass", "top Stem Song stem band"}
+	if got := deck.readingsOf(0); !slices.Equal(got, want) {
+		t.Errorf("readings of two new stems = %q, want %q: the root read through for the bass answers for the band", got, want)
+	}
+
+	// The bass again, into a folder that holds 30 older takes, the newest
+	// first: its first page tells the take.
+	deck.mu.Lock()
+	for i := 30; i > 0; i-- {
+		deck.older["Stem Song stem bass"] = append(deck.older["Stem Song stem bass"], fmt.Sprintf("Master - 120 bpm - %03d", i))
+	}
+	deck.mu.Unlock()
+	deck.afterTake = nil
+	again := func(file string, readings ...string) {
+		t.Helper()
+		n := len(deck.readingsOf(0))
+		r.opens("Stem Song stem bass", stemBassStrips)
+		if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1, "stems": []string{"bass"}, "again": true}); res.IsError {
+			t.Fatalf("record: %s", resultText(res))
+		}
+		res, text := stemsDone(t, s)
+		if file != "" {
+			if rep, _ := res.StructuredContent.(map[string]any)["report"].(*stemsReport); res.IsError || rep == nil || rep.Stems[0].File != file {
+				t.Fatalf("want the take %q:\n%s", file, text)
+			}
+		} else if !res.IsError || !strings.Contains(text, `AUM's list of "Stem Song stem bass" was sorted "LAST OPENED" before the pass, newest first, and is sorted "NAME" now: which take is new cannot be told`) {
+			t.Fatalf("a list sorted anew between the readings:\n%s", text)
+		}
+		if got := deck.readingsOf(n); !slices.Equal(got, readings) {
+			t.Errorf("readings = %q, want %q", got, readings)
+		}
+	}
+	again("Stem Song stem bass/Master - 300 bpm - 002.wav", "top Stem Song stem bass", "top Stem Song stem bass")
+
+	// Sorted by name, the folder is read whole.
+	deck.mu.Lock()
+	deck.sorts = []string{"NAME"}
+	deck.mu.Unlock()
+	again("Stem Song stem bass/Master - 300 bpm - 003.wav", "whole Stem Song stem bass", "whole Stem Song stem bass")
+
+	// Sorted anew between the two readings.
+	deck.mu.Lock()
+	deck.sorts = []string{ipadtest.SortLastOpened, "NAME"}
+	deck.mu.Unlock()
+	again("", "top Stem Song stem bass", "whole Stem Song stem bass")
+	// The recorder was switched off after the reading, before the master
+	// was disarmed: a take the sequence did not end must not record on.
+	tail := []int{103127, 105000, 107000}
+	cmds := r.waitCommands(func(cmds []midicontrol.Command) bool {
+		cc := globalCCs(cmds, 103, 105, 107)
+		return len(cc) >= 3 && slices.Equal(cc[len(cc)-3:], tail)
+	})
+	if cc := globalCCs(cmds, 103, 105, 107); len(cc) < 3 || !slices.Equal(cc[len(cc)-3:], tail) {
+		t.Errorf("the recorder's controls of the last pass end in %v, want the stop, off, disarm %v", cc[max(0, len(cc)-3):], tail)
 	}
 }
 

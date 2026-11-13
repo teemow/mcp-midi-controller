@@ -240,9 +240,25 @@ which holds because the folder was looked for from the root and through the
 whole list. No take's row is tapped: a tap opens its PREVIEW.
 
 On the iPad the root of Recordings, 90 rows in eleven pages, took 110 to
-115 s. The takes of a folder on the root's first page took 36 s and those of
-one on its ninth page 95 s. A folder the root does not hold took 113 s, since
-the whole root is read before the tool says so.
+115 s. The takes of a folder on the root's first page took 30 to 36 s and
+those of one on its ninth page 95 to 98 s. A folder the root does not hold
+took 108 to 113 s, since the whole root is read before the tool says so. A
+root that still goes on after 60 pages is not taken for one without the
+folder: that is an error, not "no such folder".
+
+**The stems tools read less** ([songs.md](songs.md), "Looking up the take"):
+they ask a session's folder only whether it holds a take that the reading
+before the pass did not, and reach it the same way, from the root. The sort
+control above the list is in the tree, an adjustable control whose value is
+the order (`LAST OPENED` on the iPad). Sorted so, the newest take is first,
+and they read the folder's first page and do not scroll it to its end, which
+spares the two reads at its end and a page for every eight takes more. Sorted
+otherwise they read it whole. On the iPad that took 21 to 25 s for a folder
+on the root's first page (31 s whole) and 81 s for one on its ninth page
+holding 22 takes (98 s whole), and FILES' close 3 to 4 s more. A folder the
+root does not hold costs the stems tools that whole reading of the root once
+per recording: the later stems whose folders it did not hold either are
+taken to have none.
 
 **`rename` finds the session as `load` does** and long-presses its row: a
 session's row, on screen whole, in the folder that was asked for. What AUM

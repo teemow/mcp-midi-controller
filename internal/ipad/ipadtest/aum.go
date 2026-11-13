@@ -273,7 +273,14 @@ type FilesPanel struct {
 	// name and leaves its second line, FilesRowsCut rows are whole below it,
 	// and the next one reaches below the list's bottom edge.
 	Cut bool
+	// Sort is the value of the sort control above the list, the order the
+	// list is in ("" draws SortLastOpened, as the iPad showed it).
+	Sort string
 }
+
+// SortLastOpened is the value the sort control above a FILES list read on the
+// iPad: the list in the order its entries were last opened, the newest first.
+const SortLastOpened = "LAST OPENED"
 
 // FileCell is one row of a FILES list.
 type FileCell struct {
@@ -660,7 +667,11 @@ func filesPanel(p FilesPanel) node {
 		rows = append(rows,
 			el("Button", "EDIT", 1144, 76, 50, 28, el("StaticText", "EDIT", 1157, 83, 24, 14).with("isVisible", "0")),
 			el("Button", "", 1096, 76, 32, 28))
-		sort := el("Button", "", 826, 60, 270, 60).with("value", "LAST OPENED").with("traits", "Adjustable")
+		order := p.Sort
+		if order == "" {
+			order = SortLastOpened
+		}
+		sort := el("Button", "", 826, 60, 270, 60).with("value", order).with("traits", "Adjustable")
 		if p.Folder != "" {
 			sort["children"] = []node{el("StaticText", p.Folder, x, 120, w, 56).with("traits", "Header, StaticText")}
 		}
