@@ -1220,7 +1220,7 @@ func (s *Server) handleMixSongStems(ctx context.Context, req *mcp.CallToolReques
 	}
 	b.WriteByte('\n')
 	for _, t := range rep.Stems {
-		fmt.Fprintf(&b, "  %-10s %s\n", t.Stem, t.File)
+		fmt.Fprintf(&b, "  %-10s %s%s\n", t.Stem, t.File, stemStripText(plan.src, t.Stem, cs.catalog))
 	}
 	if len(stale) > 0 {
 		fmt.Fprintf(&b, "note: the stem(s) %s have changed since their takes; the mix plays the takes as they are\n", strings.Join(stale, ", "))

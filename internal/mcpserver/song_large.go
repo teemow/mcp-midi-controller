@@ -92,7 +92,7 @@ func (s *Server) summarizeStems(p *stemPlan) (string, songSummary) {
 	var calibration []song.TrackVoicing
 	for k, st := range p.stems {
 		cs := p.songs[k]
-		fmt.Fprintf(&b, "  %s: %d track(s)\n", st.Name, len(st.Tracks))
+		fmt.Fprintf(&b, "  %s: %d track(s)%s\n", st.Name, len(st.Tracks), stemStripText(src, st.Name, p.songs[k].catalog))
 		for i := range cs.plan.Tracks {
 			row := trackRow(&b, "  ", cs, i, groups[cs.plan.Tracks[i].ID])
 			if row.File != "" {
@@ -163,4 +163,26 @@ func (s *Server) summarizeStems(p *stemPlan) (string, songSummary) {
 		}
 	}
 	return b.String(), sum
+}
+
+// stemStripText says what a stem's strip in the mix is (song.StemStrip), as a
+// suffix to the line that lists the stem: "" for a stem without one, which
+// plays at unity and dry.
+func stemStripText(sg *song.Song, stem string, cat song.Catalog) string {
+	strip, ok := sg.StemStrips[stem]
+	if !ok {
+		return ""
+	}
+	parts := []string{"0 dB"}
+	if strip.Level != nil {
+		parts[0] = fmt.Sprintf("%g dB", *strip.Level)
+	}
+	for _, fx := range strip.Effects {
+		name := fx.Plugin
+		if id, err := cat.Resolve(fx.Plugin); err == nil {
+			name = cat[id].Name
+		}
+		parts = append(parts, name)
+	}
+	return "; in the mix: " + strings.Join(parts, " > ")
 }

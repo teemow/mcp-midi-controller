@@ -357,9 +357,10 @@ func (s *Song) StemSong(st Stem, title string, l StemLayout) (*Song, error) {
 
 // MixSong is the song that plays the stems' recordings together: one track
 // per stem, each a File Player with the stem's file (files, by stem name, a
-// path in AUM's Recordings) at unity, under the whole song's master effects
-// with their scenes and ramps, for the same bars, lead-in and tail. The
-// tracks' own faders, scenes and ramps are in the recordings.
+// path in AUM's Recordings) through the stem's strip (StemStrips: its level
+// and effects; unity and dry for a stem without one), under the whole song's
+// master effects with their scenes and ramps, for the same bars, lead-in and
+// tail. The tracks' own faders, scenes and ramps are in the recordings.
 func (s *Song) MixSong(stems []Stem, files map[string]string, title string, l StemLayout) (*Song, error) {
 	master := func(track string) bool { return track == MasterTrack }
 	out := s.derive(title, l, master, func(r Ramp) bool { return r.Track == MasterTrack }, false)
@@ -370,7 +371,15 @@ func (s *Song) MixSong(stems []Stem, files map[string]string, title string, l St
 		if file == "" {
 			return nil, fmt.Errorf("the stem %q has no recording", st.Name)
 		}
-		out.Tracks = append(out.Tracks, Track{ID: st.Name, Instrument: Plugin{File: file}})
+		t := Track{ID: st.Name, Instrument: Plugin{File: file}}
+		if strip, ok := s.StemStrips[st.Name]; ok {
+			if strip.Level != nil {
+				level := *strip.Level
+				t.Level = &level
+			}
+			t.Effects = slices.Clone(strip.Effects)
+		}
+		out.Tracks = append(out.Tracks, t)
 	}
 	out.Description = fmt.Sprintf("The mix of %q from the recordings of its stems (%s), through its master effects.", s.Title, strings.Join(names, ", "))
 	out.Master = slices.Clone(s.Master)

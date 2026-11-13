@@ -443,6 +443,22 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	for j, fx := range s.Master {
 		p.Master = append(p.Master, newNode(fmt.Sprintf("/master/%d", j), MasterTrack, p.MasterStrip, firstInsertSlot+j, fx, fx.EffectID()))
 	}
+	// The stems' strips are the mix's (MixSong) and no part of this session.
+	// Their plugins, presets and parameters are checked here all the same,
+	// so a mistake is named with its place in the document when the song is
+	// saved, not when its mix is written.
+	for _, name := range sortedKeys(s.StemStrips) {
+		for j, fx := range s.StemStrips[name].Effects {
+			at := fmt.Sprintf("/stems/%s/effects/%d", name, j)
+			id, err := cat.Resolve(fx.Plugin)
+			if err != nil {
+				e.addf("%s/plugin: %v", at, err)
+				continue
+			}
+			n := &NodePlan{Track: name, Effect: fx.EffectID(), Plugin: id, Name: cat[id].Name, dump: cat[id], home: fx.NodeState}
+			p.collect(&e, n, fx.NodeState, at)
+		}
+	}
 	if err := e.err(); err != nil {
 		return nil, err
 	}

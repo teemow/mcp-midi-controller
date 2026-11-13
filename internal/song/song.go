@@ -48,6 +48,12 @@ type Song struct {
 	Tracks []Track `yaml:"tracks" json:"tracks"`
 	// Master is the effect chain on the master strip, after the fader.
 	Master []Plugin `yaml:"master,omitempty" json:"master,omitempty"`
+	// StemStrips are the stems' own strips in their mix (MixSong), by stem
+	// name: the level and the effect chain a stem's recording plays through
+	// there, before the master. A stem left out plays at unity and dry. No
+	// stem is recorded through its strip, so a change here is a new mix of
+	// the same takes.
+	StemStrips map[string]StemStrip `yaml:"stems,omitempty" json:"stems,omitempty"`
 
 	Patterns map[string]Pattern `yaml:"patterns" json:"patterns"`
 	Scenes   map[string]Scene   `yaml:"scenes,omitempty" json:"scenes,omitempty"`
@@ -62,6 +68,15 @@ type Song struct {
 	// stem marks a song derived to record a stem (StemSong): its sequence
 	// ends AUM's recorder itself. It is not part of a document.
 	stem bool
+}
+
+// StemStrip is a stem's strip in the mix of the stems: the file track that
+// plays the stem's recording there.
+type StemStrip struct {
+	// Level is the strip's fader in dB, 0 (unity) when it is nil.
+	Level *float64 `yaml:"level,omitempty" json:"level,omitempty"`
+	// Effects is the strip's effect chain, after the recording.
+	Effects []Plugin `yaml:"effects,omitempty" json:"effects,omitempty"`
 }
 
 // SessionSpec is the song's own choice of session options. They are part of
@@ -591,11 +606,31 @@ func (s *Song) Validate() error {
 	// its stems says so when it is saved, not when its stems are recorded.
 	// For a song of more tracks than a session hosts this is also the check
 	// of its size: its stems are all there is to play of it.
-	if _, serr := s.Stems(nil); serr != nil {
+	stems, serr := s.Stems(nil)
+	if serr != nil {
 		if list, ok := serr.(Errors); ok {
 			e.list = append(e.list, list...)
 		} else {
 			e.addf("/tracks: %v", serr)
+		}
+	}
+	// A stem's strip in the mix belongs to one of the document's stems.
+	if serr == nil && len(s.StemStrips) > 0 {
+		names := make([]string, len(stems))
+		known := map[string]bool{}
+		for i, st := range stems {
+			names[i], known[st.Name] = st.Name, true
+		}
+		for _, name := range sortedKeys(s.StemStrips) {
+			at := "/stems/" + name
+			if !known[name] {
+				e.addf("%s: the song has no stem %q (its stems are %s)", at, name, strings.Join(names, ", "))
+			}
+			ss := s.StemStrips[name]
+			if ss.Level != nil && *ss.Level > MaxLevelDB {
+				e.addf("%s/level: %g dB is above the fader's +%g dB", at, *ss.Level, MaxLevelDB)
+			}
+			checkEffects(&e, at+"/effects", ss.Effects)
 		}
 	}
 

@@ -45,6 +45,7 @@ tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, leve
   group: the stem the track is recorded into by record_song_stems, which records a song too heavy for one pass a group of tracks at a time with AUM's own recorder; tracks that share a group are recorded together, a track without one alone.
   More than 12 tracks: one session hosts 12, so a song of more needs groups that make at most 12 stems of at most 12 tracks each. It has no session of its own (load_song, play_song, check_song and mix_song refuse it): record_song_stems records its stems, mix_song_stems writes and plays the mix, and the mix is a song like any other. Its channels are counted in each stem: a track plays on its place in its stem (the first track of every stem on channel 1), and channel and control_channels are taken within the stem alone.
 master: [effects on the master strip].
+stems: {stem: {level? (dB), effects?: [effects as on a track]}} - optional: each stem's own strip in its mix (mix_song_stems): the level and the effect chain its recording plays through there, before the master. A stem left out plays at unity and dry. The stems are recorded without it, so a change here needs no new takes.
 patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), velocity? (96),
   notes: grid line or list of lines (voices that sound together) | drums: {lane: grid} | events: [{at, dur (beats), note, vel?, channel?}], pedal?: [{at, dur (beats)}], channel?}}
   pedal: the sustain pedal of the track's instrument, down from at for dur beats (Control Change 64 on the track's channel). It comes up with the section at the latest, a stretch that begins under another makes the pedal change there, and stopping the song lifts it.
@@ -664,7 +665,7 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		sum.Stems = stems
 		b.WriteString("stems (record_song_stems records each alone with AUM's recorder, mix_song_stems mixes the files):\n")
 		for _, st := range stems {
-			fmt.Fprintf(&b, "  %-10s %s\n", st.Name, strings.Join(st.Tracks, ", "))
+			fmt.Fprintf(&b, "  %-10s %s%s\n", st.Name, strings.Join(st.Tracks, ", "), stemStripText(cs.song, st.Name, cs.catalog))
 		}
 	}
 	if rows := cs.plan.Calibration(); rows != nil {
