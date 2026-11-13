@@ -23,6 +23,7 @@ const files = [
   { src: join(docsDir, "ipad-control.md"), dest: "ipad-control.md" },
   { src: join(docsDir, "songs.md"), dest: "songs.md" },
   { src: join(docsDir, "song-authoring.md"), dest: "song-authoring.md" },
+  { src: join(docsDir, "craft-tools.md"), dest: "craft-tools.md" },
   { src: join(docsDir, "recording.md"), dest: "recording.md" },
 ];
 
