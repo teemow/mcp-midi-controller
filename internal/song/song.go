@@ -195,6 +195,19 @@ type Plugin struct {
 	// Sequence is an instrument's own step sequence (a drum machine's steps
 	// and lanes per voice), written into its saved state. See stepseq.go.
 	Sequence StepSequence `yaml:"sequence,omitempty" json:"sequence,omitempty"`
+	// Samples is a drum machine's sample per voice, "1" to "8": a sample of
+	// its factory library by its path there ("Kicks/707 Kick.wav"), written
+	// into its saved state. See kitstate.go.
+	Samples map[string]string `yaml:"samples,omitempty" json:"samples,omitempty"`
+	// Locks are parameters, by id, that a drum machine's variation and its
+	// randomise leave as they are, written into its saved state.
+	Locks []string `yaml:"locks,omitempty" json:"locks,omitempty"`
+}
+
+// writesState reports whether the plugin's document writes into its saved
+// state: a step sequence, samples or locks.
+func (p *Plugin) writesState() bool {
+	return len(p.Sequence) > 0 || len(p.Samples) > 0 || len(p.Locks) > 0
 }
 
 // NodeState is what a scene (or a plugin's own declaration) says about one
@@ -576,6 +589,10 @@ func (s *Song) Validate() error {
 		if len(t.Instrument.Sequence) > 0 && err == nil && t.Instrument.File == "" {
 			checkStepSequence(&e, at+"/instrument/sequence", t.Instrument.Sequence, meter)
 		}
+		if t.Instrument.File == "" {
+			checkSamples(&e, at+"/instrument/samples", t.Instrument.Samples)
+			checkLocks(&e, at+"/instrument/locks", t.Instrument.Locks)
+		}
 		checkEffects(&e, at+"/effects", t.Effects)
 		checkModulators(&e, at, t)
 		for lane, note := range t.DrumMap {
@@ -862,6 +879,12 @@ func checkEffects(e *errs, at string, effects []Plugin) {
 		if len(fx.Sequence) > 0 {
 			e.addf("%s/%d/sequence: only an instrument has a step sequence", at, i)
 		}
+		if len(fx.Samples) > 0 {
+			e.addf("%s/%d/samples: only an instrument has samples", at, i)
+		}
+		if len(fx.Locks) > 0 {
+			e.addf("%s/%d/locks: only an instrument has locks", at, i)
+		}
 		id := fx.EffectID()
 		if seen[id] {
 			e.addf("%s/%d/id: duplicate effect %q (give effects that share a plugin their own ids)", at, i, id)
@@ -913,6 +936,8 @@ func checkFileTrack(e *errs, at string, t *Track) {
 	no(in.Bypass != nil, "instrument/bypass", "a file is not bypassed; mute the track")
 	no(in.MIDI, "instrument/midi", "a file hears no notes")
 	no(len(in.Sequence) > 0, "instrument/sequence", "a file has no step sequence")
+	no(len(in.Samples) > 0, "instrument/samples", "a file has no samples")
+	no(len(in.Locks) > 0, "instrument/locks", "a file has no locks")
 	no(in.ID != "", "instrument/id", "an instrument needs no id")
 	no(t.Kind != "", "kind", "a track that plays a file has no notes, so no kind")
 	no(t.Transpose != 0, "transpose", "a file is not transposed")

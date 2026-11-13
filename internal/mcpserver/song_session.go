@@ -262,7 +262,7 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 		if err := applyDefaultState(ns, defaults); err != nil {
 			return err
 		}
-		return applyStepSequence(n, ns, bases)
+		return applyAuthoredState(n, ns, bases)
 	}
 	seq, err := songSequencerFor(cs, cat, a.Sequencer)
 	if err != nil {

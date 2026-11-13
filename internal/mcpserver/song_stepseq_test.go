@@ -18,7 +18,9 @@ import (
 func stageBattalion(t *testing.T) {
 	t.Helper()
 	dump := `{"component": {"type": "aumu", "subtype": "uaBL", "manufacturer": "UnAu"}, "name": "UA Battalion",
-		"parameters": [{"address": 0, "identifier": "seqChan1density", "displayName": "Seq. Chan. 1: Density", "min": 0, "max": 1, "value": 0.5, "writable": true}]}`
+		"parameters": [{"address": 0, "identifier": "seqChan1density", "displayName": "Seq. Chan. 1: Density", "min": 0, "max": 1, "value": 0.5, "writable": true},
+			{"address": 1, "identifier": "drum1pitch", "displayName": "Drum 1: Pitch", "min": 0, "max": 1, "value": 0.5, "writable": true},
+			{"address": 2, "identifier": "drum2pan", "displayName": "Drum 2: Pan", "min": 0, "max": 1, "value": 0.5, "writable": true}]}`
 	if err := os.WriteFile(filepath.Join(config.AUv3ProbesDir(), "aumu-uaBL-UnAu.json"), []byte(dump), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +70,18 @@ arrangement: [a]
 // node's saved state as the staged session has it.
 func authoredBattalion(t *testing.T, s *Server) (map[string][]byte, string) {
 	t.Helper()
-	res := call(t, s.handleAuthorSongSession, map[string]any{"song": "lanes"})
+	return authoredBattalionOf(t, s, "lanes", "Lanes")
+}
+
+// authoredBattalionOf authors the song id, titled title, and returns the
+// Battalion node's saved state as the staged session has it.
+func authoredBattalionOf(t *testing.T, s *Server, id, title string) (map[string][]byte, string) {
+	t.Helper()
+	res := call(t, s.handleAuthorSongSession, map[string]any{"song": id})
 	if res.IsError {
 		return nil, resultText(res)
 	}
-	sess, err := aum.OpenFile(filepath.Join(config.AUMSessionsDir(), "Songs", "Lanes.aumproj"))
+	sess, err := aum.OpenFile(filepath.Join(config.AUMSessionsDir(), "Songs", title+".aumproj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +143,65 @@ func TestAuthorSongStepSequence(t *testing.T) {
 	}
 	if text := stateText(t, doc); !strings.Contains(text, `value="0.42"`) || !strings.Contains(text, `fills0="1,0,0,0,1`) {
 		t.Errorf("the sequence was not written over the default state:\n%s", text)
+	}
+}
+
+const kitSong = `title: Kit
+tempo: 120
+tracks:
+  - id: drums
+    instrument:
+      plugin: UA Battalion
+      samples:
+        1: Kicks/Abstrakta 1 Kick.wav
+        2: ""
+      locks: [drum2pan, drum1pitch]
+patterns:
+  rest: {bars: 1, notes: "."}
+sections:
+  a: {bars: 1, play: {drums: rest}}
+arrangement: [a]
+`
+
+// TestAuthorSongKitState checks a song's samples and locks reach Battalion's
+// state in the session, with no sequence of its own.
+func TestAuthorSongKitState(t *testing.T) {
+	s := newSongServer(t)
+	stageBattalion(t)
+	res := call(t, s.handleSaveSong, map[string]any{"yaml": kitSong})
+	if res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if text := resultText(res); !strings.Contains(text, "2 samples and 2 locks, written into UA Battalion's saved state") {
+		t.Errorf("save does not tell of the samples and locks:\n%s", text)
+	}
+	if _, msg := authoredBattalionOf(t, s, "kit", "Kit"); !strings.Contains(msg, "the song writes 2 samples and 2 locks into its saved state") {
+		t.Fatalf("author without a base state: %q", msg)
+	}
+
+	writeState(t, config.AUv3BaseStatesDir(), map[string][]byte{"jucePluginState": battalionState("0.21")})
+	doc, msg := authoredBattalionOf(t, s, "kit", "Kit")
+	if msg != "" {
+		t.Fatalf("author: %s", msg)
+	}
+	text := stateText(t, doc)
+	for _, want := range []string{
+		`url_0="file:///private/var/containers/Bundle/Application/00000000-0000-0000-0000-000000000000/UA%20Battalion.app/PlugIns/UA%20Battalion.appex/Unfiltered%20Audio/Sample%20Library/Kicks/Abstrakta%201%20Kick.wav"`,
+		`url_1=""`,
+		`<locks drum1pitch="1" drum2pan="1"/><sequences`,
+		// No sequence: the base's stays.
+		`fills0="0,0,0,0,`,
+		`<PARAM id="seqChan1lockLength" value="1.0"/>`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the authored state lacks %s:\n%s", want, text)
+		}
+	}
+
+	// A lock is a parameter of the plugin.
+	bad := strings.Replace(kitSong, "[drum2pan, drum1pitch]", "[drum2pan, drum9pitch]", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": bad}); !res.IsError || !strings.Contains(resultText(res), "drum9pitch is not a parameter of UA Battalion") {
+		t.Errorf("save with an unknown lock: %s", resultText(res))
 	}
 }
 

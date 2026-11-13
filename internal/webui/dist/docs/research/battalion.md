@@ -156,7 +156,28 @@ after the manual, their knob names are read from the plugin's window):
 | Garbage-Fi | playback with its accuracy taken away | clock | stutter | hiccup | bits |
 
 Samples are referenced by path, not stored in a preset. The default patch has
-none loaded.
+none loaded. The factory library sits in the app bundle, in folders such as
+`Kicks`, `Hats`, `Synths and Instruments` and `Artists/<artist>` (seen in
+saved sessions); the sample selector's arrows step through a folder, its dice
+picks a random sample of the library (p. 6).
+
+The saved state keeps each voice's sample as an attribute of its root,
+`url_0` to `url_7`: a `file://` URL, empty for none. For a sample of the
+factory library that is the full path into the app bundle,
+`file:///private/var/containers/Bundle/Application/<id>/UA%20Battalion.app/PlugIns/UA%20Battalion.appex/Unfiltered%20Audio/Sample%20Library/Kicks/…wav`,
+and `<id>` changes whenever the app is installed again or updated.
+
+*Measured* (Battalion 1.2.0, a state written into a session file and loaded in
+AUM, each voice's synth off): the plugin finds a sample of its library by
+what follows `Unfiltered Audio/Sample Library/` in the URL, whatever comes
+before it. The current bundle, an earlier install's bundle id, a made-up one
+(all zeros) and `file:///nowhere/Unfiltered%20Audio/Sample%20Library/…` all
+played the sample, alike to the dB; so did the URL with its spaces left
+unescaped. Without that part it played nothing: a path in the library alone
+(`Kicks/….wav`, with or without `file://`), the file name alone,
+`file:///nowhere/Sample%20Library/…`, and a file the library does not have.
+A song writes a voice's sample with `samples:`, through the all-zeros bundle
+id (see [songs.md](../songs.md#samples)).
 
 ### Envelopes, LFOs, modulation
 
@@ -171,11 +192,16 @@ none loaded.
   Velocity, Macro 1 and 2), each with a bipolar depth to every sound
   parameter of the voice. Those depths are parameters too: 296 a voice. Random
   draws a new value from 0 to 1 on every hit; Velocity is the hit's velocity
-  from 0 to 1 (p. 14).
+  from 0 to 1 (p. 14). The 37 targets include the modulation sources' own
+  knobs (both LFOs' speed, amount and shape, every stage of both envelopes)
+  and VARIATION, so one source can move another: `drum3lfo1speedlfo2` is LFO
+  2's depth on LFO 1's speed, `drum3variationrandom` the random value's on
+  VARIATION.
 - MACRO 1 and 2 are knobs that do nothing but modulate, so one of them moves
   everything it is mapped to.
 - VARIATION adds a little randomness to nearly every control of the voice on
-  each hit (p. 19). A control locked in the window is left out.
+  each hit (p. 19). A control locked in the window is left out, of the
+  voice's randomise too (measured: [Locks](#locks)).
 
 *Measured:*
 
@@ -491,6 +517,7 @@ song reaches it:
 | Trigger and Choke "Random", "Last" | which voice answers a hit | `drum<N>trigger`, `drum<N>choke` |
 | randomise, reset, commit the Performance page | the whole kit's offsets at once | channel 11 notes 12, 13, 14, on a track with `control_channels: [11]` |
 | randomise a voice | one voice's whole sound | channel 11 notes 24-31: likewise |
+| a lock on a knob | keeps that knob out of VARIATION, the Performance page and a randomise | `locks:` |
 | mute, solo, choke | drop-outs and breaks | channel 10 notes, on a track with `control_channels: [10]` |
 | the song's own notation | velocities, pattern lists that end differently, free events, ramps, scenes | the document |
 
@@ -558,6 +585,33 @@ spreads are over 16 hits, the patterns over 16 bars unless said.
   exactly. Note 26 gave voice 3 a new sound and a new rhythm on every press
   (onsets a second 12, then 3, 10, 8; 7 dB louder), with no way back but the
   parameters the song declares.
+
+### Locks
+
+A knob locked in the window (right-click) is kept out of VARIATION, the
+Performance page and preset changes (pp. 19, 30, 33). The state keeps the
+locks as attributes of `<locks>`, a parameter's id set to `"1"`
+(`<locks drum7pan="1" drum7pitch="1"/>`), before `<sequences>`. A song writes
+them with `locks:`.
+
+*Measured*, two Additive voices at VARIATION 1.0, one with its envelope,
+level, pan, pitch, engine knobs, mode and filter locked, 16 hits each:
+
+| | locked | open |
+|-|--------|------|
+| pan, right minus left | 0 dB every hit | -6.7 to +6.3 dB (sd 3.2) |
+| pitch | 130.0-130.8 Hz (sd 0.2) | 124.5-130.8 Hz (sd 1.5) |
+| length | 90-100 ms (sd 3.5) | 55-135 ms (sd 27) |
+| level | sd 1.0 dB | sd 1.7 dB |
+
+The level still moved a little: VARIATION reaches knobs that were not locked.
+Channel 11's randomise note for each voice, three presses, one hit after
+each (VARIATION still at full): the locked voice kept 130.8 Hz and its pan
+every time, and one press made it 3 dB louder and 110 ms long; the open one
+went to 117 and 124 Hz and 280 and 195 ms long, outside what VARIATION alone
+gave it (124.5 Hz, 135 ms). A CC still moves a locked knob: pan at 0.9 put the
+locked voice 13.7 dB right, at 0.1 13.5 dB left. A lock keeps the plugin's
+own moves off a knob, not MIDI.
 
 ### What a song does not reach
 
@@ -783,6 +837,24 @@ would replace them.
           ratch: ". . . . . . . . . . . . . . 0.5 ."                         # a roll of four in step 15
 ```
 
+**Samples, and knobs held in place.** A voice's sampler plays a sample of
+the factory library the song names, and locks keep chosen knobs out of
+VARIATION and the randomise notes, so a voice can vary in tone and still keep
+its pitch and place (see [songs.md](../songs.md#samples)). Both go into the
+saved state as the steps do: no preset.
+
+```yaml
+    instrument:
+      plugin: UA Battalion
+      params:
+        drum1synthenabled: "Off"
+        drum1samplerEnvelope: No Env
+        drum2variation: 0.6
+      samples:
+        1: Kicks/Abstrakta 1 Kick.wav
+      locks: [drum2pitch, drum2pan]
+```
+
 A parameter a song declares is sent again after every preset load, so it
 holds over a preset's own value: declare only what the song means to set.
 
@@ -805,5 +877,10 @@ holds over a preset's own value: declare only what the song means to set.
 - Whether the lanes reach notes from outside as they reach the drawn steps.
 - Which of its two saved states (the XML or its binary copy) the plugin reads
   when it is given both.
+- Whether a lock holds over a preset load, as the manual says, and whether a
+  preset brings its own locks; a song with locks takes no preset until then.
+- Whether a sample imported into the app (outside the factory library) is
+  found by its URL the same way, and what the plugin writes back for a
+  re-rooted URL when the session is saved.
 - The other voices' chromatic channels (4 to 9) and the rest of channels 10
   and 11 were not tried one by one.

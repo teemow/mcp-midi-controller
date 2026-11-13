@@ -142,11 +142,11 @@ func paramValue(root *etree.Element, id string) string {
 func TestStepSequenceState(t *testing.T) {
 	p := planSeq(t, seqSong)
 	n := p.Node("drums", "")
-	if !n.HasStepSequence() {
+	if !n.WritesState() {
 		t.Fatal("the drums have no sequence")
 	}
 	// The binary twin goes: Battalion plays the XML when it is given alone.
-	doc, err := n.StepSequenceState(map[string][]byte{battalionStateKey: battalionBase(), "data": []byte{1, 2, 3}})
+	doc, err := n.AuthoredState(map[string][]byte{battalionStateKey: battalionBase(), "data": []byte{1, 2, 3}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestStepSequenceState(t *testing.T) {
 func TestStepSequenceParamsWin(t *testing.T) {
 	doc := strings.Replace(seqSong, "params: {seqChan1density: 0.496}", "params: {seqChan1density: 0.496, seqChan3velSeqLength: 0.5}", 1)
 	p := planSeq(t, doc)
-	state, err := p.Node("drums", "").StepSequenceState(map[string][]byte{battalionStateKey: battalionBase()})
+	state, err := p.Node("drums", "").AuthoredState(map[string][]byte{battalionStateKey: battalionBase()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,10 +232,10 @@ func TestStepSequenceParamsWin(t *testing.T) {
 
 func TestStepSequenceNeedsABase(t *testing.T) {
 	n := planSeq(t, seqSong).Node("drums", "")
-	if _, err := n.StepSequenceState(map[string][]byte{"data": {1}}); err != ErrNoBaseState {
+	if _, err := n.AuthoredState(map[string][]byte{"data": {1}}); err != ErrNoBaseState {
 		t.Errorf("no XML to write into: %v, want ErrNoBaseState", err)
 	}
-	if _, err := n.StepSequenceState(map[string][]byte{battalionStateKey: juce.EncodeBinaryXML(`<state/>`)}); err == nil || !strings.Contains(err.Error(), "no <sequences>") {
+	if _, err := n.AuthoredState(map[string][]byte{battalionStateKey: juce.EncodeBinaryXML(`<state/>`)}); err == nil || !strings.Contains(err.Error(), "no <sequences>") {
 		t.Errorf("a state that is not Battalion's: %v", err)
 	}
 }
@@ -271,7 +271,7 @@ func TestStepSequenceChecks(t *testing.T) {
 
 func TestStepSequencePlanChecks(t *testing.T) {
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"plugin":       {"plugin: battalion\n      params: {seqChan1density: 0.496}", "plugin: drums", "/tracks/0/instrument/sequence: Test Drums has no step sequence a song can write; only UA Battalion does"},
+		"plugin":       {"plugin: battalion\n      params: {seqChan1density: 0.496}", "plugin: drums", "/tracks/0/instrument: Test Drums has no step sequence, samples or locks a song can write; only UA Battalion does"},
 		"preset":       {"plugin: battalion", "plugin: battalion\n      preset: Rebound", "a preset replaces the whole kit with its own sequence"},
 		"scene preset": {"sections:", "scenes:\n  s: {drums: {preset: Rebound}}\nsections:", "/scenes/s/drums/preset: a preset replaces the whole kit"},
 		"length twice": {"steps: \"x... x... x... x...\"", "steps: \"x... x... x... x...\"\n          length: 16", ""},
@@ -318,7 +318,7 @@ func testSongFingerprint(t *testing.T) string {
 	t.Helper()
 	p := mustPlan(t, mustParse(t, testSong))
 	for _, n := range p.allNodes() {
-		if n.seq != nil {
+		if n.kit != nil {
 			t.Fatal("the test song has a sequence")
 		}
 	}
@@ -357,10 +357,10 @@ func TestStepSequenceRoundTrip(t *testing.T) {
 func TestBuildSessionStepSequence(t *testing.T) {
 	p := planSeq(t, seqSong)
 	sess, _, err := p.BuildSession(SessionOptions{Prepare: func(n *NodePlan, ns *aum.NodeSpec) error {
-		if !n.HasStepSequence() {
+		if !n.WritesState() {
 			return nil
 		}
-		state, err := n.StepSequenceState(map[string][]byte{battalionStateKey: battalionBase()})
+		state, err := n.AuthoredState(map[string][]byte{battalionStateKey: battalionBase()})
 		ns.StateDoc = state
 		return err
 	}})
