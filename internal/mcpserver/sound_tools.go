@@ -663,6 +663,8 @@ func cleanPath(sg *song.Song, track string) (bool, string) {
 		switch {
 		case len(t.Effects) > 0:
 			return false, "the track has effects"
+		case len(t.Modulators) > 0:
+			return false, "the track has modulators"
 		case len(t.Instrument.Params) > 0:
 			return false, "the song sets parameters on the instrument"
 		case t.Level != nil && *t.Level != 0:

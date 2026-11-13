@@ -39,9 +39,11 @@ const songFormat = `A song is one YAML document:
 title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional), calibrate (optional, see the end).
 tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?, group?,
   instrument: {plugin, preset?, params?, sequence?} or {file},
-  effects: [{id?, plugin, preset?, bypass?, params?}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1 (channel: another of 1..12). control_channels: [10, 11] lets the track's instrument also hear those channels, for control notes such as a drum machine's mutes; no other track may use them.
+  effects: [{id?, plugin, preset?, bypass?, params?}],
+  modulators: [{id?, plugin: LFOH, preset?, bypass?, params?, target: {effect?, param}, depth?: [low, high]}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1 (channel: another of 1..12). control_channels: [10, 11] lets the track's instrument also hear those channels, for control notes such as a drum machine's mutes; no other track may use them.
   sequence (UA Battalion only, no preset beside it): the drum machine's own pattern per voice, written into its saved state and played with AUM's transport - {1..8: {steps: drum grid ("x" a step, "." none), length? (1..64 steps), vel|shift|pitch|ratch|env|pan|var|prob|sends|macro2: values 0..1 as a list or a grid line ("." neutral) or {values, length?, mode?: sync|free|trig|retrig}}}. sync lanes repeat with the steps; a free lane of another length, or a trig one, comes round in another place every time. pitch is round((v-0.5)*48) semitones, ratch 1+round(6v) hits a step, prob 0 never and 0.5 always. Scenes cannot change it (a lane's length and mode are params too); docs/songs.md has the rest.
   instrument: {file: "<session>/<name>.wav"} makes the track play a recording from AUM's Recordings folder instead of a plugin (AUM's File Player; effects, level, mute and level ramps as on any track, no notes, no preset or params). The file starts at the top of AUM's transport, so such a song plays from its session's sequencer, whole and from the top; session lead_bars says the lead-in the recording was made with. mix_song_stems writes such songs.
+  modulators: an LFO (K-Devices LFOH, the one a song can host) on the track's strip that moves one parameter of the track's instrument (or of effect) by itself, between the two depth values (written as values of that parameter; default its whole range). The song routes it: LFOH's MIDI Ch/CC/Min/Max are set from target and depth in every section, never by the song. Where it runs the parameter is its alone (no scene of that section sets it, no ramp moves it there); a scene may bypass it (the parameter then holds its declared value, which must exist), change its preset, params (its rate: Time Mode free|sync, Time Numerator 1+15x, Time Denominator in steps of 1/6) and depth. One modulator per parameter; use several for several parameters.
   group: the stem the track is recorded into by record_song_stems, which records a song too heavy for one pass a group of tracks at a time with AUM's own recorder; tracks that share a group are recorded together, a track without one alone.
   More than 12 tracks: one session hosts 12, so a song of more needs groups that make at most 12 stems of at most 12 tracks each. It has no session of its own (load_song, play_song, check_song and mix_song refuse it): record_song_stems records its stems, mix_song_stems writes and plays the mix, and the mix is a song like any other. Its channels are counted in each stem: a track plays on its place in its stem (the first track of every stem on channel 1), and channel and control_channels are taken within the stem alone.
 master: [effects on the master strip].
@@ -52,8 +54,8 @@ patterns: {id: {step: "1/16" (default; 1/8, 1/4, 1/8t ...), bars?, gate? (0.9), 
   Melodic grid: steps separated by spaces - "A2" note (C4 = middle C), "[A3 C4 E4]" chord, "-" hold the previous step, "." rest; add "!" to accent or ":NN" for a velocity.
   Drum grid: one character per step - "x" hit, "X" accent, "o" soft, "." rest. Lanes: kick snare clap rim hat open_hat tom_low tom_mid tom_high crash ride cowbell tamb shaker (or the track's drum_map, or a note).
   "|" marks a bar line in both and is checked: every bar must hold exactly a bar's steps.
-scenes: {id: {track: {level?, mute?, preset?, params?, effects: {effect id: {bypass?, preset?, params?}}}}} - "master" addresses the master effects.
-sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]}, automation?: [{track, effect?, param ("level" for the fader), from, to, bar?, bars?}]}} - patterns repeat until the section ends; a track left out is silent.
+scenes: {id: {track: {level?, mute?, preset?, params?, effects: {effect id: {bypass?, preset?, params?}}, modulators: {modulator id: {bypass?, preset?, params?, depth?}}}}} - "master" addresses the master effects.
+sections: {id: {bars, scene?: id or [ids], play: {track: pattern or [patterns]}, automation?: [{track, effect? or modulator?, param ("level" for the fader), from, to, bar?, bars?}]}} - patterns repeat until the section ends; a track left out is silent.
 arrangement: [section ids in playing order].
 session: {track_taps?, full_control?, hardware? (builtin|x32), presets? (song|all), lead_bars?} - how the song's AUM session is built (see author_song_session); optional. lead_bars: the bars of lead-in the session's sequencer plays before bar 1, at the least (for a song that plays recordings). presets: all maps every factory preset, so audition_sound can play any of them in the song's session and the song can change presets without a new one.
 A section sounds like the tracks' own declarations overlaid with its scenes, so anything a scene changes must also be declared on the track (its value everywhere else).
@@ -65,7 +67,7 @@ Writing a song (the review at the end of save_song's answer says where a song fa
 - Form: decide where the song starts, where it peaks, and what the last chorus has that the first had not. A section that returns is a section of its own with something changed (a second verse with a track more, a last chorus with a lift): the same patterns under another scene or play list are a few lines. Give parts phrases of 8 or 16 bars beside the 1- to 4-bar loops, and let a repeat end differently with a pattern list ([a, a, a, b]).
 - Tracks: up to 12 in a song that plays from one session (more only in stems, see group). Beside drums, bass, chords and a lead there is room for a second harmony part, a counter-melody, percussion, a texture, an effects track. A track that rests is heard when it comes in.
 - Sounds: choose from everything installed (list_song_plugins lists the instruments and the effects), not from what the stored songs use; audition_sound measures a preset in seconds. What it reports describes the preset: a layered fifth, a slow attack or a pitch that drifts is a character to write for, not a fault.
-- Movement: automation ramps any parameter over a section (a filter that opens into a chorus, a delay that grows into a break), not only a level.
+- Movement: automation ramps any parameter over a section (a filter that opens into a chorus, a delay that grows into a break), not only a level; a modulator moves one by itself, in time with the song.
 - Ending: end the song. A last chord or hit that rings out (a recording waits for the tail), a stop together on a beat, a last line left to one instrument. A fade-out is the exception.`
 
 func (s *Server) registerSongTools() {
@@ -629,6 +631,20 @@ type songTrackRow struct {
 	File string `json:"file,omitempty"`
 	// Group is the stem the track is recorded into (record_song_stems).
 	Group string `json:"group,omitempty"`
+	// Modulators are the track's modulators and what each moves.
+	Modulators []songModulatorRow `json:"modulators,omitempty"`
+}
+
+// songModulatorRow is one modulator of a track in a song's summary: the
+// parameter it moves, the controller and channel it sends, and the lowest and
+// highest value it sends where no scene gives it another depth.
+type songModulatorRow struct {
+	ID      string `json:"id"`
+	Plugin  string `json:"plugin"`
+	Target  string `json:"target"`
+	Channel int    `json:"channel"`
+	CC      int    `json:"cc"`
+	Depth   [2]int `json:"depth"`
 }
 
 // summarize renders a compiled song as text and as its structured summary.
@@ -724,9 +740,15 @@ func trackRow(b *strings.Builder, indent string, cs *compiledSong, i int, group 
 		Pedal: tl.Tracks[i].Pedal,
 	}
 	for j, n := range tp.Nodes {
-		if j == 0 {
+		switch {
+		case j == 0:
 			row.Instrument = n.Name
-		} else {
+		case n.Mod != nil:
+			row.Modulators = append(row.Modulators, songModulatorRow{
+				ID: n.Effect, Plugin: n.Name, Target: n.Mod.Target,
+				Channel: n.Mod.At.Channel, CC: n.Mod.At.Number, Depth: n.Mod.Depth,
+			})
+		default:
 			row.Effects = append(row.Effects, n.Name)
 		}
 	}
@@ -738,6 +760,7 @@ func trackRow(b *strings.Builder, indent string, cs *compiledSong, i int, group 
 	if row.File != "" {
 		// A file has no notes: it plays from its start with the transport.
 		fmt.Fprintf(b, "  (plays %q from AUM's Recordings, from its start with AUM's transport; no notes)\n", row.File)
+		modulatorRows(b, indent, row.Modulators)
 		return row
 	}
 	fmt.Fprintf(b, "  (%d notes", row.Notes)
@@ -748,6 +771,7 @@ func trackRow(b *strings.Builder, indent string, cs *compiledSong, i int, group 
 		fmt.Fprintf(b, "; the pedal goes down %d time(s)", row.Pedal)
 	}
 	b.WriteString(")\n")
+	modulatorRows(b, indent, row.Modulators)
 	if n := tp.Nodes[0]; n.HasStepSequence() {
 		row.Sequence, row.NoBase = true, !hasStepSequenceBase(n)
 		fmt.Fprintf(b, "%s       its own sequence, written into %s's saved state in the session\n", indent, n.Name)
@@ -756,6 +780,13 @@ func trackRow(b *strings.Builder, indent string, cs *compiledSong, i int, group 
 		}
 	}
 	return row
+}
+
+// modulatorRows renders a track's modulators as lines of a summary.
+func modulatorRows(b *strings.Builder, indent string, rows []songModulatorRow) {
+	for _, m := range rows {
+		fmt.Fprintf(b, "%s       ~ %s (%s) moves %s, sending CC %d on ch%d between %d and %d\n", indent, m.ID, m.Plugin, m.Target, m.CC, m.Channel, m.Depth[0], m.Depth[1])
+	}
 }
 
 // calibrationText renders how a calibrated song's presets are corrected.

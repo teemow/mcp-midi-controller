@@ -74,7 +74,9 @@ the end of every one. Each had taken the song before it for its model. So:
   preset. A layered fifth, a slow attack or a pitch that drifts is a character
   to write for, not a fault.
 - **Movement.** [Automation](#sound) ramps any parameter over a section: a
-  filter that opens into a chorus, a delay that grows into a break. A scene
+  filter that opens into a chorus, a delay that grows into a break. A
+  [modulator](#modulators) moves one by itself, in time with the song: a
+  filter that sweeps every two bars for as long as a section lets it. A scene
   changes presets, bypasses and levels from one section to the next.
 - **Variation.** A part that repeats need not sound the same twice. Some
   plugins vary themselves, and a song switches that on and moves it like any
@@ -199,7 +201,9 @@ arrangement: [verse, chorus, verse, chorus]
   notes, for a preset that does not sound at the written pitch (a
   [calibrated](#calibration) song needs none). `instrument: {file: …}` in
   place of a plugin makes the track play a recording: see
-  [A track that plays a file](#a-track-that-plays-a-file). `group` names the
+  [A track that plays a file](#a-track-that-plays-a-file). `modulators`
+  move parameters of the track's plugins by themselves: see
+  [Modulators](#modulators). `group` names the
   stem the track is recorded into: see [Stems](#stems). A song may have more
   than twelve tracks when its groups make stems of at most twelve tracks each;
   its channels are then counted in each stem: see
@@ -368,6 +372,108 @@ sections:
 `param: level` is the track's fader; anything else is a parameter of the track's
 instrument, or of `effect`. `bar` (1-based, default 1) and `bars` (default: to
 the section's end) place the ramp.
+
+## Modulators
+
+A modulator moves one parameter by itself: an LFO that sweeps a synth's filter
+in time with the song, or lets a reverb breathe, for as long as the sections
+let it. It is a plugin that sends control changes, and K-Devices LFOH is the
+one a song can host. Use as many as there are parameters to move.
+
+```yaml
+tracks:
+  - id: pad
+    instrument:
+      plugin: NuSaw
+      preset: Adagio
+      params: {Cutoff: 0.6}       # where Cutoff rests while the sweep is bypassed
+    effects:
+      - {id: hall, plugin: Other Desert Cities, params: {Mix: 0.3}}
+    modulators:
+      - {id: sweep, plugin: LFOH, preset: gruv, target: {param: Cutoff}, depth: [0.3, 0.8]}
+      - {id: breath, plugin: LFOH, params: {Smooth: 0.8}, target: {effect: hall, param: Mix}, depth: ["20%", "45%"]}
+
+scenes:
+  break:
+    pad:
+      modulators: {sweep: {bypass: true}}               # the filter stands at 0.6
+  drop:
+    pad:
+      modulators: {sweep: {preset: wonkie, depth: [0.1, 0.9]}}
+
+sections:
+  build:
+    bars: 8
+    play: {pad: chords}
+    automation:
+      - {track: pad, modulator: breath, param: Smooth, from: 0.8, to: 0.1}
+```
+
+- `target` is the parameter it moves: one of the track's instrument, or with
+  `effect` one of the track's effects. A parameter has one modulator, and a
+  modulator moves a parameter of its own track.
+- `depth` is the lowest and the highest value it moves the parameter between,
+  written as any value of that parameter is: a number in its range, or
+  `"NN%"`. Without it, the whole range.
+- `preset`, `params` and `bypass` are the modulator's own, as for any plugin:
+  its wave, its rate, whether it follows the tempo. LFOH's parameters are
+  0..1 to a song. LFOH turns `Time Numerator` into 1 + 15·x and `Time
+  Denominator` into one of seven steps (x = 0, 1/6, 2/6 … 1).
+- `id` names it in scenes and ramps (by default its plugin). A track's effects
+  and modulators share their ids.
+
+**How it is wired.** The modulator sits on its track's strip after the
+effects and passes the audio through, as LFOH sits when it is set up by hand.
+The session routes its MIDI output (`MIDI Out`) to AUM's MIDI Control through
+the filter the brain's route there has, so only the control channels arrive.
+The parameter it moves is mapped like every parameter the song sets, to a
+controller on a control channel. LFOH is told to send exactly that controller
+on exactly that channel. `save_song` lists them:
+
+```
+ch2  pad        NuSaw > Other Desert Cities  (24 notes)
+     ~ sweep (LFOH) moves pad Cutoff, sending CC 7 on ch14 between 38 and 102
+```
+
+LFOH's routing is four of its parameters: `MIDI Ch`, `MIDI CC`, `MIDI Min`
+and `MIDI Max`. The session maps them like any parameter, and every section's
+state sets them: the channel and controller of the target's mapping, and the
+depth as the two controller values its ends are. LFOH turns the 0..1 a host
+gives these parameters into whole numbers: the channel is 1 + 15·x, the
+controller and the two ends 127·x. Its own saved state shows that, keeping
+every parameter both ways. What the song sends lands on the number it means:
+the controller and the ends exactly, the channel less than 0.12 above it, so
+LFOH lands on it whether it rounds or cuts off. The routing is the song's to
+set: a declaration, scene or ramp that sets one of the four is refused.
+
+**Scenes, ramps and presets.**
+
+- Where a modulator runs, the parameter is its alone. The section's state does
+  not send the parameter, and `save_song` refuses a scene of that section that
+  sets it, or a ramp that moves it there.
+- A scene may bypass a modulator. Its output then goes to channel 1, which
+  MIDI Control does not hear, besides AUM's bypass of the plugin. The
+  parameter holds the value its plugin declares, or a scene gives it, as any
+  parameter does, and a ramp may move it there. A modulator that is bypassed
+  anywhere needs that declaration. The modulator is sent away before the
+  parameter is set, so the value is the parameter's own.
+- A scene may change a modulator's preset, its parameters (its rate) and its
+  `depth`. A ramp may move its parameters (`modulator:` in place of
+  `effect:`), each declared on the modulator as for any ramp.
+- A preset load replaces a plugin's parameters, the routing too. As for every
+  plugin whose preset changes, every parameter the song sets on it is sent
+  again at the section's start, the routing among them. In the 400 ms between
+  the load and the section the modulator sends wherever the preset says.
+  LFOH's default patch sends controller 0 on channel 1, and neither reaches a
+  mapping.
+- A preset load of the target's plugin resets the target to the preset's
+  value until the modulator's next message, which comes within milliseconds
+  while it moves.
+
+A modulator is part of the session: adding one, or taking one away, needs
+the session authored and loaded again. Its target and its depth are in what
+the song sends, so moving it to a parameter the session maps already, or
+giving it another depth, needs no new session.
 
 ## A drum machine's own sequence
 
@@ -648,6 +754,13 @@ problem with its place in the document:
   parameter, kind or transposition, a pattern to play, a scene or a ramp that
   sets anything but its level, mute or effects;
 - a control a scene changes without a declaration on the track;
+- a [modulator](#modulators): a plugin that is none, or a modulator declared
+  as an effect; a target the track does not have; a parameter with two
+  modulators; a depth that is not two values, lies outside the parameter's
+  range or runs downwards; a song that sets the modulator's routing; a scene
+  or ramp that sets the parameter in a section where its modulator runs; a
+  modulator that is bypassed somewhere while its target declares no value to
+  hold there;
 - a [sequence](#a-drum-machines-own-sequence): a voice, step or value that is
   none, a length shorter than what is written, a mode the lane lacks, a
   plugin without one a song can write, a preset beside it, a lane length or
@@ -665,7 +778,7 @@ each of its stems has one, built the same way):
 
 ```
 Brain     ProbeMidiBrain, the sequencer (a MIDI strip)
-<track>   instrument > effects > fader          one strip per track
+<track>   instrument > effects > modulators > fader   one strip per track
 <track>   File Player > effects > fader         a track that plays a file
 Master    master sum > fader > master effects > ProbeAudioTap
 ```
@@ -675,7 +788,8 @@ through a filter that passes only that track's channel and its
 `control_channels` (an effect with `midi: true` hears the track's channel
 alone), and to AUM's MIDI Control through a filter that passes only the control
 channels. A note therefore never fires a mapping, and a control message never
-reaches a synth. The
+reaches a synth. A [modulator](#modulators)'s output goes to MIDI Control
+alone, through the same filter. The
 sequencer sits next to the brain and is routed the same way, to the same
 destinations through the same filters.
 
@@ -2018,6 +2132,13 @@ Not yet measured:
   plugin's own sequencer were read during a sequenced `play_song`, not yet
   in a `mix_song`;
 - sessions authored with `track_taps` or `full_control`;
+- [modulators](#modulators): none has run on the rig. The routing is taken
+  from sessions in which LFOH was set up by hand: its MIDI output's name, the
+  insert it sits as, and the ranges its saved state gives its parameters.
+  How LFOH turns the routing's 0..1 into whole numbers, whether AUM's bypass
+  stops its output (the song sends a bypassed one to channel 1 as well), and
+  what its factory presets hold for its routing were not looked at. The tests
+  read the authored session back and compile the sections' states;
 - taps that dial in under their names: that needs the ProbeAudioTap build
   that sends them on the iPad. Until then every tap comes without a name and
   the tools work as described under [Taps](#taps). The test suite runs both

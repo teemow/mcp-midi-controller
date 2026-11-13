@@ -55,9 +55,12 @@ type SessionReport struct {
 	Strips int `json:"strips"`
 	Nodes  int `json:"nodes"`
 	// Files is how many tracks play a recording from a File Player.
-	Files    int `json:"files,omitempty"`
-	Mappings int `json:"mappings"`
-	Presets  int `json:"presets"`
+	Files int `json:"files,omitempty"`
+	// Modulators is how many modulators the session hosts, each routed to
+	// MIDI Control.
+	Modulators int `json:"modulators,omitempty"`
+	Mappings   int `json:"mappings"`
+	Presets    int `json:"presets"`
 	// Banked is how many further targets FullControl mapped, and Overflow how
 	// many it found no room for.
 	Banked   int `json:"banked,omitempty"`
@@ -246,6 +249,9 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 	if err != nil {
 		return nil, rep, err
 	}
+	// MIDI Control hears the control channels alone, whoever sends to it: AUM
+	// keeps one filter per destination.
+	control := aum.MIDIEndpoint{Builtin: "MIDI Control", Filter: &aum.MIDIFilter{Channels: p.ControlChannels}}
 	master := aum.ChannelSpec{
 		Kind: aum.KindAudio, Title: "Master",
 		Source: &aum.ChannelSource{Kind: aum.SourceBus, BusIndex: 0},
@@ -260,10 +266,7 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 		master.PostNodes = append(master.PostNodes, ns)
 	}
 	spec.Channels = append(spec.Channels, master)
-	route.To = append(route.To, aum.MIDIEndpoint{
-		Builtin: "MIDI Control",
-		Filter:  &aum.MIDIFilter{Channels: p.ControlChannels},
-	})
+	route.To = append(route.To, control)
 	spec.Routes = []aum.MIDIRoute{route}
 	if o.Sequence != nil {
 		// The sequencer reaches everything the brain reaches, through the same
@@ -272,6 +275,15 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			From: aum.MIDIEndpoint{Channel: BrainStrip, Slot: SequencerSlot},
 			To:   route.To,
 		})
+	}
+	// Every modulator sends its control changes to MIDI Control, which maps
+	// the one it sends to the parameter it moves (modulator.go).
+	for _, n := range p.modulators() {
+		spec.Routes = append(spec.Routes, aum.MIDIRoute{
+			From: aum.MIDIEndpoint{Channel: n.Strip, Slot: n.Slot, Port: n.Mod.Port()},
+			To:   []aum.MIDIEndpoint{control},
+		})
+		rep.Modulators++
 	}
 
 	sess, built, err := aum.BuildSession(spec)

@@ -12,7 +12,6 @@ package song
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -264,6 +263,11 @@ func Compile(s *Song, p *Plan) (*Timeline, error) {
 			if err != nil {
 				return nil, err
 			}
+			for _, r := range ramps {
+				if mod, ok := want.held[r.target]; ok {
+					return nil, fmt.Errorf("/sections/%s: %s moves %s here; a ramp of it needs the modulator bypassed", name, mod, r.target)
+				}
+			}
 			// A ramp that starts with the section sets the section's opening
 			// value, so the control does not jump to its home first.
 			for _, r := range ramps {
@@ -369,6 +373,9 @@ type setting struct {
 type state struct {
 	settings []setting
 	index    map[Target]int
+	// held is the parameters a running modulator moves in the section, with
+	// the modulator's label: the state leaves them to it.
+	held map[Target]string
 }
 
 func (st *state) set(t Target, at Assignment, value int) {
@@ -460,6 +467,7 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 		preset string
 		bypass bool
 		params map[string]Value // by parameter key
+		depth  []Value          // a modulator's depth as a scene gives it
 	}
 	nodes := map[*NodePlan]*nodeWant{}
 	apply := func(n *NodePlan, ns NodeState) error {
@@ -518,11 +526,65 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 					}
 				}
 			}
+			for _, mid := range sortedKeys(ts.Modulators) {
+				if n := p.Node(tid, mid); n != nil {
+					ms := ts.Modulators[mid]
+					if err := apply(n, ms.NodeState); err != nil {
+						return nil, err
+					}
+					if len(ms.Depth) > 0 {
+						nodes[n].depth = ms.Depth
+					}
+				}
+			}
 		}
 	}
 
-	st := &state{}
+	st := &state{held: map[Target]string{}}
+	// The modulators come first: a bypassed one is sent away from the
+	// parameter it moves before the parameter is set to its own value.
+	for _, n := range p.modulators() {
+		w := nodes[n]
+		if w.preset != "" {
+			pr, err := n.preset(w.preset)
+			if err != nil {
+				return nil, err
+			}
+			st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlPreset},
+				Assignment{Kind: MsgPC, Channel: pr.Channel}, pr.Program)
+		}
+		st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlBypass}, n.Bypass, boolWire(w.bypass))
+		depth := n.Mod.Depth
+		if w.depth != nil {
+			d, err := n.Mod.depth(w.depth)
+			if err != nil {
+				return nil, fmt.Errorf("/sections/%s: %s's depth: %w", name, nodeLabel(n), err)
+			}
+			depth = d
+		}
+		routing := n.Mod.routing(depth, w.bypass)
+		for _, pp := range n.Params {
+			wire, ok := routing[pp.Key]
+			if !ok {
+				v, set := w.params[pp.Key]
+				if !set {
+					continue
+				}
+				var err error
+				if wire, err = paramWire(pp.param, v); err != nil {
+					return nil, fmt.Errorf("/sections/%s: %s: %w", name, nodeLabel(n), err)
+				}
+			}
+			st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlParam, Param: pp.Key}, pp.At, wire)
+		}
+		if !w.bypass {
+			st.held[n.Mod.targetOf()] = nodeLabel(n)
+		}
+	}
 	for _, n := range p.allNodes() {
+		if n.Mod != nil {
+			continue
+		}
 		w := nodes[n]
 		if w.preset != "" {
 			pr, err := n.preset(w.preset)
@@ -541,11 +603,15 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 			if !ok {
 				continue
 			}
+			t := Target{Track: n.Track, Effect: n.Effect, Kind: ControlParam, Param: pp.Key}
+			if _, held := st.held[t]; held {
+				continue // the modulator moves it here
+			}
 			wire, err := paramWire(pp.param, v)
 			if err != nil {
 				return nil, fmt.Errorf("/sections/%s: %s: %w", name, nodeLabel(n), err)
 			}
-			st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlParam, Param: pp.Key}, pp.At, wire)
+			st.set(t, pp.At, wire)
 		}
 	}
 	for _, tp := range p.Tracks {
@@ -647,7 +713,7 @@ func (p *Plan) sectionRamps(name string, sec Section, start, end, barTicks int64
 			return nil, fmt.Errorf("%s: the ramp starts after the section ends", where)
 		}
 
-		if a.Effect == "" && strings.EqualFold(a.Param, "level") {
+		if a.fader() {
 			tp := p.Track(a.Track)
 			if tp == nil {
 				return nil, fmt.Errorf("%s: %q has no fader to automate", where, a.Track)
@@ -661,7 +727,7 @@ func (p *Plan) sectionRamps(name string, sec Section, start, end, barTicks int64
 			r.target = Target{Track: tp.ID, Kind: ControlLevel}
 			r.at, r.from, r.to = tp.Level, levelWire(p.fader(tp, preset, a.From.Num)), levelWire(p.fader(tp, preset, a.To.Num))
 		} else {
-			n := p.Node(a.Track, a.Effect)
+			n := p.Node(a.Track, a.node())
 			if n == nil {
 				return nil, fmt.Errorf("%s: no such plugin", where)
 			}
