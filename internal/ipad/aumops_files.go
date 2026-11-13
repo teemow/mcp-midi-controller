@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,9 +20,9 @@ func (c *Client) AUMFiles(ctx context.Context, r AUMRequest) (AUMResult, error) 
 		var err error
 		switch r.Action {
 		case "list", "":
-			res, err = d.listSessions(r.Path)
+			res, err = d.listFolder(sessionsView, r.Path)
 		case "recordings":
-			res, err = d.listFiles("Recordings", r.Path)
+			res, err = d.listFolder(recordingsView, r.Path)
 		case "load":
 			if r.Name == "" {
 				return fmt.Errorf("load needs name: the session to load")
@@ -79,67 +80,11 @@ func (d *AUMDriver) filesPanel() *AUMOverlay {
 	return o
 }
 
-// openFiles opens FILES and walks to view (Sessions or Recordings), then
-// into the folders of path. FILES reopens on its last view, so it backs out
-// to its root first when the view's row is not on screen.
-//
-// The folders of path are looked for among the rows on screen and told by the
-// panel's title, which is wrong for both views: every folder of Sessions is
-// titled SESSIONS and every folder of Recordings RECORDINGS (AUM 1.4.8). A
-// folder of Recordings is therefore taken for its root and each folder step
-// waits aumWait for nothing
-// (https://github.com/teemow/mcp-midi-controller/issues/199). A folder of
-// Sessions is opened with openSessions.
-func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
-	if d.filesPanel() == nil {
-		if ok, err := d.openFromMenu("files"); err != nil || !ok {
-			return nil, fmt.Errorf("FILES did not open (%s)", d.St.overlaySummary())
-		}
-	}
-	for i := 0; i < 4; i++ {
-		p := d.filesPanel()
-		if p == nil {
-			return nil, fmt.Errorf("FILES closed (%s)", d.St.overlaySummary())
-		}
-		if strings.EqualFold(p.Title, view) {
-			break
-		}
-		if row := d.findText(view, listArea(p)); row != nil {
-			if err := d.openRow(row, p.Title); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		// Back arrow at the panel header's left.
-		if err := d.tap(p.Frame.X+20, 30, "back"); err != nil {
-			return nil, err
-		}
-		title := p.Title
-		if _, err := d.until(2*time.Second, func(st AUMState) bool { return d.filesPanel() == nil || d.filesPanel().Title != title }); err != nil {
-			return nil, err
-		}
-	}
-	for _, folder := range path {
-		p := d.filesPanel()
-		if p == nil {
-			return nil, fmt.Errorf("FILES closed")
-		}
-		row := d.findText(folder, listArea(p))
-		if row == nil {
-			return p, &NoFolderError{Folder: folder, In: p.Title, Entries: entryNames(p)}
-		}
-		if err := d.openRow(row, p.Title); err != nil {
-			return nil, err
-		}
-	}
-	return d.filesPanel(), nil
-}
-
 // NoFolderError says a FILES list has no folder of a name: a session's folder
 // of recordings that no take was made into yet, for one.
 type NoFolderError struct {
-	// Folder is the folder looked for, In the list's title and Entries what
-	// the list holds.
+	// Folder is the folder looked for, In the folder whose list does not
+	// hold it ("FILES → Recordings → /") and Entries what that list holds.
 	Folder, In, Entries string
 }
 
@@ -147,8 +92,9 @@ func (e *NoFolderError) Error() string {
 	return fmt.Sprintf("no folder %q in %s (entries: %s)", e.Folder, e.In, e.Entries)
 }
 
-// openRow taps a row of the FILES panel titled title and waits for the
-// panel's title to change (the list slides in before its header does).
+// openRow taps a row of a side panel titled title and waits for the panel's
+// title to change (the list slides in before its header does). It is for
+// panels that title each page; the folders of FILES are opened by openFolder.
 func (d *AUMDriver) openRow(row *Element, title string) error {
 	if err := d.tapRect(row.Rect, row.Text()); err != nil {
 		return err
@@ -266,46 +212,43 @@ func rowLabels(o *AUMOverlay) string {
 	return strings.Join(limit(l, 40), ", ")
 }
 
-// listFiles lists the page that shows of a view of FILES, in the folder path.
-// It is FILES → Recordings' list; Sessions is read by listSessions.
-func (d *AUMDriver) listFiles(view string, path []string) (AUMResult, error) {
-	p, err := d.openFiles(view, path)
-	if err != nil {
-		return AUMResult{}, err
-	}
-	if p == nil {
-		return AUMResult{}, fmt.Errorf("FILES closed on the way to %s (%s)", view, d.St.overlaySummary())
-	}
-	es := fileEntries(p)
-	return d.result(strings.ToLower(view), true, fmt.Sprintf("%s: %d entries: %s", p.Title, len(es), entryNames(p)), es), nil
-}
+// The views of FILES that hold folders, by the name of their row in FILES'
+// own root. AUM titles every folder of a view with that name in capitals.
+const (
+	sessionsView   = "Sessions"
+	recordingsView = "Recordings"
+)
 
-// listSessions lists a folder of FILES → Sessions: all of it, read a page at
-// a time from the list's top, in the order AUM shows it. The entries are the
-// result's data; only those on the last page carry a frame.
-func (d *AUMDriver) listSessions(path []string) (AUMResult, error) {
-	if err := d.openSessions(path); err != nil {
+// listFolder lists a folder of a view of FILES (Sessions or Recordings): all
+// of it, read a page at a time from the list's top, in the order AUM shows
+// it. The entries are the result's data; only those on the last page carry a
+// frame. No row is tapped but the folders of path on the way down.
+func (d *AUMDriver) listFolder(view string, path []string) (AUMResult, error) {
+	if err := d.openFolder(view, path); err != nil {
 		return AUMResult{}, err
 	}
 	scan, err := d.readFiles(nil)
 	if err != nil {
 		return AUMResult{}, err
 	}
-	where, names := sessionsFolder(path), fileNames(scan.Rows)
+	action, where, names := strings.ToLower(view), filesIn(view, path), fileNames(scan.Rows)
 	if len(scan.Rows) > 40 {
 		names += " (data lists all)"
 	}
 	if !scan.End {
-		return d.result("sessions", false, fmt.Sprintf("%s, NOT the whole list: it went on after %d pages: the first %d entries: %s", where, filePages, len(scan.Rows), names), scan.Rows), nil
+		return d.result(action, false, fmt.Sprintf("%s, NOT the whole list: it went on after %d pages: the first %d entries: %s", where, filePages, len(scan.Rows), names), scan.Rows), nil
 	}
-	return d.result("sessions", true, fmt.Sprintf("%s, the whole list (%d pages): %d entries: %s", where, scan.Pages, len(scan.Rows), names), scan.Rows), nil
+	return d.result(action, true, fmt.Sprintf("%s, the whole list (%d pages): %d entries: %s", where, scan.Pages, len(scan.Rows), names), scan.Rows), nil
 }
 
-// sessionsFolder names a folder of Sessions as SAVE prints it, "/" being the
+// filesIn names a folder of a view of FILES as SAVE prints it, "/" being the
 // root, for a message.
-func sessionsFolder(path []string) string {
-	return "FILES → Sessions → /" + strings.Join(path, "/")
+func filesIn(view string, path []string) string {
+	return "FILES → " + view + " → /" + strings.Join(path, "/")
 }
+
+// sessionsFolder names a folder of Sessions for a message.
+func sessionsFolder(path []string) string { return filesIn(sessionsView, path) }
 
 // AUMLoadPause is how long AUM is given to close FILES after a session row
 // was tapped, before its menu is asked for the session's name. It is a
@@ -621,59 +564,109 @@ func (d *AUMDriver) sessionEntry(path []string, name string) (*AUMFileEntry, err
 }
 
 // openSessions opens FILES → Sessions in the folder path, its list at the
-// top. It is how save, list and load reach a folder.
+// top (openFolder). It is how save, list, load and rename reach a folder.
+func (d *AUMDriver) openSessions(path []string) error { return d.openFolder(sessionsView, path) }
+
+// filesSteps bounds the steps openFolder takes to the root of a view: up the
+// folders FILES reopened in, through FILES' own root and into the view.
+const filesSteps = 12
+
+// openFolder opens a view of FILES (Sessions or Recordings) in the folder
+// path, its list at the top.
 //
-// AUM titles every folder of Sessions "SESSIONS" and names the folder in a
-// header row above the list: "/" at the root, the folder's name inside one.
-// FILES reopens in the folder it last showed, a panel left open stays
-// scrolled where it was, and its back arrow goes up one folder. So FILES is
-// opened from the menu anew, which shows the list from its top, the list is
-// taken to the root and walked down path from there, checking the header at
-// each step: the list that is read is in the folder that was asked for, and
-// AUM has just made it. Each folder is looked for through the whole list, not
-// only its first page, and what is tapped is a folder's row, on screen whole.
-func (d *AUMDriver) openSessions(path []string) error {
+// AUM titles every folder of Sessions "SESSIONS" and every folder of
+// Recordings "RECORDINGS", and names the folder in a header row above the
+// list: "/" at the view's root, the folder's name inside one. FILES reopens
+// in the view and folder it last showed, a panel left open stays scrolled
+// where it was, and its back arrow goes up one folder, from a view's root to
+// FILES' own root, whose rows open the views at their roots. So FILES is
+// opened from the menu anew, which shows the list from its top, taken to the
+// view's root and walked down path from there, checking the title and the
+// header at each step: the list that is read is in the folder that was asked
+// for, and AUM has just made it.
+//
+// The view's row is tapped only in FILES' own root (a folder of the other
+// view can hold a row of that name: a session called Recordings would be
+// loaded by the tap). Each folder of path is looked for through the whole
+// list, not only its first page, and what is tapped is a folder's row, on
+// screen whole: a session of the folder's name would be loaded by a tap, and
+// a take's would open its preview.
+func (d *AUMDriver) openFolder(view string, path []string) error {
 	if ok, err := d.openFromMenu("files"); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("FILES did not open (%s)", d.St.overlaySummary())
 	}
-	for up := 0; ; up++ {
-		p, err := d.openFiles("Sessions", nil)
-		if err != nil {
-			return err
+	for step := 0; ; step++ {
+		p := d.filesPanel()
+		if p == nil {
+			return fmt.Errorf("FILES closed (%s)", d.St.overlaySummary())
 		}
-		at, ok := filesFolder(p)
-		if !ok {
-			return fmt.Errorf("FILES → Sessions names no folder above its list (entries: %s)", entryNames(p))
-		}
-		if at == "/" {
+		title := p.Title
+		at, named := filesFolder(p)
+		in := strings.EqualFold(title, view)
+		if in && at == "/" {
 			break
 		}
-		if up == 8 {
-			return fmt.Errorf("FILES → Sessions is still in %q after going up %d folders", at, up)
+		here := title
+		if named {
+			here += ", folder " + strconv.Quote(at)
 		}
-		if err := d.tap(p.Frame.X+20, 30, "back, out of "+at); err != nil {
-			return err
+		if step == filesSteps {
+			return fmt.Errorf("FILES still shows %s after %d steps towards the root of %s", here, step, view)
 		}
+		switch {
+		case strings.EqualFold(title, filesRoot):
+			row := viewRow(p, view)
+			if row == nil {
+				return fmt.Errorf("FILES lists no %s (entries: %s)", view, entryNames(p))
+			}
+			if err := d.tapRect(row.text, view); err != nil {
+				return err
+			}
+		case in && !named:
+			// The view without its header row: a list that is still sliding
+			// in gets a moment, and without the row no back arrow is tapped,
+			// since nothing says how far up it would go.
+			if ok, err := d.until(aumWait, func(AUMState) bool {
+				_, ok := filesFolder(d.filesPanel())
+				return ok || d.filesPanel() == nil
+			}); err != nil {
+				return err
+			} else if !ok {
+				return fmt.Errorf("FILES → %s names no folder above its list (entries: %s)", view, entryNames(d.filesPanel()))
+			}
+			continue
+		default:
+			// A folder of the view, or the other view: the back arrow at the
+			// panel header's left goes up one folder.
+			if err := d.tap(p.Frame.X+20, 30, "back, out of "+here); err != nil {
+				return err
+			}
+		}
+		// Wait for the title or the header row to say that the panel shows
+		// another place.
 		if _, err := d.until(aumWait, func(AUMState) bool {
-			now, ok := filesFolder(d.filesPanel())
-			return !ok || now != at
+			p := d.filesPanel()
+			if p == nil {
+				return true
+			}
+			now, ok := filesFolder(p)
+			return p.Title != title || ok != named || now != at
 		}); err != nil {
 			return err
 		}
 	}
 	for i, folder := range path {
 		at, _ := filesFolder(d.filesPanel())
-		// A session of the folder's name would be loaded by the tap: the row
-		// that is tapped is a folder's, by the name inside that row (the
-		// header can read the same).
+		// The row that is tapped is a folder's, by the name inside that row
+		// (the header can read the same).
 		e, scan, err := d.findFile(true, folder)
 		if err != nil {
 			return err
 		}
 		if e == nil {
-			return &NoFolderError{Folder: folder, In: sessionsFolder(path[:i]), Entries: fileNames(scan.Rows)}
+			return &NoFolderError{Folder: folder, In: filesIn(view, path[:i]), Entries: fileNames(scan.Rows)}
 		}
 		if err := d.tapRect(e.text, "folder "+folder); err != nil {
 			return err
@@ -687,14 +680,28 @@ func (d *AUMDriver) openSessions(path []string) error {
 		}
 		if !in {
 			now, _ := filesFolder(d.filesPanel())
-			return fmt.Errorf("FILES → Sessions shows folder %q after a tap on %q in %q", now, folder, at)
+			return fmt.Errorf("FILES → %s shows folder %q after a tap on %q in %q", view, now, folder, at)
+		}
+	}
+	return nil
+}
+
+// filesRoot is the title of FILES' own root: the rows Sessions, Recordings
+// and Restore Previous State.
+const filesRoot = "FILES"
+
+// viewRow is the row of FILES' own root that opens view, or nil.
+func viewRow(p *AUMOverlay, view string) *AUMFileEntry {
+	for _, e := range fileEntries(p) {
+		if strings.EqualFold(e.Name, view) && !e.cut {
+			return &e
 		}
 	}
 	return nil
 }
 
 // filesFolder is the folder a FILES list shows, from the header row above
-// its cells ("/" for the root of Sessions).
+// its cells ("/" for the root of Sessions or of Recordings).
 func filesFolder(p *AUMOverlay) (string, bool) {
 	if p == nil || p.el == nil {
 		return "", false
@@ -862,18 +869,27 @@ func (d *AUMDriver) findFile(folder bool, names ...string) (found *AUMFileEntry,
 	return nil, scan, nil
 }
 
-// renameSession long-presses a session row, opens Rename from the share
-// sheet's actions and enters the new name.
+// renameSession long-presses a session's row in FILES → Sessions → path,
+// opens Rename from the sheet of actions and enters the new name. The folder
+// is reached as save reaches it (openSessions), the row is looked for through
+// the whole list, and what is pressed is a session's row, on screen whole:
+// never a folder's of that name, and never the row of another folder that
+// FILES happened to show.
+//
+// The rename is proved by the folder's list, read again and whole: it lists
+// the new name and no longer the old one.
 func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResult, error) {
-	p, err := d.openFiles("Sessions", path)
+	if err := d.openSessions(path); err != nil {
+		return AUMResult{}, err
+	}
+	row, scan, err := d.findFile(false, name, name+".aumproj")
 	if err != nil {
 		return AUMResult{}, err
 	}
-	row := d.findText(name, listArea(p))
 	if row == nil {
-		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)", name, p.Title, entryNames(p))
+		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)", name, sessionsFolder(path), fileNames(scan.Rows))
 	}
-	if err := d.hold(row.Rect, "session "+name); err != nil {
+	if err := d.hold(row.text, "session "+row.Name); err != nil {
 		return AUMResult{}, err
 	}
 	found, err := d.until(aumWait, func(st AUMState) bool { return d.findText("Rename", nil) != nil || d.findText("Copy URL", nil) != nil })
@@ -900,7 +916,9 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	if err := d.tapText("Rename", nil); err != nil {
 		return AUMResult{}, err
 	}
-	dlg, err := d.waitOverlay("", aumWait)
+	// The dialog takes the sheet's place: it is told by its text field, not
+	// by there being one overlay more.
+	dlg, err := d.waitDialog(aumWait)
 	if err != nil {
 		return AUMResult{}, err
 	}
@@ -913,11 +931,60 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	if err := d.confirmDialog(dlg); err != nil {
 		return AUMResult{}, err
 	}
-	ok, err := d.until(aumWait, func(st AUMState) bool {
-		p := d.filesPanel()
-		return p != nil && d.findText(newName, &p.Frame) != nil
-	})
-	return d.result("rename", ok, verdict(ok, fmt.Sprintf("renamed %q to %q", name, newName), fmt.Sprintf("%q is not listed", newName)), nil), err
+	closed, err := d.until(aumWait, func(st AUMState) bool { return d.dialog() == nil })
+	if err != nil {
+		return AUMResult{}, err
+	}
+	stayed := ""
+	if !closed {
+		stayed = "; the RENAME dialog stayed open after it was confirmed"
+	}
+
+	if err := d.openSessions(path); err != nil {
+		return d.result("rename", false, fmt.Sprintf("entered %q in the RENAME dialog, but %s could not be reached afterwards (%v): not known whether %q was renamed", newName, sessionsFolder(path), err, name), nil), nil
+	}
+	after, err := d.readFiles(nil)
+	if err != nil {
+		return d.result("rename", false, fmt.Sprintf("entered %q in the RENAME dialog, but %s could not be read afterwards (%v): not known whether %q was renamed", newName, sessionsFolder(path), err, name), nil), nil
+	}
+	lists := func(n string) bool {
+		n = strings.TrimSuffix(n, ".aumproj")
+		return slices.ContainsFunc(after.Rows, func(e AUMFileEntry) bool {
+			return !e.Folder && strings.TrimSuffix(e.Name, ".aumproj") == n
+		})
+	}
+	old, now := lists(name), lists(newName)
+	where := sessionsFolder(path)
+	switch {
+	case now && !old && after.End:
+		return d.result("rename", true, fmt.Sprintf("renamed %q to %q: %s lists %q and no longer %q", name, newName, where, newName, name), after.Rows), nil
+	case now && !old:
+		return d.result("rename", false, fmt.Sprintf("%s lists %q, but its list went on after %d pages: not known whether it still lists %q", where, newName, filePages, name), after.Rows), nil
+	case old && now:
+		return d.result("rename", false, fmt.Sprintf("NOT renamed: %s still lists %q, and lists %q as well%s", where, name, newName, stayed), after.Rows), nil
+	case old:
+		return d.result("rename", false, fmt.Sprintf("NOT renamed: %s still lists %q and does not list %q%s", where, name, newName, stayed), after.Rows), nil
+	default:
+		return d.result("rename", false, fmt.Sprintf("%s lists neither %q nor %q after the rename%s", where, name, newName, stayed), after.Rows), nil
+	}
+}
+
+// dialog is the popover or alert in front that holds a text field, or nil.
+func (d *AUMDriver) dialog() *AUMOverlay {
+	for i := len(d.St.Overlays) - 1; i >= 0; i-- {
+		if o := &d.St.Overlays[i]; (o.Kind == "popover" || o.Kind == "alert") && len(o.Fields) > 0 {
+			return o
+		}
+	}
+	return nil
+}
+
+// waitDialog waits for a popover or alert that holds a text field.
+func (d *AUMDriver) waitDialog(timeout time.Duration) (*AUMOverlay, error) {
+	if _, err := d.until(timeout, func(AUMState) bool { return d.dialog() != nil }); err != nil {
+		return nil, err
+	}
+	return d.dialog(), nil
 }
 
 // clearSession taps the CLEAR icon twice within its one-second window.

@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -740,5 +741,43 @@ func TestAUMFilesSaveOverMCP(t *testing.T) {
 	}
 	if aum.Writes() != 1 || saved == was {
 		t.Fatalf("%d writes, saved %q", aum.Writes(), saved)
+	}
+}
+
+// The stems tools ask AUM for a session's folder of recordings and read "the
+// root lists no such folder" as "no takes yet". FILES reopens in the folder
+// it showed last, titled RECORDINGS like every other, so the answer has to be
+// about the folder that was asked for: the takes of that one, found from the
+// root, and "none yet" only when the root does not list it.
+func TestIPadDeckRecordingsFromAnotherFolder(t *testing.T) {
+	w, s := newIPadServer(t)
+	aum := ipadtest.NewSessionsAUM(w, "Songs", "Untitled")
+	const detail = "12. Nov 2026 at 21:23:42 • 4.4 MiB • wav"
+	for i := range 20 {
+		aum.AddRecordings(fmt.Sprintf("Older Song %02d", i), [2]string{"Master - 120 bpm - 001", detail})
+	}
+	aum.AddRecordings("Stem Song stem band", [2]string{"Master - 300 bpm - 002", detail}, [2]string{"Master - 300 bpm - 001", detail})
+	aum.AddRecordings("Stem Song stem keys", [2]string{"Master - 300 bpm - 001", detail})
+	deck := ipadDeck{s.ipad}
+	ctx := context.Background()
+
+	// FILES last showed the keys' folder: the band's is beyond the first page
+	// of the root, and its takes are not the keys'.
+	aum.ShowRecordings("Stem Song stem keys")
+	got, err := deck.Recordings(ctx, "Stem Song stem band")
+	if err != nil || len(got) != 2 || got[0].Name != "Master - 300 bpm - 002" || got[1].Name != "Master - 300 bpm - 001" || got[0].Detail != detail {
+		t.Fatalf("the band's takes = %+v, %v", got, err)
+	}
+	// A stem that was not recorded yet has no folder: none, and no error,
+	// although FILES now reopens inside the band's folder.
+	if got, err := deck.Recordings(ctx, "Stem Song stem drums"); err != nil || len(got) != 0 {
+		t.Fatalf("a stem without takes = %+v, %v", got, err)
+	}
+	// And the keys' single take is not taken for the drums' or the band's.
+	if got, err := deck.Recordings(ctx, "Stem Song stem keys"); err != nil || len(got) != 1 {
+		t.Fatalf("the keys' takes = %+v, %v", got, err)
+	}
+	if touched := aum.Touched(); len(touched) != 0 {
+		t.Fatalf("tapped %q: a tap on a take opens its preview", touched)
 	}
 }
