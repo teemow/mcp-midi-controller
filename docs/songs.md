@@ -566,6 +566,78 @@ not measured.
 - **Another sequence, another session.** The sequence is in the session file,
   so a changed one makes `load_song` author the session again.
 
+### Samples
+
+Each of Battalion's voices has a sampler beside its synth engine (see
+[research/battalion.md](research/battalion.md#sampler)). Which sample it plays
+is not a parameter either: the saved state keeps it, one per voice. A song
+names it with `samples:` on the instrument, by its path in the plugin's
+factory library:
+
+```yaml
+    instrument:
+      plugin: UA Battalion
+      params:
+        drum1synthenabled: "Off"          # the sample alone
+        drum1samplerEnvelope: No Env      # all of it, not cut by an envelope
+        drum3samplermode: Granular
+        drum3samplerparam1: 0.7           # grain size
+      samples:
+        1: Kicks/Abstrakta 1 Kick.wav
+        3: Synths and Instruments/Bass Glasshouse 2 MNRK.wav
+```
+
+- **A voice is `1` to `8`; a sample is its path in the factory library**, the
+  folders the plugin's sample selector shows (`Kicks/…`, `Hats/…`,
+  `Synths and Instruments/…`, `Artists/<artist>/…`). A `file://` URL is
+  written as it is (a sample elsewhere on the device; not tried on the rig),
+  and `""` takes a voice's sample away.
+- **The library needs no setup.** The state keeps a sample as a file URL into
+  the app's bundle, whose id changes with every install and update. The plugin
+  finds a sample by what follows `Unfiltered Audio/Sample Library/` in it,
+  whatever bundle comes before (see
+  [research/battalion.md](research/battalion.md#sampler)), so the song writes
+  one id that stands for any.
+- **Nothing checks the path before it plays.** A path that is not in the
+  library leaves the voice without its sample, silent with the synth off. Hear
+  each voice with `probe_sound` after the first `load_song`.
+- **The synth and the sampler play together** unless the song says
+  otherwise: `drum<N>synthenabled: "Off"` leaves the sample alone,
+  `drum<N>enginemix` balances the two, `drum<N>samplerEnvelope` picks the
+  envelope that shapes it (`No Env` plays it whole), `drum<N>samplermode`
+  the engine (Classic, Phase Warp, Cloner, Granular, Phase Slice, Phase
+  Stretch, Garbage-Fi), and `drum<N>samplerStart`, `drum<N>samplerEnd` and
+  `drum<N>samplerpitch` where it starts, ends and how it is tuned. These are
+  parameters: scenes and ramps move them.
+- As with the sequence: no preset, the same sample in every section, and
+  another sample is another session.
+
+### Locks
+
+The plugin's window can lock a knob (right-click it): its VARIATION, the
+Performance page and a preset change then leave that parameter as it is, and
+so does the voice's randomise note (ch 11 notes 24–31). A song writes the locks
+with `locks:`, by the parameters' ids:
+
+```yaml
+    instrument:
+      plugin: UA Battalion
+      params:
+        drum2variation: 0.5               # every hit its own ...
+      locks: [drum2pitch, drum2pan, drum2outGain]   # ... but in tune, in place and as loud
+```
+
+- A lock is a parameter of the plugin (`get_song_plugin` lists them); the
+  song can still set and move it by `params`, scenes and ramps: a lock keeps
+  the plugin's own moves off it, not MIDI.
+- On the rig, with VARIATION at full: a locked voice's pan and pitch held over
+  16 hits (pan the same each hit, against up to 6.5 dB to either side on an
+  open voice), its length within a few ms (against 55–135 ms), and the
+  randomise note left the locked pitch and pan alone while it moved the open
+  voice's pitch and length. A CC still panned the locked voice left and right.
+- As with the sequence: no preset, the same locks in every section, and
+  other locks are another session.
+
 ## A track that plays a file
 
 A track's instrument can be a recording instead of a plugin:

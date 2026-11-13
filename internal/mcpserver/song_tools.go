@@ -38,10 +38,11 @@ import (
 const songFormat = `A song is one YAML document:
 title, tempo (BPM), time_signature ("4/4"), swing (0..1, optional), calibrate (optional, see the end).
 tracks: [{id, name?, kind: drums?, channel?, control_channels?, transpose?, level (dB, 0 = unity)?, mute?, drum_map?, group?,
-  instrument: {plugin, preset?, params?, sequence?} or {file},
+  instrument: {plugin, preset?, params?, sequence?, samples?, locks?} or {file},
   effects: [{id?, plugin, preset?, bypass?, params?}],
   modulators: [{id?, plugin: LFOH, preset?, bypass?, params?, target: {effect?, param}, depth?: [low, high]}]}] - plugin is a staged AUv3 probe id (list_song_plugins) or a name that fits only one plugin, preset one of its factory preset names, params {name: value}: a number in the parameter's own range, "NN%" of it, or a value label (get_song_plugin lists both). Each track plays on its own MIDI channel, in order from 1 (channel: another of 1..12). control_channels: [10, 11] lets the track's instrument also hear those channels, for control notes such as a drum machine's mutes; no other track may use them.
   sequence (UA Battalion only, no preset beside it): the drum machine's own pattern per voice, written into its saved state and played with AUM's transport - {1..8: {steps: drum grid ("x" a step, "." none), length? (1..64 steps), vel|shift|pitch|ratch|env|pan|var|prob|sends|macro2: values 0..1 as a list or a grid line ("." neutral) or {values, length?, mode?: sync|free|trig|retrig}}}. sync lanes repeat with the steps; a free lane of another length, or a trig one, comes round in another place every time. pitch is round((v-0.5)*48) semitones, ratch 1+round(6v) hits a step, prob 0 never and 0.5 always. Scenes cannot change it (a lane's length and mode are params too); docs/songs.md has the rest.
+  samples and locks (UA Battalion only, no preset beside them) are written into its saved state as the sequence is: samples {1..8: a sample of its factory library by its path there ("Kicks/Abstrakta 1 Kick.wav"), a file:// URL, or "" for none}, which the voice's sampler plays (params drum<N>synthenabled: "Off" for the sample alone, drum<N>samplerEnvelope: "No Env" for all of it); a path the library lacks leaves the voice without its sample (silent with the synth off), so probe_sound each voice once. locks [parameter ids, e.g. drum2pitch, drum2pan]: what the voice's VARIATION and the randomise notes leave as they are; params, scenes and ramps still move them. Scenes cannot change the samples or the locks.
   instrument: {file: "<session>/<name>.wav"} makes the track play a recording from AUM's Recordings folder instead of a plugin (AUM's File Player; effects, level, mute and level ramps as on any track, no notes, no preset or params). The file starts at the top of AUM's transport, so such a song plays from its session's sequencer, whole and from the top; session lead_bars says the lead-in the recording was made with. mix_song_stems writes such songs.
   modulators: an LFO (K-Devices LFOH, the one a song can host) on the track's strip that moves one parameter of the track's instrument (or of effect) by itself, between the two depth values (written as values of that parameter; default its whole range). The song routes it: LFOH's MIDI Ch/CC/Min/Max are set from target and depth in every section, never by the song. Where it runs the parameter is its alone (no scene of that section sets it, no ramp moves it there); a scene may bypass it (the parameter then holds its declared value, which must exist), change its preset, params (its rate: Time Mode free|sync, Time Numerator 1+15x, Time Denominator in steps of 1/6) and depth. One modulator per parameter; use several for several parameters.
   group: the stem the track is recorded into by record_song_stems, which records a song too heavy for one pass a group of tracks at a time with AUM's own recorder; tracks that share a group are recorded together, a track without one alone.
@@ -623,8 +624,9 @@ type songTrackRow struct {
 	ControlNotes    int      `json:"control_notes,omitempty"`
 	// Pedal counts how often the track's sustain pedal goes down.
 	Pedal int `json:"pedal,omitempty"`
-	// Sequence says the instrument's own step sequence is written into its
-	// saved state; NoBase that the rig has no state to write it over yet.
+	// Sequence says the song writes into the instrument's saved state (its
+	// own step sequence, samples or locks); NoBase that the rig has no state
+	// to write them over yet.
 	Sequence bool `json:"sequence,omitempty"`
 	NoBase   bool `json:"no_base_state,omitempty"`
 	// File is the recording a track plays instead of an instrument, by its
@@ -773,9 +775,9 @@ func trackRow(b *strings.Builder, indent string, cs *compiledSong, i int, group 
 	}
 	b.WriteString(")\n")
 	modulatorRows(b, indent, row.Modulators)
-	if n := tp.Nodes[0]; n.HasStepSequence() {
-		row.Sequence, row.NoBase = true, !hasStepSequenceBase(n)
-		fmt.Fprintf(b, "%s       its own sequence, written into %s's saved state in the session\n", indent, n.Name)
+	if n := tp.Nodes[0]; n.WritesState() {
+		row.Sequence, row.NoBase = true, !hasStateBase(n)
+		fmt.Fprintf(b, "%s       %s, written into %s's saved state in the session\n", indent, n.StateWrites(), n.Name)
 		if row.NoBase {
 			fmt.Fprintf(b, "%s       warning: the rig has no base state of %s to write it over, so its session cannot be authored: load a session with a %s of the default patch in AUM, save it there, and capture_auv3_default_state {session_id, channel, slot, base: true}\n", indent, n.Name, n.Name)
 		}
