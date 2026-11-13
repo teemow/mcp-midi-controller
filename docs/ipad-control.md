@@ -147,13 +147,19 @@ it](#files--sessions-as-the-tool-reads-it)).
 **`list` returns the whole folder.** A list holds only the rows on screen, so
 the tool reads it a page at a time, from the top to the end, and returns
 every row once, in the order AUM shows them (the sort picked above the list).
+With the sort on last opened a session moves up when it is loaded, so the
+order differs from one call to the next.
 `data` is the entries: `name`, `detail` (for a session the time it was saved),
 `folder: true` for a folder's row, and `frame`, which only the rows of the
 last page carry: the others are no longer where they were read. The message
 says "the whole list" and how many pages it took. A list that still goes on
 after 60 pages (about 480 rows) comes back `verified: false`, "NOT the whole
-list", with what was read. A page takes about 3 s, and the end of a list
-costs two more: a long folder is a matter of half a minute.
+list", with what was read.
+
+It takes its time. On the iPad a page of eight rows took 3.7 to 3.9 s and the
+end of a list two reads more, after 23 s to reach the folder (FILES from the
+menu, up to the root, down two folders). A folder of 32 rows, four pages, took
+44 s with the daemon on the iPad's host and 75 s with it on another machine.
 
 **`load` finds the session wherever the folder lists it** and taps its row,
 which loads it at once and replaces the open session. It taps
@@ -168,7 +174,11 @@ and reads the session's name in the main menu: `verified: true` means the
 menu names the session that was asked for.
 
 `recordings` is not read this way: it lists the page of FILES → Recordings
-that shows.
+that shows. Recordings names its folders as Sessions does: the title stays
+`RECORDINGS` and a header row reads `/` or the folder's name. Its `path` is
+still walked by the title, so each folder costs a wait of 5 s for a title
+that does not change before its rows are listed (13 s for one folder on the
+iPad).
 
 ### Saving a session
 
@@ -233,13 +243,20 @@ session file for a look at its size and content.
 - So `list`, `load` and `save` open FILES from the menu, go up to `/` and
   down the folder that was asked for (for `save` the one SAVE names),
   checking the header at each step, every time they read a list.
-- A list has only the rows on screen in its tree (twelve below the header,
-  fourteen or fifteen further down), in the order picked above it (name, last
-  saved, last opened). The tool drags it 420 points in 0.9 s for the next
+- A list shows twelve rows below the header and fourteen or fifteen further
+  down, in the order picked above it (name, last saved, last opened). Its
+  tree holds more cells than that, marked hidden: Recordings, just opened,
+  had one for every row below the fold, and Sessions, scrolled to its end,
+  kept those of the rows above with stale contents (one name stood in four
+  of them). So only the cells that show are read, a page at a time.
+- The tool drags the list 420 points in 0.9 s for the next
   page, which moved it by 404 to 406 points: six rows are read twice. A drag
   of 584 points in 0.5 s ran on after the finger lifted (674 points) and
   carried a row past unread. A page that shares no row with the one before is
-  therefore an error, not "no such session".
+  therefore an error, not "no such session". A drag at the end of the list
+  pulls it past its end and it springs back: the rows of the last page were
+  read up to 9 points above where they came to rest, which a tap on the
+  name, in a row of 51 points, still meets.
 - A row cut by the list's edge shows one of its two lines, or both with a
   part of the row out of sight. A row counts once it lies inside the list
   and both lines can be read; until then it is neither listed nor tapped.
@@ -310,8 +327,9 @@ How AUM shows state in its tree (AUM 1.4.8):
   keyboard** covers the mixer's bottom and is closed with its `HIDE↓` button.
 - **FILES** lists cells: a name and a detail line below it (for a session
   the time it was saved, to the second); a folder's cell has a chevron
-  button as well. It reopens on the view last shown, and a list holds only
-  the rows on screen: `aum_files list`, `load` and `save` scroll a list of
+  button as well. It reopens on the view last shown, and only the rows on
+  screen can be read (the cells of the others are hidden, some with stale
+  contents): `aum_files list`, `load` and `save` scroll a list of
   Sessions page by page, `recordings` reads the page that shows (see
   [FILES → Sessions, as the tool reads
   it](#files--sessions-as-the-tool-reads-it) for how Sessions names its
