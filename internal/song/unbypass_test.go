@@ -148,14 +148,13 @@ func TestUnbypassWithPresetLoad(t *testing.T) {
 	mix, size := paramAt(t, verb, "Mix"), paramAt(t, verb, "Size")
 	bar, settle := int64(4*PPQ), tl.settleTicks()
 	hall, _ := verb.Preset("Large Hall")
-	var wet []string
-	for _, c := range controls(tl.Events) {
-		var tick int64
-		fmt.Sscan(c, &tick)
-		if tick <= bar+settle {
-			wet = append(wet, c)
+	var upTo []Event
+	for _, e := range tl.Events {
+		if e.Tick <= bar+settle {
+			upTo = append(upTo, e)
 		}
 	}
+	wet := controls(upTo)
 	want := []string{
 		fmt.Sprintf("%d pc ch%d %d 0", bar-tl.leadTicks(), hall.Channel, hall.Program),
 		nodeCC(bar, verb.Bypass, 0),
