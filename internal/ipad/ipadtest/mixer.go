@@ -18,8 +18,11 @@ import (
 //     its close icon on the same spot closes it.
 //   - A tap on a strip's source opens its FILE PLAYER when the strip has
 //     one; the next tap, outside it, closes it.
+//   - A strip's source node can be drawn as failed (FailNode): its red ring
+//     is in the screenshot wherever the mixer is scrolled.
 type WideMixer struct {
 	mu      sync.Mutex
+	w       *WDA
 	a       AUM
 	session string
 	menu    bool
@@ -27,6 +30,7 @@ type WideMixer struct {
 	player  string // the strip whose FILE PLAYER is open
 	drags   []Gesture
 	opened  []string
+	failed  map[string]bool
 }
 
 // NewWideMixer attaches a WideMixer to w: the session named session is open,
@@ -34,6 +38,7 @@ type WideMixer struct {
 // names has a File Player whose panel shows those rows.
 func NewWideMixer(w *WDA, session string, strips []Strip, players map[string][][2]string) *WideMixer {
 	m := &WideMixer{
+		w:       w,
 		a:       AUM{Tempo: "120", Position: "001:1  00:00.0", Strips: strips, OnScreenOnly: true},
 		session: session,
 		players: players,
@@ -66,6 +71,37 @@ func (m *WideMixer) Drags() []Gesture {
 	return append([]Gesture(nil), m.drags...)
 }
 
+// FailNode draws the source node of the strip titled title the way AUM
+// draws a node whose plugin failed: a ring of red in the screenshot, where
+// the strip is scrolled to.
+func (m *WideMixer) FailNode(title string) {
+	m.w.mu.Lock()
+	defer m.w.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failed == nil {
+		m.failed = map[string]bool{}
+	}
+	m.failed[title] = true
+	m.paint()
+}
+
+// paint puts the failed source nodes' rings where their strips are now.
+// m.mu and the WDA's lock are held.
+func (m *WideMixer) paint() {
+	if len(m.failed) == 0 {
+		return
+	}
+	var rings [][4]float64
+	for i, s := range m.a.Strips {
+		if m.failed[s.Title] {
+			// A source node is 98 points square, 101 points into its strip.
+			rings = append(rings, [4]float64{StripX(i) - m.a.Scroll + 101, 88, 98, 98})
+		}
+	}
+	m.w.RedRings = rings
+}
+
 // Opened are the strips whose FILE PLAYER was opened, in order.
 func (m *WideMixer) Opened() []string {
 	m.mu.Lock()
@@ -76,6 +112,7 @@ func (m *WideMixer) Opened() []string {
 func (m *WideMixer) source() json.RawMessage {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.paint()
 	a := m.a
 	if m.menu {
 		a.Session = m.session
@@ -94,6 +131,7 @@ func (m *WideMixer) gesture(g Gesture) {
 		m.drags = append(m.drags, g)
 		if !m.menu && m.player == "" && g.Y > 60 && math.Abs(g.DX) > math.Abs(g.DY) {
 			m.a.Scroll = math.Max(0, math.Min(MaxScroll(len(m.a.Strips)), m.a.Scroll-g.DX))
+			m.paint()
 		}
 	case g.Kind != "tap":
 	case m.player != "":

@@ -141,6 +141,22 @@ func TestAUMMixerFindsAMissingStrip(t *testing.T) {
 	}
 }
 
+// TestAUMMixerSeesAFailedNodeOffScreen checks a node AUM draws as failed on a
+// strip right of the window is reported: the read looks for failed nodes at
+// every stop of its walk.
+func TestAUMMixerSeesAFailedNodeOffScreen(t *testing.T) {
+	_, m, c := wideFake(t, wideStrips)
+	m.FailNode("brass")
+	res, err := c.AUMMixer(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Data.(AUMLoaded)
+	if !slices.Equal(got.Failed, []string{"brass"}) || len(got.Problems) != 1 || !strings.Contains(got.Problems[0], `AUM draws a node of "brass" as failed`) {
+		t.Fatalf("failed = %v, problems = %v, want brass's node", got.Failed, got.Problems)
+	}
+}
+
 // TestAUMSessionWideMixer reads the session's name from the menu and every
 // strip of a mixer wider than the window.
 func TestAUMSessionWideMixer(t *testing.T) {
@@ -199,12 +215,45 @@ func TestAUMChannelOffScreen(t *testing.T) {
 	if m.Scroll() == 0 {
 		t.Fatal("the mixer did not scroll to the master")
 	}
+	// Scrolled from the first strip, the tree's count is not #n's: the
+	// master is the tree's fourth strip and the mixer's ninth.
+	if strings.Contains(res.Message, "strip 4") || !strings.Contains(res.Message, `"Master" is on screen`) {
+		t.Errorf("scroll_to Master says %q", res.Message)
+	}
 	// From the end, #2 is the second strip of the mixer, not of the tree.
 	res, err = c.AUMChannel(ctx, AUMRequest{Action: "scroll_to", Channel: "#2"})
-	if err != nil || !res.Verified || !strings.Contains(res.Message, `"piano"`) {
+	if err != nil || !res.Verified || !strings.Contains(res.Message, `strip 2 "piano"`) {
 		t.Fatalf("scroll_to #2: %+v, %v", res, err)
 	}
 	if _, err := c.AUMChannel(ctx, AUMRequest{Action: "scroll_to", Channel: "#10"}); err == nil || !strings.Contains(err.Error(), "no strip #10: the mixer has 9") {
 		t.Fatalf("scroll_to #10: %v", err)
+	}
+}
+
+// TestAUMFilePlayerPartOfATitle reads the File Player of a strip by its whole
+// title while the only strip in view that matches is one whose title merely
+// contains it: the search goes on along the mixer for the strip titled
+// exactly so, and a part of a title two strips have stays ambiguous.
+func TestAUMFilePlayerPartOfATitle(t *testing.T) {
+	strips := slices.Clone(wideStrips)
+	strips[4].Title = "woodwinds" // left of woodwinds2
+	_, m, c := wideFake(t, strips)
+	end := ipadtest.MaxScroll(len(strips))
+	m.SetScroll(end) // woodwinds2 in view, woodwinds left of the window
+	ctx := context.Background()
+	res, err := c.AUMFilePlayer(ctx, AUMRequest{Action: "read", Channel: "woodwinds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := res.Data.([]AUMRow)
+	if got := m.Opened(); !slices.Equal(got, []string{"woodwinds"}) || len(rows) < 2 || rows[1].Label != "woodwinds.wav" {
+		t.Fatalf("woodwinds opened %v, rows %+v", got, rows)
+	}
+	if _, err := c.AUMPanel(ctx, AUMRequest{Action: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	m.SetScroll(end)
+	if _, err := c.AUMFilePlayer(ctx, AUMRequest{Action: "read", Channel: "wood"}); err == nil || !strings.Contains(err.Error(), `"wood" matches 2 channels`) {
+		t.Fatalf("wood: %v", err)
 	}
 }

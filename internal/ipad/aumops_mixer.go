@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -345,10 +346,11 @@ func (d *AUMDriver) channel(sel string) (AUMChannel, error) {
 	for _, dir := range dirs {
 		for i := 0; ; i++ {
 			s, err := w.find(sel)
+			settled := w.settled(sel)
 			switch {
-			case err == nil:
+			case settled && err == nil:
 				return w.bring(s)
-			case !errors.As(err, &none):
+			case settled && !errors.As(err, &none):
 				return AUMChannel{}, err
 			case w.atEnd(dir):
 			case i == maxWalkSteps:
@@ -362,11 +364,37 @@ func (d *AUMDriver) channel(sel string) (AUMChannel, error) {
 			break
 		}
 	}
-	_, err := w.find(sel)
-	if err != nil && w.whole() && len(w.seen) > len(d.St.Channels) {
+	s, err := w.find(sel)
+	if err == nil {
+		return w.bring(s)
+	}
+	if w.whole() && len(w.seen) > len(d.St.Channels) {
 		err = fmt.Errorf("%w; the mixer was scrolled from its first strip to its last", err)
 	}
 	return AUMChannel{}, err
+}
+
+// settled reports whether what find answers for sel holds for the whole
+// mixer, not only for the strips seen so far: once the walk has seen all of
+// it; for a position (find counts it from the first strip) or a channel
+// number at once; for a part of a title only once a strip seen is titled
+// exactly so. Until then the one strip in view whose title contains it may
+// not be the one meant: the strip titled exactly so, or a second strip it
+// matches, can lie off screen ("woodwinds" in view as "woodwinds2").
+func (w *mixerWalk) settled(sel string) bool {
+	sel = strings.TrimSpace(sel)
+	if w.whole() || sel == "" || isPosition(sel) {
+		return true
+	}
+	if _, err := strconv.Atoi(sel); err == nil {
+		return true
+	}
+	for _, s := range w.seen {
+		if strings.EqualFold(s.ch.Title, sel) {
+			return true
+		}
+	}
+	return false
 }
 
 // mixerRead is a read of every strip of the mixer.
