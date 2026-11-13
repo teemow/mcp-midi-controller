@@ -111,26 +111,14 @@ func (d *AUMDriver) uncoverMixer() error {
 	return d.clearOverlays("")
 }
 
-// addChannel taps the add-channel tile, then AUDIO or MIDI at once: the
-// tile's menu closes by itself after a few seconds. On the start screen the
-// tile is the one in the middle of the mixer.
+// addChannel taps AUDIO or MIDI in the add-channel tile's menu (tapAddMenu).
+// On the start screen the tile is the one in the middle of the mixer. The
+// strip that appears is read back: only one of the kind asked for is the
+// channel that was added.
 func (d *AUMDriver) addChannel(kind string) (AUMResult, error) {
-	if err := d.showAddTile(); err != nil {
-		return AUMResult{}, err
-	}
-	if d.St.AddTile == nil {
-		return AUMResult{}, fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
-	}
+	action := "add_" + strings.ToLower(kind)
 	before := len(d.St.Channels)
-	tile := *d.St.AddTile
-	if err := d.tapRect(tile, "the add-channel tile"); err != nil {
-		return AUMResult{}, err
-	}
-	item, err := d.addMenuItem(tile, kind)
-	if err != nil {
-		return AUMResult{}, err
-	}
-	if err := d.tapRect(item, kind); err != nil {
+	if err := d.tapAddMenu(kind); err != nil {
 		return AUMResult{}, err
 	}
 	ok, err := d.until(aumWait, func(st AUMState) bool { return len(st.Channels) > before })
@@ -138,10 +126,48 @@ func (d *AUMDriver) addChannel(kind string) (AUMResult, error) {
 		return AUMResult{}, err
 	}
 	if !ok {
-		return d.result("add_"+strings.ToLower(kind), false, fmt.Sprintf("still %d strips: the %s channel was not added", before, kind), nil), nil
+		return d.result(action, false, fmt.Sprintf("still %d strips: the %s channel was not added", before, kind), nil), nil
 	}
 	added := d.St.Channels[len(d.St.Channels)-1]
-	return d.result("add_"+strings.ToLower(kind), true, fmt.Sprintf("added strip %d %q", added.Strip, added.Title), added), nil
+	if !strings.EqualFold(added.Kind, kind) {
+		return d.result(action, false, fmt.Sprintf("strip %d %q was added, and it is %s, not %s: another channel than the one asked for", added.Strip, added.Title, added.Kind, strings.ToLower(kind)), added), nil
+	}
+	return d.result(action, true, fmt.Sprintf("added strip %d %q", added.Strip, added.Title), added), nil
+}
+
+// tapAddMenu taps the add-channel tile, then AUDIO, MIDI or IMPORT at once:
+// the tile's menu closes by itself after a few seconds.
+//
+// A menu that is open already (the tile was tapped a moment ago) has turned
+// the tile into a container of its three buttons, and the tap meant to open
+// it would land on MIDI, the button at the tile's centre. That menu is waited
+// out, so the tile is the tile again; one that stays is tapped where the tree
+// has the item.
+func (d *AUMDriver) tapAddMenu(kind string) error {
+	if err := d.showAddTile(); err != nil {
+		return err
+	}
+	if len(d.St.addMenu) > 0 {
+		closed, err := d.until(aumWait, func(st AUMState) bool { return len(st.addMenu) == 0 })
+		if err != nil {
+			return err
+		}
+		if item, ok := d.St.addMenu[kind]; ok && !closed {
+			return d.tapRect(item, kind)
+		}
+	}
+	if d.St.AddTile == nil {
+		return fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
+	}
+	tile := *d.St.AddTile
+	if err := d.tapRect(tile, "the add-channel tile"); err != nil {
+		return err
+	}
+	item, err := d.addMenuItem(tile, kind)
+	if err != nil {
+		return err
+	}
+	return d.tapRect(item, kind)
 }
 
 // addMenuItem finds AUDIO, MIDI or IMPORT once the tile's menu is open: in
@@ -180,25 +206,12 @@ func (d *AUMDriver) showAddTile() error {
 	})
 }
 
-// importChannels opens IMPORT on the add tile, then either restores the
-// last removed channel (session "") or imports every channel of session.
+// importChannels opens IMPORT on the add tile (tapAddMenu), then either
+// restores the last removed channel (session "") or imports every channel of
+// session.
 func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
-	if err := d.showAddTile(); err != nil {
-		return AUMResult{}, err
-	}
-	if d.St.AddTile == nil {
-		return AUMResult{}, fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
-	}
 	before := len(d.St.Channels)
-	tile := *d.St.AddTile
-	if err := d.tapRect(tile, "the add-channel tile"); err != nil {
-		return AUMResult{}, err
-	}
-	item, err := d.addMenuItem(tile, "IMPORT")
-	if err != nil {
-		return AUMResult{}, err
-	}
-	if err := d.tapRect(item, "IMPORT"); err != nil {
+	if err := d.tapAddMenu("IMPORT"); err != nil {
 		return AUMResult{}, err
 	}
 	pop, err := d.waitOverlay("", aumWait)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -132,12 +133,20 @@ func TestAUMChannelAddAndRemove(t *testing.T) {
 	}
 	// When the open menu is not in the tree, MIDI is the tile's middle row,
 	// right under the tap that opened it.
-	w.SetScreens(base.Source(), base.Source(), added.Source())
+	addedMIDI := mixer()
+	addedMIDI.Strips = append(addedMIDI.Strips[:4:4], ipadtest.Strip{Title: "MIDI 5"})
+	w.SetScreens(base.Source(), base.Source(), addedMIDI.Source())
 	if res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_midi"}); err != nil || !res.Verified {
-		t.Fatalf("add_midi: %+v, %v", res, err)
+		t.Fatalf("add_midi: %+v, %v", res.Message, err)
 	}
 	if g := w.GestureLog(); len(g) != 2 || g[1] != "tap 1096,447" {
 		t.Fatalf("add_midi gestures = %v", g)
+	}
+	// A strip of the other kind is not the channel that was asked for.
+	w.SetScreens(base.Source(), menu.Source(), addedMIDI.Source())
+	res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || res.Verified || !strings.Contains(res.Message, `strip 5 "MIDI 5" was added, and it is midi, not audio`) {
+		t.Fatalf("add_audio that added a MIDI strip: %+v, %v", res.Message, err)
 	}
 
 	// REMOVE CHANNEL needs confirm and taps twice.
@@ -171,6 +180,77 @@ func TestAUMChannelAddFromStartScreen(t *testing.T) {
 	// The tile (530,372) 150×150, then MIDI, the middle row of its menu.
 	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 605,447" || g[1] != "tap 605,447.5" {
 		t.Fatalf("gestures = %v", g)
+	}
+}
+
+// While the add tile's menu is open the tile is a container of the menu's
+// three buttons, and its centre lies on MIDI: a tap there to open the menu
+// would add a MIDI channel. The menu closes by itself, so it is waited out
+// and the tile tapped as ever; one that stays is tapped where it is.
+func TestAUMChannelAddWithMenuOpen(t *testing.T) {
+	base := mixer()
+	base.Strips = base.Strips[:4]
+	menu := base
+	menu.AddMenu = true
+	added := mixer()
+	added.Strips = append(added.Strips[:4:4], ipadtest.Strip{Title: "CHAN 5", Level: "+0.0 dB"})
+	// What a tap on MIDI adds, for the tap that lands there.
+	midi := mixer()
+	midi.Strips = append(midi.Strips[:4:4], ipadtest.Strip{Title: "MIDI 5"})
+	const tile, audio, midiRow, imp = "tap 1096,447", "tap 1096,394.5", "tap 1096,447.5", "tap 1096,499.5"
+	// screen answers a tap by where it lands: on the closed tile the menu
+	// opens, in the open menu the item's channel is added.
+	fake := func(staysOpen bool) (*ipadtest.WDA, *Client) {
+		w := ipadtest.New(menu.Source())
+		t.Cleanup(w.Close)
+		open, shown := true, menu
+		w.OnGesture = func(g ipadtest.Gesture) {
+			at := fmt.Sprintf("tap %v,%v", g.X, g.Y)
+			switch {
+			case open && (at == tile || at == midiRow):
+				open, shown = false, midi
+			case open && at == audio:
+				open, shown = false, added
+			case !open && at == tile:
+				open, shown = true, menu
+			}
+		}
+		w.SourceFunc = func(gestures, reads int) json.RawMessage {
+			// The menu left open closes by itself after the first read.
+			if gestures == 0 && reads > 0 && !staysOpen {
+				open, shown = false, base
+			}
+			return shown.Source()
+		}
+		return w, New(w.URL)
+	}
+
+	w, c := fake(false)
+	res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || !res.Verified || res.Message != `added strip 5 "CHAN 5"` {
+		t.Fatalf("add_audio with the menu open: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != tile || g[1] != audio {
+		t.Fatalf("add_audio with the menu open: gestures = %v", g)
+	}
+
+	// A menu that does not close: AUDIO is tapped in it, the tile is not.
+	w, c = fake(true)
+	res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || !res.Verified || res.Message != `added strip 5 "CHAN 5"` {
+		t.Fatalf("add_audio with a menu that stays: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != audio {
+		t.Fatalf("add_audio with a menu that stays: gestures = %v", g)
+	}
+
+	// IMPORT is reached the same way: no tap lands on MIDI.
+	w, c = fake(true)
+	if _, err = c.AUMChannel(context.Background(), AUMRequest{Action: "restore"}); err != nil {
+		t.Fatalf("restore with a menu that stays: %v", err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != imp {
+		t.Fatalf("restore with a menu that stays: gestures = %v", g)
 	}
 }
 

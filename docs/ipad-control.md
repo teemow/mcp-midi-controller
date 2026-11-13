@@ -399,7 +399,13 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **The add-channel tile** is an unlabelled 150-point square button in a
   column of its own right of the last strip; its AUDIO / MIDI / IMPORT menu
   stacks over it once tapped and closes by itself after a few seconds. While
-  the menu is open the tile is a container of those three buttons.
+  the menu is open the tile is a container of those three buttons, and its
+  centre lies on MIDI: `add_audio` sent right after a tap on the tile tapped
+  there to open the menu and added a MIDI channel, then an audio one, and
+  answered verified. So `add_audio`, `add_midi`, `restore` and `import` wait
+  until a menu that is open has closed and tap the tile then (a menu that
+  stays is tapped where the tree has the item), and `add_audio` / `add_midi`
+  are verified only by a new strip of the kind asked for.
 - **The start screen** (a fresh AUM, or after CLEAR) has no strip. A mixer
   narrower than the window is centred, so the tile's column stands in the
   middle (the tile at 530,372), and LAST STATE and DEFAULT are in that column
