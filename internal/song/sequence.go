@@ -7,7 +7,8 @@ package song
 //
 // A sequence is the timeline with a lead-in in front of it. The lead-in holds
 // what the live player sends before its first note: the opening section's
-// preset loads, a pause for them to land, then every other control. It is a
+// preset loads, a pause for them to land, then every other control, and the
+// parameters of the plugins those switched back on a moment later. It is a
 // whole number of bars, so the song's bars stay on the transport's bar lines
 // and tempo-synced effects fall where they do when the song is played live.
 
@@ -77,9 +78,9 @@ const RecorderOffBeats = 0.5
 func (t *Timeline) Sequence() *Sequence {
 	q := &Sequence{Tempo: t.Tempo, MeterNum: t.MeterNum, MeterDen: t.MeterDen, BarTicks: t.BarTicks}
 
-	var opening []Event
+	var opening, again []Event
 	if len(t.Sections) > 0 {
-		opening = t.Sections[0].State
+		opening, again = t.Sections[0].State, t.Sections[0].Again
 	}
 	presets := 0
 	for _, e := range opening {
@@ -111,6 +112,12 @@ func (t *Timeline) Sequence() *Sequence {
 		if e.Kind == Program {
 			e.Tick = 0
 		}
+		q.Controls = append(q.Controls, e)
+	}
+	// The parameters of what the opening switches back on, once the switch
+	// has taken effect (see SectionSpan.Again).
+	for _, e := range again {
+		e.Tick = min(rest+t.settleTicks(), lead)
 		q.Controls = append(q.Controls, e)
 	}
 

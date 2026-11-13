@@ -240,7 +240,7 @@ func (s *Server) beginRecording(opts recordOptions) (*activeRecording, error) {
 		upload:  opts.uploadWhenFinished(),
 		seconds: opts.Seconds, forSong: opts.Song != "",
 		phase: "recording", stop: make(chan struct{}), done: make(chan struct{}),
-		awake: s.holdAwake(),
+		awake: s.hold(fmt.Sprintf("recording %q", name)),
 	}
 	s.rec.current = ar
 	return ar, nil

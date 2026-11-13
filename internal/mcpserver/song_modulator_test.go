@@ -136,12 +136,12 @@ func TestSongModulators(t *testing.T) {
 	if slots[sweep.Slot] != "aumf/KLFH" || slots[drift.Slot] != "aumf/KLFH" || sweep.Slot != 3 || drift.Slot != 4 {
 		t.Errorf("the pad's strip holds %v; want LFOH at slots 3 and 4", slots)
 	}
-	// Their state: the drift opens bypassed, the sweep does not.
-	if got := sessionNodeState(t, sess, pad.Strip, drift.Slot, "AUMNode.bypassed"); got != true {
-		t.Errorf("the drift opens with bypassed = %v", got)
-	}
-	if got := sessionNodeState(t, sess, pad.Strip, sweep.Slot, "AUMNode.bypassed"); got == true {
-		t.Error("the sweep opens bypassed")
+	// Their state: neither opens bypassed in AUM. The drift declares itself
+	// bypassed, which the song's state does by parking it.
+	for _, n := range []int{sweep.Slot, drift.Slot} {
+		if got := sessionNodeState(t, sess, pad.Strip, n, "AUMNode.bypassed"); got == true {
+			t.Errorf("the LFOH at slot %d opens bypassed in AUM", n)
+		}
 	}
 	// The routes: each LFOH's MIDI Out to MIDI Control alone, which passes the
 	// control channels alone.

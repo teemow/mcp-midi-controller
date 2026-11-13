@@ -659,8 +659,15 @@ func describeAUMState(st ipad.AUMState) string {
 		b.WriteString("channels: none visible\n")
 	} else {
 		b.WriteString("channels:\n")
+		// Scrolled from its first strip, the tree counts the strips from the
+		// window's left edge, not as "#n" does: they are listed unnumbered.
+		left := st.MixerScroll != nil && *st.MixerScroll >= 0.5
 		for _, ch := range st.Channels {
-			fmt.Fprintf(&b, "  strip %d %q", ch.Strip, ch.Title)
+			if left {
+				fmt.Fprintf(&b, "  strip %q", ch.Title)
+			} else {
+				fmt.Fprintf(&b, "  strip %d %q", ch.Strip, ch.Title)
+			}
 			if ch.LevelLabel != "" {
 				b.WriteString(" " + ch.LevelLabel)
 			}
@@ -677,6 +684,21 @@ func describeAUMState(st ipad.AUMState) string {
 			}
 			if nodes := nodeSummary(ch); nodes != "" {
 				b.WriteString(" nodes: " + nodes)
+			}
+			b.WriteByte('\n')
+		}
+		// AUM lists only the strips that reach into the window.
+		var more []string
+		if left {
+			more = append(more, "left")
+		}
+		if st.AddTile == nil {
+			more = append(more, "right")
+		}
+		if len(more) > 0 {
+			fmt.Fprintf(&b, "  more strips %s of the window: AUM lists only those in view (aum_channel scroll_to <title> brings one in)", strings.Join(more, " and "))
+			if left {
+				b.WriteString("; #n counts from the mixer's first strip")
 			}
 			b.WriteByte('\n')
 		}

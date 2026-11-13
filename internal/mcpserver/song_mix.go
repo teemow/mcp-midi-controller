@@ -667,7 +667,7 @@ func (s *Server) runMix(ctx context.Context, job *mixJob, cs *compiledSong, tap 
 	defer s.probeMu.Unlock()
 	// The passes are played one after another: the host must not doze
 	// between them either, or the next one starts into a stalled stream.
-	defer s.holdAwake()()
+	defer s.hold(fmt.Sprintf("mix_song %q", cs.id))()
 	tl := cs.timeline
 	rep := &mixReport{Song: cs.id, Title: cs.song.Title, Tempo: tl.Tempo}
 	began := time.Now()

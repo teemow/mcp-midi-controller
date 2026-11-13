@@ -814,7 +814,7 @@ func stemsReportOf(plan *stemPlan, kept songStems) *stemsReport {
 func (s *Server) runStems(ctx context.Context, job *stemsJob, plan *stemPlan, deck stemDeck, todo []int) (*stemsReport, error) {
 	// A pass is minutes long and a session is loaded between two: the host
 	// must not doze through either.
-	defer s.holdAwake()()
+	defer s.hold(fmt.Sprintf("record_song_stems %q", plan.id))()
 	began := time.Now()
 	kept := loadSongStems()[plan.id]
 	if kept.Layout != plan.layout {
@@ -951,9 +951,10 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	case ctx.Err() != nil:
 		return take, ctx.Err()
 	case err != nil:
-		// A mixer of many strips keeps the master off screen and out of
-		// AUM's tree. The mapping arms it all the same; a take that does not
-		// appear says when it did not.
+		// The master's REC button could not be read: of a mixer of many
+		// strips AUM's tree holds the master only once the mixer is
+		// scrolled to it, which can fail. The mapping arms it all the same;
+		// a take that does not appear says when it did not.
 		why, _ := s.ipadFailure(ctx, err)
 		take.Notes = append(take.Notes, fmt.Sprintf("the master's REC button could not be read after its mapped control armed it (%s)", why))
 	case tapped:

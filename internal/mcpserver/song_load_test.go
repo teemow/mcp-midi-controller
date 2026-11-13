@@ -1007,6 +1007,65 @@ func TestCheckSong(t *testing.T) {
 	}
 }
 
+// wideSong has seven tracks: its session's nine strips are more than fit in
+// AUM's window, which keeps the strips off screen out of its tree.
+const wideSong = `title: "Wide Drive"
+tempo: 300
+tracks:
+  - {id: piano, instrument: {plugin: syn1}}
+  - {id: violins, instrument: {plugin: syn1}}
+  - {id: low_strings, instrument: {plugin: syn1}}
+  - {id: woodwinds1, instrument: {plugin: syn1}}
+  - {id: woodwinds2, instrument: {plugin: syn1}}
+  - {id: brass, instrument: {plugin: syn1}}
+  - {id: percussion, instrument: {plugin: syn1}}
+patterns:
+  low: {step: 1/4, notes: "A2 . . ."}
+sections:
+  all: {bars: 1, play: {piano: low, violins: low, low_strings: low, woodwinds1: low, woodwinds2: low, brass: low, percussion: low}}
+arrangement: [all]
+`
+
+// TestCheckSongWideMixer checks a session of more strips than fit on AUM's
+// screen: the check scrolls the mixer for the strips off screen, passes when
+// they are all there and still names one that is not.
+func TestCheckSongWideMixer(t *testing.T) {
+	r := newSongRig(t)
+	s := r.s
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": wideSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	if res := call(t, s.handleAuthorSongSession, map[string]any{"song": "wide_drive"}); res.IsError {
+		t.Fatalf("author: %s", resultText(res))
+	}
+	r.connect()
+	strips := []ipadtest.Strip{{Title: "Brain"}}
+	for _, track := range []string{"piano", "violins", "low_strings", "woodwinds1", "woodwinds2", "brass", "percussion"} {
+		strips = append(strips, ipadtest.Strip{Title: track, Level: "+0.0 dB"})
+	}
+	strips = append(strips, ipadtest.Strip{Title: "Master", Level: "+0.0 dB"})
+
+	r.wda.SetScreens()
+	m := ipadtest.NewWideMixer(r.wda, "Wide Drive", strips, nil)
+	res := call(t, s.handleCheckSong, map[string]any{"song": "wide_drive", "sound": false})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, `aum     ok    AUM has "Wide Drive" open with the song's 9 strip(s)`) {
+		t.Fatalf("check: %s", text)
+	}
+	if len(m.Drags()) == 0 || m.Scroll() != 0 {
+		t.Errorf("the check made %d drag(s) and left the mixer scrolled %.0f points; want it walked and back at its start", len(m.Drags()), m.Scroll())
+	}
+
+	// A strip that is really not there is named, off screen or not.
+	missing := append(slices.Clone(strips[:6]), strips[7:]...) // brass
+	r.wda.SetScreens()
+	ipadtest.NewWideMixer(r.wda, "Wide Drive", missing, nil)
+	res = call(t, s.handleCheckSong, map[string]any{"song": "wide_drive", "sound": false})
+	if text := resultText(res); !res.IsError || !strings.Contains(text, "no strip for: brass (strips: Brain, piano, violins, low_strings, woodwinds1, woodwinds2, percussion, Master)") {
+		t.Fatalf("check with brass missing: %s", text)
+	}
+}
+
 // mustParseSource parses the source of one of the stand-in's screens.
 func mustParseSource(t *testing.T, src json.RawMessage) *ipad.Element {
 	t.Helper()

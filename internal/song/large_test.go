@@ -62,13 +62,15 @@ func TestTwelveTracksKeepTheirSessions(t *testing.T) {
 	eleven = strings.Replace(eleven, "t11: riff", "t11: [riff, ctl]", 1)
 	// The fingerprints of the session, of the sequence, of the stem's session
 	// and of the stem's sequence, as the code before this change gave them.
+	// The three tracks' sequence has changed since: its chorus switches the
+	// echo back on, and the echo's Mix follows the un-bypass (unbypassSettle).
 	for _, tc := range []struct {
 		name, doc string
 		stem      int
 		want      [4]string
 	}{
 		{"three tracks", strings.Replace(testSong, "  - id: lead\n", "  - id: lead\n    group: band\n", 1), 1,
-			[4]string{"119de2421092b0ff", "5d1870b1b1c06e25", "b63825b3e4590927", "ec6a7a9337a43ff9"}},
+			[4]string{"119de2421092b0ff", "2aabfb0cb655355c", "b63825b3e4590927", "ec6a7a9337a43ff9"}},
 		{"twelve tracks", twelve, 3,
 			[4]string{"0c550983f45beb4e", "75ac0150d19151f1", "d722d0632235de55", "79023091a8da8961"}},
 		{"eleven tracks and a control channel", eleven, 3,
