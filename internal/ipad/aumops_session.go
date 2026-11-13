@@ -303,20 +303,20 @@ const (
 
 // failedNodes returns the nodes on screen that AUM draws as failed. AUM says
 // so only in the node's colour, a ring of red stripes, so this takes a
-// screenshot; it reports nothing when that cannot be had. readMixer looks at
-// every strip.
-func (d *AUMDriver) failedNodes() []AUMFailedNode {
+// screenshot; it returns an error when that cannot be checked, never a clean
+// bill of health. readMixer looks at every strip.
+func (d *AUMDriver) failedNodes() ([]AUMFailedNode, error) {
 	raw, err := d.s.c.screenshot(d.ctx)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("check failed nodes: screenshot: %w", err)
 	}
 	scr, err := d.s.c.ScreenInfo(d.ctx)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("check failed nodes: screen info: %w", err)
 	}
 	img, err := DecodePNG(raw)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("check failed nodes: decode screenshot: %w", err)
 	}
 	var out []AUMFailedNode
 	for _, ch := range d.St.Channels {
@@ -330,7 +330,7 @@ func (d *AUMDriver) failedNodes() []AUMFailedNode {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // problems collects what on screen reports a fault: every alert, and every

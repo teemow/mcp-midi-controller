@@ -410,13 +410,19 @@ type mixerRead struct {
 // readMixer reads every strip of the mixer. When the tree does not hold the
 // whole mixer, the mixer is walked to its add tile and back to its first
 // strip, where it is left. With faults it also looks for failed nodes and
-// fault reports at every stop.
+// fault reports at every stop; a stop whose failed nodes cannot be checked
+// fails the read (it is no clean bill of health).
 func (d *AUMDriver) readMixer(faults bool) (mixerRead, error) {
 	var out mixerRead
 	var visit func(AUMState)
+	var unchecked error
 	if faults {
 		visit = func(AUMState) {
-			for _, n := range d.failedNodes() {
+			nodes, err := d.failedNodes()
+			if err != nil && unchecked == nil {
+				unchecked = err
+			}
+			for _, n := range nodes {
 				// A strip seen at two stops of the walk is read twice.
 				if !slices.ContainsFunc(out.Failed, func(f AUMFailedNode) bool { return f.Strip == n.Strip && f.Node == n.Node }) {
 					out.Failed = append(out.Failed, n)
@@ -435,7 +441,7 @@ func (d *AUMDriver) readMixer(faults bool) (mixerRead, error) {
 		}
 	}
 	out.Channels = w.channels()
-	return out, nil
+	return out, unchecked
 }
 
 // appendNew appends the items of add that list does not hold yet.

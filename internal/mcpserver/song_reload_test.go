@@ -215,3 +215,41 @@ func TestRecordSongStemsSkipsAFailedPlugin(t *testing.T) {
 		t.Errorf("the pad was reloaded %d times, want %d", n, songReloadRounds)
 	}
 }
+
+// A successful RELOAD is not proof of recovery when the next visual check
+// fails. Keep the observed failure so neither the check nor recording can
+// treat the plugin as healthy.
+func TestRecordSongStemsBlocksUnverifiedReload(t *testing.T) {
+	r, _ := stemsRig(t)
+	r.opens("Stem Song stem band", stemBandStrips)
+	failed := ipadtest.NewFailedNodes(r.wda, loadedMixer(stemBandStrips))
+	pad := nodeFrame(t, stemBandStrips, "pad", "source", 0)
+	failed.Fail(pad, 1)
+	before := r.wda.OnGesture
+	r.wda.OnGesture = func(g ipadtest.Gesture) {
+		before(g)
+		if failed.Reloads(pad) > 0 {
+			r.wda.FailScreenshot = true
+		}
+	}
+
+	rep, text := recordBand(t, r)
+	band := rep.Stems[1]
+	if band.File != "" || !strings.Contains(band.Error, "the stem is not recorded over a plugin that failed") ||
+		!strings.Contains(band.Error, "mixer could not be read after that") {
+		t.Fatalf("unverified recovery allowed recording: %+v\n%s", band, text)
+	}
+	if strings.Contains(text, "it came up") || strings.Contains(text, "they came up") || len(band.Notes) != 0 {
+		t.Errorf("unverified recovery claimed success: %+v\n%s", band, text)
+	}
+	r.mu.Lock()
+	sent := globalCCs(r.Commands, rigRecordCC, rigArmCC)
+	takes := len(r.Takes)
+	r.mu.Unlock()
+	if len(sent) != 0 || takes != 0 {
+		t.Errorf("unverified recovery sent recorder/arm commands %v and made %d takes", sent, takes)
+	}
+	if n := failed.Reloads(pad); n != 1 {
+		t.Errorf("reloads = %d, want one before the screenshot failure", n)
+	}
+}

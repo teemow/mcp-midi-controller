@@ -1169,7 +1169,9 @@ WebDriverAgent session bound to AUM does.
   failed plugin. AUM says that a plugin did not load only by drawing its node
   with a ring of red stripes, so the check takes a screenshot at every stop
   of its walk along the mixer and looks at the ring of every node, strips
-  scrolled out of the window included. `check_song` reloads nothing: for a
+  scrolled out of the window included. A screenshot that cannot be had fails
+  the read rather than passing the mixer as clean, so a stem is not recorded
+  on it. `check_song` reloads nothing: for a
   failed node its `next` names `load_song`, which reloads it, and the
   `aum_node reload` call (strip and node) that reloads it once;
 - every track answers a note. The daemon sets each track's own sound (its
