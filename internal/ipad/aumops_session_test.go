@@ -416,6 +416,36 @@ func TestAppNotRunning(t *testing.T) {
 	}
 }
 
+// TestAUMOpenSessionStartedAUMNeverDraws checks an AUM that was started again
+// and never draws its screen is not driven: the load fails at aumStartWait
+// without a gesture, which would be a tap at a place of the menu that is not
+// there.
+func TestAUMOpenSessionStartedAUMNeverDraws(t *testing.T) {
+	old := aumStartWait
+	aumStartWait = 300 * time.Millisecond
+	t.Cleanup(func() { aumStartWait = old })
+	w, c := openFake(t, sessionScreens(1))
+	blank := ipadtest.AUM{}
+	w.AfterLaunch = func(int, int) json.RawMessage { return blank.Source() }
+	w.SetAUMCrashes(6, 1) // ✕, ☰, FILES, Sessions, Songs, the row
+	res, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Night Drive")
+	if err == nil {
+		t.Fatalf("a load in an AUM that never drew its screen succeeded: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "AUM did not show its screen within 300ms of its start") {
+		t.Errorf("err = %q", err)
+	}
+	if n := w.Launches(); n != 1 {
+		t.Errorf("AUM was started %d time(s), want once", n)
+	}
+	if g := w.Gestures(); g != 0 {
+		t.Errorf("gestures in the started AUM = %d, want none", g)
+	}
+	if n := w.OpenSessions(); n != 0 {
+		t.Errorf("%d WebDriverAgent sessions left open", n)
+	}
+}
+
 // TestAUMSession reads the open session's name and leaves the mixer bare.
 func TestAUMSession(t *testing.T) {
 	menu := ipadtest.DefaultAUM()

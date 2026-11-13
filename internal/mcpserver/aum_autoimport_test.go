@@ -190,6 +190,56 @@ func TestAUMTapConnectNamesTheOpenSession(t *testing.T) {
 	}
 }
 
+// TestAUMTapConnectThatIsNoLongerNewest checks a tap's connect that waits
+// behind an import changes nothing when, by its turn, its tap has dropped or
+// another session's master has dialled in since: the session AUM has open is
+// the one of the newest connected master, and the older word does not replace
+// its marker, rig and surface. currentMu is held while the registry changes,
+// so the connect's turn comes after it whatever the scheduler does.
+func TestAUMTapConnectThatIsNoLongerNewest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(reg *audiotap.Registry, s *Server)
+	}{
+		{"its tap dropped", func(reg *audiotap.Registry, _ *Server) {
+			reg.Disconnect("rig_a/master")
+		}},
+		{"a newer master connected", func(reg *audiotap.Registry, s *Server) {
+			reg.Connect("rig_b/master", "ipad:1")
+			s.OnAudioTapConnected("rig_b/master")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			reg := audiotap.NewRegistry()
+			s := New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}), WithAUMAutoImport(true), WithAudioTap(reg))
+			waitBackgroundAtCleanup(t, s)
+			stageProbe(t)
+			authorConventionSession(t, s, "rig_a", "Gitarre")
+			authorConventionSession(t, s, "rig_b", "Keys")
+			s.OnAUMSessionDownloaded("rig_b.aumproj")
+
+			reg.Connect("rig_a/master", "ipad:1")
+			s.currentMu.Lock()
+			s.OnAudioTapConnected("rig_a/master")
+			tc.change(reg, s)
+			s.currentMu.Unlock()
+			s.waitBackground()
+
+			if id := s.currentAUMSessionID(); id != "rig_b" {
+				t.Fatalf("current session = %q, want rig_b: an older tap's word replaced it", id)
+			}
+			if _, ok := s.eng.DeviceFor("gitarre"); ok {
+				t.Fatal("the rig of the session whose tap is no longer the newest was imported")
+			}
+			if d, ok := s.eng.DeviceFor("keys"); !ok || d.Session != "rig_b" {
+				t.Fatalf("the open session's rig is gone (ok=%t, %+v)", ok, d)
+			}
+		})
+	}
+}
+
 // TestAUMTapConnectThatWaitedIsStale checks a tap's connect that waited
 // behind an import names the open session only while its tap is still the
 // newest master connected: the tap may have gone meanwhile, or the master of a
