@@ -564,11 +564,14 @@ func strip(x float64, s Strip) node {
 		kids = append(kids, el("Other", "", x, 88, 199, 98, nodeButton(src, x+101, 88, 98, s.EmptySource)...))
 		kids = append(kids, el("Button", "", x+193, 87, 41, 99))
 		if s.PlayEnable != nil {
-			t := el("Button", "", x+113, 125, 24, 24)
+			// The toggle is a button at the strip's left edge, left of the
+			// node, labelled with the meter's reading as iOS glues it; the
+			// caption is its child and reaches above it.
+			t := el("Button", "-∞", x, 100, 65, 74, el("StaticText", "PLAY ENABLE", x, 88, 65, 37))
 			if *s.PlayEnable {
 				t = t.with("traits", "Selected, Button")
 			}
-			kids = append(kids, el("StaticText", "PLAY ENABLE", x+93, 88, 65, 37), t)
+			kids = append(kids, el("Other", "", x, 88, 101, 98, t))
 		}
 		var ins []node
 		for k, n := range s.Inserts {

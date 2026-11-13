@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,15 +28,22 @@ var nodeMenuItems = map[string]string{
 func (c *Client) AUMNode(ctx context.Context, r AUMRequest) (AUMResult, error) {
 	var res AUMResult
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
-		var err error
-		switch r.Action {
-		case "window_close", "window_mode":
+		// What the request lacks is answered before anything is touched.
+		if err := checkNode(r); err != nil {
+			return err
+		}
+		// Every action begins with a touch on a strip or on a plugin window's
+		// bar, and none works in what an earlier call left open: a node's menu
+		// is opened by the action that taps in it (nodeMenuAction), SELECT
+		// leaves the node selected with nothing open, and a plugin window is
+		// no overlay, so it stays (uncoverMixer).
+		if err := d.uncoverMixer(); err != nil {
+			return err
+		}
+		if r.Action == "window_close" || r.Action == "window_mode" {
+			var err error
 			res, err = d.pluginWindow(r)
 			return err
-		case "eject":
-			if err := needConfirm(r, "eject removes the node and its state"); err != nil {
-				return err
-			}
 		}
 		ch, n, err := d.node(r.Channel, r.Node, r.Action == "add_slot")
 		if err != nil {
@@ -63,12 +71,39 @@ func (c *Client) AUMNode(ctx context.Context, r AUMRequest) (AUMResult, error) {
 			res, err = d.meterNode(ch, n)
 		case "name":
 			res, err = d.nameNode(ch, n, r.Name)
-		default:
-			err = fmt.Errorf("unknown aum_node action %q (%s)", r.Action, strings.Join(AUMNodeActions, ", "))
 		}
 		return err
 	})
 	return res, err
+}
+
+// checkNode reports what a request lacks for its action.
+func checkNode(r AUMRequest) error {
+	switch {
+	case !slices.Contains(AUMNodeActions, r.Action):
+		return fmt.Errorf("unknown aum_node action %q (%s)", r.Action, strings.Join(AUMNodeActions, ", "))
+	case r.Action == "eject":
+		return needConfirm(r, "eject removes the node and its state")
+	case r.Action == "move" && r.Steps == 0:
+		return fmt.Errorf("move needs steps: slots to move, negative = up")
+	case r.Action == "name" && r.Name == "":
+		return fmt.Errorf("name needs name: the bus's short name")
+	case r.Action == "window_mode" && windowMode(r.Value) == "":
+		return fmt.Errorf("window_mode needs value: %s", strings.Join(windowModes, ", "))
+	}
+	return nil
+}
+
+// windowModes are the modes of a plugin window's window-mode menu.
+var windowModes = []string{"DEFAULT", "CUSTOM", "MAXIMIZED", "FULLSCREEN"}
+
+// windowMode is value as the window-mode menu spells it, or "" when it is
+// none of the menu's modes.
+func windowMode(value string) string {
+	if mode := strings.ToUpper(strings.TrimSpace(value)); slices.Contains(windowModes, mode) {
+		return mode
+	}
+	return ""
 }
 
 // node finds a strip (bringing it on screen) and one of its nodes.
@@ -383,9 +418,6 @@ func (d *AUMDriver) ejectNode(ch AUMChannel, n AUMNode) (AUMResult, error) {
 // DSP % and latency), then moves 84 points per slot up (steps < 0) or down
 // and releases: the node moves to that slot.
 func (d *AUMDriver) moveNode(ch AUMChannel, n AUMNode, steps int) (AUMResult, error) {
-	if steps == 0 {
-		return AUMResult{}, fmt.Errorf("move needs steps: slots to move, negative = up")
-	}
 	if n.Empty || n.Role != "insert" {
 		return AUMResult{}, fmt.Errorf("move reorders inserts; %s is not one", nodeName(n))
 	}
@@ -459,12 +491,7 @@ func (d *AUMDriver) pluginWindow(r AUMRequest) (AUMResult, error) {
 		})
 		return d.result("window_close", ok, verdict(ok, "closed "+w.Title, w.Title+" is still open"), nil), err
 	}
-	mode := strings.ToUpper(strings.TrimSpace(r.Value))
-	switch mode {
-	case "DEFAULT", "CUSTOM", "MAXIMIZED", "FULLSCREEN":
-	default:
-		return AUMResult{}, fmt.Errorf("window_mode needs value: DEFAULT, CUSTOM, MAXIMIZED or FULLSCREEN")
-	}
+	mode := windowMode(r.Value)
 	if err := d.tapRect(w.Bar[len(w.Bar)-2], "window mode of "+strconv.Quote(w.Title)); err != nil {
 		return AUMResult{}, err
 	}
@@ -504,9 +531,6 @@ func (d *AUMDriver) windowModeItem(mode string) *Element {
 // popover (MIX BUS A NAME & COLOR, MIDI BUS NAME & COLOR) has a name field
 // and SAVE. The name applies to every node of that bus.
 func (d *AUMDriver) nameNode(ch AUMChannel, n AUMNode, name string) (AUMResult, error) {
-	if name == "" {
-		return AUMResult{}, fmt.Errorf("name needs name: the bus's short name")
-	}
 	if err := d.tapRect(n.Frame, nodeName(n)+" of "+strconv.Quote(ch.Title)); err != nil {
 		return AUMResult{}, err
 	}

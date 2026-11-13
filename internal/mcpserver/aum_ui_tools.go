@@ -99,7 +99,7 @@ func (s *Server) registerAUMUITools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_channel",
-		Description: "AUM mixer channels: add_audio / add_midi (the add tile right of the last strip, or the one in the middle of the start screen that CLEAR leaves), restore (IMPORT → Restore Removed Channel), import (name: a session; appends all its channels), edit (opens EDIT CHANNEL), rename (name; a custom name replaces the whole title, \"\" restores AUM's), bookmark, duplicate, remove (confirm; REMOVE CHANNEL → TAP TO CONFIRM), " +
+		Description: "AUM mixer channels: add_audio / add_midi (the add tile right of the last strip, or the one in the middle of the start screen that CLEAR leaves; a tile whose AUDIO / MIDI / IMPORT menu is still open from a tap is waited out first, since its centre then lies on MIDI, and verified means the strip that appeared is of the kind asked for), restore (IMPORT → Restore Removed Channel), import (name: a session; appends all its channels), edit (opens EDIT CHANNEL), rename (name; a custom name replaces the whole title, \"\" restores AUM's), bookmark, duplicate, remove (confirm; REMOVE CHANNEL → TAP TO CONFIRM), " +
 			"move (drag the title onto target strip), set_level (level_db; a tap on the dB label opens the Set level dialog), reset_level (double-tap the fader: back to Settings → Fader Level), mute / solo / arm (on true/false, or flip; read from the button's Selected state), scroll_to (bring an off-screen strip into view). " +
 			"Every action first closes what lies over the mixer (a side panel such as the main menu that aum_files load leaves open or FILES after aum_files save, a popover, an EDIT CHANNEL left open, an alert, the routing matrix; edit, rename, bookmark, duplicate and remove then open the named strip's own EDIT CHANNEL): under a side panel AUM takes a tap on the mixer only to close the panel and ignores a swipe." + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
@@ -121,7 +121,8 @@ func (s *Server) registerAUMUITools() {
 		Name: "aum_node",
 		Description: "AUM nodes and slots of a strip: open (tap: plugin window, built-in popover, Destinations, or the node picker for an empty slot), menu (long-press: lists POST FADER, PRE FADER, SELECT, REPLACE, RELOAD, SWAP, REMOVE SLOT, COPY HERE, MOVE HERE), select, replace (opens the picker), reload, pre_fader, post_fader, swap (onto the selected node), " +
 			"copy_here / move_here (an empty slot, after select), add_slot (+1 or double-tap below the last insert), remove_slot (an empty slot), bypass / unbypass (swipe left/right; read back from the node's place off the wire), eject (confirm; bypass then ⏏, answering Confirm Eject's OK), move (steps: slots, negative = up), meter (main meter shows this point), name (name: a bus or MIDI-bus node's short name, for every node of that bus), " +
-			"window_close / window_mode (value DEFAULT, CUSTOM, MAXIMIZED, FULLSCREEN) on the front plugin window. node: \"source\", \"output\", an insert slot number, or a node label (\"LP\"); get_aum_ui lists each strip's nodes." + aumVerifyNote + aumCareNote,
+			"window_close / window_mode (value DEFAULT, CUSTOM, MAXIMIZED, FULLSCREEN) on the front plugin window. node: \"source\", \"output\", an insert slot number, or a node label (\"LP\"); get_aum_ui lists each strip's nodes. " +
+			"Every action first closes what lies over the mixer, as aum_channel does (a side panel such as the main menu that aum_files load leaves open or FILES after aum_files save, a popover, a node's menu left open by menu, an alert, the routing matrix): under a side panel AUM takes a tap on the mixer only to close the panel and ignores a swipe, and a plugin window under one is not listed. The node selected by select and an open plugin window stay." + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -223,8 +224,9 @@ func (s *Server) registerAUMUITools() {
 	}, s.aumHandler("aum_settings", s.ipad.AUMSettings))
 
 	s.mcp.AddTool(&mcp.Tool{
-		Name:        "aum_file_player",
-		Description: "A File Player channel: open/read (FILE PLAYER: selected file, duration, format, Loop, Sync, Original BPM, Number of Beats, Rate, Beat Offset, Normalize), set (setting Loop, Sync or Normalize; value ON/OFF), load (name: the sound file; path: SOUNDFILES folders, e.g. [\"AUM Recordings\", \"<session>\"]; loads at once), play_enable (the PLAY ENABLE toggle; on, or flip). The player runs with the transport." + aumVerifyNote,
+		Name: "aum_file_player",
+		Description: "A File Player channel: open/read (FILE PLAYER: selected file, duration, format, Loop, Sync, Original BPM, Number of Beats, Rate, Beat Offset, Normalize), set (setting Loop, Sync or Normalize; value ON/OFF), load (name: the sound file; path: SOUNDFILES folders, e.g. [\"AUM Recordings\", \"<session>\"]; loads at once), play_enable (the PLAY ENABLE toggle; on, or flip). The player runs with the transport. " +
+			"Every action first closes what lies over the mixer, as aum_channel does (a side panel such as the main menu that aum_files load leaves open or FILES after aum_files save, a popover, an alert, the routing matrix), a FILE PLAYER left open by open included: its title names no channel, so read, set and load open the named channel's own." + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {

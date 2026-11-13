@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -132,12 +133,20 @@ func TestAUMChannelAddAndRemove(t *testing.T) {
 	}
 	// When the open menu is not in the tree, MIDI is the tile's middle row,
 	// right under the tap that opened it.
-	w.SetScreens(base.Source(), base.Source(), added.Source())
+	addedMIDI := mixer()
+	addedMIDI.Strips = append(addedMIDI.Strips[:4:4], ipadtest.Strip{Title: "MIDI 5"})
+	w.SetScreens(base.Source(), base.Source(), addedMIDI.Source())
 	if res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_midi"}); err != nil || !res.Verified {
-		t.Fatalf("add_midi: %+v, %v", res, err)
+		t.Fatalf("add_midi: %+v, %v", res.Message, err)
 	}
 	if g := w.GestureLog(); len(g) != 2 || g[1] != "tap 1096,447" {
 		t.Fatalf("add_midi gestures = %v", g)
+	}
+	// A strip of the other kind is not the channel that was asked for.
+	w.SetScreens(base.Source(), menu.Source(), addedMIDI.Source())
+	res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || res.Verified || !strings.Contains(res.Message, `strip 5 "MIDI 5" was added, and it is midi, not audio`) {
+		t.Fatalf("add_audio that added a MIDI strip: %+v, %v", res.Message, err)
 	}
 
 	// REMOVE CHANNEL needs confirm and taps twice.
@@ -171,6 +180,77 @@ func TestAUMChannelAddFromStartScreen(t *testing.T) {
 	// The tile (530,372) 150×150, then MIDI, the middle row of its menu.
 	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 605,447" || g[1] != "tap 605,447.5" {
 		t.Fatalf("gestures = %v", g)
+	}
+}
+
+// While the add tile's menu is open the tile is a container of the menu's
+// three buttons, and its centre lies on MIDI: a tap there to open the menu
+// would add a MIDI channel. The menu closes by itself, so it is waited out
+// and the tile tapped as ever; one that stays is tapped where it is.
+func TestAUMChannelAddWithMenuOpen(t *testing.T) {
+	base := mixer()
+	base.Strips = base.Strips[:4]
+	menu := base
+	menu.AddMenu = true
+	added := mixer()
+	added.Strips = append(added.Strips[:4:4], ipadtest.Strip{Title: "CHAN 5", Level: "+0.0 dB"})
+	// What a tap on MIDI adds, for the tap that lands there.
+	midi := mixer()
+	midi.Strips = append(midi.Strips[:4:4], ipadtest.Strip{Title: "MIDI 5"})
+	const tile, audio, midiRow, imp = "tap 1096,447", "tap 1096,394.5", "tap 1096,447.5", "tap 1096,499.5"
+	// screen answers a tap by where it lands: on the closed tile the menu
+	// opens, in the open menu the item's channel is added.
+	fake := func(staysOpen bool) (*ipadtest.WDA, *Client) {
+		w := ipadtest.New(menu.Source())
+		t.Cleanup(w.Close)
+		open, shown := true, menu
+		w.OnGesture = func(g ipadtest.Gesture) {
+			at := fmt.Sprintf("tap %v,%v", g.X, g.Y)
+			switch {
+			case open && (at == tile || at == midiRow):
+				open, shown = false, midi
+			case open && at == audio:
+				open, shown = false, added
+			case !open && at == tile:
+				open, shown = true, menu
+			}
+		}
+		w.SourceFunc = func(gestures, reads int) json.RawMessage {
+			// The menu left open closes by itself after the first read.
+			if gestures == 0 && reads > 0 && !staysOpen {
+				open, shown = false, base
+			}
+			return shown.Source()
+		}
+		return w, New(w.URL)
+	}
+
+	w, c := fake(false)
+	res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || !res.Verified || res.Message != `added strip 5 "CHAN 5"` {
+		t.Fatalf("add_audio with the menu open: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != tile || g[1] != audio {
+		t.Fatalf("add_audio with the menu open: gestures = %v", g)
+	}
+
+	// A menu that does not close: AUDIO is tapped in it, the tile is not.
+	w, c = fake(true)
+	res, err = c.AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || !res.Verified || res.Message != `added strip 5 "CHAN 5"` {
+		t.Fatalf("add_audio with a menu that stays: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != audio {
+		t.Fatalf("add_audio with a menu that stays: gestures = %v", g)
+	}
+
+	// IMPORT is reached the same way: no tap lands on MIDI.
+	w, c = fake(true)
+	if _, err = c.AUMChannel(context.Background(), AUMRequest{Action: "restore"}); err != nil {
+		t.Fatalf("restore with a menu that stays: %v", err)
+	}
+	if g := w.GestureLog(); len(g) != 1 || g[0] != imp {
+		t.Fatalf("restore with a menu that stays: gestures = %v", g)
 	}
 }
 
@@ -300,6 +380,155 @@ func TestAUMNodeMenuAction(t *testing.T) {
 	}
 	if _, err := c.AUMNode(context.Background(), AUMRequest{Action: "copy_here", Channel: "2", Node: "LP"}); err == nil {
 		t.Fatal("COPY HERE on a node accepted")
+	}
+}
+
+// aum_node touches the same mixer as aum_channel, so it closes what lies over
+// it first: FILES, which a save leaves open, the main menu, which a load
+// leaves open, and a node's menu left open by another call.
+func TestAUMNodeUncoversMixer(t *testing.T) {
+	const closeIcon, outside = "tap 1190,30", "tap 316.5,386"
+	files := mixer()
+	files.Files = &ipadtest.FilesPanel{Title: "SESSIONS", Folder: "/", Cells: []ipadtest.FileCell{{Name: "Scratch", Detail: "12. Nov 2026 at 21:00:00"}}}
+
+	// A swipe under FILES: the panel's close icon, then the swipe.
+	byp := mixer()
+	byp.Strips[1].Inserts[0].Bypassed = true
+	w, c := opFake(t, files, mixer(), byp)
+	res, err := c.AUMNode(context.Background(), AUMRequest{Action: "bypass", Channel: "2", Node: "LP"})
+	if err != nil || !res.Verified || len(res.State.Overlays) != 0 {
+		t.Fatalf("bypass under FILES: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != closeIcon || g[1] != "actions" {
+		t.Fatalf("bypass under FILES: gestures = %v", g)
+	}
+
+	// A double-tap under the main menu.
+	more := mixer()
+	more.Strips[1].Inserts = append(more.Strips[1].Inserts, ipadtest.Node{Empty: true})
+	w, c = opFake(t, ipadtest.DefaultAUM(), mixer(), more)
+	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "add_slot", Channel: "2"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "3 insert slots") {
+		t.Fatalf("add_slot under the main menu: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 2 || g[0] != closeIcon || g[1] != "doubleTap 358,421" {
+		t.Fatalf("add_slot under the main menu: gestures = %v", g)
+	}
+
+	// A node's menu left open (menu leaves it so) can be another node's: it
+	// is closed and the named node's own opened, never an item tapped in the
+	// one that was there.
+	menu := mixer()
+	menu.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "POST FADER", Buttons: []string{"POST FADER", "PRE FADER", "SELECT", "REPLACE", "RELOAD"}}}
+	w, c = opFake(t, menu, mixer(), menu, mixer())
+	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "pre_fader", Channel: "2", Node: "LP"})
+	if err != nil || !res.Verified {
+		t.Fatalf("pre_fader under another node's menu: %+v, %v", res.Message, err)
+	}
+	// A tap outside the menu, the long-press on LP (249+72, 221) 74×74, then
+	// PRE FADER.
+	if g := w.GestureLog(); len(g) != 3 || g[0] != outside || g[1] != "hold 358,258" || !strings.HasPrefix(g[2], "tap ") {
+		t.Fatalf("pre_fader under another node's menu: gestures = %v", g)
+	}
+
+	// A request that lacks its confirm or an argument touches nothing.
+	w, c = opFake(t, files, mixer())
+	if _, err := c.AUMNode(context.Background(), AUMRequest{Action: "eject", Channel: "2", Node: "LP"}); !errors.Is(err, ErrNeedsConfirm) || w.Gestures() != 0 {
+		t.Fatalf("eject without confirm under FILES: %v (%d gestures)", err, w.Gestures())
+	}
+	for _, r := range []AUMRequest{
+		{Action: "move", Channel: "2", Node: "LP"},
+		{Action: "name", Channel: "2", Node: "LP"},
+		{Action: "window_mode", Value: "HUGE"},
+		{Action: "nope", Channel: "2", Node: "LP"},
+	} {
+		if _, err := c.AUMNode(context.Background(), r); err == nil || w.Gestures() != 0 {
+			t.Fatalf("%s without what it needs under FILES: %v (%d gestures)", r.Action, err, w.Gestures())
+		}
+	}
+}
+
+// A side panel opened over a plugin window hides the window's bar, so the
+// window is not in the tree until the panel is gone: window_close after a
+// save closes SAVE first and then finds the window. The trees are AUM's own.
+func TestAUMNodeWindowCloseUnderPanel(t *testing.T) {
+	w := ipadtest.New(capturedTree(t, "aum-plugin-window-save.json"))
+	t.Cleanup(w.Close)
+	w.SetScreens(capturedTree(t, "aum-plugin-window-save.json"), capturedTree(t, "aum-plugin-window.json"), mixer().Source())
+	res, err := New(w.URL).AUMNode(context.Background(), AUMRequest{Action: "window_close"})
+	if err != nil || !res.Verified || res.Message != "closed UA Battalion @A2 - Battalion" {
+		t.Fatalf("window_close under SAVE: %+v, %v", res.Message, err)
+	}
+	// The panel's close icon, then the window's ✕.
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 1190,30" || g[1] != "tap 1180,76" {
+		t.Fatalf("window_close under SAVE: gestures = %v", g)
+	}
+}
+
+// aum_file_player touches the strip too: the PLAY ENABLE toggle and the
+// source node that opens FILE PLAYER.
+func TestAUMFilePlayerUncoversMixer(t *testing.T) {
+	const closeIcon, outside, source, loop = "tap 1190,30", "tap 316.5,386", "tap 883,137", "tap 1068,324"
+	player := func(enabled bool) ipadtest.AUM {
+		a := mixer()
+		a.Strips[3] = ipadtest.Strip{Title: "4: File Player", Level: "+0.0 dB", PlayEnable: bptr(enabled)}
+		return a
+	}
+	popover := func(loopValue string) ipadtest.AUM {
+		a := player(false)
+		a.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "FILE PLAYER", Rows: [][2]string{{"Selected file", ""}, {"Loop", loopValue}}}}
+		return a
+	}
+
+	// Under the main menu, which a load leaves open, the mixer is marked
+	// invisible and the toggle is not found; a tap on it would only close the
+	// menu.
+	menu := player(false)
+	menu.Session = "Scratch"
+	w, c := opFake(t, menu, player(false), player(true))
+	res, err := c.AUMFilePlayer(context.Background(), AUMRequest{Action: "play_enable", Channel: "4", On: bptr(true)})
+	if err != nil || !res.Verified || res.Message != "PLAY ENABLE on" {
+		t.Fatalf("play_enable under the main menu: %+v, %v", res.Message, err)
+	}
+	// The toggle of strip 4: (733, 100) 65×74.
+	if g := w.GestureLog(); len(g) != 2 || g[0] != closeIcon || g[1] != "tap 765.5,137" {
+		t.Fatalf("play_enable under the main menu: gestures = %v", g)
+	}
+
+	// Under FILES, which a save leaves open: the close icon, the source node
+	// (733+101, 88) 98×98, then Loop's value.
+	files := player(false)
+	files.Files = &ipadtest.FilesPanel{Title: "SESSIONS", Folder: "/", Cells: []ipadtest.FileCell{{Name: "Scratch", Detail: "12. Nov 2026 at 21:00:00"}}}
+	w, c = opFake(t, files, player(false), popover("OFF"), popover("ON"))
+	res, err = c.AUMFilePlayer(context.Background(), AUMRequest{Action: "set", Channel: "4", Setting: "Loop", Value: "ON"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "Loop OFF -> ON") {
+		t.Fatalf("set under FILES: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 3 || g[0] != closeIcon || g[1] != source || g[2] != loop {
+		t.Fatalf("set under FILES: gestures = %v", g)
+	}
+
+	// A FILE PLAYER left open (open leaves it so) names no strip and can be
+	// another strip's: it is closed and the named strip's own opened.
+	w, c = opFake(t, popover("OFF"), player(false), popover("OFF"), popover("ON"))
+	res, err = c.AUMFilePlayer(context.Background(), AUMRequest{Action: "set", Channel: "4", Setting: "Loop", Value: "ON"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "Loop OFF -> ON") {
+		t.Fatalf("set with a FILE PLAYER open: %+v, %v", res.Message, err)
+	}
+	if g := w.GestureLog(); len(g) != 3 || g[0] != outside || g[1] != source || g[2] != loop {
+		t.Fatalf("set with a FILE PLAYER open: gestures = %v", g)
+	}
+
+	// A request that lacks an argument touches nothing.
+	w, c = opFake(t, files, player(false))
+	for _, r := range []AUMRequest{
+		{Action: "set", Channel: "4", Setting: "Loop"},
+		{Action: "load", Channel: "4"},
+		{Action: "nope", Channel: "4"},
+	} {
+		if _, err := c.AUMFilePlayer(context.Background(), r); err == nil || w.Gestures() != 0 {
+			t.Fatalf("%s without what it needs under FILES: %v (%d gestures)", r.Action, err, w.Gestures())
+		}
 	}
 }
 

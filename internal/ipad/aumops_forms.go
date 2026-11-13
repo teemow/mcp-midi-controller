@@ -324,6 +324,14 @@ var AUMFilePlayerActions = []string{"open", "read", "load", "set", "play_enable"
 func (c *Client) AUMFilePlayer(ctx context.Context, r AUMRequest) (AUMResult, error) {
 	var res AUMResult
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
+		// What the request lacks is answered before anything is touched.
+		if err := checkFilePlayer(r); err != nil {
+			return err
+		}
+		// The node and its PLAY ENABLE toggle are on the strip (uncoverMixer).
+		if err := d.uncoverMixer(); err != nil {
+			return err
+		}
 		ch, err := d.channel(r.Channel)
 		if err != nil {
 			return err
@@ -340,27 +348,33 @@ func (c *Client) AUMFilePlayer(ctx context.Context, r AUMRequest) (AUMResult, er
 		case "open", "read", "":
 			res = d.result("read", true, describeRows(o.Rows), o.Rows)
 		case "set":
-			if r.Setting == "" || r.Value == "" {
-				return fmt.Errorf("set needs setting (Loop, Sync, Normalize) and value (ON, OFF)")
-			}
 			res, err = d.setRow(r.Setting, r.Value, false)
 		case "load":
-			if r.Name == "" {
-				return fmt.Errorf("load needs name: the sound file, with path for its folders")
-			}
 			res, err = d.loadSoundFile(r.Path, r.Name)
-		default:
-			err = fmt.Errorf("unknown aum_file_player action %q (%s)", r.Action, strings.Join(AUMFilePlayerActions, ", "))
 		}
 		return err
 	})
 	return res, err
 }
 
-func (d *AUMDriver) openFilePlayer(ch AUMChannel) (*AUMOverlay, error) {
-	if o := d.St.Overlay("popover"); o != nil && o.Title == "FILE PLAYER" {
-		return o, nil
+// checkFilePlayer reports what a request lacks for its action ("" reads).
+func checkFilePlayer(r AUMRequest) error {
+	switch {
+	case r.Action != "" && !slices.Contains(AUMFilePlayerActions, r.Action):
+		return fmt.Errorf("unknown aum_file_player action %q (%s)", r.Action, strings.Join(AUMFilePlayerActions, ", "))
+	case r.Action == "set" && (r.Setting == "" || r.Value == ""):
+		return fmt.Errorf("set needs setting (Loop, Sync, Normalize) and value (ON, OFF)")
+	case r.Action == "load" && r.Name == "":
+		return fmt.Errorf("load needs name: the sound file, with path for its folders")
 	}
+	return nil
+}
+
+// openFilePlayer taps a strip's source node and waits for FILE PLAYER.
+// Nothing is open over the mixer by then (uncoverMixer), a FILE PLAYER that
+// open left there included: its title names no strip, so it can be another
+// strip's, and the one that opens here is the named strip's own.
+func (d *AUMDriver) openFilePlayer(ch AUMChannel) (*AUMOverlay, error) {
 	src, err := ch.Node("source")
 	if err != nil {
 		return nil, err
