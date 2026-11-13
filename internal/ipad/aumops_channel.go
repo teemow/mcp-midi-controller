@@ -117,57 +117,90 @@ func (d *AUMDriver) uncoverMixer() error {
 // channel that was added.
 func (d *AUMDriver) addChannel(kind string) (AUMResult, error) {
 	action := "add_" + strings.ToLower(kind)
-	before := len(d.St.Channels)
-	if err := d.tapAddMenu(kind); err != nil {
+	before, err := d.tapAddMenu(kind)
+	if err != nil {
 		return AUMResult{}, err
 	}
-	ok, err := d.until(aumWait, func(st AUMState) bool { return len(st.Channels) > before })
+	var added []AUMChannel
+	ok, err := d.until(aumWait, func(st AUMState) bool {
+		added = addedChannels(before, st)
+		return len(added) > 0
+	})
 	if err != nil {
 		return AUMResult{}, err
 	}
 	if !ok {
-		return d.result(action, false, fmt.Sprintf("still %d strips: the %s channel was not added", before, kind), nil), nil
+		return d.result(action, false, fmt.Sprintf("no added %s channel could be verified", kind), nil), nil
 	}
-	added := d.St.Channels[len(d.St.Channels)-1]
-	if !strings.EqualFold(added.Kind, kind) {
-		return d.result(action, false, fmt.Sprintf("strip %d %q was added, and it is %s, not %s: another channel than the one asked for", added.Strip, added.Title, added.Kind, strings.ToLower(kind)), added), nil
+	ch := added[len(added)-1]
+	if !strings.EqualFold(ch.Kind, kind) {
+		return d.result(action, false, fmt.Sprintf("strip %d %q was added, and it is %s, not %s: another channel than the one asked for", ch.Strip, ch.Title, ch.Kind, strings.ToLower(kind)), ch), nil
 	}
-	return d.result(action, true, fmt.Sprintf("added strip %d %q", added.Strip, added.Title), added), nil
+	return d.result(action, true, fmt.Sprintf("added strip %d %q", ch.Strip, ch.Title), ch), nil
 }
 
 // tapAddMenu taps the add-channel tile, then AUDIO, MIDI or IMPORT at once:
-// the tile's menu closes by itself after a few seconds.
+// the tile's menu closes by itself after a few seconds. It returns the mixer
+// just before choosing the item, after scrolling the add tile into view.
 //
 // A menu that is open already (the tile was tapped a moment ago) has turned
 // the tile into a container of its three buttons, and the tap meant to open
 // it would land on MIDI, the button at the tile's centre. That menu is waited
 // out, so the tile is the tile again; one that stays is tapped where the tree
 // has the item.
-func (d *AUMDriver) tapAddMenu(kind string) error {
+func (d *AUMDriver) tapAddMenu(kind string) (AUMState, error) {
 	if err := d.showAddTile(); err != nil {
-		return err
+		return AUMState{}, err
 	}
 	if len(d.St.addMenu) > 0 {
 		closed, err := d.until(aumWait, func(st AUMState) bool { return len(st.addMenu) == 0 })
 		if err != nil {
-			return err
+			return AUMState{}, err
 		}
 		if item, ok := d.St.addMenu[kind]; ok && !closed {
-			return d.tapRect(item, kind)
+			return d.St, d.tapRect(item, kind)
 		}
 	}
 	if d.St.AddTile == nil {
-		return fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
+		return AUMState{}, fmt.Errorf("the add-channel tile is not on screen (%s)", d.St.overlaySummary())
 	}
 	tile := *d.St.AddTile
 	if err := d.tapRect(tile, "the add-channel tile"); err != nil {
-		return err
+		return AUMState{}, err
 	}
 	item, err := d.addMenuItem(tile, kind)
 	if err != nil {
-		return err
+		return AUMState{}, err
 	}
-	return d.tapRect(item, kind)
+	return d.St, d.tapRect(item, kind)
+}
+
+// addedChannels finds strips appended beyond the old mixer's right edge.
+// before is read with the add tile in view, so its last strip is the last
+// in the session. Shared strips locate that edge even if AUM scrolls after
+// an add: neither the viewport's strip count nor its local strip numbers
+// tell whether anything was added.
+func addedChannels(before, after AUMState) []AUMChannel {
+	if len(before.Channels) == 0 {
+		return after.Channels
+	}
+	shift, ok := stripShift(before.Channels, after.Channels, 0)
+	if !ok {
+		// A large import can scroll every old strip out of view. With the
+		// new end in view and none of the old tail left, these are new.
+		// Without the tile it could just be a different old viewport.
+		if after.AddTile != nil {
+			return after.Channels
+		}
+		return nil
+	}
+	last := before.Channels[len(before.Channels)-1].Frame.X + shift
+	for i, ch := range after.Channels {
+		if ch.Frame.X > last+before.pitch()/2 {
+			return after.Channels[i:]
+		}
+	}
+	return nil
 }
 
 // addMenuItem finds AUDIO, MIDI or IMPORT once the tile's menu is open: in
@@ -210,8 +243,8 @@ func (d *AUMDriver) showAddTile() error {
 // restores the last removed channel (session "") or imports every channel of
 // session.
 func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
-	before := len(d.St.Channels)
-	if err := d.tapAddMenu("IMPORT"); err != nil {
+	before, err := d.tapAddMenu("IMPORT")
+	if err != nil {
 		return AUMResult{}, err
 	}
 	pop, err := d.waitOverlay("", aumWait)
@@ -252,7 +285,11 @@ func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
 			return AUMResult{}, err
 		}
 	}
-	ok, err := d.until(aumWait, func(st AUMState) bool { return len(st.Channels) > before })
+	var added []AUMChannel
+	ok, err := d.until(aumWait, func(st AUMState) bool {
+		added = addedChannels(before, st)
+		return len(added) > 0
+	})
 	if err != nil {
 		return AUMResult{}, err
 	}
@@ -261,7 +298,7 @@ func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
 			return AUMResult{}, err
 		}
 	}
-	return d.result(action, ok, verdict(ok, fmt.Sprintf("%d strips now (was %d)", len(d.St.Channels), before), "no channel was added"), nil), nil
+	return d.result(action, ok, verdict(ok, "added "+titles(added), "no added channel could be verified"), nil), nil
 }
 
 // openEdit taps a strip's title and waits for EDIT CHANNEL. Nothing is open
