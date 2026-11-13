@@ -177,7 +177,8 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 	// before the start (the sections between are shorter than the lead): it
 	// goes out as the playback starts, or that section would play with the
 	// wrong preset. A change that leads into the section after the last one
-	// played (a preset sent early) is left out.
+	// played (a preset sent early) is left out. The parameters the section
+	// sends again after an un-bypass are the opening's Again.
 	var events []Event
 	for _, e := range tl.Events {
 		if e.Section < opts.From || e.Section > last {
@@ -190,13 +191,13 @@ func (p *Player) Start(id string, tl *Timeline, opts PlayOptions, send Sender) (
 				continue
 			}
 		default:
-			if e.Section == opts.From && e.Tick <= pb.startTick {
+			if e.Section == opts.From && (e.Tick <= pb.startTick || e.again) {
 				continue
 			}
 		}
 		events = append(events, e)
 	}
-	opening := tl.Sections[opts.From].State
+	opening := tl.Sections[opts.From]
 
 	p.launch(pb, opts.OnEnd, func() string { return pb.run(ctx, opening, events, opts, send) })
 	return pb.status(), nil
@@ -344,9 +345,10 @@ func (pb *playback) runSequenced(ctx context.Context, q *Sequence, opts Sequence
 	}
 }
 
-// run sends the opening state and then every event when it is due. It returns
-// how the playback ended.
-func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayOptions, send Sender) string {
+// run sends the opening section's state and then every event when it is due.
+// It returns how the playback ended.
+func (pb *playback) run(ctx context.Context, open SectionSpan, events []Event, opts PlayOptions, send Sender) string {
+	opening := open.State
 	deliver := func(e Event) error { return pb.deliver(ctx, send, e) }
 	wait := func(d time.Duration) bool {
 		select {
@@ -389,7 +391,8 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 	rewound := time.Now()
 
 	// Presets first, a pause for them to load, then everything they would
-	// otherwise overwrite, and a pause again before the first note.
+	// otherwise overwrite, the parameters of what that switched back on once
+	// the switch has taken effect, and a pause again before the first note.
 	preroll := opts.Preroll
 	presets := 0
 	for _, e := range opening {
@@ -416,7 +419,19 @@ func (pb *playback) run(ctx context.Context, opening, events []Event, opts PlayO
 			}
 		}
 	}
-	if !wait(preroll / 2) {
+	pause := preroll / 2
+	if len(open.Again) > 0 {
+		if !wait(unbypassSettle) {
+			return "stopped"
+		}
+		for _, e := range open.Again {
+			if err := deliver(e); err != nil {
+				return err.Error()
+			}
+		}
+		pause = max(0, pause-unbypassSettle)
+	}
+	if !wait(pause) {
 		return "stopped"
 	}
 	if d := rewindSettle - time.Since(rewound); len(opts.Rewind) > 0 && d > 0 && !wait(d) {

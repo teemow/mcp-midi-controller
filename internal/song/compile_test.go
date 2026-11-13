@@ -161,7 +161,8 @@ func TestCompileSceneChanges(t *testing.T) {
 
 	// Into the chorus (bar 3): the lead's and the reverb's presets load
 	// presetLead early; at the bar the bass opens up and un-bypasses its echo,
-	// the master effect comes in, and the lead is unmuted at -6 dB.
+	// the master effect comes in, and the lead is unmuted at -6 dB. The echo's
+	// Mix follows its un-bypass, although it did not change.
 	early := 2*bar - tl.leadTicks()
 	wantChorus := []string{
 		pc(early, preset(leadSynth, "Bright Lead")),
@@ -171,6 +172,7 @@ func TestCompileSceneChanges(t *testing.T) {
 		cc(2*bar, glue.Bypass, 0),
 		cc(2*bar, lead.Level, levelWire(-6)),
 		cc(2*bar, lead.Mute, 0),
+		cc(2*bar+tl.settleTicks(), echo.Params[0].At, 25),
 	}
 	// Back to the verse (bar 5): everything returns home.
 	early = 4*bar - tl.leadTicks()
@@ -213,6 +215,14 @@ func TestCompileSceneChanges(t *testing.T) {
 	// The verse sounds the same wherever it stands in the arrangement.
 	if a, b := controls(tl.Sections[0].State), controls(tl.Sections[2].State); strings.Join(a, ";") != strings.Join(b, ";") {
 		t.Errorf("the verse's state differs between its two occurrences:\n %v\n %v", a, b)
+	}
+	// The chorus's state has the echo on, which the verse bypasses: its Mix
+	// follows the state once more. The verse has it off and needs nothing.
+	if got, want := controls(tl.Sections[1].Again), []string{cc(0, echo.Params[0].At, 25)}; strings.Join(got, ";") != strings.Join(want, ";") {
+		t.Errorf("the chorus's Again = %v, want %v", got, want)
+	}
+	if again := tl.Sections[0].Again; len(again) != 0 {
+		t.Errorf("the verse's Again = %v, want nothing", controls(again))
 	}
 }
 
