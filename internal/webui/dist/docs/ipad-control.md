@@ -209,16 +209,19 @@ alert without Cancel is an error that names its buttons: answer it with
 in the result. On the iPad, under the same FILE PLAYER, `load` now tapped
 outside the popover, then ☰, FILES and the row, and loaded the session in
 20 s. `aum_settings read` under it, and `aum_files list` under a Set level
-dialog (closed by its Cancel), worked the same way. Then a side panel other than the one asked for is closed by its
-close icon, as before: AUM shows one side panel at a time, and the icon sits on
-☰'s spot. FILES, SAVE and NOTES are opened from the menu anew each time, so
-one that is open is closed and opened again.
+dialog (closed by its Cancel), worked the same way. Then a side panel other
+than the one asked for is closed by its close icon, as before: AUM shows one
+side panel at a time, and the icon sits on ☰'s spot. FILES, SAVE and NOTES
+are opened from the menu anew each time, so one that is open is closed and
+opened again.
 
-What was asked for and is open already is used as it is, with whatever is
-open in it: the main menu, SETTINGS for `aum_settings` and `aum_panel open
-settings`, MIDI CONTROL for `aum_midi_control` and `aum_panel open
-midi_control` (a control's mapping editor stays for `learn`). The tempo bar
-and the built-in keyboard are left alone.
+The main menu, open already, is used once what lies in front of it is
+closed. SETTINGS and MIDI CONTROL, asked for and open already, are used as
+they are, with whatever is open in or in front of them: SETTINGS for
+`aum_settings` and `aum_panel open settings`, MIDI CONTROL for
+`aum_midi_control` and `aum_panel open midi_control` (a control's mapping
+editor stays for `learn`). The tempo bar and the built-in keyboard are left
+alone.
 
 After `aum_files load` has tapped the session's row it waits for the main
 menu to name the session, opening the menu again if the load closed it. An

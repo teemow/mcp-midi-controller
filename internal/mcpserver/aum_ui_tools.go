@@ -26,7 +26,7 @@ func enumJSON(values []string) string {
 const aumVerifyNote = " Every call re-reads AUM after acting and reports verified true/false with what it saw (verified false is a normal result, not a tool error), the gestures sent, and AUM's state as structuredContent."
 
 // aumMenuNote says what the tools that open AUM's main menu close first.
-const aumMenuNote = " Opening the main menu first closes what an earlier call left in front: a popover by a tap outside it (AUM takes such a tap, one on ☰ too, only to close the popover), an alert by Cancel, the routing matrix, and a side panel other than the one asked for. The menu, or SETTINGS or MIDI CONTROL when asked for, already open is used as it is, with what is open in it."
+const aumMenuNote = " Opening the main menu first closes what an earlier call left in front: a popover by a tap outside it (AUM takes such a tap, one on ☰ too, only to close the popover), an alert by Cancel, the routing matrix; then a side panel other than the menu (FILES, SAVE and NOTES are opened anew each time). The main menu already open is used once that is done; SETTINGS or MIDI CONTROL, when asked for and already open, is used as it is, with what is open in it."
 
 const aumCareNote = " Operations that change or lose state need confirm: true; take an ipad_screenshot first and, per AGENTS.md, act only on a scratch session or a ' (mcp test)' copy, never an original session."
 
