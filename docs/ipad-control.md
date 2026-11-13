@@ -209,12 +209,13 @@ with three of AUM's built-in effects:
 - on a node already where the item puts it, nothing changes.
 
 So `aum_node pre_fader` and `post_fader` take an insert of an audio strip
-(the source, the output and a MIDI strip are refused before anything is
-touched), tap the item, close the menu AUM leaves open with a tap outside
-it, and read the fader's wire from a screenshot: verified when it leaves
-right below (pre) or right above (post) the node. The message says where it
-leaves, where it left before the long-press, and whether the node was there
-already. Without the wire in view (an insert scrolled out of its column)
+(the source, the output, an empty slot and a MIDI strip are refused before
+anything is touched), tap the item, close the menu AUM leaves open with a
+tap outside it, and read the fader's wire from a screenshot: verified when
+it leaves right below (pre) or right above (post) the node. The message
+says where it leaves, where it left before the long-press, whether the node
+was there already, and when the menu is still open after the tap outside
+it (`aum_panel close` closes it). Without the wire in view (an insert scrolled out of its column)
 the call is not verified; `ipad_screenshot` shows the strip.
 
 ### Listing and loading sessions

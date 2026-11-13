@@ -198,3 +198,20 @@ func TestAUMNodePreFaderNotVerified(t *testing.T) {
 		t.Errorf("pre_fader on an empty slot: %v", err)
 	}
 }
+
+// A menu that the tap outside it does not close is said, not hidden: the
+// fader's wire still answers for the item.
+func TestAUMNodePreFaderMenuStaysOpen(t *testing.T) {
+	menu := faderMixer()
+	menu.Overlays = []ipadtest.Overlay{ipadtest.NodeMenu}
+	w, c := opFake(t, faderMixer(), menu)
+	w.Wires = [][4]float64{ipadtest.FaderWire(1, 3)}
+	res, err := c.AUMNode(context.Background(), AUMRequest{Action: "pre_fader", Channel: "2", Node: "GAIN"})
+	if err != nil || !res.Verified || !strings.Contains(res.Message, "was pre fader already") || !strings.HasSuffix(res.Message, "; the menu is still open (aum_panel close closes it)") {
+		t.Fatalf("menu left open: %+v, %v", res.Message, err)
+	}
+	// The long-press, PRE FADER, and the tap outside the menu.
+	if g := w.GestureLog(); len(g) != 3 || !strings.HasPrefix(g[2], "tap ") || len(res.State.Overlays) != 1 {
+		t.Fatalf("menu left open: gestures %v, overlays %+v", g, res.State.Overlays)
+	}
+}

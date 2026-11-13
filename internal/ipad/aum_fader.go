@@ -142,8 +142,9 @@ func wireAt(pre, inserts int) string {
 // faderMoved checks PRE FADER or POST FADER, tapped in n's menu: the
 // fader's wire must leave right below n (pre) or right above it (post).
 // AUM leaves the menu open after either item, whether the wire moved or
-// not, so it is closed here first. was is where the wire left before the
-// menu opened (wasOK false: not read).
+// not, so it is closed here first, and the message says so when it stays
+// open. was is where the wire left before the menu opened (wasOK false:
+// not read).
 func (d *AUMDriver) faderMoved(action string, ch AUMChannel, n AUMNode, was int, wasOK bool) (bool, string, error) {
 	item := nodeMenuItems[action]
 	want, side, state := n.Slot, "below", "pre fader"
@@ -159,9 +160,14 @@ func (d *AUMDriver) faderMoved(action string, ch AUMChannel, n AUMNode, was int,
 	if err := d.Read(); err != nil {
 		return false, "", err
 	}
+	open := ""
 	if d.findText(item, nil) != nil {
-		if _, err := d.closeTop(); err != nil {
+		closed, err := d.closeTop()
+		if err != nil {
 			return false, "", err
+		}
+		if !closed.Verified {
+			open = "; the menu is still open (aum_panel close closes it)"
 		}
 	}
 	// The wire moves as the item is tapped; a few screenshots give a slow
@@ -184,15 +190,15 @@ func (d *AUMDriver) faderMoved(action string, ch AUMChannel, n AUMNode, was int,
 	name := fmt.Sprintf("%s of %q", nodeName(n), ch.Title)
 	switch {
 	case !ok:
-		return false, fmt.Sprintf("%s tapped on %s, but the fader's wire could not be read in the screenshot (check with ipad_screenshot)", item, name), nil
+		return false, fmt.Sprintf("%s tapped on %s, but the fader's wire could not be read in the screenshot (check with ipad_screenshot)%s", item, name, open), nil
 	case got != want:
-		return false, fmt.Sprintf("%s tapped on %s, but the fader's wire leaves %s, not right %s it", item, name, wireAt(got, inserts), side), nil
+		return false, fmt.Sprintf("%s tapped on %s, but the fader's wire leaves %s, not right %s it%s", item, name, wireAt(got, inserts), side, open), nil
 	case wasOK && was == want:
-		return true, fmt.Sprintf("%s: %s was %s already: the fader's wire leaves right %s it (%s)", item, name, state, side, wireAt(got, inserts)), nil
+		return true, fmt.Sprintf("%s: %s was %s already: the fader's wire leaves right %s it (%s)%s", item, name, state, side, wireAt(got, inserts), open), nil
 	}
 	from := ""
 	if wasOK {
 		from = ", was " + wireAt(was, inserts)
 	}
-	return true, fmt.Sprintf("%s: %s is %s: the fader's wire leaves right %s it (%s%s)", item, name, state, side, wireAt(got, inserts), from), nil
+	return true, fmt.Sprintf("%s: %s is %s: the fader's wire leaves right %s it (%s%s)%s", item, name, state, side, wireAt(got, inserts), from, open), nil
 }
