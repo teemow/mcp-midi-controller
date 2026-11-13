@@ -381,6 +381,12 @@ func TestRecordSongStems(t *testing.T) {
 	if !rep.Ready || len(rep.Stems) != 2 || rep.Layout != (song.StemLayout{LeadBars: 2, TailBars: 1}) || rep.ExpectedBeats != 20 {
 		t.Fatalf("report = %+v\n%s", rep, text)
 	}
+	// Neither stem had a folder in AUM's Recordings: the root was read
+	// through once, for the bass, and that answered for the band; each take
+	// was found on its folder's first page, the newest take first.
+	if got, want := deck.readingsOf(0), []string{"root Stem Song stem bass", "top Stem Song stem bass", "top Stem Song stem band"}; !slices.Equal(got, want) {
+		t.Errorf("AUM's recordings were read as %q, want %q", got, want)
+	}
 	for i, want := range []struct{ stem, file, session string }{
 		{"bass", "Stem Song stem bass/Master - 300 bpm - 001.wav", "Songs/Stem Song stem bass"},
 		{"band", "Stem Song stem band/Master - 300 bpm - 001.wav", "Songs/Stem Song stem band"},
@@ -769,98 +775,104 @@ func stemsDone(t *testing.T, s *Server) (*mcp.CallToolResult, string) {
 	}
 }
 
-// TestRecordSongStemsReadsOnlyWhatTellsTheTake: a stem's take is looked for in
-// AUM's Recordings with as few readings as tell it. Each reading walks FILES
-// from the root of Recordings to the session's folder; on an iPad whose root
-// held 90 folders a folder that is not there took 113 s, since the root is
-// read through to say so, and the end of a folder's list two reads more.
-//
-//   - The root that was read through for one stem's missing folder answers
-//     for the later stems of the recording whose folders it did not hold:
-//     nothing else makes takes into them before their own pass.
-//   - A folder whose list shows the newest take first is read at its first
-//     page, before the pass and after it: the take is there. A folder sorted
-//     otherwise is read whole, before and after.
-//   - A folder read at its top before the pass and whole after it, its sort
-//     changed in between, says nothing of which take is new: rows below the
-//     first page were not read before. The stem is not taken from it, and the
-//     recorder is switched off.
-func TestRecordSongStemsReadsOnlyWhatTellsTheTake(t *testing.T) {
-	r, deck := stemsRig(t)
-	s := r.s
-	deck.mu.Lock()
-	for i := range 30 {
-		deck.others = append(deck.others, fmt.Sprintf("Older Song %02d", i))
+// TestTakeIn picks a pass's take out of its folder as read before and after
+// the pass. A folder whose list shows the newest take first is read at its
+// first page, and there the take is; a folder sorted otherwise is read whole.
+// A folder read at its top before and whole after (its sort changed between)
+// tells nothing: the older takes below its first page would all look new.
+func TestTakeIn(t *testing.T) {
+	takes := func(names ...string) []ipad.AUMFileEntry {
+		out := make([]ipad.AUMFileEntry, len(names))
+		for i, n := range names {
+			out[i] = ipad.AUMFileEntry{Name: n, Detail: "13. Nov 2026 at 00:12:57 • 4.0 MiB • wav"}
+		}
+		return out
 	}
-	deck.mu.Unlock()
-
-	r.opens("Stem Song stem bass", stemBassStrips)
-	deck.afterTake = func(folder string) {
-		if folder == "Stem Song stem bass" {
-			r.opens("Stem Song stem band", stemBandStrips)
+	// A folder of 30 takes, the newest first; its first page holds 12.
+	var all []string
+	for i := 30; i > 0; i-- {
+		all = append(all, fmt.Sprintf("Master - 120 bpm - %03d", i))
+	}
+	const take = "Master - 120 bpm - 031"
+	top := func(names ...string) stemList {
+		return stemList{Takes: takes(names[:min(len(names), 12)]...), Top: true, Sort: ipadtest.SortLastOpened}
+	}
+	whole := func(names ...string) stemList { return stemList{Takes: takes(names...), Sort: "NAME"} }
+	withTake := append([]string{take}, all...)
+	for _, tc := range []struct {
+		name          string
+		before, after stemList
+		want          string // the take found, "" for none
+		resorted      bool
+	}{
+		{"top, then top", top(all...), top(withTake...), take, false},
+		{"top, then top: no take", top(all...), top(all...), "", false},
+		{"no folder, then top", stemList{Missing: true}, top(take), take, false},
+		{"no folder, then still none", stemList{Missing: true}, stemList{Missing: true}, "", false},
+		{"whole, then whole", whole(all...), whole(withTake...), take, false},
+		{"whole, then top", whole(all...), top(withTake...), take, false},
+		{"top, then whole", top(all...), whole(withTake...), "", true},
+		{"top, then whole: no take", top(all...), whole(all...), "", true},
+	} {
+		got, found, resorted := takeIn(tc.before, tc.after)
+		if found != (tc.want != "") || (found && got.Name != tc.want) || resorted != tc.resorted {
+			t.Errorf("%s: take %q (found %v), resorted %v; want %q, resorted %v", tc.name, got.Name, found, resorted, tc.want, tc.resorted)
 		}
 	}
-	if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1}); res.IsError {
-		t.Fatalf("record: %s", resultText(res))
-	}
-	rep, text := stemsReportOfJob(t, s)
-	if !rep.Ready || rep.Stems[0].File != "Stem Song stem bass/Master - 300 bpm - 001.wav" || rep.Stems[1].File != "Stem Song stem band/Master - 300 bpm - 001.wav" {
-		t.Fatalf("report = %+v\n%s", rep, text)
-	}
-	want := []string{"root Stem Song stem bass", "top Stem Song stem bass", "top Stem Song stem band"}
-	if got := deck.readingsOf(0); !slices.Equal(got, want) {
-		t.Errorf("readings of two new stems = %q, want %q: the root read through for the bass answers for the band", got, want)
-	}
+}
 
-	// The bass again, into a folder that holds 30 older takes, the newest
-	// first: its first page tells the take.
+// TestStemsRoot: a root of AUM's Recordings read through for one stem's
+// missing folder answers for later stems whose folders it did not hold, and
+// not for those it held; before any such reading it answers for none.
+func TestStemsRoot(t *testing.T) {
+	var r stemsRoot
+	if r.lacks("Song stem bass") {
+		t.Fatal("a root not read yet lacks a folder")
+	}
+	r.note([]string{"Older Song", "Song stem band"}, "bass")
+	if !r.lacks("Song stem bass") || !r.lacks("Song stem keys") || r.lacks("Song stem band") || r.lacks("Older Song") || r.stem != "bass" {
+		t.Fatalf("root = %+v", r)
+	}
+	r.note([]string{}, "keys")
+	if !r.lacks("Song stem band") {
+		t.Fatal("an empty root read through holds a folder")
+	}
+}
+
+// A folder read at its top before a pass and whole after it, its sort changed
+// in between, says nothing of which take is new: the stem is not taken from
+// it, and the recorder is switched off before the master is disarmed, in case
+// the sequence did not end the take.
+func TestRecordSongStemsSortedAnew(t *testing.T) {
+	r, deck := stemsRig(t)
+	s := r.s
 	deck.mu.Lock()
 	for i := 30; i > 0; i-- {
 		deck.older["Stem Song stem bass"] = append(deck.older["Stem Song stem bass"], fmt.Sprintf("Master - 120 bpm - %03d", i))
 	}
-	deck.mu.Unlock()
-	deck.afterTake = nil
-	again := func(file string, readings ...string) {
-		t.Helper()
-		n := len(deck.readingsOf(0))
-		r.opens("Stem Song stem bass", stemBassStrips)
-		if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1, "stems": []string{"bass"}, "again": true}); res.IsError {
-			t.Fatalf("record: %s", resultText(res))
-		}
-		res, text := stemsDone(t, s)
-		if file != "" {
-			if rep, _ := res.StructuredContent.(map[string]any)["report"].(*stemsReport); res.IsError || rep == nil || rep.Stems[0].File != file {
-				t.Fatalf("want the take %q:\n%s", file, text)
-			}
-		} else if !res.IsError || !strings.Contains(text, `AUM's list of "Stem Song stem bass" was sorted "LAST OPENED" before the pass, newest first, and is sorted "NAME" now: which take is new cannot be told`) {
-			t.Fatalf("a list sorted anew between the readings:\n%s", text)
-		}
-		if got := deck.readingsOf(n); !slices.Equal(got, readings) {
-			t.Errorf("readings = %q, want %q", got, readings)
-		}
-	}
-	again("Stem Song stem bass/Master - 300 bpm - 002.wav", "top Stem Song stem bass", "top Stem Song stem bass")
-
-	// Sorted by name, the folder is read whole.
-	deck.mu.Lock()
-	deck.sorts = []string{"NAME"}
-	deck.mu.Unlock()
-	again("Stem Song stem bass/Master - 300 bpm - 003.wav", "whole Stem Song stem bass", "whole Stem Song stem bass")
-
-	// Sorted anew between the two readings.
-	deck.mu.Lock()
 	deck.sorts = []string{ipadtest.SortLastOpened, "NAME"}
 	deck.mu.Unlock()
-	again("", "top Stem Song stem bass", "whole Stem Song stem bass")
-	// The recorder was switched off after the reading, before the master
-	// was disarmed: a take the sequence did not end must not record on.
+	r.opens("Stem Song stem bass", stemBassStrips)
+	if res := call(t, s.handleRecordSongStems, map[string]any{"song": "stem_song", "confirm": true, "tail_bars": 1, "stems": []string{"bass"}}); res.IsError {
+		t.Fatalf("record: %s", resultText(res))
+	}
+	res, text := stemsDone(t, s)
+	if !res.IsError || !strings.Contains(text, `AUM's list of "Stem Song stem bass" was sorted "LAST OPENED" before the pass, newest first, and is sorted "NAME" now: which take is new cannot be told`) {
+		t.Fatalf("a list sorted anew between the readings:\n%s", text)
+	}
+	if got, want := deck.readingsOf(0), []string{"top Stem Song stem bass", "whole Stem Song stem bass"}; !slices.Equal(got, want) {
+		t.Errorf("readings = %q, want %q", got, want)
+	}
+	if _, kept := loadSongStems()["stem_song"]; kept {
+		t.Error("a take that could not be told was noted down")
+	}
 	tail := []int{103127, 105000, 107000}
 	cmds := r.waitCommands(func(cmds []midicontrol.Command) bool {
 		cc := globalCCs(cmds, 103, 105, 107)
 		return len(cc) >= 3 && slices.Equal(cc[len(cc)-3:], tail)
 	})
 	if cc := globalCCs(cmds, 103, 105, 107); len(cc) < 3 || !slices.Equal(cc[len(cc)-3:], tail) {
-		t.Errorf("the recorder's controls of the last pass end in %v, want the stop, off, disarm %v", cc[max(0, len(cc)-3):], tail)
+		t.Errorf("the recorder's controls of the pass end in %v, want the stop, off, disarm %v", cc[max(0, len(cc)-3):], tail)
 	}
 }
 

@@ -488,6 +488,19 @@ func newRecording(before, after []ipad.AUMFileEntry) (ipad.AUMFileEntry, bool) {
 	return take, found
 }
 
+// takeIn picks the take a pass made out of a session's folder as read before
+// the pass and after it (newRecording). A folder read at its top before and
+// whole after, its sort changed in between, tells nothing: the rows below the
+// first page were not read before, and any of them would look new. resorted
+// says so, and nothing is found.
+func takeIn(before, after stemList) (take ipad.AUMFileEntry, found, resorted bool) {
+	if before.Top && !after.Top && !after.Missing {
+		return ipad.AUMFileEntry{}, false, true
+	}
+	take, found = newRecording(before.Takes, after.Takes)
+	return take, found, false
+}
+
 // recordingFile is a listed take as a File Player's file: its path in AUM's
 // Recordings. AUM's list prints a file's name without its extension and the
 // format last in the line under it ("12. Nov 2026 at 21:23:42 • 4.4 MiB •
@@ -1117,13 +1130,8 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	for looking := time.Now(); ; {
 		var after stemList
 		if after, lerr = deck.Recordings(ctx, folder); lerr == nil {
-			if before.Top && !after.Top && !after.Missing {
-				// Rows further down were not read before: any of them would
-				// look new.
-				resorted, resort = true, after.Sort
-				break
-			}
-			if entry, found = newRecording(before.Takes, after.Takes); found {
+			if entry, found, resorted = takeIn(before, after); found || resorted {
+				resort = after.Sort
 				break
 			}
 		}
