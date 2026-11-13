@@ -22,6 +22,13 @@ package song
 // bypassed, its output goes to channel parkChannel, which MIDI Control does
 // not hear, and the parameter holds the value its node declares (or a scene
 // gives it); a ramp may move it there.
+//
+// A bypassed modulator is parked and nothing else: AUM's own bypass of it
+// stays off. Measured on the rig, AUM loses the parameter changes that reach
+// a node in the same burst as its un-bypass. The routing that sends the
+// modulator back to its target, and the rate a scene gives it there, are such
+// changes, and the modulator stayed parked. A parked one keeps running, and
+// every parameter change reaches it.
 
 import (
 	"fmt"

@@ -421,7 +421,9 @@ sections:
 - `preset`, `params` and `bypass` are the modulator's own, as for any plugin:
   its wave, its rate, whether it follows the tempo. LFOH's parameters are
   0..1 to a song. LFOH turns `Time Numerator` into 1 + 15·x and `Time
-  Denominator` into one of seven steps (x = 0, 1/6, 2/6 … 1).
+  Denominator` into one of seven steps (x = 0, 1/6, 2/6 … 1). In sync, its
+  default patch (numerator 1, denominator step 1/6) runs a cycle a quarter
+  note; `Time Numerator: 0.07` (2) runs one every half note.
 - `id` names it in scenes and ramps (by default its plugin). A track's effects
   and modulators share their ids.
 
@@ -455,11 +457,14 @@ set: a declaration, scene or ramp that sets one of the four is refused.
   not send the parameter, and `save_song` refuses a scene of that section that
   sets it, or a ramp that moves it there.
 - A scene may bypass a modulator. Its output then goes to channel 1, which
-  MIDI Control does not hear, besides AUM's bypass of the plugin. The
-  parameter holds the value its plugin declares, or a scene gives it, as any
-  parameter does, and a ramp may move it there. A modulator that is bypassed
-  anywhere needs that declaration. The modulator is sent away before the
-  parameter is set, so the value is the parameter's own.
+  MIDI Control does not hear. The plugin keeps running there: AUM's own
+  bypass of it stays off, because AUM loses the parameter changes that reach
+  a plugin together with its un-bypass, and the routing that brings the
+  modulator back is such a change (see [Status](#status)). The parameter
+  holds the value its plugin declares, or a scene gives it, as any parameter
+  does, and a ramp may move it there. A modulator that is bypassed anywhere
+  needs that declaration. The modulator is sent away before the parameter is
+  set, so the value is the parameter's own.
 - A scene may change a modulator's preset, its parameters (its rate) and its
   `depth`. A ramp may move its parameters (`modulator:` in place of
   `effect:`), each declared on the modulator as for any ramp.
@@ -1712,9 +1717,29 @@ a device, in sessions authored from a song:
   nothing. Read from AUM's own display and at the tap. The song sends 127 and
   0. A mute and its unmute sent to one strip back to back, about 10 ms apart,
   left the strip muted in 2 of 10 tries; 30 ms and more apart they left it
-  open in all 24.
+  open in all 24. Parameter changes that reach a plugin in the same burst as
+  its un-bypass are lost: an LFOH bypassed by one section's state and
+  brought back by the next, with its channel and its rate changed in the
+  same messages, came back with neither, and took the channel when it was
+  sent again alone. Going into the bypass, a change sent with it held. A song
+  sends a node's bypass before its parameters, so a scene that switches an
+  effect back on and changes one of its parameters at once may lose the
+  change.
 - **Parameters.** A parameter's CC runs linearly over the parameter's range:
   0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
+- **Modulators.** A scratch song of one NuSaw pad, whose Cutoff an LFOH
+  swept between 0.1 and 0.9 in sync at 120 BPM, recorded at the master tap
+  and measured every 100 ms. Its spectral centroid ran between about 60 Hz
+  and 5.5 kHz once a beat, 16 cycles without drift. So the LFOH sent the
+  controller and channel of Cutoff's mapping: CC 3 on channel 14, its channel
+  sent as 111 of 127. Bypassed by a scene (bypassed in AUM and sent to
+  channel 1 at once), it stopped, and Cutoff held its declared 0.5 at about
+  610 Hz. Parked by hand while it ran (channel 1 alone), it stopped, and sent
+  back to channel 14 it ran again at once. With `Time Numerator` at 0.07 the
+  cycle took two beats. AUM's bypass of the plugin also stopped it, and lifted
+  alone it ran again; lifted together with the routing it stayed parked (see
+  **Bypass and mute**), which is why the song parks a bypassed modulator and
+  leaves AUM's bypass off.
 - **A preset load resets parameters.** Loading a reverb preset put its mix
   back to the preset's own value, and the song's value sent after it held.
 - **Parameters in groups.** Many plugins sort their parameters into groups,
@@ -2175,13 +2200,12 @@ Not yet measured:
   plugin's own sequencer were read during a sequenced `play_song`, not yet
   in a `mix_song`;
 - sessions authored with `track_taps` or `full_control`;
-- [modulators](#modulators): none has run on the rig. The routing is taken
-  from sessions in which LFOH was set up by hand: its MIDI output's name, the
-  insert it sits as, and the ranges its saved state gives its parameters.
-  How LFOH turns the routing's 0..1 into whole numbers, whether AUM's bypass
-  stops its output (the song sends a bypassed one to channel 1 as well), and
-  what its factory presets hold for its routing were not looked at. The tests
-  read the authored session back and compile the sections' states;
+- of [modulators](#modulators): a bypass that only parks, sent by the
+  song's own state (by hand it was), a scene's `depth`, a ramp of
+  a modulator's parameter, a modulator on an effect, several at once, what
+  LFOH's factory presets hold for its routing, and the other steps of `Time
+  Denominator`. The tests read the authored session back and compile the
+  sections' states;
 - taps that dial in under their names: that needs the ProbeAudioTap build
   that sends them on the iPad. Until then every tap comes without a name and
   the tools work as described under [Taps](#taps). The test suite runs both

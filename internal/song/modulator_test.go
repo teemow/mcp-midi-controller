@@ -215,7 +215,7 @@ func TestModulatorCompile(t *testing.T) {
 	}
 	for i, w := range []want{
 		{k.Channel.wire(cutoff.Channel), cutoff.Number, 32, 95, 0, -1},  // verse: the sweep runs; Cutoff is its own
-		{k.Channel.wire(parkChannel), cutoff.Number, 32, 95, 127, 76},   // bridge: bypassed, parked, Cutoff at 0.6
+		{k.Channel.wire(parkChannel), cutoff.Number, 32, 95, 0, 76},     // bridge: bypassed, so parked (never AUM's bypass), Cutoff at 0.6
 		{k.Channel.wire(cutoff.Channel), cutoff.Number, 13, 114, 0, -1}, // drop: the scene's depth
 		{k.Channel.wire(cutoff.Channel), cutoff.Number, 32, 95, 0, -1},
 	} {
@@ -276,6 +276,12 @@ func TestModulatorCompile(t *testing.T) {
 		}
 		if got, ok := routingAfterDrop[at.Number]; !ok || got != v {
 			t.Errorf("after the drop's preset load %v is %d (sent: %v), want %d", at, got, ok, v)
+		}
+	}
+	// AUM's bypass of a modulator stays off throughout: parking is its bypass.
+	for _, ev := range tl.Events {
+		if ev.Kind == Control && ev.Channel == sweep.Bypass.Channel && ev.Data1 == sweep.Bypass.Number && ev.Data2 != 0 {
+			t.Errorf("tick %d bypasses the sweep in AUM (%d)", ev.Tick, ev.Data2)
 		}
 	}
 	pr, _ := sweep.Preset("wonkie")
@@ -360,13 +366,27 @@ func checkModulatorSession(t *testing.T, sess *aum.Session, p *Plan) {
 			}
 		}
 	}
-	// The wash opens bypassed, as the song declares it, and the sweep does
-	// not.
-	if wash := p.Node("pad", "wash"); nodeArchiveState(t, sess, wash.Strip, wash.Slot, "AUMNode.bypassed") != true {
-		t.Error("the wash does not open bypassed")
+	// The wash declares itself bypassed, and is parked by the song's state,
+	// not bypassed in AUM: it opens running, as the sweep does.
+	for _, id := range []string{"wash", "sweep"} {
+		if n := p.Node("pad", id); nodeArchiveState(t, sess, n.Strip, n.Slot, "AUMNode.bypassed") == true {
+			t.Errorf("the %s opens bypassed in AUM", id)
+		}
 	}
-	if sweep := p.Node("pad", "sweep"); nodeArchiveState(t, sess, sweep.Strip, sweep.Slot, "AUMNode.bypassed") == true {
-		t.Error("the sweep opens bypassed")
+	home, err := p.HomeState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wash := p.Node("pad", "wash")
+	for _, pp := range wash.Params {
+		if pp.Key == "midi_ch" {
+			if v, _ := stateValue(home, pp.At); v != modulatorKinds[0].Channel.wire(parkChannel) {
+				t.Errorf("the wash's home state sends it to channel CC value %d, want it parked", v)
+			}
+		}
+	}
+	if v, _ := stateValue(home, wash.Bypass); v != 0 {
+		t.Errorf("the wash's home state bypasses it in AUM (%d)", v)
 	}
 }
 
