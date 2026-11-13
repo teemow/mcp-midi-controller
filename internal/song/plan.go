@@ -157,17 +157,22 @@ type NodePlan struct {
 	Slot  int `json:"slot"`
 	// MIDI routes the track's notes to the node.
 	MIDI bool `json:"midi,omitempty"`
+	// File is the recording a track's File Player plays, by its path in AUM's
+	// Recordings folder: the node is then AUM's own File Player and hosts no
+	// plugin, so it has no preset, parameter or bypass a song could set.
+	File string `json:"file,omitempty"`
 
 	Bypass  Assignment   `json:"-"`
 	Presets []PresetPlan `json:"presets,omitempty"`
 	Params  []ParamPlan  `json:"params,omitempty"`
+	// Mod is what a modulator moves (modulator.go); nil for any other node.
+	Mod *ModPlan `json:"modulator,omitempty"`
 
 	dump device.ProbeDump
 	home NodeState // the plugin's own declaration
-	// seq is the instrument's own step sequence, nil without one; seqAt is
-	// where the document writes it.
-	seq   *stepSequence
-	seqAt string
+	// kit is what the song writes into the instrument's saved state (its
+	// step sequence, samples and locks), nil when it writes nothing there.
+	kit *kitState
 	// refs is where the session keeps each of the dump's parameters, worked
 	// out when the first one is asked for.
 	refs []aum.ParamRef
@@ -215,7 +220,7 @@ type TrackPlan struct {
 
 	Level Assignment `json:"-"`
 	Mute  Assignment `json:"-"`
-	// Nodes is the instrument followed by the effects.
+	// Nodes is the instrument followed by the effects and the modulators.
 	Nodes []*NodePlan `json:"nodes"`
 
 	homeLevel float64
@@ -238,6 +243,9 @@ type Plan struct {
 	ControlChannels []int `json:"control_channels"`
 	// Transport is the transport actions the session maps, by AUM target.
 	Transport map[string]Assignment `json:"-"`
+	// MasterRec arms (127) and disarms (0) the master strip for AUM's own
+	// recorder, which the transport's Toggle Record then starts and ends.
+	MasterRec Assignment `json:"-"`
 	// SequencerBypass switches the session's sequencer off (127) and on (0),
 	// in a session that hosts one.
 	SequencerBypass Assignment `json:"-"`
@@ -261,9 +269,28 @@ const BrainStrip = 0
 // session's sequencer. It sits with the transport's (102..105, 108).
 const sequencerBypassCC = 106
 
+// masterRecCC is the controller on the global channel that arms the master
+// strip for AUM's recorder. It sits with the transport's and the sequencer's.
+const masterRecCC = 107
+
 // firstInsertSlot is the slot of an audio strip's first insert: slot 0 is the
 // strip's source and slot 1 its output node.
 const firstInsertSlot = 2
+
+// FilePlayerName is what a track's File Player is called where a plugin has
+// its name.
+const FilePlayerName = "File Player"
+
+// IsFile reports whether the node is a File Player and no plugin.
+func (n *NodePlan) IsFile() bool { return n != nil && n.File != "" }
+
+// File is the recording the track plays, "" for a track with an instrument.
+func (tp *TrackPlan) File() string {
+	if len(tp.Nodes) == 0 {
+		return ""
+	}
+	return tp.Nodes[0].File
+}
 
 // midiReservedCC reports the controllers MIDI itself gives a meaning the pool
 // must not borrow: bank select, data entry, the (N)RPN selectors and the
@@ -317,6 +344,44 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
+	if s.StemsOnly() {
+		// A plan is one session's layout, and this song is several sessions.
+		return nil, fmt.Errorf("/tracks: %d tracks, and one session hosts %d at most: the song has no session of its own and plays as its stems and their mix (record_song_stems, mix_song_stems)", len(s.Tracks), maxTracks)
+	}
+	p, err := resolve(s, cat, o)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.address(); err != nil {
+		return nil, err
+	}
+	if err := p.calibrate(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Check resolves every plugin, preset and parameter a song names against the
+// plugins in cat, as NewPlan does, and lays no session out. It is the check
+// of a song of more tracks than a session hosts (StemsOnly), which has no
+// plan: every problem is reported with its place in the whole document, where
+// the plan of a stem (StemSong) would name the place in the stem's.
+//
+// What only a session's layout can tell is left to the stems' plans: controls
+// or preset loads beyond what a session's channels hold, and what a calibrated
+// song's presets were measured as.
+func Check(s *Song, cat Catalog) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	_, err := resolve(s, cat, PlanOptions{})
+	return err
+}
+
+// resolve is the first half of a plan: every node the song hosts, with the
+// presets and parameters the song sets on it, checked against the plugins. s
+// is a valid song.
+func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	var e errs
 	p := &Plan{song: s, nodes: map[string]*NodePlan{}, Transport: map[string]Assignment{}, sounds: o.Sounds, notes: map[string]bool{}}
 
@@ -336,10 +401,9 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			MIDI: track != MasterTrack && (pl.MIDI || effect == ""),
 			dump: dump, home: pl.NodeState,
 		}
-		if effect == "" && len(pl.Sequence) > 0 {
-			n.seqAt = at + "/sequence"
+		if effect == "" && pl.writesState() {
 			m, _ := parseMeter(s.TimeSignature) // checked by Validate
-			n.seq = checkStepSequence(&e, n.seqAt, pl.Sequence, m)
+			n.kit = newKitState(&e, at, pl, m)
 		}
 		p.nodes[track+"/"+effect] = n
 		return n
@@ -359,10 +423,25 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			tp.homeLevel = *t.Level
 		}
 		// AUM stores a strip as [source, output, inserts…]: the instrument is
-		// slot 0, the output slot 1, and the effects follow from slot 2.
-		tp.Nodes = append(tp.Nodes, newNode(at+"/instrument", t.ID, tp.Strip, 0, t.Instrument, ""))
+		// slot 0, the output slot 1, and the effects follow from slot 2. A File
+		// Player is a source like an instrument and sits where one would.
+		if t.IsFile() {
+			n := &NodePlan{Track: t.ID, Name: FilePlayerName, Strip: tp.Strip, Slot: 0, File: t.Instrument.File}
+			p.nodes[t.ID+"/"] = n
+			tp.Nodes = append(tp.Nodes, n)
+		} else {
+			tp.Nodes = append(tp.Nodes, newNode(at+"/instrument", t.ID, tp.Strip, 0, t.Instrument, ""))
+		}
 		for j, fx := range t.Effects {
 			tp.Nodes = append(tp.Nodes, newNode(fmt.Sprintf("%s/effects/%d", at, j), t.ID, tp.Strip, firstInsertSlot+j, fx, fx.EffectID()))
+		}
+		// The modulators follow the effects: inserts that pass the audio
+		// through, as one is hosted by hand.
+		for j, m := range t.Modulators {
+			mat := fmt.Sprintf("%s/modulators/%d", at, j)
+			n := newNode(mat, t.ID, tp.Strip, firstInsertSlot+len(t.Effects)+j, Plugin{ID: m.ID, Plugin: m.Plugin, NodeState: m.NodeState}, m.ModulatorID())
+			n.Mod = &ModPlan{at: mat}
+			tp.Nodes = append(tp.Nodes, n)
 		}
 		p.Tracks = append(p.Tracks, tp)
 	}
@@ -372,6 +451,26 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	for j, fx := range s.Master {
 		p.Master = append(p.Master, newNode(fmt.Sprintf("/master/%d", j), MasterTrack, p.MasterStrip, firstInsertSlot+j, fx, fx.EffectID()))
 	}
+	// The stems' strips are the mix's (MixSong) and no part of this session.
+	// Their plugins, presets and parameters are checked here all the same,
+	// so a mistake is named with its place in the document when the song is
+	// saved, not when its mix is written.
+	for _, name := range sortedKeys(s.StemStrips) {
+		for j, fx := range s.StemStrips[name].Effects {
+			at := fmt.Sprintf("/stems/%s/effects/%d", name, j)
+			id, err := cat.Resolve(fx.Plugin)
+			if err != nil {
+				e.addf("%s/plugin: %v", at, err)
+				continue
+			}
+			n := &NodePlan{Track: name, Effect: fx.EffectID(), Plugin: id, Name: cat[id].Name, dump: cat[id], home: fx.NodeState}
+			p.collect(&e, n, fx.NodeState, at)
+		}
+	}
+	if err := e.err(); err != nil {
+		return nil, err
+	}
+	p.checkModulatorKinds(&e)
 	if err := e.err(); err != nil {
 		return nil, err
 	}
@@ -393,14 +492,19 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 					p.collect(&e, n, st.Effects[fx], where+"/effects/"+fx)
 				}
 			}
+			for _, mid := range sortedKeys(st.Modulators) {
+				if n := p.nodes[tid+"/"+mid]; n != nil {
+					p.collect(&e, n, st.Modulators[mid].NodeState, where+"/modulators/"+mid)
+				}
+			}
 		}
 	}
 	for _, name := range sortedKeys(s.Sections) {
 		for i, r := range s.Sections[name].Automation {
-			if r.Effect == "" && strings.EqualFold(r.Param, "level") {
+			if r.fader() {
 				continue
 			}
-			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
+			if n := p.nodes[r.Track+"/"+r.node()]; n != nil {
 				where := fmt.Sprintf("/sections/%s/automation/%d", name, i)
 				if _, err := n.param(r.Param); err != nil {
 					e.addf("%s/param: %v", where, err)
@@ -408,6 +512,10 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			}
 		}
 	}
+	if err := e.err(); err != nil {
+		return nil, err
+	}
+	p.resolveModulators(&e)
 	if err := e.err(); err != nil {
 		return nil, err
 	}
@@ -419,10 +527,15 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	if err := e.err(); err != nil {
 		return nil, err
 	}
+	return p, nil
+}
 
-	// Addresses. Strips and transport take the convention's CCs on the global
-	// channel; presets take its Program Changes; bypasses and parameters fill
-	// the pool, which starts above every channel a track plays or hears on.
+// address is the second half of a plan: the MIDI address of every control.
+// Strips and transport take the convention's CCs on the global channel;
+// presets take its Program Changes; bypasses and parameters fill the pool,
+// which starts above every channel a track plays or hears on.
+func (p *Plan) address() error {
+	s := p.song
 	lowest := 1
 	for _, tp := range p.Tracks {
 		for _, ch := range tp.Hears() {
@@ -440,6 +553,8 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	}
 	p.SequencerBypass = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: sequencerBypassCC}
 	globalUsed[sequencerBypassCC] = true
+	p.MasterRec = Assignment{Kind: MsgCC, Channel: GlobalChannel, Number: masterRecCC}
+	globalUsed[masterRecCC] = true
 	var late []*TrackPlan // strips beyond the convention's eight
 	for i, tp := range p.Tracks {
 		vol, okV := device.ConventionMixerCC(i+1, "Volume")
@@ -468,21 +583,24 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	}
 
 	for _, n := range p.allNodes() {
+		if n.IsFile() {
+			continue // AUM maps no bypass for a File Player
+		}
 		var err error
 		if n.Bypass, err = pool.take(); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if s.SessionOptions().AllPresets() {
 		if err := p.mapAllPresets(lowest); err != nil {
-			return nil, err
+			return err
 		}
 	} else {
 		program := 0
 		for _, n := range p.allNodes() {
 			for i := range n.Presets {
 				if program > 127 {
-					return nil, fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them (session presets: all spreads them over every control channel)")
+					return fmt.Errorf("the song loads more than 128 presets; the session has one Program Change channel for them (session presets: all spreads them over every control channel)")
 				}
 				n.Presets[i].Program, n.Presets[i].Channel = program, GlobalChannel
 				program++
@@ -493,7 +611,7 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 		for i := range n.Params {
 			var err error
 			if n.Params[i].At, err = pool.take(); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
@@ -501,10 +619,10 @@ func NewPlanWith(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	for ch := lowest; ch <= 16; ch++ {
 		p.ControlChannels = append(p.ControlChannels, ch)
 	}
-	if err := p.calibrate(); err != nil {
-		return nil, err
+	for _, n := range p.modulators() {
+		n.Mod.At = n.Mod.targetParam().At
 	}
-	return p, nil
+	return nil
 }
 
 // mapAllPresets gives every factory preset of every node a Program Change:
@@ -683,46 +801,66 @@ func (p *Plan) checkHomes(e *errs) {
 			for _, fx := range sortedKeys(st.Effects) {
 				check(p.nodes[tid+"/"+fx], st.Effects[fx], where+"/effects/"+fx)
 			}
+			for _, mid := range sortedKeys(st.Modulators) {
+				check(p.nodes[tid+"/"+mid], st.Modulators[mid].NodeState, where+"/modulators/"+mid)
+			}
 		}
 	}
 	for _, name := range sortedKeys(s.Sections) {
 		for i, r := range s.Sections[name].Automation {
-			if r.Effect == "" && strings.EqualFold(r.Param, "level") {
+			if r.fader() {
 				continue
 			}
-			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
+			if n := p.nodes[r.Track+"/"+r.node()]; n != nil {
 				needParam(n, r.Param, fmt.Sprintf("/sections/%s/automation/%d", name, i))
 			}
 		}
 	}
 }
 
-// checkSequences checks every instrument's step sequence against its plugin
-// and against the rest of the song: only UA Battalion has one a song can
-// write; a preset would replace it; and a lane's length or mode the song also
-// sets as a parameter is set in two places.
+// checkSequences checks what every instrument writes into its saved state (a
+// step sequence, samples, locks) against its plugin and against the rest of
+// the song: only UA Battalion has a state a song can write; a preset would
+// replace it; a lock names a parameter of the plugin; and a lane's length or
+// mode the song also sets as a parameter is set in two places.
 func (p *Plan) checkSequences(e *errs) {
 	for _, n := range p.allNodes() {
-		if n.seq == nil {
+		k := n.kit
+		if k == nil {
 			continue
 		}
 		if !aum.ComponentMatches(n.dump.Component, BattalionComponent) {
-			e.addf("%s: %s has no step sequence a song can write; only UA Battalion does", n.seqAt, n.Name)
+			e.addf("%s: %s has no step sequence, samples or locks a song can write; only UA Battalion does", k.at, n.Name)
 			continue
 		}
+		what := k.says()
 		if n.home.Preset != "" {
-			e.addf("%s: a preset replaces the whole kit with its own sequence; leave out the preset (%q) of an instrument with a sequence", n.seqAt, n.home.Preset)
+			e.addf("%s: a preset replaces the whole kit with its own sequence, samples and locks; leave out the preset (%q) of an instrument with %s", k.at, n.home.Preset, what)
 		}
 		for _, name := range sortedKeys(p.song.Scenes) {
 			if st, ok := p.song.Scenes[name][n.Track]; ok && st.Preset != "" {
-				e.addf("/scenes/%s/%s/preset: a preset replaces the whole kit with its own sequence, and %s has one", name, n.Track, nodeLabel(n))
+				e.addf("/scenes/%s/%s/preset: a preset replaces the whole kit with its own sequence, samples and locks, and %s has %s", name, n.Track, nodeLabel(n), what)
 			}
+		}
+		if len(k.locks) > 0 {
+			ids := map[string]bool{}
+			for _, pa := range n.dump.Parameters {
+				ids[pa.Identifier] = true
+			}
+			for _, id := range k.locks {
+				if !ids[id] {
+					e.addf("%s/locks: %s is not a parameter of %s (get_song_plugin lists them)", k.at, id, n.Name)
+				}
+			}
+		}
+		if k.seq == nil {
+			continue
 		}
 		set := map[string]bool{}
 		for _, pa := range n.Params {
 			set[pa.Key] = true
 		}
-		for _, sp := range n.seq.params(n.seqAt) {
+		for _, sp := range k.seq.params(k.at + "/sequence") {
 			if sp.set && set[sp.id] {
 				e.addf("%s: the song also sets %s as a parameter; say it in one place (in params, a scene can move it)", sp.where, sp.id)
 			}
@@ -732,8 +870,11 @@ func (p *Plan) checkSequences(e *errs) {
 
 // nodeLabel names a node for a message.
 func nodeLabel(n *NodePlan) string {
-	if n.Effect == "" {
+	switch {
+	case n.Effect == "":
 		return fmt.Sprintf("%s's instrument", n.Track)
+	case n.Mod != nil:
+		return fmt.Sprintf("%s's modulator %s", n.Track, n.Effect)
 	}
 	return fmt.Sprintf("%s's effect %s", n.Track, n.Effect)
 }
@@ -1046,17 +1187,33 @@ func (p *Plan) Fingerprint() string {
 		}
 	}
 	for _, n := range p.allNodes() {
+		if n.IsFile() {
+			// The file is in the node's saved state: another file is another
+			// session.
+			fmt.Fprintf(&b, "F%s:%d:%d:%s|", n.Track, n.Strip, n.Slot, n.File)
+			continue
+		}
 		fmt.Fprintf(&b, "N%s/%s:%s:%d:%d:%v:%s|", n.Track, n.Effect, n.Plugin, n.Strip, n.Slot, n.MIDI, n.Bypass)
+		if n.Mod != nil {
+			// A modulator's output is routed to MIDI Control. What it moves
+			// is in the state the song sends, not in the session.
+			fmt.Fprintf(&b, "R%s|", n.Mod.Port())
+		}
 		for _, pr := range n.Presets {
 			fmt.Fprintf(&b, "P%s:%d:%d|", pr.Name, pr.Number, pr.Program)
 			if pr.Channel != GlobalChannel {
 				fmt.Fprintf(&b, "c%d|", pr.Channel)
 			}
 		}
-		if n.seq != nil {
-			// The sequence is in the node's saved state: another sequence is
-			// another session.
-			fmt.Fprintf(&b, "Q%s|", n.seq.fingerprint())
+		if k := n.kit; k != nil {
+			// The sequence, the samples and the locks are in the node's saved
+			// state: another of them is another session. A sequence alone
+			// keeps the fingerprint it had before samples and locks.
+			if len(k.samples) == 0 && len(k.locks) == 0 {
+				fmt.Fprintf(&b, "Q%s|", k.seq.fingerprint())
+			} else {
+				fmt.Fprintf(&b, "K%s|", k.fingerprint())
+			}
 		}
 		for _, pa := range n.Params {
 			fmt.Fprintf(&b, "A%s:%s|", pa.Key, pa.At)

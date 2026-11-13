@@ -100,6 +100,7 @@ func (s *Server) registerSongLoadTools(songArg string) {
 			"Which session is open is read from the session's master tap, which dials in under the session's id; AUM's menu is opened for the name only when no tap names the session, or with ui: true. " +
 			"The mixer is looked at either way: its strips, and a plugin that did not load, which is read off a screenshot: AUM draws its node with a ring of red stripes and says so nowhere else. " +
 			"For the notes, the song's own sound is set (each track's declaration, no scene) and every strip muted; then each track in turn is unmuted, the master tap is let fall silent (what still rings in the strip, such as a reverb's tail, would drown a quiet note), and the lowest of its first notes is played and the tap measured. The note is held as long as the sound catalogue says the preset takes to rise to its level (a slow pad's attack), else briefly. A track that is silent is played once more, held longer, and named with its plugin when it is silent again — that is what a failed or crashed plugin and a missing MIDI route look like from outside. The song's own mutes are put back. " +
+			"A track that plays a file is played no note: its File Player's panel is opened and read instead, for the file it has (a player whose file is not in AUM's Recordings is empty and plays nothing), its length in frames and in beats, and whether Loop or Sync is on. " +
 			"Not while a song plays. ui: false leaves AUM's screen alone.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -261,6 +262,9 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 	}
 	if s.ipad != nil && !args.Confirm {
 		return textResult("load_song needs confirm: true: loading replaces the session open in AUM, and unsaved changes there are lost", true), nil
+	}
+	if busy := s.stemsBusy("load_song"); busy != nil {
+		return busy, nil
 	}
 	rep, err := s.runLoadSong(ctx, cs, loadSongArgs{
 		Author:   songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware, Sequencer: args.Sequencer},
@@ -552,8 +556,10 @@ type checkReport struct {
 	Session  string       `json:"session,omitempty"`
 	Findings []loadStep   `json:"findings"`
 	Tracks   []trackCheck `json:"tracks,omitempty"`
-	OK       bool         `json:"ok"`
-	Next     string       `json:"next,omitempty"`
+	// Files is what the File Players of the tracks that play a file show.
+	Files []fileCheck `json:"files,omitempty"`
+	OK    bool        `json:"ok"`
+	Next  string      `json:"next,omitempty"`
 }
 
 func (c *checkReport) find(step string, ok bool, format string, a ...any) {
@@ -594,6 +600,22 @@ func (c *checkReport) text() string {
 			fmt.Fprintf(&b, "    %-10s %-22s %-4s SILENT (peak %.1f dBFS%s, played %d times)\n", t.Track, t.Plugin, song.NoteName(t.Note), t.PeakDB, floor, t.Tries)
 		}
 	}
+	for _, f := range c.Files {
+		switch {
+		case f.Unread != "":
+			fmt.Fprintf(&b, "    %-10s file %q: its File Player could not be read (%s)\n", f.Track, f.File, f.Unread)
+		case !f.Loaded:
+			fmt.Fprintf(&b, "    %-10s file %q: NOT LOADED\n", f.Track, f.File)
+		case f.Whole == nil:
+			fmt.Fprintf(&b, "    %-10s file %q: loaded; its length was not shown\n", f.Track, f.File)
+		default:
+			whole := "whole beats"
+			if !*f.Whole {
+				whole = "NOT whole beats"
+			}
+			fmt.Fprintf(&b, "    %-10s file %q: %d frames, %s, %s beats (%s)\n", f.Track, f.File, f.Frames, clockMillis(f.Seconds), trimFloat(f.Beats), whole)
+		}
+	}
 	return b.String()
 }
 
@@ -609,6 +631,9 @@ func (s *Server) handleCheckSong(ctx context.Context, req *mcp.CallToolRequest) 
 	cs, fail := s.loadSong(args.Song)
 	if fail != nil {
 		return fail, nil
+	}
+	if busy := s.stemsBusy("check_song"); busy != nil {
+		return busy, nil
 	}
 	if st := s.player.Status(); st.Playing {
 		return textResult(fmt.Sprintf("check_song: %q is playing; stop_song first (the check plays notes of its own)", st.Song), true), nil
@@ -735,9 +760,13 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		tracks, err := s.soundCheck(ctx, cs, tap)
 		c.Tracks = tracks
 		var silent []string
+		played := 0
 		for _, t := range tracks {
-			if t.Skipped == "" && !t.Sounds {
-				silent = append(silent, fmt.Sprintf("%s (%s)", t.Track, t.Plugin))
+			if t.Skipped == "" {
+				played++
+				if !t.Sounds {
+					silent = append(silent, fmt.Sprintf("%s (%s)", t.Track, t.Plugin))
+				}
 			}
 		}
 		switch {
@@ -746,14 +775,116 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		case len(silent) > 0:
 			c.find("sound", false, "silent: %s", strings.Join(silent, ", "))
 			c.Next = "a silent track is a plugin that failed to load or crashed (AUM shows its node as failed), or one that does not answer this note: load_song loads the session again; if it stays silent, audition the plugin on its own"
+		case played == 0:
+			c.find("sound", true, "no track has a note to answer")
+		case played < len(tracks):
+			c.find("sound", true, "every track that plays notes answers its first note")
 		default:
 			c.find("sound", true, "every track answers its first note")
 		}
+	}
+	// A track that plays a file answers no note: what its File Player shows
+	// tells whether AUM found the file.
+	if o.UI != lookNever {
+		s.checkFiles(ctx, cs, &c)
 	}
 	if !c.OK && c.Next == "" {
 		c.Next = "load_song loads the session again"
 	}
 	return c
+}
+
+// fileCheck is what the File Player of a track that plays a file shows.
+type fileCheck struct {
+	Track string `json:"track"`
+	// File is the file the song names, by its path in AUM's Recordings, and
+	// Shown the file the player has.
+	File  string `json:"file"`
+	Shown string `json:"shown,omitempty"`
+	// Loaded says the player has the song's file.
+	Loaded bool `json:"loaded"`
+	// Frames, Seconds and Beats are its length; Whole whether that is a
+	// whole number of beats at the song's tempo (nil without a length).
+	Frames  int64   `json:"frames,omitempty"`
+	Seconds float64 `json:"seconds,omitempty"`
+	Beats   float64 `json:"beats,omitempty"`
+	Whole   *bool   `json:"whole_beats,omitempty"`
+	Format  string  `json:"format,omitempty"`
+	// Unread says why the player could not be read.
+	Unread string `json:"unread,omitempty"`
+
+	view filePlayerView
+}
+
+// checkFiles reads the File Player of every track that plays a file and says
+// whether it has the track's file, and how long the file is. A File Player
+// whose file is not in AUM's Recordings loads empty and plays nothing, and
+// nothing else tells: a recording of a session begins with its lead-in, a bar
+// of silence, so a check that listens hears none either way. A player that
+// loops, or follows the tempo, plays another length than the file's. A File
+// Player that cannot be read is said, and fails nothing.
+func (s *Server) checkFiles(ctx context.Context, cs *compiledSong, c *checkReport) {
+	deck := s.aumDeck()
+	if deck == nil || !cs.song.HasFiles() {
+		return
+	}
+	var absent, unread, odd []string
+	loaded := 0
+	// The files' lengths in beats, to tell takes of one length from takes of
+	// several: a take ends a few frames short of its bar line, and not every
+	// take by the same few (on a device 4, 6 and 7), so frames are not it.
+	lengths := map[int64]bool{}
+	for _, tp := range cs.plan.Tracks {
+		file := tp.File()
+		if file == "" {
+			continue
+		}
+		row := fileCheck{Track: tp.ID, File: file}
+		v, err := deck.FilePlayer(ctx, tp.Name)
+		name := path.Base(file)
+		switch {
+		case err != nil:
+			row.Unread, _ = s.ipadFailure(ctx, err)
+			unread = append(unread, tp.ID)
+		case !strings.EqualFold(v.File, name) && !strings.EqualFold(v.File, strings.TrimSuffix(name, path.Ext(name))):
+			row.Shown, row.view = v.File, v
+			shown := v.Text
+			if shown == "" {
+				shown = "no file"
+			}
+			absent = append(absent, fmt.Sprintf("%s wants %q and its File Player shows %s", tp.ID, file, shown))
+		default:
+			row.Shown, row.Loaded, row.view = v.File, true, v
+			loaded++
+			var take stemTake
+			take.setLength(v, cs.timeline.Tempo)
+			row.Frames, row.Seconds, row.Beats, row.Whole, row.Format = take.Frames, take.Seconds, take.Beats, take.Whole, take.Format
+			if row.Whole != nil {
+				lengths[int64(math.Round(row.Beats/(2*stemWholeBeat)))] = true
+			}
+			for _, sw := range [][2]string{{"Loop", v.Loop}, {"Sync", v.Sync}} {
+				if strings.EqualFold(sw[1], "ON") {
+					odd = append(odd, fmt.Sprintf("%s has %s on", tp.ID, sw[0]))
+				}
+			}
+		}
+		c.Files = append(c.Files, row)
+	}
+	switch {
+	case len(absent) > 0:
+		c.find("files", false, "%s", strings.Join(absent, "; "))
+		if c.Next == "" {
+			c.Next = "a File Player without its file plays nothing: the file must be in AUM's Recordings under that very path (aum_files recordings lists them; record_song_stems makes a song's stems)"
+		}
+	case len(odd) > 0:
+		c.find("files", false, "%s: the file then does not play once, at its own speed, from the transport's top (load_song authors the session again with both off)", strings.Join(odd, ", "))
+	case len(unread) > 0:
+		c.find("files", true, "%d File Player(s) have their file; not read: %s", loaded, strings.Join(unread, ", "))
+	case len(lengths) > 1:
+		c.find("files", true, "every File Player has its file; the files are not equally long")
+	default:
+		c.find("files", true, "every File Player has its file")
+	}
 }
 
 // missingStrips lists the song's strips AUM does not show: the brain's, one
@@ -837,6 +968,9 @@ func (s *Server) soundCheck(ctx context.Context, cs *compiledSong, tap *audiotap
 			row.Skipped = "it plays no note in the song"
 			if len(tp.ControlChannels) > 0 {
 				row.Skipped = "it plays no note on its own channel in the song"
+			}
+			if file := tp.File(); file != "" {
+				row.Skipped = fmt.Sprintf("it plays the file %q with AUM's transport, and no note", file)
 			}
 			out = append(out, row)
 			continue

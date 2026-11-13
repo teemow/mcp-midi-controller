@@ -126,7 +126,7 @@ a normal result, not a tool error.
 | `aum_channel` | `add_audio`, `add_midi`, `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`, through the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. |
 | `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
-| `aum_files` | `list` (FILES → Sessions; `path` for folders), `recordings` (FILES → Recordings; `path` into a session's folder), `load`¹, `save`¹ (SAVE, Return saves at once), `rename`¹, `clear`¹ (CLEAR → Sure?), `notes`. |
+| `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings; `path` into a session's folder; the page that shows), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹, `clear`¹ (CLEAR → Sure?), `notes`. |
 | `aum_midi_routing` | `read` (sources, destinations and the connected cells), `connect` / `disconnect` (`source`, `destination`), `destination` (its panel: MIDI sources, All Notes Off, the filter; `path` taps further). |
 | `aum_midi_control` | `read` (`path` walks into a collection or a control's mapping editor), `filter` (ALL, ASSIGNED, UNUSED), `learn`, `menu` (a section's `⋮`: Set MIDI Channels¹, Save, Load¹, Copy, Paste¹, Clear All¹, Delete All¹), `add` (ADD TEMPO, ADD PRESET), `main_parameter`. |
 | `aum_settings` | `read` every setting (scrolling the panel), `set` a `setting` to a `value` as AUM prints it (ON, INT 24, 48 kHz, …). Settings are global: set them back afterwards. |
@@ -134,6 +134,144 @@ a normal result, not a tool error.
 
 ¹ Changes or loses state: needs `confirm: true`. Iterate on a scratch session
 or the ` (mcp test)` copies ([AGENTS.md](../AGENTS.md)), never an original.
+
+### Listing and loading sessions
+
+`aum_files list` and `load` take `path`, the folders below the root of
+Sessions (`["Songs"]`; none for the root, which AUM prints as `/`). Both open
+FILES from the menu anew and walk to that folder from the root, as `save`
+does: what FILES showed before, and where its list was scrolled to, makes no
+difference ([FILES → Sessions, as the tool reads
+it](#files--sessions-as-the-tool-reads-it)).
+
+**`list` returns the whole folder.** Only the rows on screen can be read, so
+the tool reads it a page at a time, from the top to the end, and returns
+every row once, in the order AUM shows them (the sort picked above the list).
+With the sort on last opened a session moves up when it is loaded, so the
+order differs from one call to the next.
+`data` is the entries: `name`, `detail` (for a session the time it was saved),
+`folder: true` for a folder's row, and `frame`, which only the rows of the
+last page carry: the others are no longer where they were read. The message
+says "the whole list" and how many pages it took. A list that still goes on
+after 60 pages (about 480 rows) comes back `verified: false`, "NOT the whole
+list", with what was read.
+
+It takes its time. On the iPad a page of eight rows took 3.7 to 3.9 s and the
+end of a list two reads more, after 23 s to reach the folder (FILES from the
+menu, up to the root, down two folders). A folder of 32 rows, four pages, took
+44 s with the daemon on the iPad's host and 75 s with it on another machine.
+
+**`load` finds the session wherever the folder lists it** and taps its row,
+which loads it at once and replaces the open session. It taps
+
+- only a session's row: a folder of that name has a chevron and is not it,
+- only once the row is on screen whole: a row the list's edge cuts is read
+  again on the next page, and a tap aimed at it could land beside the list.
+
+A name the folder does not hold is an error that lists the folder, and
+nothing is tapped. After the tap the tool waits for AUM to finish loading
+and reads the session's name in the main menu: `verified: true` means the
+menu names the session that was asked for.
+
+`recordings` is not read this way: it lists the page of FILES → Recordings
+that shows. Recordings names its folders as Sessions does: the title stays
+`RECORDINGS` and a header row reads `/` or the folder's name. Its `path` is
+still walked by the title, so each folder costs a wait of 5 s for a title
+that does not change before its rows are listed (13 s for one folder on the
+iPad). For the same reason a FILES that reopens inside a folder of Recordings
+is taken for its root: `recordings` then lists that folder, or answers that
+the folder of `path` is missing (to be fixed:
+https://github.com/teemow/mcp-midi-controller/issues/199).
+
+### Saving a session
+
+`aum_files save` saves the open session under `name` and says whether AUM
+wrote the file. What AUM 1.4.8 does, as seen on the iPad:
+
+- AUM saves into the folder its SAVE panel shows (`/Songs` for a session
+  loaded from there, `/` after CLEAR), under the name in the panel's field.
+- **A name the folder does not hold** is written by the first press of SAVE
+  SESSION.
+- **A name it holds** makes the button read `OVERWRITE?` for a second or two
+  (it still did 1.2 s after the press and no longer at 3.0 s). A press in
+  that time writes the file. After it the button reads SAVE SESSION again,
+  nothing was written, and the next press is a first one again. Return in the
+  name field is a press of the button, with the same second.
+- **After it has written, AUM closes the SAVE panel by itself.** After a
+  press that wrote nothing the panel stays open.
+- **The session's name in the main menu proves nothing.** Saving the open
+  session over itself leaves it as it was, whether AUM wrote or not.
+
+One read of AUM's tree takes 0.5 to 2 s, so reading the button's label and
+then tapping comes too late. The tool does this instead:
+
+1. It opens SAVE and reads the folder.
+2. It reads the session's row in that folder of FILES → Sessions, going
+   through the whole list. Now it knows whether the name exists.
+3. It opens SAVE again, types `name` when the field holds another, and reads
+   the field in the panel once more before it presses anything.
+4. One press of SAVE SESSION for a new name; for one that exists both
+   presses as one gesture, half a second apart (`ipad_tap gesture: twice`).
+5. It waits for the panel to close, opens FILES again and reads the row.
+
+**The proof is the row's saved time**: the second line of a session's row is
+the time its file was written, to the second (`12. Nov 2026 at 21:38:05`).
+`verified: true` means the time has moved, or that the row is new and the
+panel closed. `data` holds `folder`, `existed`, `saved_before`, `saved_after`
+and `panel_closed`. When the time has not moved the result is `verified:
+false` and begins "NOT saved", with the time that stayed and what the button
+read. Save again, and look at the SAVE panel (`aum_panel open save`,
+`ipad_screenshot`) when it repeats.
+
+The tool leaves these cases alone and says so, since pressing on would
+overwrite something it has not seen:
+
+- a name AUM asks to overwrite although the list did not show it,
+- a list it could not read whole (below), which stops the save before
+  anything is pressed.
+
+A save takes 35 to 80 s, most of it the two readings of the list. From the
+host the iPad is plugged into, `ios fsync --app=com.kymatica.AUM pull
+--srcPath="/Documents/Songs/<name>.aumproj" --dstPath=<dir>` fetches the
+session file for a look at its size and content.
+
+#### FILES → Sessions, as the tool reads it
+
+- Every folder of Sessions is titled `SESSIONS`. The folder is named in a
+  header row above the list: `/` for the root, the folder's name inside one.
+  A folder's row opens it and the back arrow goes up one folder. The house
+  icon above the list goes to FILES, whose Sessions row opens the root.
+- FILES opened from the menu shows the folder it showed last, from the top.
+  A panel that is left open stays scrolled where it was.
+- So `list`, `load` and `save` open FILES from the menu, go up to `/` and
+  down the folder that was asked for (for `save` the one SAVE names),
+  checking the header at each step, every time they read a list.
+- A list shows twelve rows below the header and fourteen or fifteen further
+  down, in the order picked above it (name, last saved, last opened). Its
+  tree holds more cells than that, marked hidden: Recordings, just opened,
+  had one for every row below the fold, and Sessions, scrolled to its end,
+  kept those of the eighteen rows above, four of them with another row's
+  name and saved time. So only the cells that show are read, a page at a
+  time.
+- The tool drags the list 420 points in 0.9 s for the next
+  page, which moved it by 404 to 406 points: six rows are read twice. A drag
+  of 584 points in 0.5 s ran on after the finger lifted (674 points) and
+  carried a row past unread. A page that shares no row with the one before is
+  therefore an error, not "no such session". A drag at the end of the list
+  pulls it past its end and it springs back: the rows of the last page were
+  read up to 9 points above where they came to rest, which a tap on the
+  name, in a row of 51 points, still meets.
+- A row cut by the list's edge shows one of its two lines, or both with a
+  part of the row out of sight. A row counts once it lies inside the list
+  and both lines can be read; until then it is neither listed nor tapped.
+  (A row cut by the list's top edge can show its saved time alone, which
+  would read as a name.)
+- A folder's row carries a chevron at its right; a session's does not, and
+  a tap on it loads that session at once. A folder and a session can share a
+  name, so the tool taps only rows with the chevron on its way down, and
+  reads the saved time, and loads, only from a row without one.
+- The FILES root has a row "Restore Previous State". The tool taps rows by
+  their text and never that one.
 
 ### Reading AUM
 
@@ -191,8 +329,15 @@ How AUM shows state in its tree (AUM 1.4.8):
   the last strip; its AUDIO / MIDI / IMPORT menu stacks over it once tapped.
 - **The tempo bar** shows the tempo as a button between `‹` and `›`; **the
   keyboard** covers the mixer's bottom and is closed with its `HIDE↓` button.
-- **FILES** lists cells: a name and a detail line (date) below it. It reopens
-  on the view last shown.
+- **FILES** lists cells: a name and a detail line below it (for a session
+  the time it was saved, to the second); a folder's cell has a chevron
+  button as well. It reopens on the view last shown, and only the rows on
+  screen can be read (the cells of the others are hidden, some with stale
+  contents): `aum_files list`, `load` and `save` scroll a list of
+  Sessions page by page, `recordings` reads the page that shows (see
+  [FILES → Sessions, as the tool reads
+  it](#files--sessions-as-the-tool-reads-it) for how Sessions names its
+  folder).
 - **MIDI routing connections** are not in the tree: `aum_midi_routing` reads
   them from a screenshot (a connected cell's fill is lighter).
 - Opening something from the top bar (Navigator, Engine Info, routing, tempo
@@ -285,7 +430,8 @@ What AUM's tree does **not** carry, and how to check it instead:
   `ipad_tap`). The `aum_*` tools refuse these without `confirm: true`.
   Screenshot first near them. Per [AGENTS.md](../AGENTS.md), iterate on the
   ` (mcp test)` session copies, never on the originals.
-- **Timing.** Each WDA action takes about 0.8 s. AUM's two-step buttons take the
+- **Timing.** Each WDA action takes about 0.8 s. AUM's two-step buttons (CLEAR → Sure?, SAVE
+  SESSION → OVERWRITE?, REMOVE CHANNEL → TAP TO CONFIRM) take the
   second tap only for about a second (`ipad_tap gesture: twice`), and the add
   tile's AUDIO / MIDI / IMPORT menu closes by itself after a few seconds, so
   `aum_channel` taps the item right after the tile, without a read in between.

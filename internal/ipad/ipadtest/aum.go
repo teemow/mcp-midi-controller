@@ -92,7 +92,80 @@ type AUM struct {
 	// "LOADING STATE" overlay of a session being restored, a line naming a
 	// plugin that failed.
 	Notices []string
+	// Save opens the SAVE side panel.
+	Save *SavePanel
+	// Files opens the FILES side panel as AUM draws it. (An Overlay of kind
+	// "panel" with Cells is a simpler list for tests that only read one.)
+	Files *FilesPanel
 }
+
+// FilesPanel is AUM's FILES side panel: its root (title "FILES": Sessions,
+// Recordings, Restore Previous State) or a folder of Sessions. AUM titles
+// every folder "SESSIONS" and names the folder in a header row above the
+// list, which scrolls away with the list's first rows.
+type FilesPanel struct {
+	// Title is "FILES" or "SESSIONS".
+	Title string
+	// Folder is the header row: "/" for the root of Sessions, a folder's
+	// name inside it; "" draws none (the FILES root has none).
+	Folder string
+	// Cells are the list's rows from the first one on screen.
+	Cells []FileCell
+	// Scrolled says the list is scrolled down: the sort bar and the header
+	// row are out of sight and the rows begin at the list's top.
+	Scrolled bool
+	// Cut says the scrolled list rests between two rows, as AUM's does after
+	// a drag: Cells[0] reaches above the list's top edge, which hides its
+	// name and leaves its second line, FilesRowsCut rows are whole below it,
+	// and the next one reaches below the list's bottom edge.
+	Cut bool
+}
+
+// FileCell is one row of a FILES list.
+type FileCell struct {
+	// Name and Detail are the row's two lines (a session's detail is the
+	// time it was saved).
+	Name, Detail string
+	// Folder draws the chevron of a row that opens a folder or a view.
+	Folder bool
+}
+
+// FilesRows is how many rows a FILES list shows whole: below its sort bar
+// and header row, once those are scrolled away, and when the scrolled list
+// rests between two rows. A table holds a few more below its edge, in the
+// tree and not visible.
+const (
+	FilesRowsTop      = 12
+	FilesRowsScrolled = 14
+	FilesRowsCut      = 13
+)
+
+// FilesCutY is the top of the row a list's top edge cuts (FilesPanel.Cut):
+// 30 of its 51 points are above the edge, and the rows below follow it.
+const FilesCutY = 30.0
+
+// FilesRowY is the top of row i (from the first on screen) of a FILES list.
+func FilesRowY(i int, scrolled bool) float64 {
+	if scrolled {
+		return 60 + float64(i)*50
+	}
+	return 175 + float64(i)*50
+}
+
+// SavePanel is AUM's SAVE side panel: the session's name in a text field,
+// the folder it is saved into and the SAVE SESSION button.
+type SavePanel struct {
+	// Name is the name field's value.
+	Name string
+	// Folder is the folder as SAVE prints it ("/Songs", "/" for the root).
+	Folder string
+	// Button is the button's label: "SAVE SESSION", or "OVERWRITE?" for the
+	// second after it was pressed with the name of a session that exists.
+	Button string
+}
+
+// SaveButton is the SAVE panel's button, as x, y, w, h in points.
+var SaveButton = [4]float64{966, 302, 228, 37}
 
 // Routing is the MIDI routing matrix of a synthetic AUM screen.
 type Routing struct {
@@ -198,7 +271,7 @@ func (a AUM) Source() json.RawMessage {
 	mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
 	mixerView := el("ScrollView", "", 0, 60, W, 774, mixer...)
 	// Under a side panel or the routing matrix AUM marks the mixer invisible.
-	covered := a.Session != "" || a.Routing != nil
+	covered := a.Session != "" || a.Routing != nil || a.Save != nil || a.Files != nil
 	for _, o := range a.Overlays {
 		covered = covered || o.Kind == "panel"
 	}
@@ -220,6 +293,12 @@ func (a AUM) Source() json.RawMessage {
 	}
 	if a.Routing != nil {
 		main = append(main, routing(*a.Routing))
+	}
+	if a.Save != nil {
+		main = append(main, savePanel(*a.Save))
+	}
+	if a.Files != nil {
+		main = append(main, filesPanel(*a.Files))
 	}
 	if a.Keyboard {
 		main = append(main, el("Other", "", 0, 666, W, 168,
@@ -330,6 +409,89 @@ func menuPanel(session string) node {
 	return el("Other", "", 950, 0, 260, 834,
 		el("Other", "", 950, 0, 260, 60, el("StaticText", "MENU", 990, 0, 180, 60)),
 		el("ScrollView", "", 950, 60, 260, 774, kids...))
+}
+
+// savePanel follows WDA's source of AUM 1.4.8's SAVE panel (testdata
+// aum-plugin-window-save.json of internal/ipad): a table with the name field
+// and the folder in a cell each under their headers, and the button, whose
+// own text is not visible.
+func savePanel(p SavePanel) node {
+	b := SaveButton
+	return el("Other", "", 950, 0, 260, 834,
+		el("Other", "", 950, 0, 260, 60,
+			el("Button", "MIDI CTRL, SETTINGS, ABOUT, CLEAR, FILES, SESSION: Old, DSP:  0 %, -∞", 950, 0, 60, 60),
+			el("StaticText", "SAVE", 990, 0, 180, 60)),
+		el("Table", "", 950, 60, 260, 774,
+			el("Other", "", 950, 60, 260, 56, el("StaticText", "SESSION NAME", 950, 60, 260, 56).with("traits", "Header, StaticText")),
+			el("Cell", "", 950, 115, 260, 51, el("TextField", "", 966, 115, 228, 45).with("value", p.Name)),
+			el("Other", "", 950, 183, 260, 38, el("StaticText", "FOLDER", 950, 183, 260, 38).with("traits", "Header, StaticText")),
+			el("Cell", "", 950, 221, 260, 50,
+				el("StaticText", p.Folder, 966, 221, 210, 50),
+				el("Button", "chevron", 1183, 239, 11, 14).with("traits", "NotEnabled, Button")).with("traits", "Button"),
+			el("Button", p.Button, b[0], b[1], b[2], b[3], el("StaticText", p.Button, 1038, 312, 84, 17).with("isVisible", "0"))))
+}
+
+// filesPanel follows WDA's source of AUM 1.4.8's FILES panel: a table with
+// the EDIT and home buttons, the sort control and, inside it, the header row
+// naming the folder, then a cell per row with its two texts. The FILES root
+// has three cells and none of the bar.
+func filesPanel(p FilesPanel) node {
+	const x, w = 810.0, 400.0
+	var rows []node
+	root := p.Title == "FILES"
+	if !root && !p.Scrolled {
+		rows = append(rows,
+			el("Button", "EDIT", 1144, 76, 50, 28, el("StaticText", "EDIT", 1157, 83, 24, 14).with("isVisible", "0")),
+			el("Button", "", 1096, 76, 32, 28))
+		sort := el("Button", "", 826, 60, 270, 60).with("value", "LAST OPENED").with("traits", "Adjustable")
+		if p.Folder != "" {
+			sort["children"] = []node{el("StaticText", p.Folder, x, 120, w, 56).with("traits", "Header, StaticText")}
+		}
+		rows = append(rows, sort)
+	}
+	whole := FilesRowsScrolled
+	if !p.Scrolled {
+		whole = FilesRowsTop
+	}
+	cut := !root && p.Scrolled && p.Cut
+	if cut {
+		whole = FilesRowsCut + 2 // and the row each edge cuts
+	}
+	for i, c := range p.Cells {
+		y := FilesRowY(i, p.Scrolled)
+		if root {
+			y = 95 + float64(i)*85
+		}
+		if cut {
+			y = FilesCutY + float64(i)*50
+		}
+		kids := []node{el("StaticText", c.Name, x+65, y+7, 180, 20)}
+		if cut && i == 0 {
+			kids[0] = kids[0].with("isVisible", "0")
+		}
+		if c.Detail != "" {
+			kids = append(kids, el("StaticText", c.Detail, x+65, y+29, 114, 14))
+		}
+		cell := el("Cell", "", x, y, w, 51, kids...)
+		if c.Folder {
+			cell["children"] = append(kids, el("Button", "chevron", 1183, y+18, 11, 15).with("traits", "NotEnabled, Button"))
+			cell = cell.with("traits", "Button")
+		}
+		if !root && i >= whole {
+			if i >= whole+2 {
+				break
+			}
+			hide(cell)
+		}
+		rows = append(rows, cell)
+	}
+	return el("Other", "", x, 0, w, 834,
+		el("Other", "", x, 0, w, 60,
+			el("Button", "MIDI CTRL, SETTINGS, ABOUT, CLEAR, FILES, SESSION: Old, DSP:  0 %, -∞", x, 0, 60, 60),
+			el("StaticText", p.Title, x+40, 0, 320, 60)),
+		el("Table", "", x, 60, w, 714, rows...),
+		el("Button", "Manage recordings in AudioShare.", x, 774, w, 60,
+			el("StaticText", "Manage recordings in AudioShare.", 987, 787, 104, 34)))
 }
 
 func overlay(o Overlay) []node {
@@ -450,20 +612,28 @@ const LoadingNotice = "LOADING STATE"
 
 // OpenSessionScreens is AUM while a session is opened from FILES → Sessions →
 // folder, for WDA.SourceFunc: one screen per gesture. A plugin window is open
-// at first; the session's row loads strips, which show LoadingNotice for the
-// first loadingReads reads once the menu is asked for the session's name, and
-// notices once the menu is closed again.
+// at first; FILES opens on its root; the session's row loads strips, which
+// show LoadingNotice for the first loadingReads reads once the menu is asked
+// for the session's name, and notices once the menu is closed again. It
+// answers the gestures of a load that finds every row on its first page; a
+// list that is searched further (SessionsAUM) is dragged, which is a gesture.
 func OpenSessionScreens(folder, name string, strips []Strip, loadingReads int, notices ...string) func(gestures, reads int) json.RawMessage {
 	old := MixerAUM()
 	window := old
 	window.PluginWindow = "Synth @A1"
 	menu := DefaultAUM()
+	// FILES as AUM draws it: its root, the root of Sessions (titled SESSIONS,
+	// "/" in its header row) and the folder (the same title, its name in the
+	// header row).
 	files := MixerAUM()
-	files.Overlays = []Overlay{{Kind: "panel", Title: "FILES", Rows: [][2]string{{"Sessions", ""}, {"Recordings", ""}}}}
+	files.Files = &FilesPanel{Title: "FILES", Cells: []FileCell{
+		{Name: "Sessions", Folder: true}, {Name: "Recordings", Folder: true},
+		{Name: "Restore Previous State", Detail: "12. Nov 2026 at 20:30:00"}}}
 	sessions := MixerAUM()
-	sessions.Overlays = []Overlay{{Kind: "panel", Title: "Sessions", Cells: [][2]string{{folder, ""}, {"other", "yesterday"}}}}
+	sessions.Files = &FilesPanel{Title: "SESSIONS", Folder: "/", Cells: []FileCell{
+		{Name: folder, Detail: "12. Nov 2026 at 20:00:00", Folder: true}, {Name: "other", Detail: "11. Nov 2026 at 09:00:00"}}}
 	inFolder := MixerAUM()
-	inFolder.Overlays = []Overlay{{Kind: "panel", Title: folder, Cells: [][2]string{{name, "today"}}}}
+	inFolder.Files = &FilesPanel{Title: "SESSIONS", Folder: folder, Cells: []FileCell{{Name: name, Detail: "12. Nov 2026 at 21:00:00"}}}
 	fresh := AUM{Tempo: "104", Position: "001:1  00:00.0", Strips: strips}
 	loading := fresh
 	loading.Notices = []string{LoadingNotice}

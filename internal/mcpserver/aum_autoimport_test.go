@@ -240,6 +240,57 @@ func TestAUMTapConnectThatIsNoLongerNewest(t *testing.T) {
 	}
 }
 
+// TestAUMTapConnectThatWaitedIsStale checks a tap's connect that waited
+// behind an import names the open session only while its tap is still the
+// newest master connected: the tap may have gone meanwhile, or the master of a
+// session loaded since dialled in. The import lock is held while the registry
+// changes, so the connect's work runs only after the change.
+func TestAUMTapConnectThatWaitedIsStale(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg := audiotap.NewRegistry()
+	s := New(engine.New(device.NewRegistry(), fakeBLE{}, fakeAUv3{}), WithAUMAutoImport(true), WithAudioTap(reg))
+	waitBackgroundAtCleanup(t, s)
+	stageProbe(t)
+	authorConventionSession(t, s, "rig_a", "Gitarre")
+	authorConventionSession(t, s, "rig_b", "Keys")
+	s.OnAUMSessionDownloaded("rig_b.aumproj")
+	if _, ok := s.eng.DeviceFor("keys"); !ok {
+		t.Fatal("the downloaded session's rig was not imported")
+	}
+	check := func(when string) {
+		t.Helper()
+		if id := s.currentAUMSessionID(); id != "rig_b" {
+			t.Fatalf("%s: current session = %q, want rig_b", when, id)
+		}
+		if _, ok := s.eng.DeviceFor("gitarre"); ok {
+			t.Fatalf("%s: the stale tap's session rig was imported", when)
+		}
+		if d, ok := s.eng.DeviceFor("keys"); !ok || d.Session != "rig_b" {
+			t.Fatalf("%s: the current session's rig is gone (ok=%t, %+v)", when, ok, d)
+		}
+	}
+
+	// The tap goes before its connect's work has its turn.
+	s.currentMu.Lock()
+	reg.Connect("rig_a/master", "ipad:1")
+	s.OnAudioTapConnected("rig_a/master")
+	reg.Disconnect("rig_a/master")
+	s.currentMu.Unlock()
+	s.waitBackground()
+	check("the tap disconnected")
+
+	// The master of a session loaded since dials in before it has its turn.
+	s.currentMu.Lock()
+	reg.Connect("rig_a/master", "ipad:2")
+	s.OnAudioTapConnected("rig_a/master")
+	reg.Connect("rig_b/master", "ipad:3")
+	s.OnAudioTapConnected("rig_b/master")
+	s.currentMu.Unlock()
+	s.waitBackground()
+	check("a newer master connected")
+}
+
 // TestAUMTapConnectWithoutAutoImport checks the marker follows the open
 // session with the automatic import off, and nothing is imported.
 func TestAUMTapConnectWithoutAutoImport(t *testing.T) {

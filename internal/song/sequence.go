@@ -62,6 +62,17 @@ func (q *Sequence) TickTime(tick int64) time.Duration {
 func (q *Sequence) Lead() time.Duration     { return q.TickTime(q.LeadTicks()) }
 func (q *Sequence) Duration() time.Duration { return q.TickTime(q.Ticks) }
 
+// RecorderOffBeats is how far ahead of its last bar line a stem's sequence
+// switches AUM's recorder off, in beats (quarter notes). AUM ends a take on
+// the next bar line after that, so the take ends where the sequence does, as
+// long as the lead-in, the song and the tail. The sequencer sends it, with
+// the transport's own timing, and nothing else does: a second off before
+// that bar line withdraws the first, and the recorder runs on (measured on a
+// device). So a take ends by itself, also when the daemon that started it is
+// gone; a recorder that nobody switches off records on through a stopped
+// transport.
+const RecorderOffBeats = 0.5
+
 // Sequence lays the whole song out for a sequencer.
 func (t *Timeline) Sequence() *Sequence {
 	q := &Sequence{Tempo: t.Tempo, MeterNum: t.MeterNum, MeterDen: t.MeterDen, BarTicks: t.BarTicks}
@@ -87,6 +98,9 @@ func (t *Timeline) Sequence() *Sequence {
 	if bar > 0 {
 		q.LeadBars = max(1, int(math.Ceil(float64(preroll)/float64(bar))))
 	}
+	// A song can ask for a longer lead-in than its opening sound needs: the
+	// one its recordings were made with (SessionSpec.LeadBars).
+	q.LeadBars = max(q.LeadBars, t.LeadBars)
 	lead := q.LeadTicks()
 	rest := int64(0)
 	if presets > 0 {
@@ -126,6 +140,12 @@ func (t *Timeline) Sequence() *Sequence {
 		}
 	}
 	q.Ticks = lead + t.Ticks
+	// A stem's sequence ends the take it is recorded into: see
+	// RecorderOffBeats.
+	if t.recorderOff != nil {
+		at := max(q.Ticks-int64(RecorderOffBeats*PPQ), lead)
+		q.Controls = append(q.Controls, Event{Tick: at, Kind: Control, Channel: t.recorderOff.Channel, Data1: t.recorderOff.Number})
+	}
 	// A note the timeline never ends runs to the end of the song.
 	for _, i := range open {
 		q.Notes[i].Ticks = q.Ticks - q.Notes[i].Tick

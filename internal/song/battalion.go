@@ -112,14 +112,14 @@ func (q *stepSequence) params(at string) []sequenceParam {
 	return out
 }
 
-// ErrNoBaseState is returned when the state a step sequence is written over
-// has no XML to write it into.
-var ErrNoBaseState = errors.New("no saved state to write the sequence over")
+// ErrNoBaseState is returned when the state a step sequence, samples or locks
+// are written over has no XML to write them into.
+var ErrNoBaseState = errors.New("no saved state to write the sequence, samples and locks over")
 
-// writeBattalionSequence writes q into a Battalion state (a binary XML
-// block) and returns the new block. A parameter in skip is left as the state
-// has it: the song sets it by MIDI instead.
-func writeBattalionSequence(state []byte, q *stepSequence, skip map[string]bool) ([]byte, error) {
+// writeBattalionState writes k into a Battalion state (a binary XML block)
+// and returns the new block. A parameter in skip is left as the state has it:
+// the song sets it by MIDI instead.
+func writeBattalionState(state []byte, k *kitState, skip map[string]bool) ([]byte, error) {
 	text, err := juce.DecodeBinaryXML(state)
 	if err != nil {
 		return nil, err
@@ -148,43 +148,68 @@ func writeBattalionSequence(state []byte, q *stepSequence, skip map[string]bool)
 		seqs.CreateAttr(attr, strings.Join(vals, ","))
 		return nil
 	}
-	for _, v := range q.voices {
-		i := v.voice - 1
-		if v.steps != nil {
-			vals := make([]string, maxSequenceSteps)
-			for s := range vals {
-				vals[s] = "0"
-				if s < len(v.steps) && v.steps[s] {
-					vals[s] = "1"
+	if q := k.seq; q != nil {
+		for _, v := range q.voices {
+			i := v.voice - 1
+			if v.steps != nil {
+				vals := make([]string, maxSequenceSteps)
+				for s := range vals {
+					vals[s] = "0"
+					if s < len(v.steps) && v.steps[s] {
+						vals[s] = "1"
+					}
+				}
+				if err := setValues(fmt.Sprintf("%s%d", stepsAttr, i), vals); err != nil {
+					return nil, err
 				}
 			}
-			if err := setValues(fmt.Sprintf("%s%d", stepsAttr, i), vals); err != nil {
-				return nil, err
+			for _, l := range v.lanes {
+				// The values repeat over all of the lane's positions. A lane in
+				// SYNC follows the steps whatever its length, so this is what
+				// makes a short one repeat; in the other modes the positions past
+				// its length are not played.
+				vals := make([]string, maxSequenceSteps)
+				for s := range vals {
+					vals[s] = strconv.FormatFloat(l.values[s%len(l.values)], 'f', -1, 64)
+				}
+				if err := setValues(fmt.Sprintf("%s%d", l.lane.attr, i), vals); err != nil {
+					return nil, err
+				}
 			}
 		}
-		for _, l := range v.lanes {
-			// The values repeat over all of the lane's positions. A lane in
-			// SYNC follows the steps whatever its length, so this is what
-			// makes a short one repeat; in the other modes the positions past
-			// its length are not played.
-			vals := make([]string, maxSequenceSteps)
-			for s := range vals {
-				vals[s] = strconv.FormatFloat(l.values[s%len(l.values)], 'f', -1, 64)
+		for _, sp := range q.params("") {
+			if skip[sp.id] {
+				continue
 			}
-			if err := setValues(fmt.Sprintf("%s%d", l.lane.attr, i), vals); err != nil {
-				return nil, err
+			p := params[sp.id]
+			if p == nil {
+				return nil, fmt.Errorf("the state has no parameter %s", sp.id)
 			}
+			p.CreateAttr("value", stateNumber(sp.value))
 		}
 	}
-	for _, sp := range q.params("") {
-		if skip[sp.id] {
-			continue
+
+	// A voice's sample is an attribute of the root, url_0 to url_7: a file
+	// URL, "" for none.
+	for _, s := range k.samples {
+		u := s.path
+		if u != "" && !s.isURL() {
+			u = libraryURL(s.path)
 		}
-		p := params[sp.id]
-		if p == nil {
-			return nil, fmt.Errorf("the state has no parameter %s", sp.id)
+		root.CreateAttr(sampleAttr(s.voice), u)
+	}
+
+	// The locks are attributes of <locks>, a parameter's id set to "1".
+	if len(k.locks) > 0 {
+		locks := root.SelectElement("locks")
+		if locks == nil {
+			locks = etree.NewElement("locks")
+			// Where Battalion writes it: before <sequences>.
+			root.InsertChildAt(seqs.Index(), locks)
 		}
-		p.CreateAttr("value", stateNumber(sp.value))
+		for _, id := range k.locks {
+			locks.CreateAttr(id, "1")
+		}
 	}
 
 	out, err := doc.WriteToString()
@@ -204,17 +229,29 @@ func stateNumber(v float64) string {
 	return s
 }
 
-// HasStepSequence reports whether the song writes the node's own step
-// sequence (its instrument's sequence:), which lives in the node's saved
-// state.
-func (n *NodePlan) HasStepSequence() bool { return n.seq != nil }
+// sampleAttr is the attribute of the state's root with a voice's sample.
+func sampleAttr(voice int) string { return fmt.Sprintf("url_%d", voice-1) }
 
-// StepSequenceState returns the saved state the node is authored with: base
-// (the plugin's state the sequence is written over, as key -> bytes) with the
-// song's step sequence in it. It holds the plugin's XML alone; see the top of
-// this file. A base without that XML is ErrNoBaseState.
-func (n *NodePlan) StepSequenceState(base map[string][]byte) (map[string][]byte, error) {
-	if n.seq == nil {
+// WritesState reports whether the song writes into the node's saved state:
+// its instrument's step sequence, samples or locks (sequence:, samples:,
+// locks:).
+func (n *NodePlan) WritesState() bool { return n.kit != nil }
+
+// StateWrites says what the song writes into the node's saved state, for a
+// message: "its own sequence, 2 samples and 3 locks".
+func (n *NodePlan) StateWrites() string {
+	if n.kit == nil {
+		return ""
+	}
+	return n.kit.says()
+}
+
+// AuthoredState returns the saved state the node is authored with: base (the
+// plugin's state the song's sequence, samples and locks are written over, as
+// key -> bytes) with them in it. It holds the plugin's XML alone; see the top
+// of this file. A base without that XML is ErrNoBaseState.
+func (n *NodePlan) AuthoredState(base map[string][]byte) (map[string][]byte, error) {
+	if n.kit == nil {
 		return base, nil
 	}
 	xml, ok := base[battalionStateKey]
@@ -225,9 +262,9 @@ func (n *NodePlan) StepSequenceState(base map[string][]byte) (map[string][]byte,
 	for _, pa := range n.Params {
 		skip[pa.Key] = true
 	}
-	state, err := writeBattalionSequence(xml, n.seq, skip)
+	state, err := writeBattalionState(xml, n.kit, skip)
 	if err != nil {
-		return nil, fmt.Errorf("%s's sequence: %w", n.Name, err)
+		return nil, fmt.Errorf("writing into %s's saved state: %w", n.Name, err)
 	}
 	return map[string][]byte{battalionStateKey: state}, nil
 }

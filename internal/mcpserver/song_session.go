@@ -262,7 +262,7 @@ func (s *Server) authorSong(cs *compiledSong, a songAuthorArgs) (*authoredSong, 
 		if err := applyDefaultState(ns, defaults); err != nil {
 			return err
 		}
-		return applyStepSequence(n, ns, bases)
+		return applyAuthoredState(n, ns, bases)
 	}
 	seq, err := songSequencerFor(cs, cat, a.Sequencer)
 	if err != nil {
@@ -340,6 +340,11 @@ func describeSongLayout(b *strings.Builder, cs *compiledSong, seq *songSequencer
 			controls = " (and control notes on " + joinInts(tp.ControlChannels, ", ") + ")"
 		}
 		fmt.Fprintf(b, "  strip %d: %s on MIDI channel %d%s: %s\n", tp.Strip+1, tp.Name, tp.Channel, controls, strings.Join(names, " > "))
+		for _, n := range tp.Nodes {
+			if n.Mod != nil {
+				fmt.Fprintf(b, "           %s (%s) sends CC %d on channel %d from its %s to MIDI Control, which moves %s\n", n.Effect, n.Name, n.Mod.At.Number, n.Mod.At.Channel, n.Mod.Port(), n.Mod.Target)
+			}
+		}
 	}
 	fmt.Fprintf(b, "  strip %d: Master", cs.plan.MasterStrip+1)
 	for _, n := range cs.plan.Master {
@@ -387,6 +392,9 @@ func (s *Server) handleAuthorSongSession(_ context.Context, req *mcp.CallToolReq
 	var b strings.Builder
 	fmt.Fprintf(&b, "authored the session of %q -> %s\n", cs.song.Title, au.Path)
 	fmt.Fprintf(&b, "  %d strip(s), %d plugin node(s), %d mapping(s), %d preset load(s)", au.Report.Strips, au.Report.Nodes, au.Report.Mappings, au.Report.Presets)
+	if au.Report.Modulators > 0 {
+		fmt.Fprintf(&b, ", %d modulator(s) routed to MIDI Control", au.Report.Modulators)
+	}
 	if au.Options.FullControl {
 		fmt.Fprintf(&b, ", %d further target(s) mapped (%d did not fit)", au.Report.Banked, au.Report.Overflow)
 	}

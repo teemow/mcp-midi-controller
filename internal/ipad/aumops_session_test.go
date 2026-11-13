@@ -227,13 +227,14 @@ func TestAUMOpenSessionLoadsForever(t *testing.T) {
 }
 
 // TestAUMOpenSessionUnknown checks a session that is not in the folder is an
-// error that lists what is.
+// error that lists what is, and that no other session's row was tapped.
 func TestAUMOpenSessionUnknown(t *testing.T) {
-	_, c := openFake(t, sessionScreens(0))
+	w, aum, c := filesFake(t, "Songs", "Old", [2]string{"Night Drive", "12. Nov 2026 at 21:00:00"})
 	_, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Nowhere")
-	if err == nil || !strings.Contains(err.Error(), `no session "Nowhere" in Songs (entries: Night Drive)`) {
+	if err == nil || !strings.Contains(err.Error(), `no session "Nowhere" in FILES → Sessions → /Songs (entries: Night Drive)`) {
 		t.Fatalf("open of an unknown session: %v", err)
 	}
+	wantTouched(t, w, aum)
 }
 
 // freshScreens is AUM, just started, while "Night Drive" is opened from the
@@ -301,24 +302,22 @@ func TestAUMOpenSessionStartsAUMAgain(t *testing.T) {
 	}
 }
 
-// TestAUMOpenSessionStartedAUMNeverDraws checks an AUM that was started again
-// and never draws its screen is not driven: the load fails at aumStartWait
-// without a gesture, which would be a tap at a place of the menu that is not
-// there.
-func TestAUMOpenSessionStartedAUMNeverDraws(t *testing.T) {
+// TestAUMOpenSessionStartedAUMNeverShows is an AUM started again that does
+// not draw its screen: the load ends on that before a gesture, which goes by
+// coordinates and would land on whatever is there instead.
+func TestAUMOpenSessionStartedAUMNeverShows(t *testing.T) {
 	old := aumStartWait
-	aumStartWait = 300 * time.Millisecond
+	aumStartWait = 100 * time.Millisecond
 	t.Cleanup(func() { aumStartWait = old })
 	w, c := openFake(t, sessionScreens(1))
-	blank := ipadtest.AUM{}
-	w.AfterLaunch = func(int, int) json.RawMessage { return blank.Source() }
+	w.AfterLaunch = ipadtest.FreshSessionScreens("Songs", "Night Drive", []ipadtest.Strip{{Title: "4: Master"}}, 1<<30, 1)
 	w.SetAUMCrashes(6, 1) // ✕, ☰, FILES, Sessions, Songs, the row
 	res, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Night Drive")
 	if err == nil {
-		t.Fatalf("a load in an AUM that never drew its screen succeeded: %+v", res)
+		t.Fatalf("a load in an AUM that never showed its screen succeeded: %+v", res)
 	}
-	if !strings.Contains(err.Error(), "AUM did not show its screen within 300ms of its start") {
-		t.Errorf("err = %q", err)
+	if !strings.Contains(err.Error(), "did not show its screen within") {
+		t.Errorf("err = %q, want it to say AUM did not show its screen", err)
 	}
 	if n := w.Launches(); n != 1 {
 		t.Errorf("AUM was started %d time(s), want once", n)
@@ -413,6 +412,36 @@ func TestAppNotRunning(t *testing.T) {
 		if got := AppNotRunning(tc.err); got != tc.not {
 			t.Errorf("AppNotRunning(%v) = %v, want %v", tc.err, got, tc.not)
 		}
+	}
+}
+
+// TestAUMOpenSessionStartedAUMNeverDraws checks an AUM that was started again
+// and never draws its screen is not driven: the load fails at aumStartWait
+// without a gesture, which would be a tap at a place of the menu that is not
+// there.
+func TestAUMOpenSessionStartedAUMNeverDraws(t *testing.T) {
+	old := aumStartWait
+	aumStartWait = 300 * time.Millisecond
+	t.Cleanup(func() { aumStartWait = old })
+	w, c := openFake(t, sessionScreens(1))
+	blank := ipadtest.AUM{}
+	w.AfterLaunch = func(int, int) json.RawMessage { return blank.Source() }
+	w.SetAUMCrashes(6, 1) // ✕, ☰, FILES, Sessions, Songs, the row
+	res, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Night Drive")
+	if err == nil {
+		t.Fatalf("a load in an AUM that never drew its screen succeeded: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "AUM did not show its screen within 300ms of its start") {
+		t.Errorf("err = %q", err)
+	}
+	if n := w.Launches(); n != 1 {
+		t.Errorf("AUM was started %d time(s), want once", n)
+	}
+	if g := w.Gestures(); g != 0 {
+		t.Errorf("gestures in the started AUM = %d, want none", g)
+	}
+	if n := w.OpenSessions(); n != 0 {
+		t.Errorf("%d WebDriverAgent sessions left open", n)
 	}
 }
 

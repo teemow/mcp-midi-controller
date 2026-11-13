@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -688,5 +689,56 @@ func TestIPadLocked(t *testing.T) {
 		if strings.Contains(req.Path, "unlock") {
 			t.Errorf("the daemon asked %s %s of the iPad: it never unlocks it", req.Method, req.Path)
 		}
+	}
+}
+
+// aum_files save over MCP: a save over a session that exists is verified by
+// the row's saved time, and one that AUM did not take is reported as not
+// verified, whatever session name the menu shows.
+func TestAUMFilesSaveOverMCP(t *testing.T) {
+	old := ipad.AUMSaveSettle
+	ipad.AUMSaveSettle = 50 * time.Millisecond
+	t.Cleanup(func() { ipad.AUMSaveSettle = old })
+	const was = "12. Nov 2026 at 21:38:05"
+	w, s := newIPadServer(t)
+	aum := ipadtest.NewSessionsAUM(w, "Songs", "scratch save", [2]string{"scratch save", was})
+	cs := connectClient(t, s)
+	save := func() (string, map[string]any) {
+		t.Helper()
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "aum_files", Arguments: map[string]any{"action": "save", "name": "scratch save", "confirm": true}})
+		if err != nil || res.IsError {
+			t.Fatalf("aum_files save: %v %s", err, resultText(res))
+		}
+		raw, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return resultText(res), out
+	}
+
+	// AUM's OVERWRITE? is gone before the second press: nothing is written.
+	aum.SetWindow(50 * time.Millisecond)
+	text, out := save()
+	if !strings.HasPrefix(text, "save: NOT verified — NOT saved: the saved time of \"scratch save\"") || !strings.Contains(text, was) || out["verified"] != false {
+		t.Fatalf("a save that did not land:\n%s\n%v", text, out["verified"])
+	}
+	if aum.Writes() != 0 {
+		t.Fatalf("%d writes", aum.Writes())
+	}
+
+	aum.SetWindow(time.Second)
+	text, out = save()
+	saved, _ := aum.Saved("scratch save")
+	data, _ := out["data"].(map[string]any)
+	if !strings.HasPrefix(text, "save: verified — saved over \"scratch save\"") || out["verified"] != true ||
+		data["saved_before"] != was || data["saved_after"] != saved || data["existed"] != true || data["folder"] != "/Songs" || data["panel_closed"] != true {
+		t.Fatalf("a save over the session:\n%s\n%v", text, data)
+	}
+	if aum.Writes() != 1 || saved == was {
+		t.Fatalf("%d writes, saved %q", aum.Writes(), saved)
 	}
 }

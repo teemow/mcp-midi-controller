@@ -163,8 +163,14 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 	if len(args.Plugins) == 0 {
 		return textResult("/plugins: name the instruments to host (list_song_plugins kind=instrument)", true), nil
 	}
+	if len(args.Plugins) > song.MaxSessionTracks {
+		return textResult(fmt.Sprintf("/plugins: %d instruments, and one session hosts %d at most", len(args.Plugins), song.MaxSessionTracks), true), nil
+	}
 	if s.ipad != nil && !args.Confirm {
 		return textResult("open_sound_lab needs confirm: true: loading replaces the session open in AUM, and unsaved changes there are lost", true), nil
+	}
+	if busy := s.stemsBusy("open_sound_lab"); busy != nil {
+		return busy, nil
 	}
 	cat := songCatalog()
 	doc := song.Song{
@@ -346,6 +352,9 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 		return textResult(fmt.Sprintf("name the track or the plugin to audition (tracks of %q: %s)", cs.id, trackIDs(cs)), true), nil
 	}
 	node := tp.Nodes[0]
+	if node.IsFile() {
+		return textResult(fmt.Sprintf("/track: %q plays a file (%s), not an instrument: there is no preset to audition", tp.ID, node.File), true), nil
+	}
 
 	// The presets to play.
 	names := append([]string(nil), args.Presets...)
@@ -429,6 +438,9 @@ func (s *Server) handleAuditionSound(ctx context.Context, req *mcp.CallToolReque
 	}
 
 	// The rig must be there, and the session the song's.
+	if busy := s.stemsBusy("audition_sound"); busy != nil {
+		return busy, nil
+	}
 	if st := s.player.Status(); st.Playing {
 		return textResult(fmt.Sprintf("audition_sound: %q is playing; stop_song first", st.Song), true), nil
 	}
@@ -651,6 +663,8 @@ func cleanPath(sg *song.Song, track string) (bool, string) {
 		switch {
 		case len(t.Effects) > 0:
 			return false, "the track has effects"
+		case len(t.Modulators) > 0:
+			return false, "the track has modulators"
 		case len(t.Instrument.Params) > 0:
 			return false, "the song sets parameters on the instrument"
 		case t.Level != nil && *t.Level != 0:

@@ -102,32 +102,48 @@ func (s *Server) reimportCurrentAUMSession() {
 // is not a staged session's (a tap named by hand). The work runs in a
 // goroutine (tracked by s.bg), so the tap's stream is read meanwhile.
 func (s *Server) OnAudioTapConnected(name string) {
-	id, strip, ok := song.ParseTapName(name)
-	if !ok || strip != song.MasterTap {
+	if !s.stagedMasterTap(name) {
 		return
 	}
-	if path, err := resolveAUMSessionPath("", id); err != nil || !isFile(path) {
-		return
-	}
-	s.bg.Go(func() { s.tapOpen(id, "the session's tap connected") })
-}
-
-// tapOpen is OnAudioTapConnected's body: sessionOpen, for a session whose
-// master tap is still the one that connected last when its turn comes. It
-// waits for currentMu behind the imports before it, and meanwhile the tap may
-// have dropped or another session's master may have dialled in: the older
-// word would then replace the marker, the rig and the surface of the session
-// AUM has open with its own.
-func (s *Server) tapOpen(id, trigger string) {
-	s.currentMu.Lock()
-	defer s.currentMu.Unlock()
-	if s.audio != nil {
-		if open := s.tapSession(); open != id {
-			log.Printf("current AUM session: %q's tap is not the newest master (that is %q): left as is", id, open)
+	id, _, _ := song.ParseTapName(name)
+	s.bg.Go(func() {
+		s.currentMu.Lock()
+		defer s.currentMu.Unlock()
+		// The work may have waited behind an import meanwhile: the tap may
+		// have gone, or the master of a session loaded since dialled in.
+		// Only the newest master that is connected names the open session.
+		if newest, ok := s.newestMasterTap(); ok && newest != name {
+			log.Printf("current AUM session: %q's tap is no longer the newest connected master (%q), ignored", id, newest)
 			return
 		}
+		s.sessionOpenLocked(id, "the session's tap connected")
+	})
+}
+
+// newestMasterTap is the name of the most recently connected master tap of a
+// staged session that is streaming now ("" when none is). known is false
+// without a tap registry: there is nothing to ask, and the tap that connected
+// is taken at its word.
+func (s *Server) newestMasterTap() (name string, known bool) {
+	if s.audio == nil {
+		return "", false
 	}
-	s.sessionOpenLocked(id, trigger)
+	for _, st := range s.audio.Connected() {
+		if s.stagedMasterTap(st.Name()) {
+			return st.Name(), true
+		}
+	}
+	return "", true
+}
+
+// stagedMasterTap reports whether name is the master tap of a staged session.
+func (s *Server) stagedMasterTap(name string) bool {
+	id, strip, ok := song.ParseTapName(name)
+	if !ok || strip != song.MasterTap {
+		return false
+	}
+	path, err := resolveAUMSessionPath("", id)
+	return err == nil && isFile(path)
 }
 
 func isFile(path string) bool {
