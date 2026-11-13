@@ -355,11 +355,53 @@ func (s *Song) StemSong(st Stem, title string, l StemLayout) (*Song, error) {
 	return out, nil
 }
 
+// StripOf returns the strip the song declares for st in its mix (StemStrips),
+// when st is that stem of the document's own grouping: the same name and the
+// same tracks. A stem of another grouping (record_song_stems' groups) takes no
+// strip, not even one declared under its name: the strip was written for
+// other tracks.
+func (s *Song) StripOf(st Stem) (StemStrip, bool) {
+	strip, ok := s.StemStrips[st.Name]
+	if !ok {
+		return StemStrip{}, false
+	}
+	own, err := s.Stems(nil)
+	if err != nil {
+		return StemStrip{}, false
+	}
+	for _, o := range own {
+		if o.Name == st.Name {
+			return strip, slices.Equal(o.Tracks, st.Tracks)
+		}
+	}
+	return StemStrip{}, false
+}
+
+// StripsLeftOut names the strips the song declares that a mix of these stems
+// plays through none of (StripOf): those of stems the grouping does not have,
+// or has with other tracks. Empty when the stems are the document's own.
+func (s *Song) StripsLeftOut(stems []Stem) []string {
+	applied := map[string]bool{}
+	for _, st := range stems {
+		if _, ok := s.StripOf(st); ok {
+			applied[st.Name] = true
+		}
+	}
+	var out []string
+	for _, name := range sortedKeys(s.StemStrips) {
+		if !applied[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // MixSong is the song that plays the stems' recordings together: one track
 // per stem, each a File Player with the stem's file (files, by stem name, a
-// path in AUM's Recordings) at unity, under the whole song's master effects
-// with their scenes and ramps, for the same bars, lead-in and tail. The
-// tracks' own faders, scenes and ramps are in the recordings.
+// path in AUM's Recordings) through the stem's strip (StripOf: its level and
+// effects; unity and dry for a stem without one), under the whole song's
+// master effects with their scenes and ramps, for the same bars, lead-in and
+// tail. The tracks' own faders, scenes and ramps are in the recordings.
 func (s *Song) MixSong(stems []Stem, files map[string]string, title string, l StemLayout) (*Song, error) {
 	master := func(track string) bool { return track == MasterTrack }
 	out := s.derive(title, l, master, func(r Ramp) bool { return r.Track == MasterTrack }, false)
@@ -370,7 +412,15 @@ func (s *Song) MixSong(stems []Stem, files map[string]string, title string, l St
 		if file == "" {
 			return nil, fmt.Errorf("the stem %q has no recording", st.Name)
 		}
-		out.Tracks = append(out.Tracks, Track{ID: st.Name, Instrument: Plugin{File: file}})
+		t := Track{ID: st.Name, Instrument: Plugin{File: file}}
+		if strip, ok := s.StripOf(st); ok {
+			if strip.Level != nil {
+				level := *strip.Level
+				t.Level = &level
+			}
+			t.Effects = slices.Clone(strip.Effects)
+		}
+		out.Tracks = append(out.Tracks, t)
 	}
 	out.Description = fmt.Sprintf("The mix of %q from the recordings of its stems (%s), through its master effects.", s.Title, strings.Join(names, ", "))
 	out.Master = slices.Clone(s.Master)

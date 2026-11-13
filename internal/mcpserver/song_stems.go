@@ -644,7 +644,7 @@ func (s *Server) registerSongStemTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "mix_song_stems",
 		Description: "Mix a song from the recordings of its stems (record_song_stems): write the mix as a song of its own, load it and play it. " +
-			"The mix has one track per stem, each a File Player with the stem's file at unity, and the whole song's master effects with their scenes and ramps, for the same bars, lead-in and tail. It is stored as <song>_mix (mix names another id) and is a song like any other: load_song, play_song, mix_song and check_song take it, and a stem's level is its track's level there. Writing it again replaces it. " +
+			"The mix has one track per stem, each a File Player with the stem's file through the stem's strip (the song's stems: a level and effects; at unity and dry for a stem without one), and the whole song's master effects with their scenes and ramps, for the same bars, lead-in and tail. It is stored as <song>_mix (mix names another id) and is a song like any other: load_song, play_song, mix_song and check_song take it. Writing it again replaces it, so a stem's level and effects in the mix are changed in the song's stems, which needs no new take. " +
 			"Then the call loads the mix (load_song: it replaces the session open in AUM, so confirm: true) and plays it from the session's sequencer, recording it at the master's tap unless record is false (play_song record: true; upload as there). " +
 			"It refuses when a stem has no take, or a take of the song as it was before a change (stale: true mixes those all the same).",
 		InputSchema: json.RawMessage(`{
@@ -1132,7 +1132,11 @@ func (s *Server) handleGetSongStems(ctx context.Context, req *mcp.CallToolReques
 	} else {
 		rep.Next = "record_song_stems records what is missing or has changed"
 	}
-	return structResult(rep.text(), map[string]any{"song": plan.id, "done": true, "report": rep}), nil
+	out := map[string]any{"song": plan.id, "done": true, "report": rep}
+	if left := plan.src.StripsLeftOut(plan.stems); len(left) > 0 {
+		out["strips_left_out"] = left
+	}
+	return structResult(rep.text()+stripsLeftOutText(plan.src, plan.stems), out), nil
 }
 
 // --- the mix ------------------------------------------------------------------
@@ -1203,7 +1207,7 @@ func (s *Server) handleMixSongStems(ctx context.Context, req *mcp.CallToolReques
 		return textResult("mix_song_stems: "+err.Error(), true), nil
 	}
 	head := fmt.Sprintf("# The mix of %q (%s) from the recordings of its stems, written by mix_song_stems on %s.\n"+
-		"# A track's level is that stem's level in the mix. mix_song_stems writes this document anew.\n",
+		"# A track's level and effects are that stem's strip, from the song's stems; change them there: mix_song_stems writes this document anew.\n",
 		plan.src.Title, id, time.Now().Format("2006-01-02 15:04"))
 	if _, err := s.songs.Save(mixID, append([]byte(head), body...)); err != nil {
 		return textResult("mix_song_stems: the mix could not be stored: "+err.Error(), true), nil
@@ -1219,13 +1223,17 @@ func (s *Server) handleMixSongStems(ctx context.Context, req *mcp.CallToolReques
 		fmt.Fprintf(&b, " under %d master effect(s)", len(mix.Master))
 	}
 	b.WriteByte('\n')
-	for _, t := range rep.Stems {
-		fmt.Fprintf(&b, "  %-10s %s\n", t.Stem, t.File)
+	for i, t := range rep.Stems {
+		fmt.Fprintf(&b, "  %-10s %s%s\n", t.Stem, t.File, stemStripText(plan.src, plan.stems[i], cs.catalog))
 	}
+	b.WriteString(stripsLeftOutText(plan.src, plan.stems))
 	if len(stale) > 0 {
 		fmt.Fprintf(&b, "note: the stem(s) %s have changed since their takes; the mix plays the takes as they are\n", strings.Join(stale, ", "))
 	}
 	out := map[string]any{"song": id, "mix": mixID, "files": files, "stale": stale}
+	if left := plan.src.StripsLeftOut(plan.stems); len(left) > 0 {
+		out["strips_left_out"] = left
+	}
 
 	if s.ipad != nil && !args.Confirm {
 		b.WriteString("not loaded: loading replaces the session open in AUM and needs confirm: true (or load_song the mix)\n")

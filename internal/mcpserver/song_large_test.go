@@ -50,6 +50,10 @@ func TestLargeSongTools(t *testing.T) {
 		{"an unknown plugin in the second stem", strings.Replace(largeSong(nil), "  - id: t12\n    group: high\n    instrument: {plugin: syn1,", "  - id: t12\n    group: high\n    instrument: {plugin: organ,", 1),
 			`/tracks/11/instrument/plugin: no staged AUv3 probe "organ"`},
 		{"two tracks of a stem on one channel", largeSong(map[int]string{8: "    channel: 1\n"}), `/tracks/8/channel: MIDI channel 1 is already track "t8"'s in the stem "high"`},
+		{"an unknown plugin on a stem's strip", strings.Replace(largeSong(nil), "patterns:\n", "stems:\n  high: {effects: [{plugin: organ}]}\npatterns:\n", 1),
+			`/stems/high/effects/0/plugin: no staged AUv3 probe "organ"`},
+		{"a strip for a stem the song does not have", strings.Replace(largeSong(nil), "patterns:\n", "stems:\n  mid: {level: -3}\npatterns:\n", 1),
+			`/stems/mid: the song has no stem "mid" (its stems are low, high)`},
 	} {
 		if res := call(t, s.handleSaveSong, map[string]any{"yaml": tc.doc}); !res.IsError || !strings.Contains(resultText(res), tc.want) {
 			t.Errorf("%s: %s\nwant an error that says %q", tc.name, resultText(res), tc.want)
@@ -174,6 +178,13 @@ func TestLargeSongTools(t *testing.T) {
 		t.Errorf("record_song_stems with one group of thirteen: %s", resultText(res))
 	}
 
+	// A stem's strip in the mix is listed with the stem.
+	withStrip := strings.Replace(largeSong(nil), "patterns:\n", "stems:\n  high: {level: -3, effects: [{id: slap, plugin: dly1, params: {Mix: 0.3}}]}\npatterns:\n", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": withStrip, "dry_run": true}); res.IsError ||
+		!strings.Contains(resultText(res), "  high: 6 track(s); in the mix: -3 dB > TapeDelay\n") || !strings.Contains(resultText(res), "  low: 7 track(s)\n") {
+		t.Errorf("a song with a stem's strip: %s", resultText(res))
+	}
+
 	// A song of twelve tracks is one session, as it always was.
 	twelve := strings.Replace(largeSong(nil), "  - id: t13\n    group: high\n    instrument: {plugin: syn1, preset: Warm Pad}\n", "", 1)
 	twelve = strings.ReplaceAll(strings.Replace(twelve, "Big Song", "Twelve", 1), ", t13: riff", "")
@@ -181,6 +192,17 @@ func TestLargeSongTools(t *testing.T) {
 	if text := resultText(res); res.IsError || !strings.Contains(text, "tracks:\n  ch1  t1 ") || !strings.Contains(text, "  ch12 t12 ") ||
 		!strings.Contains(text, "session: not authored yet (load_song)") || strings.Contains(text, "no session of its own") {
 		t.Errorf("a song of twelve tracks: %s", text)
+	}
+	// One without groups is twelve stems of a track each, listed when it
+	// gives one of them a strip in the mix.
+	single := strings.ReplaceAll(strings.ReplaceAll(twelve, "    group: low\n", ""), "    group: high\n", "")
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": single, "dry_run": true}); res.IsError || strings.Contains(resultText(res), "stems (") {
+		t.Errorf("a song of one session without groups or strips lists stems: %s", resultText(res))
+	}
+	single = strings.Replace(single, "patterns:\n", "stems:\n  t3: {level: -3}\npatterns:\n", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": single, "dry_run": true}); res.IsError ||
+		!strings.Contains(resultText(res), "  t3         t3; in the mix: -3 dB\n") || !strings.Contains(resultText(res), "  t2         t2\n") {
+		t.Errorf("a song of one session with a strip: %s", resultText(res))
 	}
 }
 
@@ -242,6 +264,12 @@ func TestRecordLargeSongStems(t *testing.T) {
 		t.Errorf("get_song after the stems are recorded: %s", text)
 	}
 
+	// A strip for a stem in the mix records nothing: the takes stay current.
+	withStrip := strings.Replace(largeSong(nil), "patterns:\n", "stems:\n  high: {level: -3, effects: [{id: slap, plugin: dly1, params: {Mix: 0.3}}]}\npatterns:\n", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": withStrip}); res.IsError || !strings.Contains(resultText(res), "takes: 2 of the 2 stems have a take of the song as it is now\n") {
+		t.Fatalf("save with a stem's strip: %s", resultText(res))
+	}
+
 	// The mix: a song of one session, written, loaded and played.
 	r.opens("Big Song mix", strips("low", "high"))
 	res = call(t, s.handleMixSongStems, map[string]any{"song": "big_song", "confirm": true, "record": false})
@@ -251,6 +279,8 @@ func TestRecordLargeSongStems(t *testing.T) {
 	}
 	for _, want := range []string{
 		`wrote the mix of "Big Song" as the song "big_song_mix": 2 file track(s) under 1 master effect(s)`,
+		"  low        Big Song stem low/Master - 300 bpm - 001.wav\n",
+		"  high       Big Song stem high/Master - 300 bpm - 001.wav; in the mix: -3 dB > TapeDelay\n",
 		`"Big Song mix" is loaded in AUM as Songs/Big Song mix`,
 		`low        file "Big Song stem low/Master - 300 bpm - 001.wav": 191993 frames, 0:04.000, 19.999 beats (whole beats)`,
 		`high       file "Big Song stem high/Master - 300 bpm - 001.wav": `,
@@ -267,6 +297,8 @@ func TestRecordLargeSongStems(t *testing.T) {
 	mix, _, err := s.songs.Load("big_song_mix")
 	if err != nil || len(mix.Tracks) != 2 || mix.StemsOnly() || !mix.Tracks[0].IsFile() || len(mix.Master) != 1 {
 		t.Errorf("the stored mix = %+v, %v", mix, err)
+	} else if high := mix.Tracks[1]; high.Level == nil || *high.Level != -3 || len(high.Effects) != 1 || high.Effects[0].EffectID() != "slap" || len(mix.Tracks[0].Effects) != 0 {
+		t.Errorf("the stored mix's strips: low %+v, high %+v; want high at -3 dB through the delay", mix.Tracks[0], high)
 	}
 	if text := resultText(call(t, s.handleGetSong, map[string]any{"song": "big_song"})); !strings.Contains(text, `mix: the song "big_song_mix"`) {
 		t.Errorf("get_song after the mix: %s", text)

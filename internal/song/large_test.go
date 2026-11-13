@@ -3,6 +3,7 @@ package song
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -371,6 +372,9 @@ func TestDocsLargeExample(t *testing.T) {
 	if !s.StemsOnly() || len(s.Tracks) != 14 || len(stems) != 5 || stems[1].Name != "winds" || len(stems[1].Tracks) != 4 {
 		t.Errorf("the example is %d tracks in the stems %+v, want fourteen in five", len(s.Tracks), stems)
 	}
+	if b := s.StemStrips["brass"]; len(s.StemStrips) != 2 || b.Level == nil || *b.Level != -2 || len(b.Effects) != 1 {
+		t.Errorf("the example's strips in the mix are %+v, want the strings' and the brass's", s.StemStrips)
+	}
 	tl, err := Compile(s, nil)
 	if err != nil {
 		t.Fatalf("the example in docs/songs.md does not compile: %v", err)
@@ -394,5 +398,177 @@ func TestDocsLargeExample(t *testing.T) {
 		if _, err := s.StemSong(st, "Chamber Piece stem "+st.Name, l); err != nil {
 			t.Errorf("the stem %s: %v", st.Name, err)
 		}
+	}
+}
+
+// TestStemStrips checks a song's own strips for its stems in their mix: what
+// is accepted and refused, with its place in the document, that the mix plays
+// each stem's recording through its strip, and that a stem is recorded
+// without it.
+func TestStemStrips(t *testing.T) {
+	strips := "stems:\n" +
+		"  g1:\n    level: -2.5\n    effects:\n      - {id: echo, plugin: delay, params: {Mix: 0.3}}\n      - {id: room, plugin: reverb, preset: Large Hall, params: {Size: 0.8}}\n" +
+		"  g3: {effects: [{plugin: reverb, params: {Mix: 0.1}}]}\n"
+	plain := channelSong(nil)
+	doc := strings.Replace(plain, "patterns:\n", strips+"patterns:\n", 1)
+	s := mustParse(t, doc)
+	if err := Check(s, testCatalog()); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	for _, tc := range []struct{ name, from, to, want string }{
+		{"a stem the song does not have", "  g3: {", "  g9: {", `/stems/g9: the song has no stem "g9" (its stems are g1, g2, g3, g4, g5)`},
+		{"a level above the fader", "level: -2.5", "level: 7", "/stems/g1/level: 7 dB is above the fader's +6 dB"},
+		{"two effects of one id", "{id: room, plugin: reverb", "{id: echo, plugin: reverb", `/stems/g1/effects/1/id: duplicate effect "echo"`},
+		{"a file as an effect", "{id: echo, plugin: delay,", `{id: echo, file: "x/y.wav", plugin: delay,`, "/stems/g1/effects/0/file: only a track's instrument can be a file"},
+	} {
+		bad := strings.Replace(doc, tc.from, tc.to, 1)
+		if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	// What only the staged plugins can tell is said by Check, with the place
+	// in the document as well.
+	for _, tc := range []struct{ name, from, to, want string }{
+		{"an unknown plugin", "plugin: delay,", "plugin: organ,", `/stems/g1/effects/0/plugin: no staged AUv3 probe "organ"`},
+		{"an unknown parameter", "params: {Size: 0.8}", "params: {Wobble: 0.8}", "/stems/g1/effects/1/params/Wobble: Test Reverb has no writable parameter"},
+		{"a value out of range", "params: {Mix: 0.3}", "params: {Mix: 3}", "/stems/g1/effects/0/params/Mix:"},
+		{"an unknown preset", "preset: Large Hall", "preset: Cathedral", "/stems/g1/effects/1/preset:"},
+	} {
+		bad := mustParse(t, strings.Replace(doc, tc.from, tc.to, 1))
+		if err := Check(bad, testCatalog()); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+
+	stems, err := s.Stems(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := s.StemLayout(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A stem is recorded without its strip: its song, and so its take, is the
+	// same with and without one.
+	without := mustParse(t, plain)
+	files := map[string]string{}
+	for _, st := range stems {
+		sg, err := s.StemSong(st, "Many stem "+st.Name, l)
+		if err != nil {
+			t.Fatalf("StemSong %s: %v", st.Name, err)
+		}
+		bare, err := without.StemSong(st, "Many stem "+st.Name, l)
+		if err != nil {
+			t.Fatalf("StemSong %s without strips: %v", st.Name, err)
+		}
+		if sg.StemStrips != nil {
+			t.Errorf("stem %s carries the strips %+v", st.Name, sg.StemStrips)
+		}
+		a, err := Compile(sg, mustPlan(t, sg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := Compile(bare, mustPlan(t, bare))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Fingerprint != b.Fingerprint || a.Sequence().Fingerprint() != b.Sequence().Fingerprint() {
+			t.Errorf("stem %s: the strips change its session (%s, %s) from (%s, %s)", st.Name, a.Fingerprint, a.Sequence().Fingerprint(), b.Fingerprint, b.Sequence().Fingerprint())
+		}
+		files[st.Name] = "Many stem " + st.Name + "/Master - 120 bpm - 001.wav"
+	}
+
+	// The mix plays each recording through its stem's strip, and a stem
+	// without one at unity and dry.
+	mix, err := s.MixSong(stems, files, "Many mix", l)
+	if err != nil {
+		t.Fatalf("MixSong: %v", err)
+	}
+	g1, g2, g3 := mix.Tracks[0], mix.Tracks[1], mix.Tracks[2]
+	if g1.ID != "g1" || g1.Level == nil || *g1.Level != -2.5 || len(g1.Effects) != 2 || g1.Effects[1].Preset != "Large Hall" {
+		t.Errorf("the mix's g1 = level %v, effects %+v; want -2.5 dB through the delay and the reverb", g1.Level, g1.Effects)
+	}
+	if g2.Level != nil || len(g2.Effects) != 0 {
+		t.Errorf("the mix's g2 = level %v, effects %+v; want unity and dry", g2.Level, g2.Effects)
+	}
+	if g3.Level != nil || len(g3.Effects) != 1 {
+		t.Errorf("the mix's g3 = level %v, effects %+v; want unity through the reverb", g3.Level, g3.Effects)
+	}
+	if mix.StemStrips != nil {
+		t.Errorf("the mix carries the strips %+v; its tracks are them", mix.StemStrips)
+	}
+	p := mustPlan(t, mix)
+	tl, err := Compile(mix, p)
+	if err != nil {
+		t.Fatalf("the mix does not compile: %v", err)
+	}
+	if n := len(p.Tracks[0].Nodes); n != 3 || p.Tracks[0].Nodes[1].Name != "Test Delay" || p.Tracks[0].Nodes[2].Name != "Test Reverb" {
+		t.Errorf("the mix's first strip hosts %d nodes, want the file player, the delay and the reverb", n)
+	}
+	unity := mustParse(t, plain)
+	plainMix, err := unity.MixSong(stems, files, "Many mix", l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ptl, err := Compile(plainMix, mustPlan(t, plainMix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.Fingerprint == ptl.Fingerprint {
+		t.Errorf("the mix's session is the same with and without the strips (%s)", tl.Fingerprint)
+	}
+	// The mix is stored as a document and read back as the same song.
+	body, err := mix.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back := mustParse(t, string(body))
+	if !strings.Contains(string(body), "level: -2.5") || len(back.Tracks[0].Effects) != 2 || back.Tracks[0].Effects[0].EffectID() != "echo" {
+		t.Errorf("the stored mix lost the strip:\n%s", body)
+	}
+
+	if left := s.StripsLeftOut(stems); len(left) != 0 {
+		t.Errorf("the document's own stems leave out the strips %v", left)
+	}
+
+	// Takes of another grouping are of other stems: a strip was written for
+	// the tracks of the document's stem, and plays for no other, not even a
+	// stem of its name. The strips a mix of them leaves out are named.
+	for _, tc := range []struct {
+		name   string
+		groups map[string][]string
+		left   []string
+	}{
+		{"other names", map[string][]string{"front": {"t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"}, "back": {"t9", "t10", "t11", "t12", "t13", "t14", "t15"}}, []string{"g1", "g3"}},
+		{"a strip's name for other tracks", map[string][]string{"g1": {"t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"}, "g3": {"t9", "t10", "t11", "t12", "t13", "t14", "t15"}}, []string{"g1", "g3"}},
+	} {
+		other, err := s.Stems(tc.groups)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		for _, st := range other {
+			files[st.Name] = st.Name + "/Master - 120 bpm - 001.wav"
+		}
+		m, err := s.MixSong(other, files, "Many mix", l)
+		if err != nil {
+			t.Fatalf("%s: MixSong: %v", tc.name, err)
+		}
+		for _, tr := range m.Tracks {
+			if tr.Level != nil || len(tr.Effects) != 0 {
+				t.Errorf("%s: the mix's %s plays through %v dB, %+v; want unity and dry", tc.name, tr.ID, tr.Level, tr.Effects)
+			}
+		}
+		if left := s.StripsLeftOut(other); !slices.Equal(left, tc.left) {
+			t.Errorf("%s: strips left out = %v, want %v", tc.name, left, tc.left)
+		}
+	}
+
+	// A song of one session has stems too, and strips for them: a track
+	// without a group is a stem by its id.
+	small := strings.Replace(testSong, "patterns:\n", "stems:\n  bass: {level: -3}\npatterns:\n", 1)
+	if _, err := Parse([]byte(small)); err != nil {
+		t.Errorf("a strip for an ungrouped track's stem: %v", err)
 	}
 }

@@ -205,6 +205,9 @@ arrangement: [verse, chorus, verse, chorus]
   its channels are then counted in each stem: see
   [More than twelve tracks](#more-than-twelve-tracks).
 - **master** — effects on the master strip, after its fader.
+- **stems** — optional: each stem's own strip in the mix of its recordings,
+  by stem name: its `level` and its `effects`. See
+  [Stems](#stems), "A stem's strip in the mix".
 - **patterns** — the phrases; see [Notation](#notation).
 - **scenes** — named sound settings; see [Sound](#sound).
 - **sections** — for a number of `bars`, every track listed under `play` plays
@@ -1285,13 +1288,49 @@ recording running it reports the takes kept for that song, and whether each is
 still of the song as it is.
 
 **The mix.** `mix_song_stems` writes a song `<song>_mix` (`mix` names another
-id): one track per stem that plays the stem's file at unity, the whole song's
-master effects with their scenes and ramps, the same sections, lead-in and
-tail. It is a song like any other. A stem's level in the mix is its track's
-`level` there, and `load_song`, `play_song`, `check_song` and `mix_song` take
-it. Running `mix_song_stems` again writes it anew. Then the call loads it and
+id): one track per stem that plays the stem's file through the stem's strip
+(below; at unity and dry for a stem without one), the whole song's master
+effects with their scenes and ramps, the same sections, lead-in and tail. It
+is a song like any other: `load_song`, `play_song`, `check_song` and
+`mix_song` take it. Running `mix_song_stems` again writes it anew, so a stem's
+level and effects in the mix are changed in the song. Then the call loads it and
 plays it from its sequencer, recorded at the master's tap as `play_song` with
 `record: true` does (`record: false`, `play: false` and `upload` as there).
+
+**A stem's strip in the mix.** A stem's track in the mix is its strip there,
+and the song can say what that strip is: under `stems`, by the stem's name, a
+`level` in dB and `effects`, a chain as on any track.
+
+```yaml
+stems:
+  strings:
+    effects:
+      - {id: eq, plugin: eq, params: {Low Cut: 80}}
+      - {id: room, plugin: hall, params: {Mix: 12}}
+  brass:
+    level: -2
+    effects:
+      - {id: eq, plugin: eq, params: {Low Cut: 40, High Shelf: -2}}
+      - {id: room, plugin: hall, params: {Mix: 30}}
+      - {id: comp, plugin: compressor, params: {Ratio: 2}}
+```
+
+`mix_song_stems` writes the strip onto the stem's file track: the recording
+plays through those effects at that level, before the master's. That is where
+a row of an orchestra gets the room it sits in, its own equalizer or a
+compressor of its own, on the recording of its group. A stem the song leaves
+out plays at unity and dry, as before. A stem is recorded without its strip,
+so a change to `stems` needs no new take: it is a new mix of the same takes,
+and `mix_song_stems` with the takes as they are writes it. `save_song`
+checks the strips' plugins, presets and parameters against the staged
+plugins, and names a mistake with its place under `stems`; a strip for a stem
+the song does not have is an error. `get_song` lists each stem with its strip,
+and the mix's report each file with the strip it plays through.
+
+A strip is written for the tracks of the document's own stem. Takes recorded
+with `groups` (another grouping) are of other stems: their mix plays them at
+unity and dry, even a stem that has a strip's name but other tracks, and
+`mix_song_stems` and `get_song_stems` name the strips left out.
 
 **Length.** A take's exact length is read where the daemon can read it: in the
 panel of the File Player that has it loaded. So it is the mix's load that
@@ -1360,6 +1399,10 @@ tracks:
 master:
   - {id: hall, plugin: hall, params: {Mix: 0.2}}
   - {id: limiter, plugin: limiter}
+
+stems:                                    # the rows of the stage, nearer and farther
+  strings: {effects: [{id: room, plugin: hall, params: {Mix: 0.1}}]}
+  brass:   {level: -2, effects: [{id: room, plugin: hall, params: {Mix: 0.3}}]}
 
 patterns:
   line:  {step: 1/8, notes: "A4 . C5 . E5 . C5 . | F4 . A4 . C5 . A4 ."}
