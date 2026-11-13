@@ -889,31 +889,46 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	if row == nil {
 		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)", name, sessionsFolder(path), fileNames(scan.Rows))
 	}
+	held := strings.TrimSuffix(row.Name, ".aumproj")
 	if err := d.hold(row.text, "session "+row.Name); err != nil {
 		return AUMResult{}, err
 	}
-	found, err := d.until(aumWait, func(st AUMState) bool { return d.findText("Rename", nil) != nil || d.findText("Copy URL", nil) != nil })
+	sheet, err := d.waitShareSheet(func(*shareSheet) bool { return true })
 	if err != nil {
 		return AUMResult{}, err
 	}
-	if !found {
-		return d.result("rename", false, "the session's share sheet did not appear", nil), nil
+	if sheet == nil {
+		return d.result("rename", false, fmt.Sprintf("NOT renamed: the long-press on %q opened no share sheet", row.Name), nil), nil
 	}
-	if d.findText("Rename", nil) == nil {
-		// The share sheet lists AUM's actions after its "more" entry.
-		for _, more := range []string{"More", "Mehr", "Edit Actions…", "Aktionen bearbeiten …"} {
-			if e := d.findText(more, nil); e != nil {
-				if err := d.tapRect(e.Rect, more); err != nil {
-					return AUMResult{}, err
-				}
-				break
-			}
+	// The sheet names the file it is for: another row's is closed untouched.
+	if c := strings.TrimSuffix(sheet.caption, ".aumproj"); c != "" && c != held {
+		closed := d.closeShareSheet(sheet)
+		return AUMResult{}, fmt.Errorf("the share sheet that opened is for %q, not for %q: %s, nothing renamed", sheet.caption, row.Name, closed)
+	}
+	rename := sheet.action("Rename")
+	if rename == nil {
+		// The row of actions ends in an entry that unfolds the rest as a
+		// list, AUM's Rename first.
+		more := sheet.action(shareMore...)
+		if more == nil {
+			closed := d.closeShareSheet(sheet)
+			return AUMResult{}, fmt.Errorf("the share sheet of %q lists no Rename and no entry that unfolds more actions (%s): %s, nothing renamed", row.Name, sheet.names(), closed)
 		}
-		if _, err := d.until(aumWait, func(st AUMState) bool { return d.findText("Rename", nil) != nil }); err != nil {
+		if err := d.tapRect(more.rect, more.name+", which unfolds the sheet's actions"); err != nil {
 			return AUMResult{}, err
 		}
+		if sheet, err = d.waitShareSheet(func(s *shareSheet) bool { return s.action("Rename") != nil }); err != nil {
+			return AUMResult{}, err
+		}
+		if sheet == nil {
+			return d.result("rename", false, fmt.Sprintf("NOT renamed: the share sheet of %q closed when its actions were unfolded", row.Name), nil), nil
+		}
+		if rename = sheet.action("Rename"); rename == nil {
+			closed := d.closeShareSheet(sheet)
+			return AUMResult{}, fmt.Errorf("the share sheet of %q lists no Rename with its actions unfolded (%s): %s, nothing renamed", row.Name, sheet.names(), closed)
+		}
 	}
-	if err := d.tapText("Rename", nil); err != nil {
+	if err := d.tapRect(rename.rect, "Rename in the share sheet of "+row.Name); err != nil {
 		return AUMResult{}, err
 	}
 	// The dialog takes the sheet's place: it is told by its text field, not
@@ -923,10 +938,23 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 		return AUMResult{}, err
 	}
 	if dlg == nil {
-		return d.result("rename", false, "the RENAME dialog did not open", nil), nil
+		closed := "no share sheet is open"
+		if left := d.shareSheet(); left != nil {
+			closed = d.closeShareSheet(left)
+		}
+		return d.result("rename", false, fmt.Sprintf("NOT renamed: the RENAME dialog did not open (%s)", closed), nil), nil
 	}
-	if _, err := d.fillText(0, newName); err != nil {
+	// It opens holding the name of the session it renames. Any other name
+	// is another session's dialog, and nothing is typed into it.
+	if got := strings.TrimSuffix(dlg.Fields[0], ".aumproj"); got != held {
+		return AUMResult{}, fmt.Errorf("the RENAME dialog holds %q, not %q: %s, nothing renamed", dlg.Fields[0], row.Name, d.cancelDialog(dlg))
+	}
+	typed, err := d.fillText(0, newName)
+	if err != nil {
 		return AUMResult{}, err
+	}
+	if typed != newName {
+		return d.result("rename", false, fmt.Sprintf("NOT renamed: the RENAME dialog's field reads %q after %q was typed into it; %s", typed, newName, d.cancelDialog(dlg)), nil), nil
 	}
 	if err := d.confirmDialog(dlg); err != nil {
 		return AUMResult{}, err
@@ -938,6 +966,16 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	stayed := ""
 	if !closed {
 		stayed = "; the RENAME dialog stayed open after it was confirmed"
+	}
+	// AUM answers a name it does not take with an alert of its own ("Sorry: A
+	// file with that name already exists!"), which stays until its OK and
+	// would keep FILES from opening.
+	said, err := d.answerAlert()
+	if err != nil {
+		return AUMResult{}, err
+	}
+	if said != "" {
+		stayed += "; AUM answered " + strconv.Quote(said)
 	}
 
 	if err := d.openSessions(path); err != nil {
@@ -957,9 +995,9 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	where := sessionsFolder(path)
 	switch {
 	case now && !old && after.End:
-		return d.result("rename", true, fmt.Sprintf("renamed %q to %q: %s lists %q and no longer %q", name, newName, where, newName, name), after.Rows), nil
+		return d.result("rename", true, fmt.Sprintf("renamed %q to %q: %s lists %q and no longer %q%s", name, newName, where, newName, name, stayed), after.Rows), nil
 	case now && !old:
-		return d.result("rename", false, fmt.Sprintf("%s lists %q, but its list went on after %d pages: not known whether it still lists %q", where, newName, filePages, name), after.Rows), nil
+		return d.result("rename", false, fmt.Sprintf("%s lists %q, but its list went on after %d pages: not known whether it still lists %q%s", where, newName, filePages, name, stayed), after.Rows), nil
 	case old && now:
 		return d.result("rename", false, fmt.Sprintf("NOT renamed: %s still lists %q, and lists %q as well%s", where, name, newName, stayed), after.Rows), nil
 	case old:
@@ -967,6 +1005,177 @@ func (d *AUMDriver) renameSession(path []string, name, newName string) (AUMResul
 	default:
 		return d.result("rename", false, fmt.Sprintf("%s lists neither %q nor %q after the rename%s", where, name, newName, stayed), after.Rows), nil
 	}
+}
+
+// shareSheet is iOS's share sheet, which a long-press on a session's row of
+// FILES opens: a popover that another process draws. Its elements report
+// their frames from the popover's corner, not from the screen's (on the iPad
+// Copy was at (18,257) in a popover at (816,282)), so each frame kept here
+// has the popover's origin added. Only the sheet's actions are kept: the
+// apps it offers to send the file to are never tapped.
+type shareSheet struct {
+	frame   Rect
+	caption string // the file the sheet is for
+	actions []shareAction
+}
+
+type shareAction struct {
+	name string
+	rect Rect // on screen
+}
+
+// shareMore are the names of the entry that unfolds the sheet's actions
+// ("Mehr anzeigen" was seen, on an iPad whose language is German; the others
+// are what the same entry is expected to read elsewhere).
+var shareMore = []string{"Show More", "View More", "More", "Mehr anzeigen", "Mehr"}
+
+// action is the sheet's first action with one of names, or nil.
+func (s *shareSheet) action(names ...string) *shareAction {
+	for i := range s.actions {
+		if slices.Contains(names, s.actions[i].name) {
+			return &s.actions[i]
+		}
+	}
+	return nil
+}
+
+func (s *shareSheet) names() string {
+	names := make([]string, len(s.actions))
+	for i, a := range s.actions {
+		names[i] = a.name
+	}
+	return strings.Join(names, ", ")
+}
+
+// shareSheet is the share sheet in the last tree read, or nil.
+func (d *AUMDriver) shareSheet() *shareSheet {
+	content := func(e *Element) bool { return e.Identifier == "activityCollectionView" }
+	pop := d.find(func(e *Element) bool { return e.Type == "Popover" && e.First(content) != nil })
+	if pop == nil {
+		return nil
+	}
+	// The collection view fills the popover: its origin is the popover's,
+	// in whatever space the sheet's frames are given.
+	body := pop.First(content)
+	dx, dy := pop.Rect.X-body.Rect.X, pop.Rect.Y-body.Rect.Y
+	s := &shareSheet{frame: pop.Rect}
+	pop.Walk(func(e *Element, _ int) bool {
+		switch e.Identifier {
+		case "LP.CaptionBar.TopCaption":
+			s.caption = strings.TrimSpace(e.Label)
+		case "actionGroupCell":
+			r := Rect{X: e.Rect.X + dx, Y: e.Rect.Y + dy, Width: e.Rect.Width, Height: e.Rect.Height}
+			if cx, cy := r.Center(); !e.Hidden && e.Label != "" && !r.Empty() && pop.Rect.Contains(cx, cy) {
+				s.actions = append(s.actions, shareAction{name: strings.TrimSpace(e.Label), rect: r})
+			}
+		}
+		return true
+	})
+	return s
+}
+
+// waitShareSheet waits for a share sheet that want accepts and that two reads
+// in a row found in the same place: unfolding moves it. It returns the sheet
+// last read (nil for none) when the wait runs out.
+func (d *AUMDriver) waitShareSheet(want func(*shareSheet) bool) (*shareSheet, error) {
+	var last *Rect
+	_, err := d.until(aumWait, func(AUMState) bool {
+		s := d.shareSheet()
+		if s == nil || !want(s) {
+			last = nil
+			return false
+		}
+		still := last != nil && *last == s.frame
+		last = &s.frame
+		return still
+	})
+	return d.shareSheet(), err
+}
+
+// closeShareSheet closes the share sheet by a tap beside it, on the title of
+// the FILES panel behind, where a tap does nothing once the sheet is gone.
+// It says what came of it.
+func (d *AUMDriver) closeShareSheet(s *shareSheet) string {
+	x, y := s.frame.X+s.frame.Width/2, 12.0
+	if p := d.St.Overlay("panel"); p != nil {
+		x = p.Frame.X + p.Frame.Width/2
+	}
+	if s.frame.Contains(x, y) {
+		return "the share sheet is left open (it covers the panel's title)"
+	}
+	if err := d.tap(x, y, "beside the share sheet, which closes it"); err != nil {
+		return fmt.Sprintf("the share sheet is left open (%v)", err)
+	}
+	if gone, err := d.until(aumWait, func(AUMState) bool { return d.shareSheet() == nil }); err != nil || !gone {
+		return "the share sheet stayed open after a tap beside it"
+	}
+	return "closed the share sheet"
+}
+
+// notice is the alert in front that holds no text field, or nil.
+func (d *AUMDriver) notice() *AUMOverlay {
+	if a := d.St.Overlay("alert"); a != nil && len(a.Fields) == 0 {
+		return a
+	}
+	return nil
+}
+
+// answerAlert waits a moment for an alert without a text field, presses its
+// OK and returns what it said ("" when none came up).
+func (d *AUMDriver) answerAlert() (string, error) {
+	if _, err := d.until(2*time.Second, func(AUMState) bool { return d.notice() != nil }); err != nil {
+		return "", err
+	}
+	a := d.notice()
+	if a == nil {
+		return "", nil
+	}
+	said := alertText(a)
+	if err := d.confirmDialog(a); err != nil {
+		return said, err
+	}
+	if gone, err := d.until(aumWait, func(AUMState) bool { return d.notice() == nil }); err != nil {
+		return said, err
+	} else if !gone {
+		said += " (the alert stayed open after its OK)"
+	}
+	return said, nil
+}
+
+// alertText is an alert's title and message, without its buttons' captions.
+func alertText(a *AUMOverlay) string {
+	var parts []string
+	var walk func(e *Element, inButton bool)
+	walk = func(e *Element, inButton bool) {
+		if t := strings.TrimSpace(e.Label); e.Type == "StaticText" && !inButton && !e.Hidden && t != "" {
+			parts = append(parts, t)
+		}
+		for _, c := range e.Children {
+			walk(c, inButton || e.Type == "Button")
+		}
+	}
+	if a.el != nil {
+		walk(a.el, false)
+	}
+	if len(parts) == 0 {
+		return a.Title
+	}
+	return strings.Join(parts, ": ")
+}
+
+// cancelDialog presses Cancel in dlg and says what came of it.
+func (d *AUMDriver) cancelDialog(dlg *AUMOverlay) string {
+	b := d.findText("Cancel", &dlg.Frame)
+	if b == nil {
+		return "the dialog has no Cancel and is left open"
+	}
+	if err := d.press(b.Rect, "Cancel"); err != nil {
+		return fmt.Sprintf("the dialog is left open (%v)", err)
+	}
+	if gone, err := d.until(aumWait, func(AUMState) bool { return d.dialog() == nil }); err != nil || !gone {
+		return "the dialog stayed open after Cancel"
+	}
+	return "cancelled the dialog"
 }
 
 // dialog is the popover or alert in front that holds a text field, or nil.

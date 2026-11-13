@@ -391,8 +391,31 @@ func TestAUMFilesRecordingsFolderBeyondTheFirstPage(t *testing.T) {
 	if !res.Verified || len(es) != 1 || es[0].Name != "Master - 120 bpm - 025" {
 		t.Fatalf("recordings: %+v, entries %q", res.Message, entryNamesOf(es))
 	}
-	if countGestures(w, filesIcon) != 1 || countGestures(w, backArrow) != 1 {
-		t.Fatalf("FILES was not opened from the menu anew and taken up to the root once: %v", w.GestureLog())
+	// Up to the root, which the back arrow leaves headed by its directory's
+	// name, and on to FILES' own root, whose Recordings row heads it "/".
+	if countGestures(w, filesIcon) != 1 || countGestures(w, backArrow) != 2 {
+		t.Fatalf("FILES was not opened from the menu anew and left through its own root: %v", w.GestureLog())
+	}
+	wantTouched(t, w, aum)
+}
+
+// The root of Recordings is headed "/" only when FILES' own Recordings row
+// opened it. Reached by the back arrow, or with FILES reopening on it, its
+// header names the directory the recordings are kept in, as the header of a
+// session's folder of that name would: only "/" is taken for the root.
+func TestAUMFilesRecordingsRootNamedLikeAFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	aum.AddRecordings("Night Drive", takes(2)...)
+	aum.AddRecordings(ipadtest.RecordingsRoot, takes(3)...)
+	for _, last := range []string{"", ipadtest.RecordingsRoot, "Night Drive"} {
+		aum.ShowRecordings(last)
+		res, es := recordingsNow(t, c)
+		if !res.Verified || len(es) != 2 || !es[0].Folder || !es[1].Folder || !strings.Contains(res.Message, "2 entries: Night Drive, "+ipadtest.RecordingsRoot) {
+			t.Fatalf("FILES last in %q, the root: %+v, entries %q", last, res.Message, entryNamesOf(es))
+		}
+		if res, es = recordingsNow(t, c, ipadtest.RecordingsRoot); !res.Verified || len(es) != 3 {
+			t.Fatalf("FILES last in %q, the folder: %+v, entries %q", last, res.Message, entryNamesOf(es))
+		}
 	}
 	wantTouched(t, w, aum)
 }
@@ -542,4 +565,77 @@ func TestAUMFilesRenameThatDidNotHappen(t *testing.T) {
 	}
 	wantStrings(t, "held", aum.Held(), "/Songs/song 20")
 	wantStrings(t, "renamed", aum.Renamed())
+}
+
+// The share sheet is drawn by another process and reports its cells from its
+// own corner. The tool taps the entry that unfolds its actions and then
+// Rename where they are on screen: a tap at a frame as the tree prints it
+// lands beside the sheet, which closes it, and a tap on another of its cells
+// sends the session somewhere.
+func TestAUMFilesRenameThroughTheShareSheet(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(8)...)
+	res := renameNow(t, c, "song 03", "song 03 b", "Songs")
+	if !res.Verified {
+		t.Fatalf("rename: %+v", res.Message)
+	}
+	steps := strings.Join(res.Steps, "\n")
+	for _, want := range []string{
+		"long-press session song 03",
+		"tap " + ipadtest.ShareMore + ", which unfolds the sheet's actions at (1132,606)",
+		"tap Rename in the share sheet of song 03 at (1004,456)",
+		`fill text field 0 with "song 03 b"`,
+	} {
+		if !strings.Contains(steps, want) {
+			t.Fatalf("no step %q in:\n%s", want, steps)
+		}
+	}
+	if aum.SheetOpen() {
+		t.Fatal("a sheet or dialog is left open")
+	}
+	wantTouched(t, w, aum)
+}
+
+// AUM answers a name another session of the folder has with an alert and
+// renames nothing. The tool reads the alert, presses its OK, and says what
+// AUM said: left open, the alert keeps FILES from opening.
+func TestAUMFilesRenameOntoAnExistingName(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(30)...)
+	res := renameNow(t, c, "song 20", "song 05", "Songs")
+	if res.Verified || !strings.Contains(res.Message, `NOT renamed: FILES → Sessions → /Songs still lists "song 20", and lists "song 05" as well`) ||
+		!strings.Contains(res.Message, `AUM answered "Sorry: `+ipadtest.NameExists+`"`) {
+		t.Fatalf("rename: verified %v, %+v", res.Verified, res.Message)
+	}
+	wantStrings(t, "renamed", aum.Renamed())
+	if got := aum.Sessions("Songs"); len(got) != 30 || got[20] != "song 20" || got[5] != "song 05" {
+		t.Fatalf("the folder now: %q", got)
+	}
+	if aum.SheetOpen() {
+		t.Fatal("the alert is left open")
+	}
+	wantTouched(t, w, aum)
+}
+
+// The share sheet names the file it is for, and the RENAME dialog opens
+// holding that name. A sheet or a dialog for another session than the one
+// that was held is closed, and nothing is typed or renamed.
+func TestAUMFilesRenameSheetOfAnotherSession(t *testing.T) {
+	for _, bare := range []bool{false, true} {
+		w, aum, c := filesFake(t, "Songs", "Untitled", songs(8)...)
+		aum.HoldSlips(bare)
+		_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Path: []string{"Songs"}, Name: "song 03", NewName: "song 03 b", Confirm: true})
+		want := `the share sheet that opened is for "song 04", not for "song 03": closed the share sheet, nothing renamed`
+		if bare {
+			// No caption to go by: the dialog's field is what tells.
+			want = `the RENAME dialog holds "song 04", not "song 03": cancelled the dialog, nothing renamed`
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("sheet without caption %v: err = %v", bare, err)
+		}
+		wantStrings(t, "held", aum.Held(), "/Songs/song 03")
+		wantStrings(t, "renamed", aum.Renamed())
+		if aum.SheetOpen() {
+			t.Fatalf("sheet without caption %v: a sheet or dialog is left open", bare)
+		}
+		wantTouched(t, w, aum)
+	}
 }
