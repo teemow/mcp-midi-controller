@@ -288,6 +288,19 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **Strips** are found by shape (a full-height container with a wide title
   button at its bottom), so custom titles, which replace AUM's `n: <source>`,
   count too. Select them by part of the title or by position (`#3`).
+- **A mixer wider than the window** has only the strips that reach into the
+  window in the tree, and the add tile's column only while that does: on
+  the rig a mix of nine strips showed its first five. The mixer's horizontal
+  scroll bar is in the tree (`Horizontal scroll bar, 2 pages`) with how far
+  it is scrolled as its value (`0 %` at the first strip). A strip that is
+  not in view is looked for by scrolling the mixer half a window at a time,
+  towards its end first (a position `#n`, counted from the first strip,
+  towards its start first): `aum_channel`, `aum_node` and `aum_file_player`
+  reach every strip that way. `load_song` and `check_song` (and so
+  `mix_song_stems`) read every strip, and every failed node, by scrolling
+  from where the mixer is to its add tile and back to its first strip,
+  where they leave it. `get_aum_ui` reads one screen and says when strips
+  lie beyond it.
 - **Nodes**: a loaded node has an inner button (value `1`) over its square
   button; an empty slot (`+`) has none. A bypassed node slides about 55 points
   left of the strip's wire and leaves an eject `⏏` in its place.

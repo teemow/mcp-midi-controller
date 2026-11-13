@@ -680,6 +680,17 @@ func describeAUMState(st ipad.AUMState) string {
 			}
 			b.WriteByte('\n')
 		}
+		// AUM lists only the strips that reach into the window.
+		var more []string
+		if st.MixerScroll != nil && *st.MixerScroll >= 0.5 {
+			more = append(more, "left")
+		}
+		if st.AddTile == nil {
+			more = append(more, "right")
+		}
+		if len(more) > 0 {
+			fmt.Fprintf(&b, "  more strips %s of the window: AUM lists only those in view (aum_channel scroll_to <title> brings one in)\n", strings.Join(more, " and "))
+		}
 	}
 	b.WriteString("not in AUM's tree: plugin parameters (get_audio_tap), MIDI routing connections (aum_midi_routing read)")
 	return b.String()

@@ -113,11 +113,11 @@ func (c *Client) aumOpenSession(ctx context.Context, path []string, name string,
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
-		out.Strips, out.Problems = d.stripTitles(), d.problems()
-		out.Failed = d.failedStrips()
-		for _, title := range out.Failed {
-			out.Problems = append(out.Problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
+		mix, err := d.readMixer(true)
+		if err != nil {
+			return err
 		}
+		out.setMixer(mix)
 		ok := loaded.Verified && done
 		msg := fmt.Sprintf("AUM has %q open: %d strip(s)", out.Session, len(out.Strips))
 		switch {
@@ -163,35 +163,48 @@ func (c *Client) readAUM(ctx context.Context, menu bool) (AUMResult, error) {
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
 		// Faults are read first: an alert would be dismissed on the way to
 		// the menu.
-		problems := d.problems()
+		out := AUMLoaded{Problems: d.problems()}
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
-		failed := d.failedStrips()
-		for _, title := range failed {
-			problems = append(problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
+		if menu {
+			if ok, err := d.ensureMenu(); err != nil || !ok {
+				if err != nil {
+					return err
+				}
+				return fmt.Errorf("AUM's main menu did not open (%s)", d.St.overlaySummary())
+			}
+			out.Session = d.St.Session
+			if err := d.clearScreen(); err != nil {
+				return err
+			}
 		}
-		out := AUMLoaded{Problems: problems, Failed: failed}
+		mix, err := d.readMixer(true)
+		if err != nil {
+			return err
+		}
+		out.setMixer(mix)
 		if !menu {
-			out.Strips = d.stripTitles()
 			res = d.result("mixer", true, fmt.Sprintf("AUM's mixer has %d strip(s)", len(out.Strips)), out)
 			return nil
 		}
-		if ok, err := d.ensureMenu(); err != nil || !ok {
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("AUM's main menu did not open (%s)", d.St.overlaySummary())
-		}
-		out.Session = d.St.Session
-		if err := d.clearScreen(); err != nil {
-			return err
-		}
-		out.Strips = d.stripTitles()
 		res = d.result("session", out.Session != "", fmt.Sprintf("AUM has %q open: %d strip(s)", out.Session, len(out.Strips)), out)
 		return nil
 	})
 	return res, err
+}
+
+// setMixer takes the strips and faults of a read of the whole mixer.
+func (l *AUMLoaded) setMixer(mix mixerRead) {
+	l.Strips = make([]string, len(mix.Channels))
+	for i, ch := range mix.Channels {
+		l.Strips[i] = ch.Title
+	}
+	l.Problems = appendNew(l.Problems, mix.Problems...)
+	l.Failed = mix.Failed
+	for _, title := range mix.Failed {
+		l.Problems = append(l.Problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
+	}
 }
 
 // clearScreen closes plugin windows and whatever lies over the mixer, so the
@@ -224,15 +237,6 @@ func (d *AUMDriver) loading() bool {
 	}) != nil
 }
 
-// stripTitles lists the mixer's strip titles.
-func (d *AUMDriver) stripTitles() []string {
-	out := make([]string, len(d.St.Channels))
-	for i, ch := range d.St.Channels {
-		out[i] = ch.Title
-	}
-	return out
-}
-
 // A node counts as failed when most of its ring is red and what lies around
 // the node is not (a screen that is red all over says nothing about a node).
 const (
@@ -241,10 +245,10 @@ const (
 	failedRingShare              = 0.6
 )
 
-// failedStrips returns the titles of the strips that have a node AUM draws
-// as failed. AUM says so only in the node's colour, a ring of red stripes,
-// so this takes a screenshot; it reports nothing when that cannot be had.
-// Strips scrolled out of the window are not seen.
+// failedStrips returns the titles of the strips on screen that have a node
+// AUM draws as failed. AUM says so only in the node's colour, a ring of red
+// stripes, so this takes a screenshot; it reports nothing when that cannot be
+// had. readMixer looks at every strip.
 func (d *AUMDriver) failedStrips() []string {
 	raw, err := d.s.c.screenshot(d.ctx)
 	if err != nil {
