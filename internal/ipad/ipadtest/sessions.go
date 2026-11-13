@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -35,11 +36,19 @@ import (
 //   - FILES → Recordings is built the same way: every folder is titled
 //     "RECORDINGS" and named in the header row, the back arrow goes up one
 //     folder, a session's folder of takes has a chevron and a take's row has
-//     none. A tap on a take opens its PREVIEW.
-//   - A long-press on a session's row opens a sheet of actions with Rename
-//     among them, which opens the RENAME dialog: a text field holding the
-//     session's name, Cancel and OK. OK renames the file at once and the row
-//     stays where the list had it.
+//     none. A tap on a take opens its PREVIEW. Its root is headed "/" only
+//     when the FILES root's Recordings row opened it: reached by the back
+//     arrow, or when FILES reopens on it, the header names the directory the
+//     recordings are kept in (RecordingsRoot), as a folder's header would.
+//   - A long-press on a session's row opens iOS's share sheet for that file
+//     (ShareSheet). Its row of actions ends in an entry that unfolds the rest
+//     as a list, Rename first. Rename closes the sheet and opens the RENAME
+//     dialog: a text field holding the session's name, Cancel and OK. OK
+//     renames the file at once and the row stays where the list had it. A
+//     name another session of the folder has is answered with the alert
+//     "Sorry" (NameExists), which stays until its OK, and nothing is renamed.
+//     A touch beside the sheet closes it; any other cell of it does
+//     something with the file, which Touched reports.
 type SessionsAUM struct {
 	mu sync.Mutex
 	w  *WDA
@@ -55,9 +64,14 @@ type SessionsAUM struct {
 	last     string    // the FILES view it reopens on: files, sessions or recordings
 	dir      string    // the folder the sessions or recordings view shows: "" is the root
 	first    int       // that list's first whole row on screen
-	sheet    string    // the session whose sheet of actions a long-press opened
+	slash    bool      // the root of Recordings is headed "/": it was entered from the FILES root
+	sheet    string    // the session whose share sheet a long-press opened
+	more     bool      // that sheet's row of actions was unfolded
+	slips    bool      // a long-press opens the sheet of the row below the one it meets
+	bare     bool      // the sheet has no caption
 	renaming string    // the session whose RENAME dialog is open
 	refuse   bool      // OK in the RENAME dialog renames nothing
+	sorry    string    // the text of the alert "Sorry" on screen
 	held     []string
 	renamed  []string
 	closing  bool // the SAVE panel is about to close after a write
@@ -70,6 +84,10 @@ type SessionsAUM struct {
 }
 
 type savedSession struct{ name, saved string }
+
+// RecordingsRoot heads the root of FILES → Recordings when it was not entered
+// from the FILES root.
+const RecordingsRoot = "AUM Recordings"
 
 // NewSessionsAUM attaches a SessionsAUM to w: the session open is loaded,
 // SAVE saves into folder ("" for the root of Sessions), and the folder holds
@@ -157,6 +175,22 @@ func (m *SessionsAUM) RefuseRenames() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refuse = true
+}
+
+// HoldSlips makes a long-press open the share sheet of the row below the one
+// it meets, as when the list moves under the finger; bare leaves the sheet
+// without its caption.
+func (m *SessionsAUM) HoldSlips(bare bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.slips, m.bare = true, bare
+}
+
+// SheetOpen says whether a share sheet or the RENAME dialog is on screen.
+func (m *SessionsAUM) SheetOpen() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sheet != "" || m.renaming != "" || m.sorry != ""
 }
 
 // ShowRecordings makes folder dir of Recordings ("" for the root) the view
@@ -344,21 +378,16 @@ func (m *SessionsAUM) load(name string, cut bool) {
 	m.show("mixer")
 }
 
-// The sheet of actions a long-press on a session's row opens, and the RENAME
-// dialog its Rename opens, where Overlay draws their buttons.
-var (
-	sheetActions = []string{"Copy URL", "Import Channels", "Rename"}
-	sheetRename  = [4]float64{649, 354, 468, 40}
-	renameCancel = [4]float64{471, 405, 268, 40}
-	renameOK     = [4]float64{471, 455, 268, 40}
-)
-
 // rename is OK in the RENAME dialog: the file is renamed at once, and the
 // row keeps its place in the list.
 func (m *SessionsAUM) rename() {
 	to := ""
 	if len(m.w.Fields) > 0 {
 		to = m.w.Fields[0]
+	}
+	if to != m.renaming && slices.ContainsFunc(m.lists[m.dir], func(s savedSession) bool { return s.name == to }) {
+		m.renaming, m.w.Fields, m.sorry = "", nil, NameExists
+		return
 	}
 	for i, s := range m.lists[m.dir] {
 		if s.name == m.renaming && to != "" && !m.refuse {
@@ -393,6 +422,9 @@ func (m *SessionsAUM) source() json.RawMessage {
 		title := "SESSIONS"
 		if m.screen == "recordings" {
 			title = "RECORDINGS"
+			if m.dir == "" && !m.slash {
+				header = RecordingsRoot
+			}
 		}
 		first := min(m.first, len(rows))
 		a.Files = &FilesPanel{Title: title, Folder: header, Cells: rows[first:], Scrolled: first > 0}
@@ -401,14 +433,15 @@ func (m *SessionsAUM) source() json.RawMessage {
 		}
 		switch {
 		case m.sheet != "":
-			a.Overlays = append(a.Overlays, Overlay{Kind: "popover", Buttons: sheetActions})
+			a.Share = &ShareSheet{Name: m.sheet, NoCaption: m.bare, More: m.more}
 		case m.renaming != "":
 			name := ""
 			if len(m.w.Fields) > 0 {
 				name = m.w.Fields[0]
 			}
-			a.Overlays = append(a.Overlays, Overlay{Kind: "alert", Title: "RENAME", Fields: []string{name}, Buttons: []string{"Cancel", "OK"}})
+			a.Rename = &RenameDialog{Name: name}
 		}
+		a.Sorry = m.sorry
 	case "save":
 		name := ""
 		if len(m.w.Fields) > 0 {
@@ -440,20 +473,37 @@ func (m *SessionsAUM) gesture(g Gesture) {
 	case g.Kind == "keys" && m.screen == "save":
 		m.press()
 		return
+	case m.sorry != "":
+		// The alert takes every touch; its OK closes it.
+		if g.Kind == "tap" && inRect(g.X, g.Y, SorryOK) {
+			m.sorry = ""
+		}
+		return
 	case m.sheet != "":
-		// A tap on Rename opens the dialog; any other touch closes the sheet.
+		// The row of actions unfolds and folds; Rename opens the dialog; a
+		// touch beside the sheet closes it; any other cell acts on the file.
 		name := m.sheet
-		m.sheet = ""
-		if g.Kind == "tap" && inRect(g.X, g.Y, sheetRename) {
+		cell, inside := ShareSheet{Name: name, More: m.more}.Hit(g.X, g.Y)
+		switch {
+		case g.Kind != "tap" || (inside && cell == ""):
+		case !inside:
+			m.sheet, m.more = "", false
+		case cell == ShareMore || cell == ShareLess:
+			m.more = cell == ShareMore
+		case cell == "Rename":
+			m.sheet, m.more = "", false
 			m.renaming, m.w.Fields = name, []string{name}
+		default:
+			m.sheet, m.more = "", false
+			m.loaded = append(m.loaded, cell+" of "+m.path(name, false))
 		}
 		return
 	case m.renaming != "":
 		switch {
 		case g.Kind != "tap":
-		case inRect(g.X, g.Y, renameOK):
+		case inRect(g.X, g.Y, RenameOK):
 			m.rename()
-		case inRect(g.X, g.Y, renameCancel):
+		case inRect(g.X, g.Y, RenameCancel):
 			m.renaming, m.w.Fields = "", nil
 		}
 		return
@@ -462,8 +512,11 @@ func (m *SessionsAUM) gesture(g Gesture) {
 			rows := m.rows()
 			if i, cut := m.rowAt(g.Y); i >= 0 && i < len(rows) {
 				m.held = append(m.held, m.path(rows[i].Name, cut))
+				if m.slips && i+1 < len(rows) {
+					i++
+				}
 				if !rows[i].Folder {
-					m.sheet = rows[i].Name
+					m.sheet, m.more = rows[i].Name, false
 				}
 			}
 		}
@@ -497,7 +550,7 @@ func (m *SessionsAUM) gesture(g Gesture) {
 		case corner:
 			m.screen = "mixer"
 		case inRect(x, y, [4]float64{965, 105, 64, 64}): // FILES
-			m.screen, m.first = m.last, 0
+			m.screen, m.first, m.slash = m.last, 0, false
 		case inRect(x, y, [4]float64{965 + 83, 105, 64, 64}): // SAVE
 			m.show("save")
 		}
@@ -519,7 +572,7 @@ func (m *SessionsAUM) gesture(g Gesture) {
 		case x >= filesX && y >= 95 && y < 146: // Sessions: its root folder
 			m.screen, m.last, m.dir, m.first = "sessions", "sessions", "", 0
 		case x >= filesX && y >= 180 && y < 231: // Recordings: its root folder
-			m.screen, m.last, m.dir, m.first = "recordings", "recordings", "", 0
+			m.screen, m.last, m.dir, m.first, m.slash = "recordings", "recordings", "", 0, true
 		case x >= filesX && y >= 265 && y < 316:
 			m.restored = true
 		}
@@ -529,7 +582,7 @@ func (m *SessionsAUM) gesture(g Gesture) {
 			m.screen = "mixer"
 		case x < filesX+60 && y <= 60: // up one folder, then to the FILES root
 			if m.dir != "" {
-				m.dir, m.first = "", 0
+				m.dir, m.first, m.slash = "", 0, false
 			} else {
 				m.screen, m.last = "files", "files"
 			}

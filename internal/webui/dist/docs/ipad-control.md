@@ -126,7 +126,7 @@ a normal result, not a tool error.
 | `aum_channel` | `add_audio`, `add_midi` (the add tile: right of the last strip, or in the middle of the start screen that CLEAR leaves), `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`: a tap on the dB label opens the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 | `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
-| `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings, read the same way: the root lists a folder per session, `path` into one its takes), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹ (`name` in the folder `path` to `new_name`: found like `load`, long-press on its row → Rename; proved by the folder's list, read again), `clear`¹ (CLEAR → Sure?), `notes`. |
+| `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings, read the same way: the root lists a folder per session, `path` into one its takes), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹ (`name` in the folder `path` to `new_name`: found like `load`, long-press on its row → the share sheet → Rename; proved by the folder's list, read again), `clear`¹ (CLEAR → Sure?), `notes`. |
 | `aum_midi_routing` | `read` (sources, destinations and the connected cells), `connect` / `disconnect` (`source`, `destination`), `destination` (its panel: MIDI sources, All Notes Off, the filter; `path` taps further). |
 | `aum_midi_control` | `read` (`path` walks into a collection or a control's mapping editor), `filter` (ALL, ASSIGNED, UNUSED), `learn`, `menu` (a section's `⋮`: Set MIDI Channels¹, Save, Load¹, Copy, Paste¹, Clear All¹, Delete All¹), `add` (ADD TEMPO, ADD PRESET), `main_parameter`. |
 | `aum_settings` | `read` every setting (scrolling the panel), `set` a `setting` to a `value` as AUM prints it (ON, INT 24, 48 kHz, …). Settings are global: set them back afterwards. |
@@ -213,13 +213,41 @@ and lists what is there. The stems tools read that error as "no takes yet",
 which holds because the folder was looked for from the root and through the
 whole list. No take's row is tapped: a tap opens its PREVIEW.
 
+On the iPad the root of Recordings, 90 rows in eleven pages, took 110 to
+115 s. The takes of a folder on the root's first page took 36 s and those of
+one on its ninth page 95 s. A folder the root does not hold took 113 s, since
+the whole root is read before the tool says so.
+
 **`rename` finds the session as `load` does** and long-presses its row: a
-session's row, on screen whole, in the folder that was asked for. It picks
-Rename from the sheet of actions, enters `new_name` in the RENAME dialog and
-confirms it. Then it reads the folder again, whole: `verified: true` means
-the folder lists the new name and no longer the old one, and a result that
-begins "NOT renamed" that the old name is still there. `data` is the folder
-as it was read afterwards.
+session's row, on screen whole, in the folder that was asked for. What AUM
+1.4.8 showed on the iPad, and what the tool does with it:
+
+- The long-press opens iOS's share sheet for that file, captioned with the
+  session's name. A sheet captioned with another name is closed by a tap
+  beside it, and nothing is renamed.
+- The sheet's row of actions (Copy, Copy URL, Import Channels) ends in an
+  entry that unfolds the rest as a list, AUM's Rename first. That entry read
+  `Mehr anzeigen` on an iPad set to German; `Show More`, `View More` and
+  `More` are taken for it too, unseen. The tool taps that entry and Rename
+  and no other cell of the sheet: the others send the file to an app or a
+  person.
+- Another process draws the sheet, and its tree gives every frame from the
+  sheet's own corner: Copy read (18,257) in a sheet at (816,282). A tap at a
+  frame as printed lands beside the sheet and closes it, so the tool adds the
+  sheet's origin first.
+- Rename closes the sheet and opens the RENAME dialog, whose field holds the
+  session's name. The tool types `new_name` only into a dialog that holds
+  the name of the session it pressed, reads the field back and presses OK;
+  a dialog with another name gets Cancel.
+- AUM answers a name another session of the folder has with an alert,
+  "Sorry: A file with that name already exists!", and renames nothing. The
+  tool presses the alert's OK and quotes it in the result.
+
+Then it reads the folder again, whole: `verified: true` means the folder
+lists the new name and no longer the old one, and a result that begins "NOT
+renamed" that the old name is still there. `data` is the folder as it was
+read afterwards. The renamed row keeps its place and its saved time. In a
+folder of 30 sessions, four pages, a rename of the last one took 97 s.
 
 ### Saving a session
 
@@ -281,6 +309,13 @@ session file for a look at its size and content.
   opens it and the back arrow goes up one folder, from a view's root to FILES
   itself, whose Sessions and Recordings rows open the views at their roots.
   The house icon above the list goes to FILES as well.
+- The root of Recordings is headed `/` only when the Recordings row of FILES
+  opened it. Reached by the back arrow from a session's folder, or shown
+  when FILES reopens on it, its header reads `AUM Recordings`, the directory
+  the recordings are kept in, exactly as the header of a session's folder of
+  that name would. So `recordings` takes only `/` for the root and leaves the
+  view through FILES itself until it reads that, which costs two taps. (The
+  root of Sessions read `/` both ways.)
 - FILES opened from the menu shows the view and the folder it showed last,
   from the top. A panel that is left open stays scrolled where it was.
 - So `list`, `load`, `rename`, `recordings` and `save` open FILES from the
@@ -296,7 +331,10 @@ session file for a look at its size and content.
   had one for every row below the fold, and Sessions, scrolled to its end,
   kept those of the eighteen rows above, four of them with another row's
   name and saved time. So only the cells that show are read, a page at a
-  time.
+  time. A folder of Recordings with six takes showed a search field above
+  the sort button, with the header and the rows 56 points lower; above a
+  long list the field is out of sight. The tool reads the rows where they
+  are and does not use the field.
 - The tool drags the list 420 points in 0.9 s for the next
   page, which moved it by 404 to 406 points: six rows are read twice. A drag
   of 584 points in 0.5 s ran on after the finger lifted (674 points) and
