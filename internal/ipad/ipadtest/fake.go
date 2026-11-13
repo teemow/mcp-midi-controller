@@ -92,8 +92,8 @@ type WDA struct {
 	// OnGesture, when set, is told every gesture AUM receives, before the
 	// gesture is counted. With SourceFunc it models a screen that answers
 	// what is touched where and when (SessionsAUM). Like SourceFunc it runs
-	// inside the fake: it may read and write Fields, and calls none of the
-	// fake's methods.
+	// inside the fake: it may read and write Fields and RedRings
+	// (FailedNodes), and calls none of the fake's methods.
 	OnGesture func(Gesture)
 
 	requests  []Request

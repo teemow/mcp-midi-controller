@@ -881,6 +881,18 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	case load.Check == nil:
 		// A step before the check failed: there is no session to record.
 		return fail("its session did not load:\n%s", strings.TrimRight(load.text(""), "\n"))
+	case load.loaded != nil && (len(load.loaded.FailedNodes) > 0 || len(load.loaded.Failed) > 0):
+		// A plugin AUM still draws as failed after the load reloaded it
+		// plays nothing, or passes nothing on: the stem is not recorded over
+		// it.
+		why := "AUM draws a node of " + quoteList(load.loaded.Failed) + " as failed"
+		if names := failedNames(cs, load.loaded.FailedNodes); names != "" {
+			why = "AUM draws " + names + " as failed"
+		}
+		if st, ok := load.step("reload"); ok {
+			why = st.Detail // what was reloaded, how often, and what stayed failed
+		}
+		return fail("the stem is not recorded over a plugin that failed: %s. record_song_stems again loads its session anew", why)
 	case !load.OK:
 		// The session is loaded and connected; what the check found is said,
 		// and the stem is recorded: a check can call a track silent that plays.
@@ -889,6 +901,11 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 				take.Notes = append(take.Notes, fmt.Sprintf("the check after the load: %s: %s", f.Step, f.Detail))
 			}
 		}
+	}
+	if st, ok := load.step("reload"); ok && st.OK {
+		// The reload started the plugin anew; the stem's sequence loads its
+		// preset and sets its parameters again at the transport's start.
+		take.Notes = append(take.Notes, "the load reloaded a plugin: "+st.Detail)
 	}
 	sessions := loadSongSessions()
 	rec := sessions[cs.id]

@@ -3,6 +3,8 @@ package ipad
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,13 +19,70 @@ type AUMLoaded struct {
 	// that says a plugin failed or was invalidated, a node drawn as failed.
 	Problems []string `json:"problems,omitempty"`
 	// Failed are the titles of the strips with a node AUM draws as failed:
-	// its plugin did not load, or crashed.
-	Failed []string `json:"failed,omitempty"`
+	// its plugin did not load, or crashed. FailedNodes are those nodes.
+	Failed      []string        `json:"failed,omitempty"`
+	FailedNodes []AUMFailedNode `json:"failed_nodes,omitempty"`
 	// LoadMS is how long AUM showed that it was loading.
 	LoadMS int64 `json:"load_ms,omitempty"`
 	// Restarted is set when AUM was not running at the load and was started
 	// again for it: what WebDriverAgent said of AUM before that.
 	Restarted string `json:"restarted,omitempty"`
+}
+
+// AUMFailedNode is a node AUM draws as failed: a ring of red stripes, for a
+// plugin that did not load or crashed. RELOAD in the node's menu (aum_node
+// reload) starts the plugin anew, which brings back one that failed as AUM
+// initialised it.
+type AUMFailedNode struct {
+	// Strip is its strip's title, Node its selector on that strip as
+	// aum_node takes it: "source", an insert slot's number, a MIDI node's
+	// index.
+	Strip string `json:"strip"`
+	Node  string `json:"node"`
+	// Role, Slot and Label are the node's (see AUMNode).
+	Role  string `json:"role"`
+	Slot  int    `json:"slot,omitempty"`
+	Label string `json:"label,omitempty"`
+}
+
+// failedNode is the AUMFailedNode of node n on strip ch.
+func failedNode(ch AUMChannel, n AUMNode) AUMFailedNode {
+	sel := n.Role
+	switch n.Role {
+	case "insert":
+		sel = strconv.Itoa(n.Slot)
+	case "midi":
+		sel = strconv.Itoa(n.Index)
+	}
+	return AUMFailedNode{Strip: ch.Title, Node: sel, Role: n.Role, Slot: n.Slot, Label: n.Label}
+}
+
+// String names the node for a message: its strip and its place there.
+func (f AUMFailedNode) String() string {
+	where := f.Role
+	switch f.Role {
+	case "insert":
+		where = fmt.Sprintf("insert slot %d", f.Slot)
+	case "midi":
+		where = "MIDI node " + f.Node
+	}
+	if f.Label != "" {
+		where += fmt.Sprintf(" %q", f.Label)
+	}
+	return fmt.Sprintf("%s of %q", where, f.Strip)
+}
+
+// setFailed takes the failed nodes of a read of the mixer: Failed names
+// their strips, and Problems says each strip once.
+func (l *AUMLoaded) setFailed(nodes []AUMFailedNode) {
+	l.FailedNodes = nodes
+	l.Failed = nil
+	for _, n := range nodes {
+		if !slices.Contains(l.Failed, n.Strip) {
+			l.Failed = append(l.Failed, n.Strip)
+			l.Problems = append(l.Problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", n.Strip))
+		}
+	}
 }
 
 // loadingLabel is the overlay AUM shows while it restores a session's
@@ -114,10 +173,7 @@ func (c *Client) aumOpenSession(ctx context.Context, path []string, name string,
 			return err
 		}
 		out.Strips, out.Problems = d.stripTitles(), d.problems()
-		out.Failed = d.failedStrips()
-		for _, title := range out.Failed {
-			out.Problems = append(out.Problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
-		}
+		out.setFailed(d.failedNodes())
 		ok := loaded.Verified && done
 		msg := fmt.Sprintf("AUM has %q open: %d strip(s)", out.Session, len(out.Strips))
 		switch {
@@ -163,15 +219,11 @@ func (c *Client) readAUM(ctx context.Context, menu bool) (AUMResult, error) {
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
 		// Faults are read first: an alert would be dismissed on the way to
 		// the menu.
-		problems := d.problems()
+		out := AUMLoaded{Problems: d.problems()}
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
-		failed := d.failedStrips()
-		for _, title := range failed {
-			problems = append(problems, fmt.Sprintf("AUM draws a node of %q as failed: its plugin did not load", title))
-		}
-		out := AUMLoaded{Problems: problems, Failed: failed}
+		out.setFailed(d.failedNodes())
 		if !menu {
 			out.Strips = d.stripTitles()
 			res = d.result("mixer", true, fmt.Sprintf("AUM's mixer has %d strip(s)", len(out.Strips)), out)
@@ -241,11 +293,11 @@ const (
 	failedRingShare              = 0.6
 )
 
-// failedStrips returns the titles of the strips that have a node AUM draws
-// as failed. AUM says so only in the node's colour, a ring of red stripes,
-// so this takes a screenshot; it reports nothing when that cannot be had.
-// Strips scrolled out of the window are not seen.
-func (d *AUMDriver) failedStrips() []string {
+// failedNodes returns the nodes AUM draws as failed. AUM says so only in the
+// node's colour, a ring of red stripes, so this takes a screenshot; it
+// reports nothing when that cannot be had. Strips scrolled out of the window
+// are not seen.
+func (d *AUMDriver) failedNodes() []AUMFailedNode {
 	raw, err := d.s.c.screenshot(d.ctx)
 	if err != nil {
 		return nil
@@ -258,7 +310,7 @@ func (d *AUMDriver) failedStrips() []string {
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []AUMFailedNode
 	for _, ch := range d.St.Channels {
 		for _, n := range ch.Nodes {
 			if n.Empty || !n.OnScreen || !ch.OnScreen || n.Role == "output" {
@@ -266,8 +318,7 @@ func (d *AUMDriver) failedStrips() []string {
 			}
 			if RingRedness(img, scr.Scale, n.Frame, failedRingFrom, failedRingTo) >= failedRingShare &&
 				RingRedness(img, scr.Scale, n.Frame, aroundRingFrom, aroundRingTo) < failedRingShare/2 {
-				out = append(out, ch.Title)
-				break
+				out = append(out, failedNode(ch, n))
 			}
 		}
 	}

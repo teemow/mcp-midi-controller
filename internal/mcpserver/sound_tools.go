@@ -248,7 +248,7 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 		switch {
 		case !loaded:
 		case down:
-			fmt.Fprintf(&b, "  %-16s %s: FAILED to load (AUM draws its node as failed); loading the lab again may bring it up, some plugins never do when a session hosts them from scratch\n", tp.ID, n.Name)
+			fmt.Fprintf(&b, "  %-16s %s: FAILED to load (AUM draws its node as failed, also after the load reloaded it); loading the lab again may bring it up, some plugins never do when a session hosts them from scratch\n", tp.ID, n.Name)
 		default:
 			fmt.Fprintf(&b, "  %-16s %s: %d of %d preset(s) mapped\n", tp.ID, n.Name, len(n.Presets), len(n.FactoryPresets()))
 		}

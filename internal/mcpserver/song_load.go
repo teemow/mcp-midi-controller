@@ -74,7 +74,7 @@ const songQuietPoll = 50 * time.Millisecond
 func (s *Server) registerSongLoadTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "load_song",
-		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself; the step ends on the app's report of what its sync made of the session, or on its screen for an app that sends none: a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged, and a copy the app failed at is named with its error; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading (an AUM that is not running any more at that point, because it crashed under the load, is started again and loads the session once more; when it is gone again the step says so, and that the iPad is on its Home Screen and locks itself if AUM could not be brought back), wait for the session's brain and tap (the session is the daemon's current one from then on: its rig and control surface are in place whatever the iPad downloaded last), then check that every track answers a note (see check_song). " +
+		Description: "Take a saved song to a session that plays, in one call: author its AUM session (skipped when the staged one is already the song's), have the iPad pull it (the probe app is brought to the front when it does not pull by itself; the step ends on the app's report of what its sync made of the session, or on its screen for an app that sends none: a session the app holds as a conflict is named, or resolved when the iPad's copy is one the daemon staged, and a copy the app failed at is named with its error; when the pull fails AUM is brought back to the front, because the probe app left there lets the iPad lock itself), load it in AUM and wait until AUM has finished loading (an AUM that is not running any more at that point, because it crashed under the load, is started again and loads the session once more; when it is gone again the step says so, and that the iPad is on its Home Screen and locks itself if AUM could not be brought back), reload every plugin AUM draws as failed (RELOAD in its node's menu: a plugin that failed as AUM initialised it comes up; up to 3 times, the mixer read again after each; reload: false leaves them failed), wait for the session's brain and tap (the session is the daemon's current one from then on: its rig and control surface are in place whatever the iPad downloaded last), then check that every track answers a note (see check_song). " +
 			"Each step is reported with what was seen; a step that fails ends the call and says what to do. A locked iPad is named as that: it has to be unlocked on the device, the daemon never does. Loading replaces the session open in AUM, so it needs confirm: true. " +
 			"Call it after save_song says the session is out of date, and again whenever a plugin failed.",
 		InputSchema: json.RawMessage(`{
@@ -85,6 +85,7 @@ func (s *Server) registerSongLoadTools(songArg string) {
 				"out_id": {"type": "string", "description": "Staging id of the session (default: the one the song was last authored into, else \"Songs/<title>\")."},
 				"reauthor": {"type": "boolean", "description": "Author and stage the session again even when the staged one matches the song."},
 				"check": {"type": "boolean", "description": "Play every track's first note and listen (default true)."},
+				"reload": {"type": "boolean", "description": "Reload a plugin AUM draws as failed after the load, before the check (default true). A reload starts the plugin anew; the song's opening sound (sent by the check, and by the sequencer at the transport's start) puts its preset and parameters back."},
 				"track_taps": {"type": "boolean", "description": "Override the song's session option."},
 				"full_control": {"type": "boolean", "description": "Override the song's session option."},
 				"sequencer": {"type": "boolean", "description": "Host the sequencer with the song in it (default: yes when Atom | Piano Roll² is installed; see author_song_session). false leaves it out."},
@@ -202,6 +203,16 @@ func (r *loadReport) add(step string, ok bool, since time.Time, format string, a
 	r.Steps = append(r.Steps, st)
 }
 
+// step returns the load's step called name.
+func (r *loadReport) step(name string) (loadStep, bool) {
+	for _, st := range r.Steps {
+		if st.Step == name {
+			return st, true
+		}
+	}
+	return loadStep{}, false
+}
+
 func (r *loadReport) skip(step, format string, a ...any) {
 	r.Steps = append(r.Steps, loadStep{Step: step, OK: true, Skipped: true, Detail: fmt.Sprintf(format, a...)})
 }
@@ -239,6 +250,9 @@ type loadSongArgs struct {
 	Reauthor bool
 	// Check plays every track's first note once the session is loaded.
 	Check bool
+	// KeepFailed leaves a plugin AUM draws as failed as it is: by default
+	// the load reloads it (reloadFailed).
+	KeepFailed bool
 }
 
 func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -248,6 +262,7 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 		OutID       string `json:"out_id"`
 		Reauthor    bool   `json:"reauthor"`
 		Check       *bool  `json:"check"`
+		Reload      *bool  `json:"reload"`
 		TrackTaps   *bool  `json:"track_taps"`
 		FullControl *bool  `json:"full_control"`
 		Hardware    string `json:"hardware"`
@@ -267,9 +282,10 @@ func (s *Server) handleLoadSong(ctx context.Context, req *mcp.CallToolRequest) (
 		return busy, nil
 	}
 	rep, err := s.runLoadSong(ctx, cs, loadSongArgs{
-		Author:   songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware, Sequencer: args.Sequencer},
-		Reauthor: args.Reauthor,
-		Check:    args.Check == nil || *args.Check,
+		Author:     songAuthorArgs{OutID: args.OutID, TrackTaps: args.TrackTaps, FullControl: args.FullControl, Hardware: args.Hardware, Sequencer: args.Sequencer},
+		Reauthor:   args.Reauthor,
+		Check:      args.Check == nil || *args.Check,
+		KeepFailed: args.Reload != nil && !*args.Reload,
 	})
 	if err != nil {
 		return textResult(err.Error(), true), nil
@@ -399,6 +415,17 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	}
 	rep.add("load", true, start, "%s", res.Message)
 
+	// 3b. A plugin AUM draws as failed is reloaded in its node: some fail as
+	// AUM initialises them on nearly every load, and come up when reloaded.
+	// What stays failed is the check's to report, and next says what then.
+	reloaded := true
+	if !args.KeepFailed && (len(loaded.FailedNodes) > 0 || len(loaded.Failed) > 0) {
+		start = time.Now()
+		ok, detail := s.reloadFailed(ctx, cs, &loaded)
+		rep.add("reload", ok, start, "%s", detail)
+		reloaded = ok
+	}
+
 	// 4. The new session's brain and tap dial in.
 	start = time.Now()
 	brain, tap, named := s.waitRig(ctx, gen, outID, songDialTimeout)
@@ -430,10 +457,13 @@ func (s *Server) runLoadSong(ctx context.Context, cs *compiledSong, args loadSon
 	check := s.checkSong(ctx, cs, checkOptions{Sound: args.Check, Loaded: &loaded})
 	rep.Check = &check
 	rep.OK = check.OK
-	if !check.OK {
-		return done(check.Next)
+	switch {
+	case check.OK:
+		return done("")
+	case !reloaded && (len(loaded.FailedNodes) > 0 || len(loaded.Failed) > 0):
+		return done("a plugin that stays failed when it is reloaded may come up in a new load of the session: load_song again. One that fails at every load is auditioned on its own (audition_sound), or left out of the song")
 	}
-	return done("")
+	return done(check.Next)
 }
 
 // aumGone ends a load step at an AUM that is not running although the load
@@ -725,6 +755,10 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 		if len(loaded.Problems) > 0 {
 			c.find("plugins", false, "AUM reports: %s", strings.Join(loaded.Problems, "; "))
 		}
+		if len(loaded.FailedNodes) > 0 {
+			n := loaded.FailedNodes[0]
+			c.Next = fmt.Sprintf("a plugin AUM draws as failed may come up when its node is reloaded (RELOAD in the node's menu, which starts it anew; the song's opening sound puts its preset back): load_song {confirm: true} loads the session and reloads such a node up to %d times, aum_node {action: \"reload\", channel: %q, node: %q} reloads it once (then check_song again)", songReloadRounds, n.Strip, n.Node)
+		}
 	} else if named != "" {
 		s.loaded.set(rec.Session)
 		c.find("aum", true, "AUM has %q open: its ProbeAudioTap dialled in under that name", named)
@@ -774,7 +808,10 @@ func (s *Server) checkSong(ctx context.Context, cs *compiledSong, o checkOptions
 			c.find("sound", false, "the check could not play: %v", err)
 		case len(silent) > 0:
 			c.find("sound", false, "silent: %s", strings.Join(silent, ", "))
-			c.Next = "a silent track is a plugin that failed to load or crashed (AUM shows its node as failed), or one that does not answer this note: load_song loads the session again; if it stays silent, audition the plugin on its own"
+			// What was found before is said first: a failed node, a locked iPad.
+			if c.Next == "" {
+				c.Next = "a silent track is a plugin that failed to load or crashed (AUM shows its node as failed), or one that does not answer this note: load_song loads the session again; if it stays silent, audition the plugin on its own"
+			}
 		case played == 0:
 			c.find("sound", true, "no track has a note to answer")
 		case played < len(tracks):
