@@ -2,6 +2,7 @@ package ipad
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -81,11 +82,14 @@ func (d *AUMDriver) filesPanel() *AUMOverlay {
 }
 
 // NoFolderError says a FILES list has no folder of a name: a session's folder
-// of recordings that no take was made into yet, for one.
+// of recordings that no take was made into yet, for one. It is given only for
+// a list that was read through to its end.
 type NoFolderError struct {
 	// Folder is the folder looked for, In the folder whose list does not
 	// hold it ("FILES → Recordings → /") and Entries what that list holds.
 	Folder, In, Entries string
+	// Rows are that list's rows, all of them.
+	Rows []AUMFileEntry
 }
 
 func (e *NoFolderError) Error() string {
@@ -239,6 +243,98 @@ func (d *AUMDriver) listFolder(view string, path []string) (AUMResult, error) {
 		return d.result(action, false, fmt.Sprintf("%s, NOT the whole list: it went on after %d pages: the first %d entries: %s", where, filePages, len(scan.Rows), names), scan.Rows), nil
 	}
 	return d.result(action, true, fmt.Sprintf("%s, the whole list (%d pages): %d entries: %s", where, scan.Pages, len(scan.Rows), names), scan.Rows), nil
+}
+
+// AUMTakes is what Client.AUMTakes read of a session's folder in FILES →
+// Recordings: enough to tell a take made after an earlier reading, which is
+// all the stems tools ask of it.
+type AUMTakes struct {
+	// Takes are the folder's rows in the list's order: all of them, or with
+	// Top those of its first page only.
+	Takes []AUMFileEntry `json:"takes"`
+	// Top says Takes are the folder's first page, read without scrolling,
+	// because its sort (Sort) shows the newest take first: a take made after
+	// an earlier reading is among them. It is not the whole folder.
+	Top bool `json:"top,omitempty"`
+	// Sort is the order the sort control above the list showed.
+	Sort string `json:"sort,omitempty"`
+	// Missing says the root of Recordings does not hold the folder, which
+	// it says only once it has read the root through to its end. Root is
+	// then every row of the root.
+	Missing bool           `json:"missing,omitempty"`
+	Root    []AUMFileEntry `json:"root,omitempty"`
+}
+
+// sortNewestFirst is the sort of a FILES list that shows the newest take of a
+// folder of Recordings first. On the iPad (AUM 1.4.8) the sort control above
+// the list read LAST OPENED, and a session's folder read after each of its
+// takes gave 002, 001; then 003, 001, 002; then 005, 004, 003: the takes
+// before are in no order of theirs, the new one is first. Other sorts (by
+// name, last saved) were not seen and are read whole.
+const sortNewestFirst = "LAST OPENED"
+
+// AUMTakes reads a session's folder of FILES → Recordings for the take a pass
+// made into it. The folder is reached as aum_files recordings reaches it,
+// from the root whatever FILES showed last, and a folder the root does not
+// hold is Missing only once the root was read through to its end. In the
+// folder only the first page is read when the list shows the newest take
+// first, and the result says so (Top); else the whole list, which must end.
+// No take's row is tapped.
+func (c *Client) AUMTakes(ctx context.Context, folder string) (AUMTakes, error) {
+	var t AUMTakes
+	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
+		var err error
+		t, err = d.takes(folder)
+		return err
+	})
+	return t, err
+}
+
+func (d *AUMDriver) takes(folder string) (AUMTakes, error) {
+	path := []string{folder}
+	var none *NoFolderError
+	switch err := d.openFolder(recordingsView, path); {
+	case errors.As(err, &none):
+		return AUMTakes{Missing: true, Root: none.Rows}, nil
+	case err != nil:
+		return AUMTakes{}, err
+	}
+	t := AUMTakes{Sort: listSort(d.filesPanel())}
+	if strings.EqualFold(t.Sort, sortNewestFirst) {
+		// openFolder left the list at its top: the page on screen is read,
+		// and the list is not scrolled.
+		scan, err := d.readFiles(func([]AUMFileEntry) bool { return true })
+		if err != nil {
+			return AUMTakes{}, err
+		}
+		t.Takes, t.Top = scan.Rows, true
+		return t, nil
+	}
+	scan, err := d.readFiles(nil)
+	if err != nil {
+		return AUMTakes{}, err
+	}
+	if !scan.End {
+		return AUMTakes{}, fmt.Errorf("%s, NOT the whole list: it went on after %d pages", filesIn(recordingsView, path), filePages)
+	}
+	t.Takes = scan.Rows
+	return t, nil
+}
+
+// listSort is the order the sort control above a FILES list shows ("LAST
+// OPENED"): an adjustable control whose value is the order. "" when the list
+// is scrolled and the control is out of sight.
+func listSort(p *AUMOverlay) string {
+	if p == nil || p.el == nil {
+		return ""
+	}
+	c := p.el.First(func(e *Element) bool {
+		return hasTrait(e.Traits, "Adjustable") && !e.Hidden && !e.Rect.Empty() && strings.TrimSpace(e.Value) != ""
+	})
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Value)
 }
 
 // filesIn names a folder of a view of FILES as SAVE prints it, "/" being the
@@ -666,7 +762,11 @@ func (d *AUMDriver) openFolder(view string, path []string) error {
 			return err
 		}
 		if e == nil {
-			return &NoFolderError{Folder: folder, In: filesIn(view, path[:i]), Entries: fileNames(scan.Rows)}
+			if !scan.End {
+				// Not read to its end: the folder can be further down.
+				return fmt.Errorf("%s went on after %d pages without a folder %q: not known whether it holds one", filesIn(view, path[:i]), filePages, folder)
+			}
+			return &NoFolderError{Folder: folder, In: filesIn(view, path[:i]), Entries: fileNames(scan.Rows), Rows: scan.Rows}
 		}
 		if err := d.tapRect(e.text, "folder "+folder); err != nil {
 			return err

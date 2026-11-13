@@ -68,9 +68,10 @@ var (
 	// list of recordings, which is read every stemListPoll. A take that has
 	// not appeared after stemOffAfter was not ended by the stem's sequence:
 	// the daemon then switches the recorder off itself, once, and reads the
-	// list again. One reading can take longer than all of stemListWait (36
-	// to 115 s on an iPad whose Recordings held 90 folders): the recorder is
-	// switched off and the list read once more all the same.
+	// list again. One reading can take longer than all of stemListWait (25 s
+	// for a folder on the first page of the root of Recordings and 85 s for
+	// one on its ninth, on an iPad whose root held 90 folders): the recorder
+	// is switched off and the list read once more all the same.
 	stemListWait = 20 * time.Second
 	stemListPoll = 2 * time.Second
 	stemOffAfter = 6 * time.Second
@@ -272,15 +273,33 @@ func (p *stemPlan) expectedBeats() float64 {
 // recordings, the master's record-arm, and what a File Player shows. The
 // daemon reads and taps AUM's UI for them; the tests put a stand-in here.
 type stemDeck interface {
-	// Recordings lists the files of a session's folder in AUM's Recordings.
-	// A folder that is not there yet has none, and is no error.
-	Recordings(ctx context.Context, folder string) ([]ipad.AUMFileEntry, error)
+	// Recordings reads a session's folder in AUM's Recordings, enough to
+	// tell a take made after an earlier reading. A folder that is not there
+	// yet has none, and is no error.
+	Recordings(ctx context.Context, folder string) (stemList, error)
 	// Arm makes sure the master strip is armed for recording, or is not. It
 	// says whether it had to tap for that: false when AUM showed it so
 	// already.
 	Arm(ctx context.Context, on bool) (tapped bool, err error)
 	// FilePlayer reads what the File Player of a strip shows.
 	FilePlayer(ctx context.Context, strip string) (filePlayerView, error)
+}
+
+// stemList is a reading of a session's folder in AUM's Recordings.
+type stemList struct {
+	// Takes are the folder's rows in the list's order: all of them, or with
+	// Top those of its first page only.
+	Takes []ipad.AUMFileEntry
+	// Top says Takes are only the folder's first page, which its sort (Sort)
+	// shows newest first: a take made after an earlier reading is among
+	// them, and what is further down is not.
+	Top  bool
+	Sort string
+	// Missing says the root of Recordings does not hold the folder: no take
+	// was made into it yet. Root is then the root's folders, every one of
+	// them: it was read through to its end to say so.
+	Missing bool
+	Root    []string
 }
 
 // filePlayerView is what a File Player's panel shows of its file.
@@ -366,27 +385,29 @@ func parseFilePlayer(rows []ipad.AUMRow) filePlayerView {
 // ipadDeck is the stemDeck that drives AUM over WebDriverAgent.
 type ipadDeck struct{ c *ipad.Client }
 
-// Recordings lists the takes of a session's folder in FILES → Recordings, all
-// of them. A folder the root of Recordings does not list holds no take yet:
-// AUM makes it with the session's first one. aum_files recordings walks to
-// the folder from the root whatever FILES showed last, so that answer is
-// about this folder and no other.
-func (d ipadDeck) Recordings(ctx context.Context, folder string) ([]ipad.AUMFileEntry, error) {
-	res, err := d.c.AUMFiles(ctx, ipad.AUMRequest{Action: "recordings", Path: []string{folder}})
+// Recordings reads the takes of a session's folder in FILES → Recordings
+// (ipad.Client.AUMTakes): the folder's first page when AUM shows its newest
+// take first, else all of it. A folder the root of Recordings does not list
+// holds no take yet: AUM makes it with the session's first one. The folder is
+// reached from the root whatever FILES showed last, so that answer is about
+// this folder and no other, and it is given only for a root read through.
+func (d ipadDeck) Recordings(ctx context.Context, folder string) (stemList, error) {
+	t, err := d.c.AUMTakes(ctx, folder)
 	// FILES stays open on the list it showed: close it, whatever it showed.
 	defer func() { _, _ = d.c.AUMPanel(context.WithoutCancel(ctx), ipad.AUMRequest{Action: "close"}) }()
-	var none *ipad.NoFolderError
-	switch {
-	case errors.As(err, &none):
-		return nil, nil
-	case err != nil:
-		return nil, err
-	case !res.Verified:
-		// A list that was not read to its end cannot say which take is new.
-		return nil, errors.New(res.Message)
+	if err != nil {
+		return stemList{}, err
 	}
-	entries, _ := res.Data.([]ipad.AUMFileEntry)
-	return entries, nil
+	l := stemList{Takes: t.Takes, Top: t.Top, Sort: t.Sort, Missing: t.Missing}
+	if t.Missing {
+		l.Root = []string{}
+		for _, e := range t.Root {
+			if e.Folder {
+				l.Root = append(l.Root, e.Name)
+			}
+		}
+	}
+	return l, nil
 }
 
 func (d ipadDeck) Arm(ctx context.Context, on bool) (bool, error) {
@@ -465,6 +486,19 @@ func newRecording(before, after []ipad.AUMFileEntry) (ipad.AUMFileEntry, bool) {
 		}
 	}
 	return take, found
+}
+
+// takeIn picks the take a pass made out of a session's folder as read before
+// the pass and after it (newRecording). A folder read at its top before and
+// whole after, its sort changed in between, tells nothing: the rows below the
+// first page were not read before, and any of them would look new. resorted
+// says so, and nothing is found.
+func takeIn(before, after stemList) (take ipad.AUMFileEntry, found, resorted bool) {
+	if before.Top && !after.Top && !after.Missing {
+		return ipad.AUMFileEntry{}, false, true
+	}
+	take, found = newRecording(before.Takes, after.Takes)
+	return take, found, false
 }
 
 // recordingFile is a listed take as a File Player's file: its path in AUM's
@@ -844,10 +878,11 @@ func (s *Server) runStems(ctx context.Context, job *stemsJob, plan *stemPlan, de
 		return rep
 	}
 
+	root := &stemsRoot{}
 	for n, i := range todo {
 		st, cs := plan.stems[i], plan.songs[i]
 		job.setPhase("stem %s (%d of %d): loading its session", st.Name, n+1, len(todo))
-		take, err := s.recordStem(ctx, job, cs, st, deck, fmt.Sprintf("stem %s (%d of %d)", st.Name, n+1, len(todo)))
+		take, err := s.recordStem(ctx, job, cs, st, deck, root, fmt.Sprintf("stem %s (%d of %d)", st.Name, n+1, len(todo)))
 		if take.File != "" {
 			rec.Stems[i] = take
 			if serr := s.saveSongStems(rec); serr != nil {
@@ -870,10 +905,36 @@ func (s *Server) runStems(ctx context.Context, job *stemsJob, plan *stemPlan, de
 	return report(), nil
 }
 
+// stemsRoot is the root of AUM's Recordings as a reading of this recording
+// last read it through, for a stem whose folder it did not hold: the folders
+// it held, and that stem. A later stem whose folder it did not hold either has
+// no take yet: AUM makes a session's folder with its first take, and of the
+// sessions a recording loads only the stem's own makes takes into it, in its
+// pass, which comes after. So its reading is not done again: on an iPad whose
+// Recordings held 90 folders it took about 110 s.
+type stemsRoot struct {
+	folders map[string]bool
+	stem    string
+}
+
+// lacks says the root, read through for an earlier stem, did not hold folder.
+func (r *stemsRoot) lacks(folder string) bool {
+	return r.folders != nil && !r.folders[folder]
+}
+
+// note keeps the root's folders as a reading for stem read them through.
+func (r *stemsRoot) note(folders []string, stem string) {
+	r.folders, r.stem = map[string]bool{}, stem
+	for _, f := range folders {
+		r.folders[f] = true
+	}
+}
+
 // recordStem loads a stem's session and records one pass of it with AUM's
 // recorder. The take it returns says what was recorded, or why nothing was;
-// the error ends the whole recording.
-func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong, st song.Stem, deck stemDeck, label string) (stemTake, error) {
+// the error ends the whole recording. root is what an earlier stem's reading
+// saw of the root of AUM's Recordings.
+func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong, st song.Stem, deck stemDeck, root *stemsRoot, label string) (stemTake, error) {
 	take := stemTake{Stem: st.Name, Tracks: st.Tracks}
 	fail := func(format string, a ...any) (stemTake, error) {
 		take.Error = fmt.Sprintf(format, a...)
@@ -945,14 +1006,22 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	// take would be found as this pass's: it is switched off before AUM's
 	// list is read. The transport stands (the load left it stopped).
 	recorderOff()
-	job.setPhase("%s: reading AUM's recordings of %q", label, folder)
-	before, err := deck.Recordings(ctx, folder)
-	if err != nil {
-		if ctx.Err() != nil {
-			return take, ctx.Err()
+	var before stemList
+	if root.lacks(folder) {
+		job.setPhase("%s: AUM's Recordings hold no folder %q yet (its root was read through for the stem %s)", label, folder, root.stem)
+		before = stemList{Missing: true}
+	} else {
+		job.setPhase("%s: reading AUM's recordings of %q", label, folder)
+		if before, err = deck.Recordings(ctx, folder); err != nil {
+			if ctx.Err() != nil {
+				return take, ctx.Err()
+			}
+			why, _ := s.ipadFailure(ctx, err)
+			return fail("AUM's list of recordings could not be read before the take: %s", why)
 		}
-		why, _ := s.ipadFailure(ctx, err)
-		return fail("AUM's list of recordings could not be read before the take: %s", why)
+		if before.Missing {
+			root.note(before.Root, st.Name)
+		}
 	}
 
 	// Arm the master: by its mapping, and then by AUM's screen, which says
@@ -1055,10 +1124,14 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 	var entry ipad.AUMFileEntry
 	found, nudged := false, false
 	var lerr error
+	// resorted says the folder was read at its top before the pass and is
+	// read whole now, sorted resort: its sort was changed in between.
+	resorted, resort := false, ""
 	for looking := time.Now(); ; {
-		var after []ipad.AUMFileEntry
+		var after stemList
 		if after, lerr = deck.Recordings(ctx, folder); lerr == nil {
-			if entry, found = newRecording(before, after); found {
+			if entry, found, resorted = takeIn(before, after); found || resorted {
+				resort = after.Sort
 				break
 			}
 		}
@@ -1089,6 +1162,12 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 		take.Notes = append(take.Notes, "AUM listed no take after the pass until the daemon switched its recorder off: the stem's sequence had not ended it, so the take ran on after the stem and is not whole beats long")
 	}
 	switch {
+	case resorted:
+		if !nudged {
+			// As below: the recorder must not record on.
+			recorderOff()
+		}
+		return fail("AUM's list of %q was sorted %q before the pass, newest first, and is sorted %q now: which take is new cannot be told from it. Set the sort above the list in FILES back to %s and record the stem again", folder, before.Sort, resort, before.Sort)
 	case lerr != nil && !found:
 		why, _ := s.ipadFailure(ctx, lerr)
 		return fail("AUM's list of recordings could not be read after the take: %s", why)

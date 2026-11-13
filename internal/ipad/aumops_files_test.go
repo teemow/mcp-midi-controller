@@ -468,6 +468,93 @@ func TestAUMFilesRecordingsFromSessions(t *testing.T) {
 	wantTouched(t, w, aum)
 }
 
+// The stems tools ask a session's folder of Recordings only whether it holds a
+// take that an earlier reading did not see. Sorted LAST OPENED, as on the
+// iPad, the newest take is first: the first page tells it, and the list is
+// not scrolled to its end (two reads more, about 8 s on the iPad, and a page
+// more for every eight takes).
+func TestAUMTakesReadsTheFirstPageOfANewestFirstFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	aum.AddRecordings("Night Drive", takes(40)...)
+	for i := range 20 {
+		aum.AddRecordings(fmt.Sprintf("Song %02d", i), takes(1)...)
+	}
+	aum.ShowRecordings("Song 07")
+	got, err := c.AUMTakes(context.Background(), "Night Drive")
+	if err != nil || !got.Top || got.Sort != ipadtest.SortLastOpened || got.Missing || len(got.Root) != 0 {
+		t.Fatalf("takes = %+v, %v", got, err)
+	}
+	if len(got.Takes) != ipadtest.FilesRowsTop {
+		t.Fatalf("%d takes, want the first page's %d: %q", len(got.Takes), ipadtest.FilesRowsTop, entryNamesOf(got.Takes))
+	}
+	for i, e := range got.Takes {
+		if want := takes(40)[i]; e.Name != want[0] || e.Detail != want[1] || e.Folder {
+			t.Fatalf("take %d = %+v, want %v", i, e, want)
+		}
+	}
+	// Reached from the root as aum_files recordings reaches it, and nothing
+	// dragged: the folder is on the root's first page and read at its own.
+	if countGestures(w, filesIcon) != 1 || countGestures(w, backArrow) != 2 || countGestures(w, "actions") != 0 {
+		t.Fatalf("FILES was not walked from the root, or a list was scrolled: %v", w.GestureLog())
+	}
+	wantTouched(t, w, aum)
+}
+
+// Sorted by anything else the newest take need not be on the first page: the
+// folder is read whole, to its end.
+func TestAUMTakesReadsAnotherSortWhole(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	aum.AddRecordings("Night Drive", takes(40)...)
+	aum.SetSort("NAME")
+	aum.SetCutRows(true)
+	got, err := c.AUMTakes(context.Background(), "Night Drive")
+	if err != nil || got.Top || got.Sort != "NAME" || got.Missing || len(got.Takes) != 40 {
+		t.Fatalf("takes = %+v (%d), %v", got.Sort, len(got.Takes), err)
+	}
+	if n := countGestures(w, "actions"); n < 4 {
+		t.Fatalf("%d drags for 40 takes: %v", n, w.GestureLog())
+	}
+	wantTouched(t, w, aum)
+}
+
+// A folder the root does not hold is Missing once the root was read through,
+// whatever FILES showed last, and every row of the root comes with it: the
+// stems tools keep it for the stems after this one.
+func TestAUMTakesMissingFolder(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled")
+	for i := range 30 {
+		aum.AddRecordings(fmt.Sprintf("Song %02d", i), takes(1)...)
+	}
+	aum.AddRecordings("", [2]string{"New Song", "13. Nov 2026 at 00:12:57 • 4.0 MiB • wav"})
+	aum.LeaveRecordingsOpen("Song 12", 0)
+	got, err := c.AUMTakes(context.Background(), "New Song")
+	if err != nil || !got.Missing || got.Top || len(got.Takes) != 0 || len(got.Root) != 31 {
+		t.Fatalf("takes = %+v, %v", got, err)
+	}
+	// A take of the folder's name is a row of the root, and no folder.
+	if got.Root[0].Name != "Song 00" || !got.Root[0].Folder || got.Root[30].Name != "New Song" || got.Root[30].Folder {
+		t.Fatalf("the root's rows = %q", entryNamesOf(got.Root))
+	}
+	wantTouched(t, w, aum)
+}
+
+// "No such folder" is said only of a list read to its end: a root that goes
+// on after the pages a reading is given can hold the folder further down.
+func TestAUMFilesNoFolderOnlyForAWholeList(t *testing.T) {
+	_, aum, c := filesFake(t, "Songs", "Untitled")
+	for i := range filePages*8 + 40 {
+		aum.AddRecordings(fmt.Sprintf("Song %03d", i), takes(1)...)
+	}
+	_, err := c.AUMFiles(context.Background(), AUMRequest{Action: "recordings", Path: []string{"New Song"}})
+	var none *NoFolderError
+	if err == nil || errors.As(err, &none) || !strings.Contains(err.Error(), `went on after 60 pages without a folder "New Song"`) {
+		t.Fatalf("recordings of a folder beyond what was read: %v", err)
+	}
+	if got, err := c.AUMTakes(context.Background(), "New Song"); err == nil || got.Missing {
+		t.Fatalf("takes of a folder beyond what was read = %+v, %v", got, err)
+	}
+}
+
 func renameNow(t *testing.T, c *Client, name, to string, path ...string) AUMResult {
 	t.Helper()
 	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "rename", Path: path, Name: name, NewName: to, Confirm: true})

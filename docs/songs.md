@@ -1493,10 +1493,37 @@ When AUM's list holds no new take after that, the sequence has not ended it.
 The daemon then switches the recorder off itself, once, with the transport
 stopped, and reads the list again. Such a take ran on after the stem and is
 not whole beats long: the report says so, and the mix is not played from it
-(below). Each reading walks FILES → Recordings from its root to the session's
-folder and reads both whole: on an iPad whose Recordings held 90 folders one
-reading took 36 to 115 s, so the first one after the pass can end well after
-the stem, and a take the sequence did not end runs on that long.
+(below).
+
+**Looking up the take.** Each reading walks FILES → Recordings from its root
+to the session's folder, whatever FILES showed last (see
+[ipad-control.md](ipad-control.md#listing-and-loading-sessions)), and reads
+as much as tells the take, no more:
+
+- AUM's list sorted LAST OPENED, as it was on the iPad, shows a folder's
+  newest take first. The daemon then reads the folder's first page, before
+  the pass and after it, and does not scroll it to its end: the take is
+  there. A list sorted otherwise is read whole, both times. A folder read at
+  its top before the pass and whole after it (its sort was changed in
+  between) says nothing of which take is new: the stem is reported as not
+  recorded, and the recorder is switched off.
+- A folder the root does not hold has no take yet. That is said only once
+  the root was read through, and that reading answers for the later stems of
+  the same recording whose folders it did not hold either: AUM makes a
+  session's folder with its first take, and only the stem's own pass, which
+  comes later, makes one into it. So of a new song's stems only the first
+  reads the root through.
+
+On an iPad whose root of Recordings held 90 folders (AUM 1.4.8), one reading
+took 25 to 28 s for a folder on the root's first page (34 s read whole), 85 s
+for one on its ninth page holding 22 takes (102 s whole), and 116 s for a
+folder the root does not hold. So a stem whose folder is near the top of the
+root spends about 50 s reading, and of a new song's stems the first about
+140 s and each one after it about 25 s, the reading after its pass, its new
+folder being at the top of the root (each about 150 s while every reading
+took the folder whole and every new stem read the root through). The first
+reading after a pass ends about 25 s after the stem on such an iPad, and a
+take the sequence did not end runs on that long.
 `stop_song` ends a pass, and the whole recording: the transport stops and the
 recorder is switched off.
 
@@ -1504,7 +1531,8 @@ recorder is switched off.
 one with the highest number when there are several. AUM names it
 `<session>/Master - <tempo> bpm - <nnn>.wav`, counting up in the session's
 folder. The list gives a file's date, size and format, and no length, and is
-not always in the order of the takes.
+not always in the order of the takes; sorted LAST OPENED it shows the newest
+one first.
 
 **What is kept.** The daemon notes down every take: the stem and its tracks,
 the file, and a fingerprint of the stem's session and of what its sequencer
