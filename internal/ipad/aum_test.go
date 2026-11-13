@@ -68,6 +68,10 @@ func TestParseAUMStartScreen(t *testing.T) {
 	if !st.StartScreen || st.MenuOpen || len(st.Channels) != 0 {
 		t.Fatalf("start screen: %+v", st)
 	}
+	// The add tile is in the middle, above LAST STATE and DEFAULT.
+	if st.AddTile == nil || *st.AddTile != (Rect{X: 530, Y: 372, Width: 150, Height: 150}) {
+		t.Fatalf("start screen: add tile = %v", st.AddTile)
+	}
 	if st.TempoBPM == nil || *st.TempoBPM != 98.5 {
 		t.Fatalf("fractional tempo: %v", st.TempoBPM)
 	}
