@@ -124,7 +124,7 @@ a normal result, not a tool error.
 |---|---|
 | `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the Navigator by a tap on the mixer, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). `open` of `menu` and the panels reached through it first closes what lies in front, see [Opening the main menu](#opening-the-main-menu). |
 | `aum_channel` | `add_audio`, `add_midi` (the add tile: right of the last strip, or in the middle of the start screen that CLEAR leaves), `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`: a tap on the dB label opens the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
-| `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
+| `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader` / `post_fader` (an insert: the fader goes right below / right above it, see [Pre and post fader](#pre-and-post-fader)), `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
 | `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings, read the same way: the root lists a folder per session, `path` into one its takes), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹ (`name` in the folder `path` to `new_name`: found like `load`, long-press on its row → the share sheet → Rename; proved by the folder's list, read again), `clear`¹ (CLEAR → Sure?), `notes`. Every action goes through the main menu, see [Opening the main menu](#opening-the-main-menu). |
 | `aum_midi_routing` | `read` (sources, destinations and the connected cells), `connect` / `disconnect` (`source`, `destination`), `destination` (its panel: MIDI sources, All Notes Off, the filter; `path` taps further). |
@@ -227,6 +227,33 @@ After `aum_files load` has tapped the session's row it waits for the main
 menu to name the session, opening the menu again if the load closed it. An
 alert AUM puts up then is not answered: it is AUM's word on the session just
 loaded, and it stays for the caller to read in the result's state.
+
+### Pre and post fader
+
+Where a strip's fader sits among its inserts is not in AUM's tree: the tree
+read the same before and after the fader moved, and PRE FADER and POST FADER
+in a node's menu carry no checked state. AUM draws it only, as the fader's
+wire: a light line from the strip's wire to the fader that leaves 5 points
+below the last insert above the fader (5 points above the first insert when
+every insert is post fader). Seen on the iPad (AUM 1.4.8), on a scratch strip
+with three of AUM's built-in effects:
+
+- PRE FADER puts the fader right below the node, POST FADER right above it.
+  Inserts on the other side follow: PRE FADER on the first of three
+  pre-fader inserts made the two below it post fader;
+- AUM leaves the node's menu open after either item, whether the wire moved
+  or not (still open 10 s later);
+- on a node already where the item puts it, nothing changes.
+
+So `aum_node pre_fader` and `post_fader` take an insert of an audio strip
+(the source, the output, an empty slot and a MIDI strip are refused before
+anything is touched), tap the item, close the menu AUM leaves open with a
+tap outside it, and read the fader's wire from a screenshot: verified when
+it leaves right below (pre) or right above (post) the node. The message
+says where it leaves, where it left before the long-press, whether the node
+was there already, and when the menu is still open after the tap outside
+it (`aum_panel close` closes it). Without the wire in view (an insert scrolled out of its column)
+the call is not verified; `ipad_screenshot` shows the strip.
 
 ### Listing and loading sessions
 
@@ -608,7 +635,8 @@ What AUM's tree does **not** carry, and how to check it instead:
 |---|---|
 | Plugin parameters | the audio tap (`get_audio_tap`, `probe_sound`); plugin views are out-of-process |
 | MIDI routing connections | `aum_midi_routing read` (from a screenshot) |
-| Pre/post-fader wiring, the SELECT glow, the metronome | `ipad_screenshot` |
+| Pre/post-fader wiring | `aum_node pre_fader` / `post_fader` read the fader's wire from a screenshot ([Pre and post fader](#pre-and-post-fader)); `ipad_screenshot` |
+| The SELECT glow, the metronome | `ipad_screenshot` |
 | MIDI Control mappings | `aum_midi_control read` with a `path`, or the session file (`get_aum_session`) |
 
 ## Care
