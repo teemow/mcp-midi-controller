@@ -47,11 +47,19 @@ type AUMState struct {
 	// Overlays are the popovers, side panels, alerts and the MIDI routing
 	// matrix over the mixer, front-most last.
 	Overlays []AUMOverlay `json:"overlays,omitempty"`
-	// Channels are the mixer strips in mixer order (on screen or scrolled
-	// away).
+	// Channels are the mixer strips in the tree, in mixer order. AUM keeps
+	// only the strips that reach into the window in it: of a mixer wider
+	// than the window the others are missing until it is scrolled to them
+	// (see mixerWalk).
 	Channels []AUMChannel `json:"channels"`
-	// AddTile is the add-channel tile right of the last strip.
+	// AddTile is the add-channel tile right of the last strip; on the start
+	// screen, which has no strip, it sits in the middle of the mixer. Like a
+	// strip it is in the tree only while its column reaches into the window.
 	AddTile *Rect `json:"add_tile,omitempty"`
+	// MixerScroll is how far the mixer is scrolled sideways, in percent of
+	// its scroll range (0 at its first strip), as its horizontal scroll bar
+	// says; nil when that is not in the tree.
+	MixerScroll *float64 `json:"mixer_scroll,omitempty"`
 	// PluginWindows are the open plugin windows (title "<name> @<node>").
 	PluginWindows []AUMPluginWindow `json:"plugin_windows,omitempty"`
 
@@ -260,6 +268,7 @@ func ParseAUM(root *Element, window Size) AUMState {
 			if st.mixer.Empty() && el.Rect.Width >= window.Width*0.9 && el.Rect.Height >= window.Height*0.8 {
 				st.mixer = el.Rect
 				st.findAddTile(el)
+				st.readMixerScroll(el)
 			}
 		}
 		return true
@@ -321,9 +330,13 @@ func parsePluginWindows(root *Element) []AUMPluginWindow {
 // full-height container (228×764 in AUM 1.4.8) whose lowest child is a
 // wide button (156×50). The title can be "2: <source>", "MIDI 1", "CHAN 3"
 // or any custom name, so it is found by shape, not text.
+//
+// The add tile's column has that shape on the start screen, where LAST STATE
+// and DEFAULT (140×36) sit below the tile: it is told by its tile and is no
+// strip.
 func stripTitle(el *Element) *Element {
 	r := el.Rect
-	if el.Type != "Other" || r.Height < 300 || r.Width < 150 || r.Width > 320 {
+	if el.Type != "Other" || r.Height < 300 || r.Width < 150 || r.Width > 320 || addTileOf(el) != nil {
 		return nil
 	}
 	for _, c := range el.Children {
@@ -336,29 +349,67 @@ func stripTitle(el *Element) *Element {
 	return nil
 }
 
-// findAddTile finds the add-channel tile: a square (150×150) in a
-// full-height column right of the last strip. AUM 1.4.8 lists it as an
-// unlabelled Button; its AUDIO, MIDI and IMPORT menu shows in the tree only
-// while it is open.
-func (st *AUMState) findAddTile(mixer *Element) {
-	for _, c := range mixer.Children {
-		if stripTitle(c) != nil || c.Type != "Other" || c.Rect.Height < 300 {
-			continue
-		}
-		for _, g := range c.Children {
-			if (g.Type == "Other" || g.Type == "Button") && g.Rect.Width >= 100 && math.Abs(g.Rect.Width-g.Rect.Height) <= 2 {
-				r := g.Rect
-				st.AddTile = &r
-				c.Walk(func(b *Element, _ int) bool {
-					if l := strings.ToUpper(b.Label); b.Type == "Button" && (l == "AUDIO" || l == "MIDI" || l == "IMPORT") {
-						st.addMenu[l] = b.Rect
-					}
-					return true
-				})
-				return
-			}
+// addTileOf returns the add-channel tile when el is its column: a square
+// (150×150) directly in a full-height container, right of the last strip, or
+// alone in the middle of the mixer on the start screen. AUM 1.4.8 lists the
+// tile as an unlabelled Button and, while its menu is open, as a container of
+// the AUDIO, MIDI and IMPORT buttons.
+func addTileOf(el *Element) *Element {
+	if el.Type != "Other" || el.Rect.Height < 300 {
+		return nil
+	}
+	for _, g := range el.Children {
+		if (g.Type == "Other" || g.Type == "Button") && g.Rect.Width >= 100 && math.Abs(g.Rect.Width-g.Rect.Height) <= 2 {
+			return g
 		}
 	}
+	return nil
+}
+
+// findAddTile sets AddTile and, while the tile's menu is open, where its
+// AUDIO, MIDI and IMPORT are.
+func (st *AUMState) findAddTile(mixer *Element) {
+	for _, c := range mixer.Children {
+		tile := addTileOf(c)
+		if tile == nil {
+			continue
+		}
+		r := tile.Rect
+		st.AddTile = &r
+		c.Walk(func(b *Element, _ int) bool {
+			if l := strings.ToUpper(b.Label); b.Type == "Button" && (l == "AUDIO" || l == "MIDI" || l == "IMPORT") {
+				st.addMenu[l] = b.Rect
+			}
+			return true
+		})
+		return
+	}
+}
+
+// readMixerScroll reads the mixer's horizontal scroll bar: a child of the
+// mixer labelled "Horizontal scroll bar, 2 pages" whose value is how far the
+// mixer is scrolled ("0 %" at its first strip, with a no-break space). It is
+// in the tree hidden as well, under a panel or a plugin window.
+func (st *AUMState) readMixerScroll(mixer *Element) {
+	for _, c := range mixer.Children {
+		if !strings.HasPrefix(strings.ToLower(c.Label), "horizontal scroll bar") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(c.Value), "%"))
+		if f, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", "."), 64); err == nil {
+			st.MixerScroll = &f
+			return
+		}
+	}
+}
+
+// atMixerStart reports whether the mixer is scrolled to its first strip: its
+// scroll bar says so, and no strip reaches past its left edge.
+func (st AUMState) atMixerStart() bool {
+	if st.MixerScroll == nil || *st.MixerScroll >= 0.5 {
+		return false
+	}
+	return len(st.Channels) == 0 || st.Channels[0].Frame.X >= st.mixer.X-1
 }
 
 func parseStrip(n int, s *Element, window Size) AUMChannel {
@@ -717,6 +768,17 @@ func (o *AUMOverlay) Row(label string) (AUMRow, bool) {
 	return AUMRow{}, false
 }
 
+// noChannelError is Channel's error for a selector that no strip of those
+// read answers: one of a mixer wider than the window may be off screen.
+type noChannelError struct{ msg string }
+
+func (e *noChannelError) Error() string { return e.msg }
+
+func noChannel(format string, a ...any) error { return &noChannelError{fmt.Sprintf(format, a...)} }
+
+// isPosition reports whether sel selects a strip by its position ("#3").
+func isPosition(sel string) bool { return strings.HasPrefix(strings.TrimSpace(sel), "#") }
+
 // Channel finds a strip by selector: "#3" (the third strip from the left),
 // a number ("2" = the strip titled "2: …" or "CHAN 2"), a MIDI title
 // ("MIDI 1"), or a case-insensitive part of the title.
@@ -727,8 +789,11 @@ func (st AUMState) Channel(sel string) (AUMChannel, error) {
 	}
 	if pos, ok := strings.CutPrefix(sel, "#"); ok {
 		n, err := strconv.Atoi(pos)
-		if err != nil || n < 1 || n > len(st.Channels) {
+		switch {
+		case err != nil || n < 1:
 			return AUMChannel{}, fmt.Errorf("no strip %s: the mixer has %d (channels: %s)", sel, len(st.Channels), st.channelList())
+		case n > len(st.Channels):
+			return AUMChannel{}, noChannel("no strip %s: the mixer has %d (channels: %s)", sel, len(st.Channels), st.channelList())
 		}
 		return st.Channels[n-1], nil
 	}
@@ -738,7 +803,7 @@ func (st AUMState) Channel(sel string) (AUMChannel, error) {
 				return ch, nil
 			}
 		}
-		return AUMChannel{}, fmt.Errorf("no audio channel %d (channels: %s; select a custom-named strip by title or #position)", n, st.channelList())
+		return AUMChannel{}, noChannel("no audio channel %d (channels: %s; select a custom-named strip by title or #position)", n, st.channelList())
 	}
 	var hits []AUMChannel
 	for _, ch := range st.Channels {
@@ -751,7 +816,7 @@ func (st AUMState) Channel(sel string) (AUMChannel, error) {
 	}
 	switch len(hits) {
 	case 0:
-		return AUMChannel{}, fmt.Errorf("no channel matches %q (channels: %s)", sel, st.channelList())
+		return AUMChannel{}, noChannel("no channel matches %q (channels: %s)", sel, st.channelList())
 	case 1:
 		return hits[0], nil
 	}

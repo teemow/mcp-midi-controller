@@ -1167,8 +1167,9 @@ WebDriverAgent session bound to AUM does.
   `track_taps` the check also says which tracks' taps are connected;
 - the mixer has a strip for the brain, every track and the master, and no
   failed plugin. AUM says that a plugin did not load only by drawing its node
-  with a ring of red stripes, so the check takes a screenshot and looks at
-  the ring of every node on screen. `check_song` reloads nothing: for a
+  with a ring of red stripes, so the check takes a screenshot at every stop
+  of its walk along the mixer and looks at the ring of every node, strips
+  scrolled out of the window included. `check_song` reloads nothing: for a
   failed node its `next` names `load_song`, which reloads it, and the
   `aum_node reload` call (strip and node) that reloads it once;
 - every track answers a note. The daemon sets each track's own sound (its

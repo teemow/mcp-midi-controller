@@ -70,7 +70,9 @@ func TestParseAUMStripsNodesAndOverlays(t *testing.T) {
 	if _, err := st.Channel("#9"); err == nil {
 		t.Fatal("#9 accepted")
 	}
-	if st.AddTile == nil || st.AddTile.X != 7+3*242+46 || len(st.addMenu) != 0 {
+	// Three strips and the tile's column are narrower than the window: the
+	// stand-in centres them, 121 points in.
+	if st.AddTile == nil || st.AddTile.X != 121+3*242+46 || len(st.addMenu) != 0 {
 		t.Fatalf("add tile = %+v %+v", st.AddTile, st.addMenu)
 	}
 	if len(st.PluginWindows) != 1 || st.PluginWindows[0].Title != "Synth @A1" || len(st.PluginWindows[0].Bar) != 6 {
@@ -152,6 +154,82 @@ func TestAUMChannelAddAndRemove(t *testing.T) {
 	g := w.GestureLog()
 	if len(g) != 3 || g[1] != g[2] || g[0] != "tap 1125,789" || g[1] != "tap 883,374" {
 		t.Fatalf("remove gestures = %v", g)
+	}
+}
+
+// On the start screen the add tile is the one in the middle of the mixer.
+func TestAUMChannelAddFromStartScreen(t *testing.T) {
+	start := ipadtest.AUM{Tempo: "120", Position: "001:1  00:00.0", StartScreen: true}
+	menu := start
+	menu.AddMenu = true
+	added := ipadtest.AUM{Tempo: "120", Position: "001:1  00:00.0", Strips: []ipadtest.Strip{{Title: "MIDI 1"}}}
+	w, c := opFake(t, start, menu, added)
+	res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "add_midi"})
+	if err != nil || !res.Verified || res.Message != `added strip 1 "MIDI 1"` || res.State.StartScreen {
+		t.Fatalf("add_midi: %+v, %v", res.Message, err)
+	}
+	// The tile (530,372) 150×150, then MIDI, the middle row of its menu.
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 605,447" || g[1] != "tap 605,447.5" {
+		t.Fatalf("gestures = %v", g)
+	}
+}
+
+// AUM takes the first tap on the mixer under a side panel to close the panel
+// and passes nothing on, so what lies over the mixer is closed before a strip
+// is touched: FILES, which a save leaves open, and an alert left from before.
+func TestAUMChannelUncoversMixer(t *testing.T) {
+	files := mixer()
+	files.Files = &ipadtest.FilesPanel{Title: "SESSIONS", Folder: "/", Cells: []ipadtest.FileCell{{Name: "Scratch", Detail: "12. Nov 2026 at 21:00:00"}}}
+	alert := mixer()
+	alert.Overlays = []ipadtest.Overlay{{Kind: "alert", Title: "Set level", Fields: []string{"-1.0"}, Buttons: []string{"Cancel", "Set"}}}
+	muted := mixer()
+	muted.Strips[1].Muted = true
+	for name, tc := range map[string]struct {
+		covered ipadtest.AUM
+		closing string
+	}{
+		"FILES":    {files, "tap 1190,30"}, // the panel's close icon
+		"an alert": {alert, "tap 605,425"}, // Cancel
+	} {
+		w, c := opFake(t, tc.covered, mixer(), muted)
+		res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "mute", Channel: "2", On: bptr(true)})
+		if err != nil || !res.Verified || len(res.State.Overlays) != 0 {
+			t.Fatalf("mute under %s: %+v, %v", name, res.Message, err)
+		}
+		if g := w.GestureLog(); len(g) != 2 || g[0] != tc.closing || g[1] != "tap 430,645" {
+			t.Fatalf("mute under %s: gestures = %v", name, g)
+		}
+	}
+
+	// A request that lacks its confirm or an argument touches nothing.
+	w, c := opFake(t, files, mixer())
+	if _, err := c.AUMChannel(context.Background(), AUMRequest{Action: "remove", Channel: "2"}); !errors.Is(err, ErrNeedsConfirm) || w.Gestures() != 0 {
+		t.Fatalf("remove without confirm under FILES: %v (%d gestures)", err, w.Gestures())
+	}
+	if _, err := c.AUMChannel(context.Background(), AUMRequest{Action: "set_level", Channel: "2"}); err == nil || w.Gestures() != 0 {
+		t.Fatalf("set_level without level_db under FILES: %v (%d gestures)", err, w.Gestures())
+	}
+
+	// An EDIT CHANNEL left open (edit leaves it so) can be another strip's:
+	// rename, like remove, acts in the one that is open, so it is closed and
+	// the named strip's own is opened, never the other strip renamed.
+	other := mixer()
+	other.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "EDIT CHANNEL 3", Fields: []string{"3: Drum Machine"}, Buttons: []string{"DUPLICATE", "REMOVE CHANNEL"}}}
+	edit := mixer()
+	edit.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "EDIT CHANNEL 2", Fields: []string{"2: Synth One"}, Buttons: []string{"DUPLICATE", "REMOVE CHANNEL"}}}
+	renamed := mixer()
+	renamed.Strips[1].Title = "Lead"
+	w, c = opFake(t, other, mixer(), edit, edit, renamed)
+	w.Fields = []string{"2: Synth One"}
+	res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "rename", Channel: "2", Name: "Lead"})
+	if err != nil || !res.Verified || w.Fields[0] != "Lead" {
+		t.Fatalf("rename under another strip's EDIT CHANNEL: %+v, %v (field %q)", res.Message, err, w.Fields[0])
+	}
+	// A tap outside the open popover, then strip 2's title (249+72, 764)
+	// 156×50, then the name field.
+	g := w.GestureLog()
+	if len(g) != 4 || g[1] != "tap 399,789" || g[2] != "click" || g[3] != "keys" || len(res.Steps) == 0 || !strings.HasPrefix(res.Steps[0], "tap outside the popover") {
+		t.Fatalf("rename under another strip's EDIT CHANNEL: gestures = %v, steps = %v", g, res.Steps)
 	}
 }
 
