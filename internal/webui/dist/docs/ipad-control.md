@@ -247,8 +247,9 @@ session file for a look at its size and content.
   down, in the order picked above it (name, last saved, last opened). Its
   tree holds more cells than that, marked hidden: Recordings, just opened,
   had one for every row below the fold, and Sessions, scrolled to its end,
-  kept those of the rows above with stale contents (one name stood in four
-  of them). So only the cells that show are read, a page at a time.
+  kept those of the eighteen rows above, four of them with another row's
+  name and saved time. So only the cells that show are read, a page at a
+  time.
 - The tool drags the list 420 points in 0.9 s for the next
   page, which moved it by 404 to 406 points: six rows are read twice. A drag
   of 584 points in 0.5 s ran on after the finger lifted (674 points) and
