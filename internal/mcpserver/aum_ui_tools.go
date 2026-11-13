@@ -27,7 +27,7 @@ const aumVerifyNote = " Every call re-reads AUM after acting and reports verifie
 
 const aumCareNote = " Operations that change or lose state need confirm: true; take an ipad_screenshot first and, per AGENTS.md, act only on a scratch session or a ' (mcp test)' copy, never an original session."
 
-const channelProp = `"channel": {"type": "string", "description": "Strip selector: a number (\"2\" = the strip titled \"2: …\" or \"CHAN 2\"), \"MIDI 1\", \"#3\" (the third strip from the left, also for custom titles), or part of the title."}`
+const channelProp = `"channel": {"type": "string", "description": "Strip selector: a number (\"2\" = the strip titled \"2: …\" or \"CHAN 2\"), \"MIDI 1\", \"#3\" (the mixer's third strip, counted from its first wherever it is scrolled, also for custom titles), or part of the title."}`
 
 const confirmProp = `"confirm": {"type": "boolean", "description": "Required (true) for actions that change or lose state."}`
 

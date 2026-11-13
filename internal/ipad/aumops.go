@@ -308,28 +308,9 @@ func limit(s []string, n int) []string {
 	return append(append([]string{}, s[:n]...), "…")
 }
 
-// channel finds a strip and brings it on screen.
-func (d *AUMDriver) channel(sel string) (AUMChannel, error) {
-	ch, err := d.St.Channel(sel)
-	if err != nil || ch.OnScreen {
-		return ch, err
-	}
-	strip := ch.Strip
-	if err := d.scrollTo(func(st AUMState) (Rect, bool) {
-		if strip > len(st.Channels) {
-			return Rect{}, false
-		}
-		return st.Channels[strip-1].Frame, true
-	}); err != nil {
-		return ch, err
-	}
-	return d.St.Channels[strip-1], nil
-}
-
-// scrollTo scrolls the mixer sideways until the rect locate returns (a strip
-// or the add tile) is on screen. It drags slowly and holds before release so
-// the mixer does not fling, starting in a gap between two strips (a drag
-// that starts on a node or fader would move that instead).
+// scrollTo scrolls the mixer sideways until the rect locate returns (the add
+// tile) is on screen (see dragMixer). Strips are brought on screen by
+// AUMDriver.channel, which keeps track of strips that leave the tree.
 func (d *AUMDriver) scrollTo(locate func(AUMState) (Rect, bool)) error {
 	for i := 0; i < 6; i++ {
 		r, ok := locate(d.St)
@@ -341,10 +322,8 @@ func (d *AUMDriver) scrollTo(locate func(AUMState) (Rect, bool)) error {
 		}
 		want := (d.win.Width - r.Width) / 2
 		dx := math.Max(-(d.win.Width - 260), math.Min(d.win.Width-260, want-r.X))
-		x0 := d.scrollGrip(dx)
-		y := d.win.Height * 0.55
-		if err := d.drag("the mixer", DragTiming{Move: 500 * time.Millisecond, Hold: 200 * time.Millisecond},
-			Point{x0, y}, Point{x0 + dx, y}); err != nil {
+		x0, err := d.dragMixer(dx)
+		if err != nil {
 			return err
 		}
 		if err := d.Read(); err != nil {

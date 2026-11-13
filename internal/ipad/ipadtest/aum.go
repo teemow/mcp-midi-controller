@@ -3,6 +3,7 @@ package ipadtest
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 // Strip is one mixer strip of a synthetic AUM tree.
@@ -80,6 +81,14 @@ type AUM struct {
 	// AddMenu opens the add tile's AUDIO / MIDI / IMPORT menu.
 	AddMenu bool
 	Strips  []Strip
+	// Scroll is how far the mixer is scrolled sideways, in points: the
+	// strips and the add tile sit that much further left, and the mixer's
+	// horizontal scroll bar reads it in percent of its range.
+	Scroll float64
+	// OnScreenOnly keeps in the tree only the strips, and the add tile's
+	// column, that reach into the window, as AUM does: of a mixer wider than
+	// the window the others are not in it. Without it every strip is.
+	OnScreenOnly bool
 	// Overlays are drawn over the mixer, front-most last.
 	Overlays []Overlay
 	// PluginWindow opens a plugin window with this title ("Synth @A1").
@@ -264,12 +273,15 @@ func (a AUM) Source() json.RawMessage {
 	if (n+1)*242 < W {
 		left = (W - (n+1)*242) / 2
 	}
+	inView := func(x, w float64) bool { return !a.OnScreenOnly || (x < W && x+w > 0) }
 	for i, s := range a.Strips {
-		mixer = append(mixer, strip(left+float64(i)*242, s))
+		if x := left + float64(i)*242 - a.Scroll; inView(x, 228) {
+			mixer = append(mixer, strip(x, s))
+		}
 	}
 	// The add tile is an unlabelled button in a column of its own. While its
 	// menu is open it is a container of the menu's three buttons instead.
-	tile := left + n*242
+	tile := left + n*242 - a.Scroll
 	col := []node{el("Button", "", tile+46, 372, 150, 150)}
 	if a.AddMenu {
 		col = []node{el("Other", "", tile+46, 372, 150, 150,
@@ -283,7 +295,10 @@ func (a AUM) Source() json.RawMessage {
 			el("Button", "LAST STATE", tile+51, 611, 140, 36, el("StaticText", "LAST STATE", tile+100, 621, 62, 16)),
 			el("Button", "DEFAULT", tile+51, 687, 140, 36, el("StaticText", "DEFAULT", tile+107, 697, 48, 16)))
 	}
-	mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
+	if inView(tile, 242) {
+		mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
+	}
+	mixer = append(mixer, scrollBar(W, MixerWidth(len(a.Strips)), a.Scroll))
 	mixerView := el("ScrollView", "", 0, 60, W, 774, mixer...)
 	// Under a side panel or the routing matrix AUM marks the mixer invisible.
 	covered := a.Session != "" || a.Routing != nil || a.Save != nil || a.Files != nil
@@ -330,6 +345,39 @@ func (a AUM) Source() json.RawMessage {
 		panic(fmt.Sprintf("ipadtest: marshal AUM source: %v", err))
 	}
 	return b
+}
+
+// ScreenWidth is the width of the window the synthetic screens are drawn
+// for (landscape).
+const ScreenWidth = 1210.0
+
+// StripX is the x of the i-th strip (from 0) in the mixer's content; the add
+// tile's column is a strip's width further right of the last.
+func StripX(i int) float64 { return 7 + float64(i)*242 }
+
+// MixerWidth is the width of the content of a mixer of n strips: the strips
+// and the add tile's column.
+func MixerWidth(n int) float64 { return StripX(n) + 242 }
+
+// MaxScroll is how far a mixer of n strips scrolls sideways.
+func MaxScroll(n int) float64 { return math.Max(0, MixerWidth(n)-ScreenWidth) }
+
+// scrollBar is the mixer's horizontal scroll bar as iOS lists it: its label
+// counts the pages, its value is how far the mixer is scrolled in percent,
+// with a no-break space before the sign, its thumb the part in view.
+func scrollBar(w, content, scroll float64) node {
+	pages := int(math.Ceil(content / w))
+	label := fmt.Sprintf("Horizontal scroll bar, %d pages", pages)
+	if pages <= 1 {
+		label = "Horizontal scroll bar, 1 page"
+	}
+	pct, thumb := 0.0, w-56
+	if rng := content - w; rng > 0 {
+		pct = math.Round(100 * math.Max(0, math.Min(1, scroll/rng)))
+		thumb = (w - 56) * w / content
+	}
+	return el("Other", label, 25, 801, w-50, 30,
+		el("Other", "", 28+(w-56-thumb)*pct/100, 828, thumb, 3)).with("value", fmt.Sprintf("%.0f %%", pct))
 }
 
 // nodeButton is a square node button and, when loaded, the inner button

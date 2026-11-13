@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -364,6 +365,33 @@ func TestGetAUMUI(t *testing.T) {
 	}
 	if st, ok := res.StructuredContent.(ipad.AUMState); !ok || len(st.Channels) != 6 {
 		t.Fatalf("structured = %#v", res.StructuredContent)
+	}
+	if strings.Contains(text, "more strips") {
+		t.Fatalf("get_aum_ui says strips lie beyond a mixer it holds whole:\n%s", text)
+	}
+
+	// Of a mixer wider than the window AUM lists only the strips in view.
+	var strips []ipadtest.Strip
+	for i := 1; i <= 9; i++ {
+		strips = append(strips, ipadtest.Strip{Title: fmt.Sprintf("%d: Synth", i), Level: "+0.0 dB"})
+	}
+	for scroll, want := range map[float64]string{0: "more strips right of the window", 600: "more strips left and right of the window", ipadtest.MaxScroll(9): "more strips left of the window"} {
+		a := ipadtest.AUM{Tempo: "120", Strips: strips, Scroll: scroll, OnScreenOnly: true}
+		st := ipad.ParseAUM(mustParseSource(t, a.Source()), ipad.Size{Width: 1210, Height: 834})
+		text := describeAUMState(st)
+		if !strings.Contains(text, want) {
+			t.Errorf("scrolled %.0f: get_aum_ui lacks %q:\n%s", scroll, want, text)
+		}
+		// Scrolled from the first strip, the tree's count is not #n's: the
+		// strips are listed without it.
+		switch {
+		case scroll == 0 && (!strings.Contains(text, `strip 1 "1: Synth"`) || strings.Contains(text, `strip "`)):
+			t.Errorf("at the first strip: want the strips numbered:\n%s", text)
+		case scroll != 0 && (strings.Contains(text, `strip 1 "`) || !strings.Contains(text, "#n counts from the mixer's first strip")):
+			t.Errorf("scrolled %.0f: want the strips unnumbered and how #n counts:\n%s", scroll, text)
+		case scroll == ipadtest.MaxScroll(9) && !strings.Contains(text, `strip "9: Synth"`):
+			t.Errorf("at the end: want the last strip listed:\n%s", text)
+		}
 	}
 }
 

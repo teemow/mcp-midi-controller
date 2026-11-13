@@ -58,7 +58,13 @@ func (c *Client) AUMChannel(ctx context.Context, r AUMRequest) (AUMResult, error
 			if err2 != nil {
 				return err2
 			}
-			res = d.result(r.Action, ch.OnScreen, fmt.Sprintf("strip %d %q is on screen at x %.0f", ch.Strip, ch.Title, ch.Frame.X), nil)
+			msg := fmt.Sprintf("strip %d %q is on screen at x %.0f", ch.Strip, ch.Title, ch.Frame.X)
+			if s := d.St.MixerScroll; s != nil && *s >= 0.5 {
+				// Scrolled from its first strip, the tree counts the strips
+				// from the window's left edge, not as "#n" does.
+				msg = fmt.Sprintf("%q is on screen at x %.0f", ch.Title, ch.Frame.X)
+			}
+			res = d.result(r.Action, ch.OnScreen, msg, nil)
 		}
 		return err
 	})
