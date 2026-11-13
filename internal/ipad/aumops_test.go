@@ -371,9 +371,9 @@ func TestAUMNodeMenuAction(t *testing.T) {
 	menu := mixer()
 	menu.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "POST FADER", Buttons: []string{"POST FADER", "PRE FADER", "SELECT", "REPLACE", "RELOAD"}}}
 	w, c := opFake(t, mixer(), menu, mixer())
-	res, err := c.AUMNode(context.Background(), AUMRequest{Action: "pre_fader", Channel: "2", Node: "LP"})
+	res, err := c.AUMNode(context.Background(), AUMRequest{Action: "select", Channel: "2", Node: "LP"})
 	if err != nil || !res.Verified {
-		t.Fatalf("pre_fader: %+v, %v", res, err)
+		t.Fatalf("select: %+v, %v", res, err)
 	}
 	if g := w.GestureLog(); len(g) != 2 || !strings.HasPrefix(g[0], "hold ") {
 		t.Fatalf("gestures = %v", g)
@@ -421,14 +421,14 @@ func TestAUMNodeUncoversMixer(t *testing.T) {
 	menu := mixer()
 	menu.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "POST FADER", Buttons: []string{"POST FADER", "PRE FADER", "SELECT", "REPLACE", "RELOAD"}}}
 	w, c = opFake(t, menu, mixer(), menu, mixer())
-	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "pre_fader", Channel: "2", Node: "LP"})
+	res, err = c.AUMNode(context.Background(), AUMRequest{Action: "select", Channel: "2", Node: "LP"})
 	if err != nil || !res.Verified {
-		t.Fatalf("pre_fader under another node's menu: %+v, %v", res.Message, err)
+		t.Fatalf("select under another node's menu: %+v, %v", res.Message, err)
 	}
 	// A tap outside the menu, the long-press on LP (249+72, 221) 74×74, then
-	// PRE FADER.
+	// SELECT.
 	if g := w.GestureLog(); len(g) != 3 || g[0] != outside || g[1] != "hold 358,258" || !strings.HasPrefix(g[2], "tap ") {
-		t.Fatalf("pre_fader under another node's menu: gestures = %v", g)
+		t.Fatalf("select under another node's menu: gestures = %v", g)
 	}
 
 	// A request that lacks its confirm or an argument touches nothing.

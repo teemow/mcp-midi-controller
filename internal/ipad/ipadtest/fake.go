@@ -69,6 +69,9 @@ type WDA struct {
 	// RedRings lists node frames (x, y, w, h in points) whose ring is drawn
 	// red in the screenshot, the way AUM draws a node whose plugin failed.
 	RedRings [][4]float64
+	// Wires lists lines (x, y, w, h in points) drawn light grey in the
+	// screenshot, the way AUM draws a strip's fader's wire (FaderWire).
+	Wires [][4]float64
 	// FailScreenshot makes screenshot capture unavailable.
 	FailScreenshot bool
 	// BrightScreens, when set, replaces Bright after each gesture like
@@ -618,6 +621,10 @@ func (w *WDA) png() []byte {
 	for _, b := range bright {
 		px := func(v float64) int { return int(v * w.Scale) }
 		fill(image.Rect(px(b[0]), px(b[1]), px(b[0]+b[2]), px(b[1]+b[3])), color.RGBA{90, 90, 90, 255})
+	}
+	for _, l := range w.Wires {
+		px := func(v float64) int { return int(math.Round(v * w.Scale)) }
+		fill(image.Rect(px(l[0]), px(l[1]), px(l[0]+l[2]), max(px(l[1]+l[3]), px(l[1])+1)), color.RGBA{198, 198, 198, 255})
 	}
 	for _, r := range w.RedRings {
 		cx, cy, half := (r[0]+r[2]/2)*w.Scale, (r[1]+r[3]/2)*w.Scale, r[2]/2*w.Scale
