@@ -400,8 +400,9 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			}
 			rep.Presets++
 		}
-		if n.home.Bypass != nil && *n.home.Bypass {
-			// Open already bypassed, as the song will set it.
+		if n.home.Bypass != nil && *n.home.Bypass && n.Mod == nil {
+			// Open already bypassed, as the song will set it. A bypassed
+			// modulator is parked instead, and never bypassed in AUM.
 			if err := sess.SetNodeParam(n.Strip, n.Slot, "AUMNode.bypassed", true); err != nil {
 				return nil, rep, err
 			}

@@ -553,7 +553,11 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 			st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlPreset},
 				Assignment{Kind: MsgPC, Channel: pr.Channel}, pr.Program)
 		}
-		st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlBypass}, n.Bypass, boolWire(w.bypass))
+		// A bypassed modulator is parked, never bypassed in AUM: AUM loses
+		// the parameter changes that reach a node together with its
+		// un-bypass, and the routing that brings it back is such a change
+		// (modulator.go).
+		st.set(Target{Track: n.Track, Effect: n.Effect, Kind: ControlBypass}, n.Bypass, boolWire(false))
 		depth := n.Mod.Depth
 		if w.depth != nil {
 			d, err := n.Mod.depth(w.depth)

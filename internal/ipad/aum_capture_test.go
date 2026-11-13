@@ -15,7 +15,11 @@ import (
 // landscape (1210×834), trimmed to the keys ParseSource reads, with the names
 // of private sessions replaced. The aum-plugin-window*.json ones have a
 // plugin window open on a strip with a custom title, the plugin's own view
-// emptied.
+// emptied. The aum-start-screen*.json and aum-one-channel*.json ones are a
+// scratch session: the start screen CLEAR leaves, its add tile's menu, the
+// first read after AUDIO was tapped, and that one empty channel with the main
+// menu open, bare, with its Set level dialog (the iOS keyboard's keys
+// removed) and after Set.
 
 func capturedTree(t *testing.T, name string) json.RawMessage {
 	t.Helper()
@@ -218,5 +222,89 @@ func TestAUMOpenPanelOverCapturedPluginWindow(t *testing.T) {
 		if g := w.GestureLog(); len(g) != 2 {
 			t.Fatalf("open %s: gestures = %v", panel, g)
 		}
+	}
+}
+
+// The start screen (what CLEAR leaves) has no strip: its add tile sits in the
+// middle of the mixer, in a column that also holds LAST STATE and DEFAULT.
+// DEFAULT is a wide button low in a full-height container, like a strip's
+// title, and is none.
+func TestParseAUMCapturedStartScreen(t *testing.T) {
+	for _, file := range []string{"aum-start-screen.json", "aum-start-screen-add-menu.json"} {
+		st := parseCaptured(t, file)
+		if !st.StartScreen || len(st.Channels) != 0 {
+			t.Fatalf("%s: start screen %v, strips %s", file, st.StartScreen, st.channelList())
+		}
+		if st.AddTile == nil || *st.AddTile != (Rect{X: 530, Y: 372, Width: 150, Height: 150}) {
+			t.Fatalf("%s: add tile = %v", file, st.AddTile)
+		}
+	}
+	// The open menu is the tile itself, turned into a container of its items.
+	menu := parseCaptured(t, "aum-start-screen-add-menu.json")
+	if got := menu.addMenu["MIDI"]; got != (Rect{X: 530, Y: 425, Width: 150, Height: 45}) || len(menu.addMenu) != 3 {
+		t.Fatalf("add menu = %v", menu.addMenu)
+	}
+	// One channel: the strip and the tile's column share the middle.
+	one := parseCaptured(t, "aum-start-screen-channel-added.json")
+	if one.StartScreen || len(one.Channels) != 1 || one.Channels[0].Title != "CHAN 1" || one.Channels[0].Frame.X != 363 {
+		t.Fatalf("one channel: start screen %v, strips %+v", one.StartScreen, one.Channels)
+	}
+	if one.AddTile == nil || one.AddTile.X != 651 {
+		t.Fatalf("one channel: add tile = %v", one.AddTile)
+	}
+}
+
+func TestAUMChannelAddFromCapturedStartScreen(t *testing.T) {
+	start, menu, added := capturedTree(t, "aum-start-screen.json"), capturedTree(t, "aum-start-screen-add-menu.json"), capturedTree(t, "aum-start-screen-channel-added.json")
+	w := ipadtest.New(start)
+	w.SetScreens(start, menu, added)
+	t.Cleanup(w.Close)
+	res, err := New(w.URL).AUMChannel(context.Background(), AUMRequest{Action: "add_audio"})
+	if err != nil || !res.Verified || res.Message != `added strip 1 "CHAN 1"` {
+		t.Fatalf("add_audio: %+v, %v", res.Message, err)
+	}
+	if len(res.State.Channels) != 1 || res.State.Channels[0].Kind != "audio" || res.State.StartScreen {
+		t.Fatalf("state after add_audio: %+v", res.State.Channels)
+	}
+	// The tile in the middle, then AUDIO, the top of the menu over it.
+	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 605,447" || g[1] != "tap 605,394.5" {
+		t.Fatalf("gestures = %v", g)
+	}
+}
+
+// CLEAR on a session of one channel leaves the start screen: no strip.
+func TestAUMFilesClearCapturedOneChannel(t *testing.T) {
+	menu, start := capturedTree(t, "aum-one-channel-menu.json"), capturedTree(t, "aum-start-screen.json")
+	w := ipadtest.New(menu)
+	w.SetScreens(menu, menu, start)
+	t.Cleanup(w.Close)
+	res, err := New(w.URL).AUMFiles(context.Background(), AUMRequest{Action: "clear", Confirm: true})
+	if err != nil || !res.Verified || res.Message != "1 strips -> 0" {
+		t.Fatalf("clear: %+v, %v", res.Message, err)
+	}
+}
+
+// While a side panel is open AUM takes a tap on the mixer to close the panel
+// and passes nothing on: the dB label's tap under the main menu (which a
+// session load leaves open) opened no dialog, the next one did. The screens
+// follow that: whatever the first gesture is, it only closes the menu.
+func TestAUMChannelSetLevelCapturedUnderMenu(t *testing.T) {
+	w := ipadtest.New(capturedTree(t, "aum-one-channel-menu.json"))
+	w.SetScreens(capturedTree(t, "aum-one-channel-menu.json"), capturedTree(t, "aum-one-channel.json"),
+		capturedTree(t, "aum-one-channel-set-level.json"), capturedTree(t, "aum-one-channel-level-set.json"))
+	w.Fields = []string{"-9.00"}
+	w.Labels = map[string]int{`button:"Set"`: 1}
+	t.Cleanup(w.Close)
+	level := -6.0
+	res, err := New(w.URL).AUMChannel(context.Background(), AUMRequest{Action: "set_level", Channel: "1", LevelDB: &level})
+	if err != nil || !res.Verified || res.Message != `strip 1 "CHAN 1" fader -9.0 dB -> -6.0 dB` || w.Fields[0] != "-6" {
+		t.Fatalf("set_level: %+v, %v (field %q)", res.Message, err, w.Fields[0])
+	}
+	// The menu's close icon, the dB label, Set.
+	if g := w.GestureLog(); len(g) != 3 || g[0] != "tap 1190,30" || g[1] != "tap 560,213" || g[2] != "click" {
+		t.Fatalf("gestures = %v", g)
+	}
+	if res.State.MenuOpen || len(res.State.Overlays) != 0 {
+		t.Fatalf("state after set_level: menu %v, overlays %+v", res.State.MenuOpen, res.State.Overlays)
 	}
 }

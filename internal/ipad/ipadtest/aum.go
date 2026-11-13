@@ -64,7 +64,8 @@ type Overlay struct {
 // AUM describes a synthetic AUM screen. The shapes follow WDA's JSON source
 // of AUM 1.4.8 (frames, types, traits, the spelled-out MUTE texts, the
 // square node buttons with their inner button, the add tile and its
-// AUDIO/MIDI/IMPORT menu, popovers and side panels); the names are made up.
+// AUDIO/MIDI/IMPORT menu, the start screen, popovers and side panels); the
+// names are made up.
 type AUM struct {
 	Tempo    string // "120" -> "♩120"
 	Position string // "001:1  00:00.0"
@@ -72,7 +73,9 @@ type AUM struct {
 	// (AUM does not refresh it; parsers must ignore it).
 	MeterLabel string
 	// Session set: the main menu is open and shows it.
-	Session     string
+	Session string
+	// StartScreen is the screen CLEAR leaves: no strip (leave Strips empty),
+	// the add tile in the middle and LAST STATE and DEFAULT below it.
 	StartScreen bool
 	TempoBar    bool
 	// AddMenu opens the add tile's AUDIO / MIDI / IMPORT menu.
@@ -260,22 +263,37 @@ func (a AUM) Source() json.RawMessage {
 	}
 	top = append(top, el("Button", "", 1000, 0, 60, 60, el("StaticText", "DSP:  3 %", 1000, 15, 60, 15)))
 
+	// AUM centres the mixer while its strips and the add tile's column are
+	// narrower than the window: the column is at 484 with no strip, the strip
+	// at 363 and the column at 605 with one. A wider mixer starts 7 points in
+	// and scrolls.
 	var mixer []node
+	n := float64(len(a.Strips))
+	left := 7.0
+	if (n+1)*242 < W {
+		left = (W - (n+1)*242) / 2
+	}
 	inView := func(x, w float64) bool { return !a.OnScreenOnly || (x < W && x+w > 0) }
 	for i, s := range a.Strips {
-		if x := StripX(i) - a.Scroll; inView(x, 228) {
+		if x := left + float64(i)*242 - a.Scroll; inView(x, 228) {
 			mixer = append(mixer, strip(x, s))
 		}
 	}
-	// The add tile is an unlabelled button in a column of its own; its
-	// menu is in the tree only while it is open.
-	tile := StripX(len(a.Strips)) - a.Scroll
+	// The add tile is an unlabelled button in a column of its own. While its
+	// menu is open it is a container of the menu's three buttons instead.
+	tile := left + n*242 - a.Scroll
 	col := []node{el("Button", "", tile+46, 372, 150, 150)}
 	if a.AddMenu {
-		col = append(col,
+		col = []node{el("Other", "", tile+46, 372, 150, 150,
 			el("Button", "AUDIO", tile+46, 372, 150, 45, el("StaticText", "AUDIO", tile+95, 383, 52, 23)),
 			el("Button", "MIDI", tile+46, 425, 150, 45, el("StaticText", "MIDI", tile+103, 436, 36, 23)),
-			el("Button", "IMPORT", tile+46, 477, 150, 45, el("StaticText", "IMPORT", tile+91, 488, 60, 23)))
+			el("Button", "IMPORT", tile+46, 477, 150, 45, el("StaticText", "IMPORT", tile+91, 488, 60, 23)))}
+	}
+	// The start screen's two buttons are in the tile's column, below the tile.
+	if a.StartScreen {
+		col = append(col,
+			el("Button", "LAST STATE", tile+51, 611, 140, 36, el("StaticText", "LAST STATE", tile+100, 621, 62, 16)),
+			el("Button", "DEFAULT", tile+51, 687, 140, 36, el("StaticText", "DEFAULT", tile+107, 697, 48, 16)))
 	}
 	if inView(tile, 242) {
 		mixer = append(mixer, el("Other", "", tile, 60, 242, 774, col...))
@@ -291,9 +309,6 @@ func (a AUM) Source() json.RawMessage {
 		hide(mixerView)
 	}
 	main := []node{el("Other", "", 0, 0, W, 60, top...), mixerView}
-	if a.StartScreen {
-		main = append(main, el("Button", "LAST STATE", 457, 505, 115, 30), el("Button", "DEFAULT", 457, 568, 115, 30))
-	}
 	if a.Session != "" {
 		main = append(main, menuPanel(a.Session))
 	}
