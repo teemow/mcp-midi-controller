@@ -206,7 +206,10 @@ So what opens the main menu first closes what lies in front of it, as
 `aum_panel close` would: a popover by a tap outside it, an alert by Cancel (an
 alert without Cancel is an error that names its buttons: answer it with
 `ipad_tap`), the routing matrix by its top-bar button. The gestures are listed
-in the result. Then a side panel other than the one asked for is closed by its
+in the result. On the iPad, under the same FILE PLAYER, `load` now tapped
+outside the popover, then ☰, FILES and the row, and loaded the session in
+20 s. `aum_settings read` under it, and `aum_files list` under a Set level
+dialog (closed by its Cancel), worked the same way. Then a side panel other than the one asked for is closed by its
 close icon, as before: AUM shows one side panel at a time, and the icon sits on
 ☰'s spot. FILES, SAVE and NOTES are opened from the menu anew each time, so
 one that is open is closed and opened again.
