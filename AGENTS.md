@@ -66,8 +66,24 @@ The rig's macOS host runs the daemon under launchd and updates itself from
 `main` within about 10 minutes of a merge while it is awake
 (`scripts/deploy-mac.sh --update` every 5 minutes on the clock and once on
 wake; it sleeps when idle, so a merge can wait for the next wake; see the
-README's macOS section). Don't build or copy binaries onto it by hand: merge to
-`main`, then confirm the version on the first line of
-`~/Library/Logs/mcp-midi-controller.log`. If it doesn't move, read
-`~/Library/Logs/mcp-midi-controller-update.log` (a clone with local changes or
-on another branch, or a failed build, stops the update).
+README's macOS section). The update restarts the daemon only when the merge
+changed the binary, and never while the daemon is busy (up to an hour), so a
+merge does not cut a song, a recording or a measurement that another session
+runs on the rig. Don't build or copy binaries onto it by hand: merge to
+`main`, then confirm the version on the last `mcp-midi-controller <version>`
+line of `~/Library/Logs/mcp-midi-controller.log`. If it doesn't move, read
+`~/Library/Logs/mcp-midi-controller-update.log`:
+
+- `builds the same daemon as the running …: not restarting`: the merge changed
+  nothing the binary is built from (docs, tests, web sources), so the daemon
+  keeps running on its older version. That is the update working.
+- `update to … waits: the daemon is busy`, with `busy:` lines: something is
+  playing, recording or measuring, or a tool call is running. The update asks
+  again every 5 minutes and restarts once the daemon is idle, or after an hour
+  at most. Anyone can ask the same: `curl -s http://127.0.0.1:7799/busy` on the
+  Mac.
+- A clone with local changes or on another branch, or a failed build, stops
+  the update.
+
+Until a merge's update has restarted the daemon, the daemon runs the code from
+before the merge.

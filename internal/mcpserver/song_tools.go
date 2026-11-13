@@ -1109,7 +1109,7 @@ func (s *Server) handlePlaySong(_ context.Context, req *mcp.CallToolRequest) (*m
 	// and reports a position that stood still. Hold the host awake from
 	// before the first message goes out until the playback is over, however
 	// it ends.
-	release := s.holdAwake()
+	release := s.hold(fmt.Sprintf("play_song %q", cs.id))
 	onEnd := func(song.Status) { release() }
 
 	var st song.Status

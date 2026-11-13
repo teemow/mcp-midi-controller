@@ -803,7 +803,7 @@ func stemsReportOf(plan *stemPlan, kept songStems) *stemsReport {
 func (s *Server) runStems(ctx context.Context, job *stemsJob, plan *stemPlan, deck stemDeck, todo []int) (*stemsReport, error) {
 	// A pass is minutes long and a session is loaded between two: the host
 	// must not doze through either.
-	defer s.holdAwake()()
+	defer s.hold(fmt.Sprintf("record_song_stems %q", plan.id))()
 	began := time.Now()
 	kept := loadSongStems()[plan.id]
 	if kept.Layout != plan.layout {

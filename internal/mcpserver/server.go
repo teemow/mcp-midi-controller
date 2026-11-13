@@ -16,6 +16,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/audiotap"
 	"github.com/teemow/mcp-midi-controller/internal/aumreceiver"
+	"github.com/teemow/mcp-midi-controller/internal/busy"
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/diagnostics"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
@@ -146,8 +147,14 @@ type Server struct {
 	// holdAwake keeps the daemon's host awake until the release it returns is
 	// called. play_song holds it for as long as a song plays, because the
 	// player keeps the time with the host's timers and a dozing host fires
-	// them late. hostawake.Hold unless WithHostAwake replaces it.
+	// them late. hostawake.Hold unless WithHostAwake replaces it. The jobs
+	// take it through hold, which also marks the daemon busy.
 	holdAwake func() (release func())
+
+	// busy is what the daemon is in the middle of: the jobs that hold the
+	// host awake and the tool calls that have not returned. GET /busy
+	// reports it so a restart can wait for the end. See busy.go.
+	busy *busy.Tracker
 
 	// songSessionsMu serializes the load-change-save cycle of the record of
 	// which session each song was authored into.
@@ -233,12 +240,14 @@ func New(eng *engine.Engine, opts ...Option) *Server {
 		songs:      song.NewStore(config.SongsDir()),
 		sounds:     sound.NewCatalog(config.SoundsDir()),
 		holdAwake:  hostawake.Hold,
+		busy:       busy.New(),
 		drafts:     map[string]*device.DeviceType{},
 		audioSnaps: map[string]audiotap.Snapshot{},
 	}
 	for _, o := range opts {
 		o(s)
 	}
+	s.mcp.AddReceivingMiddleware(s.busyWhileCalled)
 	s.registerGlobalTools()
 	s.registerWIDITools()
 	for _, d := range eng.Devices() {
@@ -379,13 +388,15 @@ func (s *Server) NotifyMidiControl(connected bool, remote string) {
 }
 
 // Handler returns the HTTP handler to mount on a loopback listener. It muxes
-// two surfaces on one listener: "/app/" serves the embedded "signalwave" SPA
-// (a real in-browser MCP client), and "/" stays the MCP streamable-HTTP handler
-// so existing MCP clients (e.g. Cursor) are unaffected.
+// three surfaces on one listener: "/app/" serves the embedded "signalwave" SPA
+// (a real in-browser MCP client), "GET /busy" says what a restart would cut
+// (see busy.go), and "/" stays the MCP streamable-HTTP handler so existing MCP
+// clients (e.g. Cursor) are unaffected.
 func (s *Server) Handler() http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
 	mux := http.NewServeMux()
 	mux.Handle(webui.MountPath, webui.Handler())
+	mux.Handle("GET /busy", s.busy.Handler())
 	mux.Handle("/", mcpHandler)
 	return mux
 }
