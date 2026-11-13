@@ -146,7 +146,7 @@ func (s *Server) registerIPadTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "get_aum_ui",
 		Description: "Read AUM's state from its own user interface over USB — independent of the MIDI path, so it shows whether MIDI the daemon sent really landed: the tempo, the transport position, the session name (only while AUM's main menu is open — aum_panel open menu), the DSP load, the main meter's source, whether the start screen, tempo bar or a plugin window is showing, " +
-			"every open popover, side panel or alert (title, rows of text → value, buttons), and every mixer strip with its number, title (custom titles too), fader level in dB, mute / solo / record-arm state, its nodes top to bottom (source, insert slots, output; empty or bypassed) and whether it is on screen. " +
+			"every open popover, side panel or alert (title, rows of text → value, buttons), and every mixer strip with its number, title (custom titles too), fader level in dB, mute / solo / record-arm state, its nodes top to bottom (source, insert slots, output; empty, or bypassed: a node AUM slid left off the wire, still loaded) and whether it is on screen. " +
 			"Not in AUM's tree: plugin parameters (use the audio tap) and MIDI routing connections (aum_midi_routing read). Brings AUM to the front. Emits the state as structuredContent.",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}, s.handleGetAUMUI)
