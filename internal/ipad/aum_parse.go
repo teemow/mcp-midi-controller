@@ -50,7 +50,8 @@ type AUMState struct {
 	// Channels are the mixer strips in mixer order (on screen or scrolled
 	// away).
 	Channels []AUMChannel `json:"channels"`
-	// AddTile is the add-channel tile right of the last strip.
+	// AddTile is the add-channel tile right of the last strip; on the start
+	// screen, which has no strip, it sits in the middle of the mixer.
 	AddTile *Rect `json:"add_tile,omitempty"`
 	// PluginWindows are the open plugin windows (title "<name> @<node>").
 	PluginWindows []AUMPluginWindow `json:"plugin_windows,omitempty"`
@@ -321,9 +322,13 @@ func parsePluginWindows(root *Element) []AUMPluginWindow {
 // full-height container (228×764 in AUM 1.4.8) whose lowest child is a
 // wide button (156×50). The title can be "2: <source>", "MIDI 1", "CHAN 3"
 // or any custom name, so it is found by shape, not text.
+//
+// The add tile's column has that shape on the start screen, where LAST STATE
+// and DEFAULT (140×36) sit below the tile: it is told by its tile and is no
+// strip.
 func stripTitle(el *Element) *Element {
 	r := el.Rect
-	if el.Type != "Other" || r.Height < 300 || r.Width < 150 || r.Width > 320 {
+	if el.Type != "Other" || r.Height < 300 || r.Width < 150 || r.Width > 320 || addTileOf(el) != nil {
 		return nil
 	}
 	for _, c := range el.Children {
@@ -336,28 +341,40 @@ func stripTitle(el *Element) *Element {
 	return nil
 }
 
-// findAddTile finds the add-channel tile: a square (150×150) in a
-// full-height column right of the last strip. AUM 1.4.8 lists it as an
-// unlabelled Button; its AUDIO, MIDI and IMPORT menu shows in the tree only
-// while it is open.
+// addTileOf returns the add-channel tile when el is its column: a square
+// (150×150) directly in a full-height container, right of the last strip, or
+// alone in the middle of the mixer on the start screen. AUM 1.4.8 lists the
+// tile as an unlabelled Button and, while its menu is open, as a container of
+// the AUDIO, MIDI and IMPORT buttons.
+func addTileOf(el *Element) *Element {
+	if el.Type != "Other" || el.Rect.Height < 300 {
+		return nil
+	}
+	for _, g := range el.Children {
+		if (g.Type == "Other" || g.Type == "Button") && g.Rect.Width >= 100 && math.Abs(g.Rect.Width-g.Rect.Height) <= 2 {
+			return g
+		}
+	}
+	return nil
+}
+
+// findAddTile sets AddTile and, while the tile's menu is open, where its
+// AUDIO, MIDI and IMPORT are.
 func (st *AUMState) findAddTile(mixer *Element) {
 	for _, c := range mixer.Children {
-		if stripTitle(c) != nil || c.Type != "Other" || c.Rect.Height < 300 {
+		tile := addTileOf(c)
+		if tile == nil {
 			continue
 		}
-		for _, g := range c.Children {
-			if (g.Type == "Other" || g.Type == "Button") && g.Rect.Width >= 100 && math.Abs(g.Rect.Width-g.Rect.Height) <= 2 {
-				r := g.Rect
-				st.AddTile = &r
-				c.Walk(func(b *Element, _ int) bool {
-					if l := strings.ToUpper(b.Label); b.Type == "Button" && (l == "AUDIO" || l == "MIDI" || l == "IMPORT") {
-						st.addMenu[l] = b.Rect
-					}
-					return true
-				})
-				return
+		r := tile.Rect
+		st.AddTile = &r
+		c.Walk(func(b *Element, _ int) bool {
+			if l := strings.ToUpper(b.Label); b.Type == "Button" && (l == "AUDIO" || l == "MIDI" || l == "IMPORT") {
+				st.addMenu[l] = b.Rect
 			}
-		}
+			return true
+		})
+		return
 	}
 }
 

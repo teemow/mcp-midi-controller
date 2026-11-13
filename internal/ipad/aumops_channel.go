@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,13 @@ var AUMChannelActions = []string{
 func (c *Client) AUMChannel(ctx context.Context, r AUMRequest) (AUMResult, error) {
 	var res AUMResult
 	err := c.DriveAUM(ctx, func(d *AUMDriver) error {
+		// What the request lacks is answered before anything is touched.
+		if err := checkChannel(r); err != nil {
+			return err
+		}
+		if err := d.uncoverMixer(r.Action); err != nil {
+			return err
+		}
 		var err error
 		switch r.Action {
 		case "add_audio", "add_midi":
@@ -26,9 +34,6 @@ func (c *Client) AUMChannel(ctx context.Context, r AUMRequest) (AUMResult, error
 		case "restore":
 			res, err = d.importChannels(r.Action, "")
 		case "import":
-			if r.Name == "" {
-				return fmt.Errorf("import needs name: the session to import channels from")
-			}
 			res, err = d.importChannels(r.Action, r.Name)
 		case "edit":
 			res, err = d.editChannel(r.Channel)
@@ -39,16 +44,10 @@ func (c *Client) AUMChannel(ctx context.Context, r AUMRequest) (AUMResult, error
 		case "duplicate":
 			res, err = d.duplicateChannel(r.Channel)
 		case "remove":
-			if err := needConfirm(r, "REMOVE CHANNEL deletes the channel (restore brings back only the last one)"); err != nil {
-				return err
-			}
 			res, err = d.removeChannel(r.Channel)
 		case "move":
 			res, err = d.moveChannel(r.Channel, r.Target)
 		case "set_level":
-			if r.LevelDB == nil {
-				return fmt.Errorf("set_level needs level_db")
-			}
 			res, err = d.setLevel(r.Channel, *r.LevelDB)
 		case "reset_level":
 			res, err = d.resetLevel(r.Channel)
@@ -60,16 +59,50 @@ func (c *Client) AUMChannel(ctx context.Context, r AUMRequest) (AUMResult, error
 				return err2
 			}
 			res = d.result(r.Action, ch.OnScreen, fmt.Sprintf("strip %d %q is on screen at x %.0f", ch.Strip, ch.Title, ch.Frame.X), nil)
-		default:
-			err = fmt.Errorf("unknown aum_channel action %q (%s)", r.Action, strings.Join(AUMChannelActions, ", "))
 		}
 		return err
 	})
 	return res, err
 }
 
+// checkChannel reports what a request lacks for its action.
+func checkChannel(r AUMRequest) error {
+	switch {
+	case !slices.Contains(AUMChannelActions, r.Action):
+		return fmt.Errorf("unknown aum_channel action %q (%s)", r.Action, strings.Join(AUMChannelActions, ", "))
+	case r.Action == "import" && r.Name == "":
+		return fmt.Errorf("import needs name: the session to import channels from")
+	case r.Action == "remove":
+		return needConfirm(r, "REMOVE CHANNEL deletes the channel (restore brings back only the last one)")
+	case r.Action == "move" && r.Target == "":
+		return fmt.Errorf("move needs target: the strip to move onto (e.g. \"#1\")")
+	case r.Action == "set_level" && r.LevelDB == nil:
+		return fmt.Errorf("set_level needs level_db")
+	}
+	return nil
+}
+
+// editActions work in EDIT CHANNEL and take the one that is open (openEdit).
+var editActions = map[string]bool{"edit": true, "rename": true, "bookmark": true, "duplicate": true, "remove": true}
+
+// uncoverMixer closes what lies over the mixer before a strip or the add
+// tile is touched. While a side panel is open (the main menu, which a session
+// load leaves open, or FILES after a save) AUM takes a tap on the mixer to
+// close the panel and passes nothing on, and a swipe does nothing at all: the
+// dB label's tap opened no dialog, a tap on MUTE did not mute, a swipe on the
+// fader left the level where it was. A popover takes the tap that closes it
+// the same way; an alert and the routing matrix cover the strips. The tempo
+// bar and the built-in keyboard (the mixer shrinks above it) take nothing.
+func (d *AUMDriver) uncoverMixer(action string) error {
+	if o := d.St.Overlay(""); o != nil && editActions[action] && o.Kind == "popover" && strings.HasPrefix(o.Title, "EDIT CHANNEL") {
+		return nil
+	}
+	return d.clearOverlays("")
+}
+
 // addChannel taps the add-channel tile, then AUDIO or MIDI at once: the
-// tile's menu closes by itself after a few seconds.
+// tile's menu closes by itself after a few seconds. On the start screen the
+// tile is the one in the middle of the mixer.
 func (d *AUMDriver) addChannel(kind string) (AUMResult, error) {
 	if err := d.showAddTile(); err != nil {
 		return AUMResult{}, err
@@ -366,9 +399,6 @@ func (d *AUMDriver) removeChannel(sel string) (AUMResult, error) {
 // moveChannel drags a strip's title up about 100 points, sideways onto the
 // target strip, holds and releases.
 func (d *AUMDriver) moveChannel(sel, target string) (AUMResult, error) {
-	if target == "" {
-		return AUMResult{}, fmt.Errorf("move needs target: the strip to move onto (e.g. \"#1\")")
-	}
 	ch, err := d.channel(sel)
 	if err != nil {
 		return AUMResult{}, err
@@ -394,7 +424,9 @@ func (d *AUMDriver) moveChannel(sel, target string) (AUMResult, error) {
 }
 
 // setLevel taps the dB label above the fader, types the level into the Set
-// level dialog and confirms it.
+// level dialog and confirms it. One tap opens the dialog, on a channel that
+// was just added as on any other, as long as nothing lies over the mixer
+// (uncoverMixer).
 func (d *AUMDriver) setLevel(sel string, db float64) (AUMResult, error) {
 	ch, err := d.channel(sel)
 	if err != nil {
@@ -411,7 +443,7 @@ func (d *AUMDriver) setLevel(sel string, db float64) (AUMResult, error) {
 		return AUMResult{}, err
 	}
 	if dlg == nil {
-		return d.result("set_level", false, "the Set level dialog did not open", nil), nil
+		return d.result("set_level", false, fmt.Sprintf("the Set level dialog did not open (%s)", d.St.overlaySummary()), nil), nil
 	}
 	text := strconv.FormatFloat(db, 'f', -1, 64)
 	if _, err := d.fillText(0, text); err != nil {

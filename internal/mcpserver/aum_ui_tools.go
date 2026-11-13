@@ -99,8 +99,9 @@ func (s *Server) registerAUMUITools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_channel",
-		Description: "AUM mixer channels: add_audio / add_midi (the add tile right of the last strip), restore (IMPORT → Restore Removed Channel), import (name: a session; appends all its channels), edit (opens EDIT CHANNEL), rename (name; a custom name replaces the whole title, \"\" restores AUM's), bookmark, duplicate, remove (confirm; REMOVE CHANNEL → TAP TO CONFIRM), " +
-			"move (drag the title onto target strip), set_level (level_db via the Set level dialog), reset_level (double-tap the fader: back to Settings → Fader Level), mute / solo / arm (on true/false, or flip; read from the button's Selected state), scroll_to (bring an off-screen strip into view)." + aumVerifyNote + aumCareNote,
+		Description: "AUM mixer channels: add_audio / add_midi (the add tile right of the last strip, or the one in the middle of the start screen that CLEAR leaves), restore (IMPORT → Restore Removed Channel), import (name: a session; appends all its channels), edit (opens EDIT CHANNEL), rename (name; a custom name replaces the whole title, \"\" restores AUM's), bookmark, duplicate, remove (confirm; REMOVE CHANNEL → TAP TO CONFIRM), " +
+			"move (drag the title onto target strip), set_level (level_db; a tap on the dB label opens the Set level dialog), reset_level (double-tap the fader: back to Settings → Fader Level), mute / solo / arm (on true/false, or flip; read from the button's Selected state), scroll_to (bring an off-screen strip into view). " +
+			"Every action first closes what lies over the mixer (a side panel such as the main menu that aum_files load leaves open or FILES after aum_files save, a popover, an alert, the routing matrix; an open EDIT CHANNEL stays for edit, rename, bookmark, duplicate and remove): under a side panel AUM takes a tap on the mixer only to close the panel and ignores a swipe." + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {

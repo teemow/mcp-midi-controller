@@ -123,7 +123,7 @@ a normal result, not a tool error.
 | Tool | Actions |
 |---|---|
 | `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the Navigator by a tap on the mixer, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). |
-| `aum_channel` | `add_audio`, `add_midi`, `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`, through the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. |
+| `aum_channel` | `add_audio`, `add_midi` (the add tile: right of the last strip, or in the middle of the start screen that CLEAR leaves), `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`: a tap on the dB label opens the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 | `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
 | `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings; `path` into a session's folder; the page that shows), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹, `clear`¹ (CLEAR → Sure?), `notes`. |
@@ -134,6 +134,35 @@ a normal result, not a tool error.
 
 ¹ Changes or loses state: needs `confirm: true`. Iterate on a scratch session
 or the ` (mcp test)` copies ([AGENTS.md](../AGENTS.md)), never an original.
+
+### Touching the mixer under a panel
+
+While a side panel is open, AUM does not pass touches on to the mixer beside
+it. Seen on the iPad (AUM 1.4.8) on a session of one empty channel:
+
+- a tap on the mixer closes the panel and does nothing else. Under the main
+  menu and under FILES the tap on the dB label opened no Set level dialog;
+  the same tap sent again, with the panel gone, opened it. Under the main
+  menu a tap on MUTE did not mute;
+- a swipe on the fader under the main menu left the level where it was, and
+  the menu open.
+
+This is the state the file operations leave: `aum_files load` ends with the
+main menu open (it reads the session's name there) and `aum_files save` with
+FILES open (it reads the session's row there). `set_level` right after a save
+answered "the Set level dialog did not open", on a channel that had taken the
+same call twice before the save.
+
+So every `aum_channel` action first closes what lies over the mixer: a side
+panel by its close icon, a popover by a tap outside it, an alert by Cancel,
+the routing matrix by its top-bar button. The gestures are listed in the
+result. An open EDIT CHANNEL stays for `edit`, `rename`, `bookmark`,
+`duplicate` and `remove`, which work in it. The tempo bar and the built-in
+keyboard are left alone: with either open a tap on the dB label opened the
+dialog (the mixer shrinks above the keyboard).
+
+With `ipad_tap`, `ipad_swipe` and `ipad_drag` on the mixer nothing is closed
+for you: run `aum_panel close` first.
 
 ### Listing and loading sessions
 
@@ -317,7 +346,8 @@ How AUM shows state in its tree (AUM 1.4.8):
   while nothing covers its bar. Side panels open over a plugin window, so
   `aum_panel`, `aum_files` and `aum_midi_control` leave it open.
 - **Under a side panel or the routing matrix** AUM marks the whole mixer
-  invisible; its states still read.
+  invisible; its states still read. Its touches do not arrive ([Touching the
+  mixer under a panel](#touching-the-mixer-under-a-panel)).
 - **Unlabelled controls** carry labels iOS glues from the texts around them
   (`-∞, DSP:  2 %, -∞, Arp, Arp` on a MIDI node; the main meter's stale
   `SESSION: …` on a panel's back button); the parser strips those texts.
@@ -325,10 +355,21 @@ How AUM shows state in its tree (AUM 1.4.8):
   Quantum, …) sit between unlabelled `‹` and `›` buttons, and tapping the
   value itself does nothing. `set` steps `›`, then `‹`, and steps back to
   where the row was when it does not offer the value.
-- **The add-channel tile** is an unlabelled 150-point square button right of
-  the last strip; its AUDIO / MIDI / IMPORT menu stacks over it once tapped.
+- **The add-channel tile** is an unlabelled 150-point square button in a
+  column of its own right of the last strip; its AUDIO / MIDI / IMPORT menu
+  stacks over it once tapped and closes by itself after a few seconds. While
+  the menu is open the tile is a container of those three buttons.
+- **The start screen** (a fresh AUM, or after CLEAR) has no strip. A mixer
+  narrower than the window is centred, so the tile's column stands in the
+  middle (the tile at 530,372), and LAST STATE and DEFAULT are in that column
+  below the tile. The column is no strip, although DEFAULT sits where a
+  strip's title would: `get_aum_ui` lists no channel there, and `add_audio`
+  and `add_midi` tap the tile in the middle. With one channel the strip is
+  at x 363 and the column at 605.
 - **The tempo bar** shows the tempo as a button between `‹` and `›`; **the
-  keyboard** covers the mixer's bottom and is closed with its `HIDE↓` button.
+  keyboard** takes the bottom of the window and the mixer shrinks above it (a
+  strip is 596 points high instead of 764); it is closed with its `HIDE↓`
+  button.
 - **FILES** lists cells: a name and a detail line below it (for a session
   the time it was saved, to the second); a folder's cell has a chevron
   button as well. It reopens on the view last shown, and only the rows on
