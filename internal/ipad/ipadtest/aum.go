@@ -112,14 +112,15 @@ type AUM struct {
 }
 
 // FilesPanel is AUM's FILES side panel: its root (title "FILES": Sessions,
-// Recordings, Restore Previous State) or a folder of Sessions. AUM titles
-// every folder "SESSIONS" and names the folder in a header row above the
-// list, which scrolls away with the list's first rows.
+// Recordings, Restore Previous State) or a folder of Sessions or Recordings.
+// AUM titles every folder of a view with the view's name ("SESSIONS",
+// "RECORDINGS") and names the folder in a header row above the list, which
+// scrolls away with the list's first rows.
 type FilesPanel struct {
-	// Title is "FILES" or "SESSIONS".
+	// Title is "FILES", "SESSIONS" or "RECORDINGS".
 	Title string
-	// Folder is the header row: "/" for the root of Sessions, a folder's
-	// name inside it; "" draws none (the FILES root has none).
+	// Folder is the header row: "/" for the root of a view, a folder's name
+	// inside it; "" draws none (the FILES root has none).
 	Folder string
 	// Cells are the list's rows from the first one on screen.
 	Cells []FileCell
