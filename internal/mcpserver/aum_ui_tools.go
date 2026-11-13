@@ -25,6 +25,9 @@ func enumJSON(values []string) string {
 
 const aumVerifyNote = " Every call re-reads AUM after acting and reports verified true/false with what it saw (verified false is a normal result, not a tool error), the gestures sent, and AUM's state as structuredContent."
 
+// aumMenuNote says what the tools that open AUM's main menu close first.
+const aumMenuNote = " Opening the main menu first closes what an earlier call left in front: a popover by a tap outside it (AUM takes such a tap, one on ☰ too, only to close the popover), an alert by Cancel, the routing matrix; then a side panel other than the menu (FILES, SAVE and NOTES are opened anew each time). The main menu already open is used once that is done; SETTINGS or MIDI CONTROL, when asked for and already open, is used as it is, with what is open in it."
+
 const aumCareNote = " Operations that change or lose state need confirm: true; take an ipad_screenshot first and, per AGENTS.md, act only on a scratch session or a ' (mcp test)' copy, never an original session."
 
 const channelProp = `"channel": {"type": "string", "description": "Strip selector: a number (\"2\" = the strip titled \"2: …\" or \"CHAN 2\"), \"MIDI 1\", \"#3\" (the mixer's third strip, counted from its first wherever it is scrolled, also for custom titles), or part of the title."}`
@@ -83,7 +86,7 @@ func (s *Server) registerAUMUITools() {
 		Name: "aum_panel",
 		Description: "Open, close or read AUM's screens. open panel: " + strings.Join(panelDocs, "; ") + ". " +
 			"path taps rows in turn after opening (or before reading), e.g. open settings, or a destination's filter sections. close closes the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the tempo bar, the keyboard). read lists every open popover, side panel and alert with its title, rows (text → value) and buttons. " +
-			"set steps a row's value button in the front-most panel or popover until it reads value, or picks value from the list it opens: Clock Options' Pre-roll and Sync Quantum, a MIDI mapping editor's fields, Engine Info." + aumVerifyNote,
+			"set steps a row's value button in the front-most panel or popover until it reads value, or picks value from the list it opens: Clock Options' Pre-roll and Sync Quantum, a MIDI mapping editor's fields, Engine Info. open of menu, files, save, settings, midi_control, notes, help and about goes through the main menu." + aumMenuNote + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -162,7 +165,7 @@ func (s *Server) registerAUMUITools() {
 			"recordings (FILES → Recordings, read like list: the root without path lists a folder per session, path into one lists its takes, each with its date, size and format as detail. A folder the list above it does not hold is an error that lists what is there. No take's row is tapped), load (confirm; name in the folder path: the session is looked for through the whole list and its row tapped once it is on screen whole, never a folder's row of that name. AUM loads it at once and replaces the open session; verified means the main menu then names it. A name the folder does not hold is an error that lists the folder), " +
 			"save (confirm; saves the open session under name into the folder SAVE shows, over a session of that name too. It reads the session's row in that folder of FILES → Sessions first, through the whole list: a new name is written by one press of SAVE SESSION; for a name that exists the button reads OVERWRITE? for a second or two and writes only when pressed again in that time, so both presses go out as one gesture. " +
 			"It then reads the row again: verified is true only when the row's saved time has moved, or the row is new and the SAVE panel closed, as it does once AUM has written. data holds folder, existed, saved_before, saved_after and panel_closed. verified false means AUM wrote nothing, with what the row and the button read; the session name in the menu is no proof of a save and is not used. Takes 35 to 80 s), " +
-			"rename (confirm; name in the folder path becomes new_name: the session is looked for through the whole list like load, its row long-pressed → iOS's share sheet → Rename → the RENAME dialog, each checked to be that session's before it is used. verified means the folder, read again whole, lists new_name and no longer name; NOT renamed that name is still there, with AUM's answer when it gave one: it refuses a name another session of the folder has), clear (confirm; CLEAR → Sure?), notes (open the session notes)." + aumVerifyNote + aumCareNote,
+			"rename (confirm; name in the folder path becomes new_name: the session is looked for through the whole list like load, its row long-pressed → iOS's share sheet → Rename → the RENAME dialog, each checked to be that session's before it is used. verified means the folder, read again whole, lists new_name and no longer name; NOT renamed that name is still there, with AUM's answer when it gave one: it refuses a name another session of the folder has), clear (confirm; CLEAR → Sure?), notes (open the session notes). Every action goes through the main menu." + aumMenuNote + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -194,7 +197,7 @@ func (s *Server) registerAUMUITools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_midi_control",
 		Description: "AUM's MIDI CONTROL (mappings of transport, system actions and every channel's controls and nodes): read/open (path walks into collections and controls, e.g. [\"Channels\", \"CHAN 2: …\", \"Channel controls\", \"Volume\"]; a control opens its mapping editor: channel, type, number, LEARN, range), filter (value ALL, ASSIGNED, UNUSED), learn (LEARN in the open mapping editor; then send the MIDI), " +
-			"menu (the ⋮ of section setting, item value: Set MIDI Channels, Save, Load, Copy, Paste, Clear All, Delete All; name supplies a dialog's value; Clear All, Delete All, Set MIDI Channels, Paste and Load need confirm: AUM applies them without asking), add (value ADD TEMPO in Tempo Presets, ADD PRESET in a plugin's Preset Load with name), main_parameter (in a plugin parameter's editor: make it the node's knob)." + aumVerifyNote + aumCareNote,
+			"menu (the ⋮ of section setting, item value: Set MIDI Channels, Save, Load, Copy, Paste, Clear All, Delete All; name supplies a dialog's value; Clear All, Delete All, Set MIDI Channels, Paste and Load need confirm: AUM applies them without asking), add (value ADD TEMPO in Tempo Presets, ADD PRESET in a plugin's Preset Load with name), main_parameter (in a plugin parameter's editor: make it the node's knob). MIDI CONTROL is opened through the main menu." + aumMenuNote + aumVerifyNote + aumCareNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -211,7 +214,7 @@ func (s *Server) registerAUMUITools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "aum_settings",
-		Description: "AUM's Settings (global, not part of a session): read (every row and its value, scrolling the panel), set (setting: a row label such as \"Confirm Eject\", \"Bit Depth\", \"Sample Rate\"; value as AUM prints it: ON, OFF, INT 24, 48 kHz, …; steps the value button until it reads value, or picks it from the list it opens). Change settings only when asked, and set them back afterwards." + aumVerifyNote,
+		Description: "AUM's Settings (global, not part of a session): read (every row and its value, scrolling the panel), set (setting: a row label such as \"Confirm Eject\", \"Bit Depth\", \"Sample Rate\"; value as AUM prints it: ON, OFF, INT 24, 48 kHz, …; steps the value button until it reads value, or picks it from the list it opens). Change settings only when asked, and set them back afterwards. SETTINGS is opened through the main menu." + aumMenuNote + aumVerifyNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {

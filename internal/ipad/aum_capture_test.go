@@ -19,7 +19,9 @@ import (
 // scratch session: the start screen CLEAR leaves, its add tile's menu, the
 // first read after AUDIO was tapped, and that one empty channel with the main
 // menu open, bare, with its Set level dialog (the iOS keyboard's keys
-// removed) and after Set.
+// removed) and after Set. aum-file-player-popover.json is another scratch
+// session's one File Player channel, no file loaded, with the FILE PLAYER
+// popover open that aum_node open on its source node leaves.
 
 func capturedTree(t *testing.T, name string) json.RawMessage {
 	t.Helper()
@@ -306,6 +308,35 @@ func TestAUMChannelSetLevelCapturedUnderMenu(t *testing.T) {
 	}
 	if res.State.MenuOpen || len(res.State.Overlays) != 0 {
 		t.Fatalf("state after set_level: menu %v, overlays %+v", res.State.MenuOpen, res.State.Overlays)
+	}
+}
+
+// AUM takes a tap outside a popover, the one on ☰ too, only to close it, and
+// an alert takes every touch: under the FILE PLAYER that aum_node open leaves,
+// aum_files load answered "FILES did not open". Whatever opens the main menu
+// closes them first, here on AUM's own trees: a tap outside the popover (the
+// spot the iPad was tapped at), or Cancel, then ☰.
+func TestAUMMenuUnderCapturedPopoverAndAlert(t *testing.T) {
+	bare, menu := capturedTree(t, "aum-one-channel.json"), capturedTree(t, "aum-one-channel-menu.json")
+	for _, tc := range []struct{ tree, closing string }{
+		{"aum-file-player-popover.json", "tap 986.5,492.5"},
+		{"aum-one-channel-set-level.json", "tap 537.5,265"}, // Cancel
+	} {
+		st := parseCaptured(t, tc.tree)
+		if o := st.Overlay(""); o == nil || (o.Kind != "popover" && o.Kind != "alert") || st.Panel() != "" {
+			t.Fatalf("%s: overlays %+v", tc.tree, st.Overlays)
+		}
+		front := capturedTree(t, tc.tree)
+		w := ipadtest.New(front)
+		w.SetScreens(front, bare, menu)
+		res, err := New(w.URL).AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "menu"})
+		w.Close()
+		if err != nil || !res.Verified || res.State.Panel() != "MENU" {
+			t.Fatalf("%s: open menu: %+v, %v", tc.tree, res.Message, err)
+		}
+		if g := w.GestureLog(); len(g) != 2 || g[0] != tc.closing || g[1] != "tap 1185,33" {
+			t.Fatalf("%s: gestures = %v", tc.tree, g)
+		}
 	}
 }
 

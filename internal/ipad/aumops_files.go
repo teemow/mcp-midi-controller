@@ -428,9 +428,11 @@ func (d *AUMDriver) awaitSession(want string) (ok, loading bool, err error) {
 			return false, loading, nil
 		}
 		if d.St.Panel() != "MENU" {
-			// ensureMenu re-reads until the menu shows (or aumWait passes);
-			// the loop then reads the name again.
-			if _, err := d.ensureMenu(); err != nil {
+			// openMenu re-reads until the menu shows (or aumWait passes);
+			// the loop then reads the name again. It leaves what is in front
+			// of the panels: the load put that up (an alert of AUM's about
+			// the session), and it stays for the caller to read.
+			if _, err := d.openMenu(); err != nil {
 				return false, false, err
 			}
 			continue

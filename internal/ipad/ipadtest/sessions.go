@@ -49,6 +49,9 @@ import (
 //     "Sorry" (NameExists), which stays until its OK, and nothing is renamed.
 //     A touch beside the sheet closes it; any other cell of it does
 //     something with the file, which Touched reports.
+//   - A popover over the screen (Cover) closes at a tap outside it, and that
+//     tap meets nothing else: a tap on ☰ under it opens no menu. An alert
+//     takes every touch and closes at its Cancel.
 type SessionsAUM struct {
 	mu sync.Mutex
 	w  *WDA
@@ -72,6 +75,7 @@ type SessionsAUM struct {
 	renaming string    // the session whose RENAME dialog is open
 	refuse   bool      // OK in the RENAME dialog renames nothing
 	sorry    string    // the text of the alert "Sorry" on screen
+	cover    *Overlay  // a popover or alert over whatever is on screen
 	held     []string
 	renamed  []string
 	closing  bool   // the SAVE panel is about to close after a write
@@ -107,6 +111,22 @@ func NewSessionsAUM(w *WDA, folder, open string, sessions ...[2]string) *Session
 	w.SourceFunc = func(_, _ int) json.RawMessage { return m.source() }
 	w.OnGesture = m.gesture
 	return m
+}
+
+// Cover opens a popover or an alert over whatever is on screen, as an
+// earlier call can leave one: a FILE PLAYER that aum_node open leaves open,
+// a Set level dialog.
+func (m *SessionsAUM) Cover(o Overlay) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cover = &o
+}
+
+// Covered reports whether the popover or alert of Cover is still open.
+func (m *SessionsAUM) Covered() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cover != nil
 }
 
 // SetWindow sets how long the button reads OVERWRITE? (a second by default).
@@ -467,6 +487,9 @@ func (m *SessionsAUM) source() json.RawMessage {
 			m.show("mixer")
 		}
 	}
+	if m.cover != nil {
+		a.Overlays = append(a.Overlays, *m.cover)
+	}
 	return a.Source()
 }
 
@@ -480,6 +503,20 @@ func (m *SessionsAUM) gesture(g Gesture) {
 		m.show("mixer")
 	}
 	switch {
+	case m.cover != nil:
+		// A popover closes at a tap outside it and passes the tap on to
+		// nothing; an alert closes at its Cancel and takes every other touch.
+		if g.Kind != "tap" {
+			return
+		}
+		if m.cover.Kind == "alert" {
+			if b, ok := m.cover.Button("Cancel"); ok && inRect(g.X, g.Y, b) {
+				m.cover = nil
+			}
+		} else if !inRect(g.X, g.Y, m.cover.Rect()) {
+			m.cover = nil
+		}
+		return
 	case g.Kind == "keys" && m.screen == "save":
 		m.press()
 		return

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -641,6 +642,95 @@ func TestAUMPanelOpenAndClose(t *testing.T) {
 	}
 	if _, err := c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "nope"}); err == nil {
 		t.Fatal("unknown panel accepted")
+	}
+}
+
+// What opens the main menu closes a popover or an alert in front first: a
+// tap on ☰ under a popover only closes the popover, and an alert takes it.
+// aum_settings, aum_midi_control and aum_panel open (menu and its panels)
+// go that way, like aum_files.
+func TestAUMMenuUnderAPopover(t *testing.T) {
+	pop := mixer()
+	pop.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "FILE PLAYER"}}
+	alert := mixer()
+	alert.Overlays = []ipadtest.Overlay{{Kind: "alert", Title: "Set level", Fields: []string{"-1.0"}, Buttons: []string{"Cancel", "Set"}}}
+	settings := mixer()
+	settings.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "SETTINGS", Rows: [][2]string{{"Confirm Eject", "OFF"}}}}
+	midi := mixer()
+	midi.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "MIDI CONTROL", Frame: &[4]float64{890, 0, 320, 834}, Rows: [][2]string{{"Channels", ""}}}}
+	const outside, cancel, menu = "tap 316.5,386", "tap 605,425", "tap 1185,33"
+	for _, tc := range []struct {
+		name    string
+		covered ipadtest.AUM
+		closing string
+		after   []ipadtest.AUM // a screen per gesture after the closing one
+		call    func(*Client) (AUMResult, error)
+		want    []string // the gestures after the closing one
+	}{
+		{"aum_settings read under a popover", pop, outside, []ipadtest.AUM{mixer(), ipadtest.DefaultAUM(), settings},
+			func(c *Client) (AUMResult, error) {
+				return c.AUMSettings(context.Background(), AUMRequest{Action: "read"})
+			}, []string{menu, "tap 997,365"}}, // SETTINGS' icon
+		{"aum_midi_control read under an alert", alert, cancel, []ipadtest.AUM{mixer(), ipadtest.DefaultAUM(), midi},
+			func(c *Client) (AUMResult, error) {
+				return c.AUMMIDIControl(context.Background(), AUMRequest{Action: "read"})
+			}, []string{menu, "tap 1163,365"}}, // MIDI CTRL's icon
+		{"aum_panel open menu under a popover", pop, outside, []ipadtest.AUM{mixer(), ipadtest.DefaultAUM()},
+			func(c *Client) (AUMResult, error) {
+				return c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "menu"})
+			}, []string{menu}},
+		{"aum_panel open settings under an alert", alert, cancel, []ipadtest.AUM{mixer(), ipadtest.DefaultAUM(), settings},
+			func(c *Client) (AUMResult, error) {
+				return c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "settings"})
+			}, []string{menu, "tap 997,365"}},
+	} {
+		w, c := opFake(t, append([]ipadtest.AUM{tc.covered}, tc.after...)...)
+		res, err := tc.call(c)
+		if err != nil || !res.Verified {
+			t.Fatalf("%s: %+v, %v", tc.name, res.Message, err)
+		}
+		want := append([]string{tc.closing}, tc.want...)
+		if g := w.GestureLog(); !reflect.DeepEqual(g[:min(len(g), len(want))], want) {
+			t.Fatalf("%s: gestures = %v, want %v first", tc.name, g, want)
+		}
+	}
+}
+
+// What the caller asks for is not closed: the main menu open is used as it
+// is, and so are SETTINGS and MIDI CONTROL, with whatever is open in them (a
+// control's mapping editor stays for learn).
+func TestAUMMenuKeepsWhatIsAskedFor(t *testing.T) {
+	settings := mixer()
+	settings.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "SETTINGS", Rows: [][2]string{{"Confirm Eject", "OFF"}}}}
+	editor := mixer()
+	editor.Overlays = []ipadtest.Overlay{
+		{Kind: "panel", Title: "MIDI CONTROL", Frame: &[4]float64{890, 0, 320, 834}, Rows: [][2]string{{"Channels", ""}}},
+		{Kind: "popover", Title: "Volume", Buttons: []string{"LEARN"}},
+	}
+	for _, tc := range []struct {
+		name     string
+		screen   ipadtest.AUM
+		call     func(*Client) (AUMResult, error)
+		overlays int
+	}{
+		{"aum_panel open menu", ipadtest.DefaultAUM(), func(c *Client) (AUMResult, error) {
+			return c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "menu"})
+		}, 1},
+		{"aum_panel open settings", settings, func(c *Client) (AUMResult, error) {
+			return c.AUMPanel(context.Background(), AUMRequest{Action: "open", Panel: "settings"})
+		}, 1},
+		{"aum_midi_control read", editor, func(c *Client) (AUMResult, error) {
+			return c.AUMMIDIControl(context.Background(), AUMRequest{Action: "read"})
+		}, 2},
+	} {
+		w, c := opFake(t, tc.screen)
+		res, err := tc.call(c)
+		if err != nil || !res.Verified || len(res.State.Overlays) != tc.overlays {
+			t.Fatalf("%s: %+v, %v, overlays %v", tc.name, res.Message, err, res.State.Overlays)
+		}
+		if g := w.GestureLog(); len(g) != 0 {
+			t.Fatalf("%s: gestures = %v", tc.name, g)
+		}
 	}
 }
 

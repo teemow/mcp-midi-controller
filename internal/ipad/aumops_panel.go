@@ -159,8 +159,23 @@ func verdict(ok bool, yes, no string) string {
 	return no
 }
 
-// ensureMenu opens the main menu, closing another side panel first.
+// ensureMenu opens the main menu from whatever an earlier call left open.
+// What lies in front is closed first: a popover (AUM takes a tap outside
+// one, a tap on ☰ too, only to close it and passes nothing on), an alert
+// (it takes every touch) and the routing matrix, each as closeTop closes it.
+// Then a side panel other than the menu is closed (AUM shows one at a time,
+// and its close icon sits on ☰'s spot), and the menu opened. The menu, open,
+// is used as it is.
 func (d *AUMDriver) ensureMenu() (bool, error) {
+	if err := d.clearOverlays("panel"); err != nil {
+		return false, err
+	}
+	return d.openMenu()
+}
+
+// openMenu opens the main menu, closing another side panel first, and leaves
+// what lies in front of the panels (awaitSession: see there).
+func (d *AUMDriver) openMenu() (bool, error) {
 	if d.St.Panel() == "MENU" {
 		return true, nil
 	}
