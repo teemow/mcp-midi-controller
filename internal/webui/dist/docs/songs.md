@@ -853,7 +853,9 @@ row:
   authored at 105 KB came back at 156 KB), a file of the same name the iPad
   never fetched from the daemon, and any session outside `Songs/`. Picking
   "keep controller" there by hand loses what AUM's folder holds, so save
-  that under another name in AUM first if it is to be kept.
+  that under another name in AUM first if it is to be kept (`aum_files
+  save`, which says whether AUM wrote the file: `docs/ipad-control.md`,
+  "Saving a session").
 
 Whose copy AUM's folder holds is on the session's row and nowhere else, so
 the row is read in either case, and the side is picked there. An app with the

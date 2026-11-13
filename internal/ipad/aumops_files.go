@@ -67,10 +67,12 @@ func (c *Client) AUMFiles(ctx context.Context, r AUMRequest) (AUMResult, error) 
 	return res, err
 }
 
-// filesPanel is the open FILES panel (the front side panel), or nil.
+// filesPanel is the open FILES panel (the front side panel), or nil. A FILES
+// view is titled by its folder, so it is told by what it is not: with SAVE
+// open, FILES is opened from the menu like from any other panel.
 func (d *AUMDriver) filesPanel() *AUMOverlay {
 	o := d.St.Overlay("panel")
-	if o == nil || o.Title == "MENU" || o.Title == "SETTINGS" || o.Title == "MIDI CONTROL" || o.Title == "NAVIGATOR" {
+	if o == nil || o.Title == "MENU" || o.Title == "SETTINGS" || o.Title == "MIDI CONTROL" || o.Title == "NAVIGATOR" || o.Title == "SAVE" {
 		return nil
 	}
 	return o
@@ -160,7 +162,11 @@ func listArea(p *AUMOverlay) *Rect {
 type AUMFileEntry struct {
 	Name   string `json:"name"`
 	Detail string `json:"detail,omitempty"`
-	Frame  Rect   `json:"frame"`
+	// Folder is true for a row that opens a folder or a view (AUM draws a
+	// chevron at its right); a tap on any other row of Sessions loads that
+	// session at once.
+	Folder bool `json:"folder,omitempty"`
+	Frame  Rect `json:"frame"`
 }
 
 // fileEntries reads the cells of a FILES list: each holds the entry's name
@@ -175,17 +181,19 @@ func fileEntries(p *AUMOverlay) []AUMFileEntry {
 			return true
 		}
 		var texts []*Element
+		folder := false
 		e.Walk(func(t *Element, _ int) bool {
 			if t.Type == "StaticText" && t.Label != "" && !t.Hidden && !t.Rect.Empty() {
 				texts = append(texts, t)
 			}
+			folder = folder || (t.Type == "Button" && t.Label == "chevron")
 			return true
 		})
 		if len(texts) == 0 {
 			return false
 		}
 		sort.SliceStable(texts, func(i, j int) bool { return texts[i].Rect.Y < texts[j].Rect.Y })
-		fe := AUMFileEntry{Name: texts[0].Label, Frame: e.Rect}
+		fe := AUMFileEntry{Name: texts[0].Label, Folder: folder, Frame: e.Rect}
 		if len(texts) > 1 {
 			fe.Detail = texts[1].Label
 		}
@@ -314,38 +322,383 @@ func (d *AUMDriver) awaitSession(want string) (ok, loading bool, err error) {
 	}
 }
 
-// saveSession types the name into SAVE's name field and presses Return,
-// which saves at once (over a session of the same name, too).
+// AUMSave is what aum_files save saw of the session's row in FILES →
+// Sessions: the proof that AUM wrote the file, or that it did not.
+type AUMSave struct {
+	// Folder is the folder SAVE names ("/Songs"), the one the row is read in.
+	Folder string `json:"folder"`
+	// Existed says the folder listed the session before the save, so SAVE
+	// SESSION asked OVERWRITE? and was pressed a second time.
+	Existed bool `json:"existed"`
+	// SavedBefore and SavedAfter are the saved time in the session's row
+	// before and after the save, as AUM prints it ("" = not listed).
+	SavedBefore string `json:"saved_before,omitempty"`
+	SavedAfter  string `json:"saved_after,omitempty"`
+	// PanelClosed says the SAVE panel closed by itself after the press, as
+	// it does once AUM has written the file. After a press AUM did not take
+	// it stays open.
+	PanelClosed bool `json:"panel_closed"`
+	// Button is what the SAVE panel's button read after the press while the
+	// panel was still open: "OVERWRITE?" when it was seen to ask, else its
+	// last label.
+	Button string `json:"button,omitempty"`
+}
+
+// saveButton is the SAVE panel's button by its two labels.
+const (
+	saveButton      = "SAVE SESSION"
+	overwriteButton = "OVERWRITE"
+)
+
+// saveSession saves the open session under name and proves the save by the
+// saved time of the session's row in FILES → Sessions, read before and after.
+//
+// AUM writes a new name at the first press of SAVE SESSION. For a name that
+// exists the button reads "OVERWRITE?" for a second or two and writes only
+// when it is pressed again in that time; afterwards it reads SAVE SESSION
+// again and nothing was written. One read of AUM's tree can take longer than
+// that, so the confirming press cannot wait for a read of the label: the
+// list says beforehand whether the name exists, and then both presses go out
+// as one gesture (tapTwice), like CLEAR's and REMOVE CHANNEL's.
+//
+// The session's name in the main menu proves nothing: it is that name before
+// a save over the open session, too. (Up to v0.20.0 this pressed Return, read
+// the tree and tapped OVERWRITE? after it had gone, then took the menu's name
+// for proof: "verified" for saves that wrote nothing.)
 func (d *AUMDriver) saveSession(name string) (AUMResult, error) {
 	if ok, err := d.openFromMenu("save"); err != nil || !ok {
 		return d.result("save", false, "SAVE did not open: "+d.St.overlaySummary(), nil), err
 	}
-	got, err := d.typeText(0, name)
+	shown, path, ok := saveFolder(d.St.Overlay("panel"))
+	if !ok {
+		return AUMResult{}, fmt.Errorf("the SAVE panel names no folder (%s); not saving", d.St.overlaySummary())
+	}
+	rep := AUMSave{Folder: shown}
+	before, err := d.sessionEntry(path, name)
 	if err != nil {
-		return AUMResult{}, err
+		return AUMResult{}, fmt.Errorf("reading %q in FILES → Sessions before saving: %w; not saving", name, err)
 	}
-	if got != name {
-		return AUMResult{}, fmt.Errorf("the name field reads %q after typing %q; not saving", got, name)
+	if before != nil {
+		rep.Existed, rep.SavedBefore = true, before.Detail
 	}
-	if err := d.pressReturn(); err != nil {
-		return AUMResult{}, err
+
+	if ok, err := d.openFromMenu("save"); err != nil || !ok {
+		return d.result("save", false, "SAVE did not open again after FILES; not saved: "+d.St.overlaySummary(), rep), err
 	}
-	if err := d.pause(time.Second); err != nil {
-		return AUMResult{}, err
-	}
-	if err := d.Read(); err != nil {
-		return AUMResult{}, err
-	}
-	if b := d.findPrefix("OVERWRITE", nil); b != nil {
-		if err := d.tapRect(b.Rect, "OVERWRITE?"); err != nil {
+	if p := d.St.Overlay("panel"); p == nil || len(p.Fields) == 0 || p.Fields[0] != name {
+		got, err := d.typeText(0, name)
+		if err != nil {
+			return AUMResult{}, err
+		}
+		if got != name {
+			return AUMResult{}, fmt.Errorf("the name field reads %q after typing %q; not saving", got, name)
+		}
+		// What was typed into must be the SAVE panel's own field: a save
+		// under the name it still held would overwrite another session.
+		if err := d.Read(); err != nil {
 			return AUMResult{}, err
 		}
 	}
-	if _, err := d.ensureMenu(); err != nil {
+	p := d.St.Overlay("panel")
+	if p == nil || len(p.Fields) == 0 || p.Fields[0] != name {
+		return AUMResult{}, fmt.Errorf("the SAVE panel's name field does not read %q (%s); not saving", name, d.St.overlaySummary())
+	}
+	btn := d.findText(saveButton, &p.Frame)
+	if btn == nil {
+		return AUMResult{}, fmt.Errorf("no %s button in the SAVE panel (%s); not saving", saveButton, d.St.overlaySummary())
+	}
+	if rep.Existed {
+		err = d.tapTwice(btn.Rect, saveButton+" / OVERWRITE?")
+	} else {
+		err = d.tapRect(btn.Rect, saveButton)
+	}
+	if err != nil {
 		return AUMResult{}, err
 	}
-	ok, err := d.until(aumWait, func(st AUMState) bool { return strings.EqualFold(st.Session, name) })
-	return d.result("save", ok, fmt.Sprintf("menu shows session %q (saved as %q)", d.St.Session, name), nil), err
+	// AUM closes the SAVE panel by itself a moment after it has written the
+	// file, and leaves it open after a press it did not take. The list is
+	// opened only once that is settled: a tap on the panel's close icon after
+	// the panel has gone hits the menu button on the same spot.
+	if rep.PanelClosed, err = d.until(4*AUMSaveSettle, func(st AUMState) bool {
+		p := st.Overlay("panel")
+		if p == nil || p.Title != "SAVE" {
+			return true
+		}
+		if b := d.findPrefix(overwriteButton, &p.Frame); b != nil {
+			rep.Button = b.Text()
+		} else if b := d.findText(saveButton, &p.Frame); b != nil && !rep.asked() {
+			rep.Button = b.Text()
+		}
+		return false
+	}); err != nil {
+		return AUMResult{}, err
+	}
+
+	// The list is read again; once more after a moment when AUM took the
+	// press and the list does not show it yet.
+	for try := 0; ; try++ {
+		after, err := d.sessionEntry(path, name)
+		if err != nil {
+			return d.result("save", false, fmt.Sprintf("pressed %s, but FILES → Sessions could not be read afterwards (%v): not known whether %q was saved", saveButton, err, name), rep), nil
+		}
+		rep.SavedAfter = ""
+		if after != nil {
+			rep.SavedAfter = after.Detail
+		}
+		if rep.saved() || !rep.PanelClosed || try > 0 {
+			break
+		}
+		if err := d.pause(AUMSaveSettle); err != nil {
+			return AUMResult{}, err
+		}
+	}
+	return d.result("save", rep.saved(), rep.message(name), rep), nil
+}
+
+// AUMSaveSettle is the pause before the list is read a second time after a
+// save that does not show in it, and a quarter of the time the SAVE panel is
+// given to close by itself after the press. It is a variable so tests against
+// a stand-in need not sit it out.
+var AUMSaveSettle = time.Second
+
+// saved reports whether the row shows a save: one whose saved time moved, or
+// one that was not there. For a row that was not there the SAVE panel must
+// have closed as well: a panel that stays open after the one press of a new
+// name, or a button that asks OVERWRITE?, says the name was there after all,
+// whatever the list showed before, and that press wrote nothing.
+func (r AUMSave) saved() bool {
+	switch {
+	case r.SavedAfter == "":
+		return false
+	case r.Existed:
+		return r.SavedAfter != r.SavedBefore
+	default:
+		return r.PanelClosed && !r.asked()
+	}
+}
+
+// asked reports whether the button read OVERWRITE? after the press.
+func (r AUMSave) asked() bool {
+	return strings.HasPrefix(strings.ToUpper(r.Button), overwriteButton)
+}
+
+func (r AUMSave) message(name string) string {
+	where := "FILES → Sessions → " + r.Folder
+	button := "; the SAVE panel closed by itself after the press"
+	if !r.PanelClosed {
+		button = fmt.Sprintf("; the SAVE panel stayed open after the press, its button reading %q", r.Button)
+	}
+	switch {
+	case r.saved() && r.Existed:
+		return fmt.Sprintf("saved over %q: its saved time in %s went from %q to %q", name, where, r.SavedBefore, r.SavedAfter)
+	case r.saved():
+		return fmt.Sprintf("saved %q as a new session: %s lists it now, saved %q", name, where, r.SavedAfter)
+	case r.Existed && r.SavedAfter == "":
+		return fmt.Sprintf("NOT saved: %s listed %q (saved %q) before %s and OVERWRITE? were pressed, and does not list it now%s", where, name, r.SavedBefore, saveButton, button)
+	case r.Existed:
+		return fmt.Sprintf("NOT saved: the saved time of %q in %s is still %q after %s and OVERWRITE? were pressed, so AUM wrote nothing%s", name, where, r.SavedBefore, saveButton, button)
+	case r.asked():
+		return fmt.Sprintf("NOT saved: AUM asks %q for %q, a name %s did not list before the press, and was not answered: what it would overwrite is not known", r.Button, name, where)
+	case r.SavedAfter != "":
+		return fmt.Sprintf("NOT saved: %s lists %q (saved %q) now and did not before, but the SAVE panel stayed open after the one press of %s, as it does when AUM asks to overwrite: not taken for a save", where, name, r.SavedAfter, saveButton)
+	default:
+		return fmt.Sprintf("NOT saved: %s does not list %q after %s was pressed%s", where, name, saveButton, button)
+	}
+}
+
+// saveFolder reads the folder the SAVE panel saves into: the one text of the
+// panel that is a path ("/Songs", "/" for the root of Sessions). shown is
+// that text, path its folders.
+func saveFolder(p *AUMOverlay) (shown string, path []string, ok bool) {
+	if p == nil || p.el == nil {
+		return "", nil, false
+	}
+	t := p.el.First(func(e *Element) bool {
+		return e.Type == "StaticText" && !e.Hidden && !e.Rect.Empty() && strings.HasPrefix(strings.TrimSpace(e.Label), "/")
+	})
+	if t == nil {
+		return "", nil, false
+	}
+	shown = strings.TrimSpace(t.Label)
+	for _, f := range strings.Split(shown, "/") {
+		if f != "" {
+			path = append(path, f)
+		}
+	}
+	return shown, path, true
+}
+
+// sessionEntry reads the row of session name in FILES → Sessions → path, or
+// nil when the folder does not list it.
+//
+// AUM titles every folder of Sessions "SESSIONS" and names the folder in a
+// header row above the list: "/" at the root, the folder's name inside one.
+// FILES reopens in the folder it last showed, and its back arrow goes up one
+// folder. So the list is taken to the root first and walked down path from
+// there, checking the header at each step: the row that is read is in the
+// folder SAVE names, in a list AUM has just made. Each folder and the session
+// are looked for through the whole list, not only its first page.
+func (d *AUMDriver) sessionEntry(path []string, name string) (*AUMFileEntry, error) {
+	if ok, err := d.openFromMenu("files"); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("FILES did not open (%s)", d.St.overlaySummary())
+	}
+	for up := 0; ; up++ {
+		p, err := d.openFiles("Sessions", nil)
+		if err != nil {
+			return nil, err
+		}
+		at, ok := filesFolder(p)
+		if !ok {
+			return nil, fmt.Errorf("FILES → Sessions names no folder above its list (entries: %s)", entryNames(p))
+		}
+		if at == "/" {
+			break
+		}
+		if up == 8 {
+			return nil, fmt.Errorf("FILES → Sessions is still in %q after going up %d folders", at, up)
+		}
+		if err := d.tap(p.Frame.X+20, 30, "back, out of "+at); err != nil {
+			return nil, err
+		}
+		if _, err := d.until(aumWait, func(AUMState) bool {
+			now, ok := filesFolder(d.filesPanel())
+			return !ok || now != at
+		}); err != nil {
+			return nil, err
+		}
+	}
+	for _, folder := range path {
+		p := d.filesPanel()
+		at, _ := filesFolder(p)
+		e, err := d.fileEntry(true, folder)
+		if err != nil {
+			return nil, err
+		}
+		if e == nil {
+			return nil, &NoFolderError{Folder: folder, In: "Sessions " + at, Entries: entryNames(d.filesPanel())}
+		}
+		// The folder's row is on screen now, and it is a folder's: a
+		// session of that name would be loaded by this tap. The name can be
+		// the header's too, so it is looked for inside the row.
+		row := d.findText(e.Name, &e.Frame)
+		if row == nil {
+			return nil, fmt.Errorf("lost the row of folder %q in Sessions %s", folder, at)
+		}
+		if err := d.tapRect(row.Rect, "folder "+folder); err != nil {
+			return nil, err
+		}
+		in, err := d.until(aumWait, func(AUMState) bool {
+			now, ok := filesFolder(d.filesPanel())
+			return ok && now != at && lastFolder(now) == folder
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !in {
+			now, _ := filesFolder(d.filesPanel())
+			return nil, fmt.Errorf("FILES → Sessions shows folder %q after a tap on %q in %q", now, folder, at)
+		}
+	}
+	return d.fileEntry(false, name, name+".aumproj")
+}
+
+// filesFolder is the folder a FILES list shows, from the header row above
+// its cells ("/" for the root of Sessions).
+func filesFolder(p *AUMOverlay) (string, bool) {
+	if p == nil || p.el == nil {
+		return "", false
+	}
+	h := p.el.First(func(e *Element) bool {
+		return e.Type == "StaticText" && !e.Hidden && !e.Rect.Empty() && hasTrait(e.Traits, "Header") && strings.TrimSpace(e.Label) != ""
+	})
+	if h == nil {
+		return "", false
+	}
+	return strings.TrimSpace(h.Label), true
+}
+
+// lastFolder is the last folder of a path as a FILES header prints it.
+func lastFolder(path string) string {
+	path = strings.TrimRight(path, "/")
+	return path[strings.LastIndex(path, "/")+1:]
+}
+
+// filePages bounds how far fileEntry scrolls a list (eight rows a page).
+const filePages = 60
+
+// fileStep is how far fileEntry drags a FILES list for its next page, and
+// fileStepTime how long that drag takes. Measured on the iPad (AUM 1.4.8): a
+// drag of 420 points in 0.9 s moves the list by 404 to 406 points, eight of
+// its 50-point rows, so six of the twelve to fifteen rows on screen are read
+// twice. A drag of 584 points in 0.5 s ran on after the finger lifted and
+// moved the list by 674: the row in between was on neither page.
+const (
+	fileStep     = 420.0
+	fileStepTime = 900 * time.Millisecond
+)
+
+// fileEntry finds the entry called one of names in the open FILES list, or
+// nil. A list holds only the rows on screen, so it is scrolled a page at a
+// time until the entry shows or two pages in a row bring no row that was not
+// seen (one such page can be a drag the list did not follow). Pages overlap;
+// a page that shares no row with the one before means rows went by unread,
+// which is an error and not "no such entry".
+// With folder set it finds a folder's row, else a session's: a folder and a
+// session can share a name, and only one of them may be tapped. A session's
+// row counts only once its second line, the saved time, can be read: a row
+// cut by the list's edge shows one of its lines.
+func (d *AUMDriver) fileEntry(folder bool, names ...string) (*AUMFileEntry, error) {
+	seen := map[string]bool{}
+	var prev map[string]bool
+	cut := ""
+	for page, idle := 0, 0; page < filePages; page++ {
+		p := d.filesPanel()
+		if p == nil {
+			return nil, fmt.Errorf("FILES closed (%s)", d.St.overlaySummary())
+		}
+		entries := fileEntries(p)
+		cur := map[string]bool{}
+		fresh, overlap := 0, len(prev) == 0
+		for _, e := range entries {
+			for _, n := range names {
+				if e.Name != n || e.Folder != folder {
+					continue
+				}
+				if folder || e.Detail != "" {
+					return &e, nil
+				}
+				cut = e.Name
+			}
+			cur[e.Name] = true
+			overlap = overlap || prev[e.Name]
+			if !seen[e.Name] {
+				seen[e.Name] = true
+				fresh++
+			}
+		}
+		if !overlap && len(entries) > 0 {
+			return nil, fmt.Errorf("the list %s scrolled past rows that were not read: no row of one page is on the next", p.Title)
+		}
+		prev = cur
+		if fresh > 0 {
+			idle = 0
+		} else if idle++; idle == 2 {
+			break
+		}
+		x, y := p.Frame.X+30, d.win.Height/2+fileStep/2
+		if err := d.drag("the list", DragTiming{Move: fileStepTime, Hold: 200 * time.Millisecond}, Point{x, y}, Point{x, y - fileStep}); err != nil {
+			return nil, err
+		}
+		if err := d.Read(); err != nil {
+			return nil, err
+		}
+	}
+	if cut != "" {
+		return nil, fmt.Errorf("the row of %q in %s shows no saved time", cut, d.St.Panel())
+	}
+	return nil, nil
 }
 
 // renameSession long-presses a session row, opens Rename from the share
