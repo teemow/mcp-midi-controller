@@ -269,6 +269,9 @@ func (d *AUMDriver) listFiles(view string, path []string) (AUMResult, error) {
 	if err != nil {
 		return AUMResult{}, err
 	}
+	if p == nil {
+		return AUMResult{}, fmt.Errorf("FILES closed on the way to %s (%s)", view, d.St.overlaySummary())
+	}
 	es := fileEntries(p)
 	return d.result(strings.ToLower(view), true, fmt.Sprintf("%s: %d entries: %s", p.Title, len(es), entryNames(p)), es), nil
 }
