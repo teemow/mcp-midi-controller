@@ -232,7 +232,9 @@ build_and_restart() {
   mv -f "$tmp" "$BIN"
   echo "$version" >"$DEPLOYED"
   echo "$fp" >"$DEPLOYED_FP"
-  rm -f "$FAILED" "$UNCHANGED"
+  # A deploy ends any wait for a busy daemon, a forced one too: a start left
+  # behind would let the next wait count from it and go ahead at once.
+  rm -f "$FAILED" "$UNCHANGED" "$WAITING"
   install_agent "$LABEL" || launchctl kickstart -k "$DOMAIN/$LABEL"
   log "deployed $version ($BIN), restarted $LABEL"
   note_update_agent

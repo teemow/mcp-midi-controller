@@ -196,11 +196,24 @@ func (r *macRig) setBusy(answer string) {
 // update runs one run of the update agent and returns what it logged.
 func (r *macRig) update() string {
 	r.t.Helper()
-	cmd := exec.Command("bash", filepath.Join(r.clone, "scripts", "deploy-mac.sh"), "--update")
+	return r.run("--update")
+}
+
+// deployByHand runs scripts/deploy-mac.sh without arguments, as a person on
+// the Mac does, and returns what it logged.
+func (r *macRig) deployByHand() string {
+	r.t.Helper()
+	return r.run()
+}
+
+// run runs the clone's deploy-mac.sh with args and returns what it logged.
+func (r *macRig) run(args ...string) string {
+	r.t.Helper()
+	cmd := exec.Command("bash", append([]string{filepath.Join(r.clone, "scripts", "deploy-mac.sh")}, args...)...)
 	cmd.Dir, cmd.Env = r.clone, r.env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		r.t.Fatalf("deploy-mac.sh --update: %v\n%s", err, out)
+		r.t.Fatalf("deploy-mac.sh %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
 }
@@ -379,4 +392,44 @@ func TestMacUpdateWaitsWhileTheDaemonIsBusy(t *testing.T) {
 	log = r.update()
 	r.wantRestarts("an update with a daemon that does not answer /busy", 4)
 	wantLogged(t, log, "deployed "+r.originVersion())
+}
+
+// TestMacDeployByHandEndsTheWait checks a deploy by hand while the update
+// waits for a busy daemon ends that wait: the next update that finds the
+// daemon busy waits its full time again, rather than counting from the old
+// start and restarting at once.
+func TestMacDeployByHandEndsTheWait(t *testing.T) {
+	r := newMacRig(t)
+	r.update()
+	r.wantRestarts("the first update", 1)
+
+	r.write("cmd/mcp-midi-controller/main.go", fakeMainSource("second"), 0o644)
+	r.merge("feat: second")
+	second := r.originVersion()
+	playing := `play_song "battalion", for 1m0s (since 04:17:03)`
+	r.setBusy("busy\n" + playing + "\n")
+	wantLogged(t, r.update(), "update to "+second+" waits: the daemon is busy")
+	r.wantRestarts("an update while the daemon is busy", 1)
+
+	// The wait began over an hour before the next merge comes in; the person
+	// deploys by hand in between.
+	waiting := filepath.Join(r.state, "waiting-since")
+	hourAgo := time.Now().Add(-61 * time.Minute).Unix()
+	mustWrite(t, waiting, strconv.FormatInt(hourAgo, 10)+"\n", 0o644)
+	log := r.deployByHand()
+	r.wantRestarts("the deploy by hand", 2)
+	wantLogged(t, log, "restarting although the daemon is busy:", "busy: "+playing, "deployed "+second)
+	if _, err := os.Stat(waiting); !os.IsNotExist(err) {
+		t.Fatalf("the wait is still noted after the deploy by hand: %v", err)
+	}
+
+	r.write("cmd/mcp-midi-controller/main.go", fakeMainSource("third"), 0o644)
+	r.merge("feat: third")
+	third := r.originVersion()
+	log = r.update()
+	r.wantRestarts("an update while the daemon is busy, after the deploy by hand", 2)
+	wantLogged(t, log, "update to "+third+" waits: the daemon is busy (waited 0 of")
+	if got := r.installed(); got != second+" second" {
+		t.Fatalf("while busy the installed binary became %q, want %s second", got, second)
+	}
 }
