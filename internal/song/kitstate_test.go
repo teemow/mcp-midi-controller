@@ -142,13 +142,14 @@ func TestKitStateLocksElement(t *testing.T) {
 
 func TestKitStateChecks(t *testing.T) {
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"voice":      {"        4: \"\"\n", "        9: x.wav\n", `/tracks/0/instrument/samples/9: "9" is not a voice (1..8)`},
-		"absolute":   {"1: Kicks/Abstrakta 1 Kick.wav", "1: /Kicks/Abstrakta 1 Kick.wav", `/instrument/samples/1: "/Kicks/Abstrakta 1 Kick.wav": a sample of the factory library is its path there`},
-		"up":         {"1: Kicks/Abstrakta 1 Kick.wav", "1: Kicks/../x.wav", `"Kicks/../x.wav": ".." is not a folder or file of the factory library`},
-		"scheme":     {"1: Kicks/Abstrakta 1 Kick.wav", "1: https://example.com/x.wav", "or a file:// URL"},
-		"empty lock": {"[drum1pitch, drum1pan]", `[drum1pitch, ""]`, "/instrument/locks/1: a lock is the id of a parameter"},
-		"twice":      {"[drum1pitch, drum1pan]", "[drum1pitch, drum1pitch]", "/instrument/locks/1: drum1pitch is locked twice"},
-		"in a scene": {"sections:", "scenes:\n  s: {drums: {locks: [drum1pan]}}\nsections:", "field locks not found"},
+		"voice":       {"        4: \"\"\n", "        9: x.wav\n", `/tracks/0/instrument/samples/9: "9" is not a voice (1..8)`},
+		"absolute":    {"1: Kicks/Abstrakta 1 Kick.wav", "1: /Kicks/Abstrakta 1 Kick.wav", `/instrument/samples/1: "/Kicks/Abstrakta 1 Kick.wav": a sample of the factory library is its path there`},
+		"up":          {"1: Kicks/Abstrakta 1 Kick.wav", "1: Kicks/../x.wav", `"Kicks/../x.wav": ".." is not a folder or file of the factory library`},
+		"scheme":      {"1: Kicks/Abstrakta 1 Kick.wav", "1: https://example.com/x.wav", "or a file:// URL"},
+		"empty lock":  {"[drum1pitch, drum1pan]", `[drum1pitch, ""]`, "/instrument/locks/1: a lock is the id of a parameter"},
+		"twice":       {"[drum1pitch, drum1pan]", "[drum1pitch, drum1pitch]", "/instrument/locks/1: drum1pitch is locked twice"},
+		"voice twice": {"        4: \"\"\n", "        4: \"\"\n        01: x.wav\n", `/tracks/0/instrument/samples/1: voice 1 has two samples (under "01" and "1")`},
+		"in a scene":  {"sections:", "scenes:\n  s: {drums: {locks: [drum1pan]}}\nsections:", "field locks not found"},
 	} {
 		doc := strings.Replace(kitSong, tc.from, tc.to, 1)
 		if doc == kitSong {
@@ -186,7 +187,7 @@ func TestKitStatePlanChecks(t *testing.T) {
 }
 
 // TestKitStateFingerprint checks another sample or lock is another session,
-// and a sequence alone keeps the fingerprint it had.
+// and the order of the locks is none.
 func TestKitStateFingerprint(t *testing.T) {
 	a := planKit(t, kitSong).Fingerprint()
 	for name, doc := range map[string]string{

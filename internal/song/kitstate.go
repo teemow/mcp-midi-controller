@@ -68,17 +68,25 @@ func newKitState(e *errs, at string, pl Plugin, m meter) *kitState {
 	return k
 }
 
-// checkSamples checks an instrument's samples and returns them by voice.
+// checkSamples checks an instrument's samples and returns them by voice. Two
+// keys of one voice ("1" and "01") are refused: either sample could win, and
+// the session's fingerprint would change from one run to the next.
 func checkSamples(e *errs, at string, samples map[string]string) []voiceSample {
 	var out []voiceSample
-	for key, path := range samples {
+	keyOf := map[int]string{}
+	for _, key := range sortedKeys(samples) {
 		vat := at + "/" + key
 		voice, err := strconv.Atoi(strings.TrimSpace(key))
 		if err != nil || voice < 1 || voice > sequenceVoices {
 			e.addf("%s: %q is not a voice (1..%d)", vat, key, sequenceVoices)
 			continue
 		}
-		path = strings.TrimSpace(path)
+		if other, ok := keyOf[voice]; ok {
+			e.addf("%s: voice %d has two samples (under %q and %q)", vat, voice, other, key)
+			continue
+		}
+		keyOf[voice] = key
+		path := strings.TrimSpace(samples[key])
 		if err := checkSamplePath(path); err != nil {
 			e.addf("%s: %v", vat, err)
 			continue
