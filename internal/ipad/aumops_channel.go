@@ -24,7 +24,7 @@ func (c *Client) AUMChannel(ctx context.Context, r AUMRequest) (AUMResult, error
 		if err := checkChannel(r); err != nil {
 			return err
 		}
-		if err := d.uncoverMixer(r.Action); err != nil {
+		if err := d.uncoverMixer(); err != nil {
 			return err
 		}
 		var err error
@@ -82,9 +82,6 @@ func checkChannel(r AUMRequest) error {
 	return nil
 }
 
-// editActions work in EDIT CHANNEL and take the one that is open (openEdit).
-var editActions = map[string]bool{"edit": true, "rename": true, "bookmark": true, "duplicate": true, "remove": true}
-
 // uncoverMixer closes what lies over the mixer before a strip or the add
 // tile is touched. While a side panel is open (the main menu, which a session
 // load leaves open, or FILES after a save) AUM takes a tap on the mixer to
@@ -93,10 +90,12 @@ var editActions = map[string]bool{"edit": true, "rename": true, "bookmark": true
 // fader left the level where it was. A popover takes the tap that closes it
 // the same way; an alert and the routing matrix cover the strips. The tempo
 // bar and the built-in keyboard (the mixer shrinks above it) take nothing.
-func (d *AUMDriver) uncoverMixer(action string) error {
-	if o := d.St.Overlay(""); o != nil && editActions[action] && o.Kind == "popover" && strings.HasPrefix(o.Title, "EDIT CHANNEL") {
-		return nil
-	}
+//
+// An EDIT CHANNEL left open is closed as well: it can belong to another strip
+// than the one the request names (edit leaves it open), and edit, rename,
+// bookmark, duplicate and remove act in it, so they open the named strip's
+// own (openEdit).
+func (d *AUMDriver) uncoverMixer() error {
 	return d.clearOverlays("")
 }
 
@@ -240,12 +239,9 @@ func (d *AUMDriver) importChannels(action, session string) (AUMResult, error) {
 	return d.result(action, ok, verdict(ok, fmt.Sprintf("%d strips now (was %d)", len(d.St.Channels), before), "no channel was added"), nil), nil
 }
 
-// openEdit taps a strip's title and waits for EDIT CHANNEL.
+// openEdit taps a strip's title and waits for EDIT CHANNEL. Nothing is open
+// over the mixer by then (uncoverMixer), so the one that opens is the strip's.
 func (d *AUMDriver) openEdit(sel string) (AUMChannel, *AUMOverlay, error) {
-	if o := d.St.Overlay("popover"); o != nil && strings.HasPrefix(o.Title, "EDIT CHANNEL") {
-		ch, err := d.St.Channel(sel)
-		return ch, o, err
-	}
 	ch, err := d.channel(sel)
 	if err != nil {
 		return ch, nil, err

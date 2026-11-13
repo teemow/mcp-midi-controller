@@ -156,10 +156,11 @@ same call twice before the save.
 So every `aum_channel` action first closes what lies over the mixer: a side
 panel by its close icon, a popover by a tap outside it, an alert by Cancel,
 the routing matrix by its top-bar button. The gestures are listed in the
-result. An open EDIT CHANNEL stays for `edit`, `rename`, `bookmark`,
-`duplicate` and `remove`, which work in it. The tempo bar and the built-in
-keyboard are left alone: with either open a tap on the dB label opened the
-dialog (the mixer shrinks above the keyboard).
+result. An EDIT CHANNEL left open is closed too, as `edit` leaves it: it can
+be another strip's, and `edit`, `rename`, `bookmark`, `duplicate` and `remove`
+act in the one that is open, so they open the named strip's own. The tempo
+bar and the built-in keyboard are left alone: with either open a tap on the
+dB label opened the dialog (the mixer shrinks above the keyboard).
 
 With `ipad_tap`, `ipad_swipe` and `ipad_drag` on the mixer nothing is closed
 for you: run `aum_panel close` first.

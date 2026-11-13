@@ -210,19 +210,26 @@ func TestAUMChannelUncoversMixer(t *testing.T) {
 		t.Fatalf("set_level without level_db under FILES: %v (%d gestures)", err, w.Gestures())
 	}
 
-	// EDIT CHANNEL is where rename works: the open one is used, not closed.
+	// An EDIT CHANNEL left open (edit leaves it so) can be another strip's:
+	// rename, like remove, acts in the one that is open, so it is closed and
+	// the named strip's own is opened, never the other strip renamed.
+	other := mixer()
+	other.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "EDIT CHANNEL 3", Fields: []string{"3: Drum Machine"}, Buttons: []string{"DUPLICATE", "REMOVE CHANNEL"}}}
 	edit := mixer()
 	edit.Overlays = []ipadtest.Overlay{{Kind: "popover", Title: "EDIT CHANNEL 2", Fields: []string{"2: Synth One"}, Buttons: []string{"DUPLICATE", "REMOVE CHANNEL"}}}
 	renamed := mixer()
 	renamed.Strips[1].Title = "Lead"
-	w, c = opFake(t, edit, edit, renamed)
+	w, c = opFake(t, other, mixer(), edit, edit, renamed)
 	w.Fields = []string{"2: Synth One"}
 	res, err := c.AUMChannel(context.Background(), AUMRequest{Action: "rename", Channel: "2", Name: "Lead"})
-	if err != nil || !res.Verified {
-		t.Fatalf("rename in the open EDIT CHANNEL: %+v, %v", res.Message, err)
+	if err != nil || !res.Verified || w.Fields[0] != "Lead" {
+		t.Fatalf("rename under another strip's EDIT CHANNEL: %+v, %v (field %q)", res.Message, err, w.Fields[0])
 	}
-	if g := w.GestureLog(); len(g) != 2 || g[0] != "click" || g[1] != "keys" {
-		t.Fatalf("rename in the open EDIT CHANNEL: gestures = %v", g)
+	// A tap outside the open popover, then strip 2's title (249+72, 764)
+	// 156×50, then the name field.
+	g := w.GestureLog()
+	if len(g) != 4 || g[1] != "tap 399,789" || g[2] != "click" || g[3] != "keys" || len(res.Steps) == 0 || !strings.HasPrefix(res.Steps[0], "tap outside the popover") {
+		t.Fatalf("rename under another strip's EDIT CHANNEL: gestures = %v, steps = %v", g, res.Steps)
 	}
 }
 
