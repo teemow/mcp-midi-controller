@@ -122,14 +122,14 @@ a normal result, not a tool error.
 
 | Tool | Actions |
 |---|---|
-| `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the Navigator by a tap on the mixer, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). |
+| `aum_panel` | `open` a `panel` (`menu`, `files`, `save`, `settings`, `midi_control`, `midi_routing`, `navigator`, `engine_info`, `tempo`, `clock_options`, `keyboard`, `notes`, `help`, `about`), `close` the front-most thing (an alert via Cancel, a popover by tapping outside it, the routing matrix, a side panel, the Navigator by a tap on the mixer, the tempo bar, the keyboard), `read` every open popover, panel and alert (`path` taps rows first), `set` a row of the front-most one (`setting`, `value`: Clock Options' Pre-roll and Sync Quantum, a mapping editor, a filter). `open` of `menu` and the panels reached through it first closes what lies in front, see [Opening the main menu](#opening-the-main-menu). |
 | `aum_channel` | `add_audio`, `add_midi` (the add tile: right of the last strip, or in the middle of the start screen that CLEAR leaves), `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`: a tap on the dB label opens the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 | `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
-| `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings, read the same way: the root lists a folder per session, `path` into one its takes), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹ (`name` in the folder `path` to `new_name`: found like `load`, long-press on its row → the share sheet → Rename; proved by the folder's list, read again), `clear`¹ (CLEAR → Sure?), `notes`. |
+| `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings, read the same way: the root lists a folder per session, `path` into one its takes), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹ (`name` in the folder `path` to `new_name`: found like `load`, long-press on its row → the share sheet → Rename; proved by the folder's list, read again), `clear`¹ (CLEAR → Sure?), `notes`. Every action goes through the main menu, see [Opening the main menu](#opening-the-main-menu). |
 | `aum_midi_routing` | `read` (sources, destinations and the connected cells), `connect` / `disconnect` (`source`, `destination`), `destination` (its panel: MIDI sources, All Notes Off, the filter; `path` taps further). |
-| `aum_midi_control` | `read` (`path` walks into a collection or a control's mapping editor), `filter` (ALL, ASSIGNED, UNUSED), `learn`, `menu` (a section's `⋮`: Set MIDI Channels¹, Save, Load¹, Copy, Paste¹, Clear All¹, Delete All¹), `add` (ADD TEMPO, ADD PRESET), `main_parameter`. |
-| `aum_settings` | `read` every setting (scrolling the panel), `set` a `setting` to a `value` as AUM prints it (ON, INT 24, 48 kHz, …). Settings are global: set them back afterwards. |
+| `aum_midi_control` | `read` (`path` walks into a collection or a control's mapping editor), `filter` (ALL, ASSIGNED, UNUSED), `learn`, `menu` (a section's `⋮`: Set MIDI Channels¹, Save, Load¹, Copy, Paste¹, Clear All¹, Delete All¹), `add` (ADD TEMPO, ADD PRESET), `main_parameter`. MIDI CONTROL is opened through the main menu, see [Opening the main menu](#opening-the-main-menu). |
+| `aum_settings` | `read` every setting (scrolling the panel), `set` a `setting` to a `value` as AUM prints it (ON, INT 24, 48 kHz, …). Settings are global: set them back afterwards. SETTINGS is opened through the main menu, see [Opening the main menu](#opening-the-main-menu). |
 | `aum_file_player` | `open` / `read` (selected file, format, options), `set` (Loop, Sync, Normalize), `load` (`name`, `path` in SOUNDFILES), `play_enable`. Whatever lies over the mixer is closed first, see [Touching the mixer under a panel](#touching-the-mixer-under-a-panel). |
 
 ¹ Changes or loses state: needs `confirm: true`. Iterate on a scratch session
@@ -190,6 +190,37 @@ tap on the dB label opened the dialog (the mixer shrinks above the keyboard).
 
 With `ipad_tap`, `ipad_swipe` and `ipad_drag` on the mixer nothing is closed
 for you: run `aum_panel close` first.
+
+### Opening the main menu
+
+`aum_files` (every action), `aum_settings`, `aum_midi_control` and `aum_panel
+open` of `menu`, `files`, `save`, `settings`, `midi_control`, `notes`, `help`
+and `about` open AUM's main menu with a tap on ☰. AUM takes a tap outside a
+popover only to close the popover, the tap on ☰ too, and an alert takes every
+touch. Seen on the iPad (AUM 1.4.8): with a FILE PLAYER left open by `aum_node
+open` on a File Player's node, `aum_files load` tapped ☰, the popover closed,
+no menu opened, and the call answered after 7.8 s "FILES did not open (no
+popover or panel open)".
+
+So what opens the main menu first closes what lies in front of it, as
+`aum_panel close` would: a popover by a tap outside it, an alert by Cancel (an
+alert without Cancel is an error that names its buttons: answer it with
+`ipad_tap`), the routing matrix by its top-bar button. The gestures are listed
+in the result. Then a side panel other than the one asked for is closed by its
+close icon, as before: AUM shows one side panel at a time, and the icon sits on
+☰'s spot. FILES, SAVE and NOTES are opened from the menu anew each time, so
+one that is open is closed and opened again.
+
+What was asked for and is open already is used as it is, with whatever is
+open in it: the main menu, SETTINGS for `aum_settings` and `aum_panel open
+settings`, MIDI CONTROL for `aum_midi_control` and `aum_panel open
+midi_control` (a control's mapping editor stays for `learn`). The tempo bar
+and the built-in keyboard are left alone.
+
+After `aum_files load` has tapped the session's row it waits for the main
+menu to name the session, opening the menu again if the load closed it. An
+alert AUM puts up then is not answered: it is AUM's word on the session just
+loaded, and it stays for the caller to read in the result's state.
 
 ### Listing and loading sessions
 

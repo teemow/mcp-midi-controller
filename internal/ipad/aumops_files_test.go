@@ -66,8 +66,9 @@ func wantTouched(t *testing.T, w *ipadtest.WDA, aum *ipadtest.SessionsAUM, want 
 }
 
 const (
-	filesIcon = "tap 997,137" // FILES in the main menu
-	backArrow = "tap 830,30"  // up one folder
+	menuButton = "tap 1185,33" // ☰
+	filesIcon  = "tap 997,137" // FILES in the main menu
+	backArrow  = "tap 830,30"  // up one folder
 )
 
 // The root of Sessions, from FILES' own root: a session and a folder of one
@@ -230,6 +231,44 @@ func TestAUMFilesLoadSessionNamedLikeAFolder(t *testing.T) {
 		t.Fatalf("load of the session: %+v, open %q", res.Message, aum.Open())
 	}
 	wantTouched(t, w, aum, "/Songs/song 01", "/Songs")
+}
+
+// AUM takes a tap outside a popover only to close it. With a FILE PLAYER
+// left open (as aum_node open on a File Player's node leaves it), the tap on
+// ☰ closed the popover and opened no menu, and load answered "FILES did not
+// open (no popover or panel open)". The popover is closed first, by a tap
+// outside it, and the load goes on from the bare mixer.
+func TestAUMFilesLoadUnderAPopover(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(3)...)
+	aum.Cover(ipadtest.Overlay{Kind: "popover", Title: "FILE PLAYER", Rows: [][2]string{{"Loop", "ON"}, {"Sync", "OFF"}}})
+	res := loadNow(t, c, "song 01", "Songs")
+	if !res.Verified || aum.Open() != "song 01" || aum.Covered() {
+		t.Fatalf("load: %+v, open %q, popover still open %v", res.Message, aum.Open(), aum.Covered())
+	}
+	wantTouched(t, w, aum, "/Songs/song 01")
+	// Left of the popover (633,186 500×400), then ☰.
+	if g := w.GestureLog(); len(g) < 3 || g[0] != "tap 316.5,386" || g[1] != menuButton || g[2] != filesIcon {
+		t.Fatalf("gestures = %v", g)
+	}
+	if !strings.HasPrefix(res.Steps[0], "tap outside the popover") {
+		t.Fatalf("steps = %v", res.Steps)
+	}
+}
+
+// An alert takes every touch, a tap on ☰ too: list answered "FILES did not
+// open". The alert is answered with its Cancel first.
+func TestAUMFilesListUnderAnAlert(t *testing.T) {
+	w, aum, c := filesFake(t, "Songs", "Untitled", songs(3)...)
+	aum.Cover(ipadtest.Overlay{Kind: "alert", Title: "Set level", Fields: []string{"-1.0"}, Buttons: []string{"Cancel", "Set"}})
+	res, es := listNow(t, c, "Songs")
+	if !res.Verified || len(es) != 3 || aum.Covered() {
+		t.Fatalf("list: %+v, %d entries, alert still open %v", res.Message, len(es), aum.Covered())
+	}
+	wantTouched(t, w, aum)
+	// Cancel (471,405 268×40), then ☰.
+	if g := w.GestureLog(); len(g) < 3 || g[0] != "tap 605,425" || g[1] != menuButton || g[2] != filesIcon {
+		t.Fatalf("gestures = %v", g)
+	}
 }
 
 // A row the list's edge cuts is not tapped: the list goes on until the row

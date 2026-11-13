@@ -722,13 +722,45 @@ func filesPanel(p FilesPanel) node {
 			el("StaticText", "Manage recordings in AudioShare.", 987, 787, 104, 34)))
 }
 
-func overlay(o Overlay) []node {
+// Rect is where the overlay is drawn (x, y, w, h): its Frame, else the
+// default of its kind.
+func (o Overlay) Rect() [4]float64 {
+	switch {
+	case o.Frame != nil:
+		return *o.Frame
+	case o.Kind == "panel":
+		return [4]float64{950, 0, 260, 834}
+	case o.Kind == "alert":
+		return [4]float64{455, 300, 300, 200}
+	}
+	return [4]float64{633, 186, 500, 400}
+}
+
+// Button is where the overlay draws the button labelled label (x, y, w, h):
+// below its rows and text fields, as body lays them out.
+func (o Overlay) Button(label string) ([4]float64, bool) {
+	f := o.Rect()
+	y := f[1] + 63
 	switch o.Kind {
 	case "panel":
-		f := [4]float64{950, 0, 260, 834}
-		if o.Frame != nil {
-			f = *o.Frame
+		y = 70
+	case "alert":
+		y = f[1] + 50
+	}
+	y += 50 * float64(len(o.Rows)+len(o.Fields))
+	for _, b := range o.Buttons {
+		if b == label {
+			return [4]float64{f[0] + 16, y + 5, f[2] - 32, 40}, true
 		}
+		y += 50
+	}
+	return [4]float64{}, false
+}
+
+func overlay(o Overlay) []node {
+	f := o.Rect()
+	switch o.Kind {
+	case "panel":
 		// The back button's label is glued from texts around it, as AUM's is.
 		kids := []node{el("Other", "", f[0], 0, f[2], 60,
 			el("Button", "SESSION: Old, Copyright (c) Someone, DSP:  0 %, -∞", f[0], 0, 60, 60),
@@ -742,17 +774,9 @@ func overlay(o Overlay) []node {
 		kids = append(kids, body(o, f[0], 70, f[2])...)
 		return []node{el("Other", "", f[0], f[1], f[2], f[3], kids...)}
 	case "alert":
-		f := [4]float64{455, 300, 300, 200}
-		if o.Frame != nil {
-			f = *o.Frame
-		}
 		kids := []node{el("StaticText", o.Title, f[0]+20, f[1]+15, f[2]-40, 22)}
 		kids = append(kids, body(o, f[0], f[1]+50, f[2])...)
 		return []node{el("Alert", o.Title, f[0], f[1], f[2], f[3], kids...)}
-	}
-	f := [4]float64{633, 186, 500, 400}
-	if o.Frame != nil {
-		f = *o.Frame
 	}
 	kids := []node{el("NavigationBar", "", f[0], f[1]+13, f[2], 50, el("StaticText", o.Title, f[0]+180, f[1]+30, 140, 20)).with("rawIdentifier", o.Title)}
 	kids = append(kids, body(o, f[0], f[1]+63, f[2])...)
