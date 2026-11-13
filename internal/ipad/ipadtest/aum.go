@@ -114,6 +114,11 @@ type FilesPanel struct {
 	// Scrolled says the list is scrolled down: the sort bar and the header
 	// row are out of sight and the rows begin at the list's top.
 	Scrolled bool
+	// Cut says the scrolled list rests between two rows, as AUM's does after
+	// a drag: Cells[0] reaches above the list's top edge, which hides its
+	// name and leaves its second line, FilesRowsCut rows are whole below it,
+	// and the next one reaches below the list's bottom edge.
+	Cut bool
 }
 
 // FileCell is one row of a FILES list.
@@ -126,12 +131,18 @@ type FileCell struct {
 }
 
 // FilesRows is how many rows a FILES list shows whole: below its sort bar
-// and header row, and once those are scrolled away. A table holds a few more
-// below its edge, in the tree and not visible.
+// and header row, once those are scrolled away, and when the scrolled list
+// rests between two rows. A table holds a few more below its edge, in the
+// tree and not visible.
 const (
 	FilesRowsTop      = 12
 	FilesRowsScrolled = 14
+	FilesRowsCut      = 13
 )
+
+// FilesCutY is the top of the row a list's top edge cuts (FilesPanel.Cut):
+// 30 of its 51 points are above the edge, and the rows below follow it.
+const FilesCutY = 30.0
 
 // FilesRowY is the top of row i (from the first on screen) of a FILES list.
 func FilesRowY(i int, scrolled bool) float64 {
@@ -442,12 +453,22 @@ func filesPanel(p FilesPanel) node {
 	if !p.Scrolled {
 		whole = FilesRowsTop
 	}
+	cut := !root && p.Scrolled && p.Cut
+	if cut {
+		whole = FilesRowsCut + 2 // and the row each edge cuts
+	}
 	for i, c := range p.Cells {
 		y := FilesRowY(i, p.Scrolled)
 		if root {
 			y = 95 + float64(i)*85
 		}
+		if cut {
+			y = FilesCutY + float64(i)*50
+		}
 		kids := []node{el("StaticText", c.Name, x+65, y+7, 180, 20)}
+		if cut && i == 0 {
+			kids[0] = kids[0].with("isVisible", "0")
+		}
 		if c.Detail != "" {
 			kids = append(kids, el("StaticText", c.Detail, x+65, y+29, 114, 14))
 		}
@@ -591,20 +612,28 @@ const LoadingNotice = "LOADING STATE"
 
 // OpenSessionScreens is AUM while a session is opened from FILES → Sessions →
 // folder, for WDA.SourceFunc: one screen per gesture. A plugin window is open
-// at first; the session's row loads strips, which show LoadingNotice for the
-// first loadingReads reads once the menu is asked for the session's name, and
-// notices once the menu is closed again.
+// at first; FILES opens on its root; the session's row loads strips, which
+// show LoadingNotice for the first loadingReads reads once the menu is asked
+// for the session's name, and notices once the menu is closed again. It
+// answers the gestures of a load that finds every row on its first page; a
+// list that is searched further (SessionsAUM) is dragged, which is a gesture.
 func OpenSessionScreens(folder, name string, strips []Strip, loadingReads int, notices ...string) func(gestures, reads int) json.RawMessage {
 	old := MixerAUM()
 	window := old
 	window.PluginWindow = "Synth @A1"
 	menu := DefaultAUM()
+	// FILES as AUM draws it: its root, the root of Sessions (titled SESSIONS,
+	// "/" in its header row) and the folder (the same title, its name in the
+	// header row).
 	files := MixerAUM()
-	files.Overlays = []Overlay{{Kind: "panel", Title: "FILES", Rows: [][2]string{{"Sessions", ""}, {"Recordings", ""}}}}
+	files.Files = &FilesPanel{Title: "FILES", Cells: []FileCell{
+		{Name: "Sessions", Folder: true}, {Name: "Recordings", Folder: true},
+		{Name: "Restore Previous State", Detail: "12. Nov 2026 at 20:30:00"}}}
 	sessions := MixerAUM()
-	sessions.Overlays = []Overlay{{Kind: "panel", Title: "Sessions", Cells: [][2]string{{folder, ""}, {"other", "yesterday"}}}}
+	sessions.Files = &FilesPanel{Title: "SESSIONS", Folder: "/", Cells: []FileCell{
+		{Name: folder, Detail: "12. Nov 2026 at 20:00:00", Folder: true}, {Name: "other", Detail: "11. Nov 2026 at 09:00:00"}}}
 	inFolder := MixerAUM()
-	inFolder.Overlays = []Overlay{{Kind: "panel", Title: folder, Cells: [][2]string{{name, "today"}}}}
+	inFolder.Files = &FilesPanel{Title: "SESSIONS", Folder: folder, Cells: []FileCell{{Name: name, Detail: "12. Nov 2026 at 21:00:00"}}}
 	fresh := AUM{Tempo: "104", Position: "001:1  00:00.0", Strips: strips}
 	loading := fresh
 	loading.Notices = []string{LoadingNotice}

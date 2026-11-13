@@ -126,7 +126,7 @@ a normal result, not a tool error.
 | `aum_channel` | `add_audio`, `add_midi`, `restore` (the last removed channel), `import` (`name`: a session), `edit`, `rename` (`name`), `bookmark`, `duplicate`, `remove`¹, `move` (`target` strip), `set_level` (`level_db`, through the Set level dialog), `reset_level` (double-tap the fader), `mute` / `solo` / `arm` (`on`, or flip), `scroll_to`. |
 | `aum_node` | `open`, `menu`, `select`, `replace`, `reload`, `pre_fader`, `post_fader`, `swap`, `copy_here` / `move_here` (an empty slot, after `select`), `add_slot`, `remove_slot`, `bypass` / `unbypass` (swipe), `eject`¹, `move` (`steps` slots), `meter` (main meter source), `name` (a bus or MIDI-bus node's short name), `window_close` / `window_mode` (the front plugin window). `node` is `source`, `output`, an insert slot number or a node label. |
 | `aum_transport` | `state`, `play`, `stop`, `toggle`, `rewind`, `locate` (`bars`), `set_tempo` (`bpm`, through Edit Value), `nudge_tempo` (`steps` of 0.1 BPM), `metronome`, `record`¹ (starts, and on a second call stops, a take of every armed channel), `unarm_all`. |
-| `aum_files` | `list` (FILES → Sessions; `path` for folders), `recordings` (FILES → Recordings; `path` into a session's folder), `load`¹, `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹, `clear`¹ (CLEAR → Sure?), `notes`. |
+| `aum_files` | `list` (FILES → Sessions: the whole folder `path` names, the root `/` without one, read page by page), `recordings` (FILES → Recordings; `path` into a session's folder; the page that shows), `load`¹ (`name` in the folder `path`: found through the whole list, then a tap on the session's row; see [Listing and loading sessions](#listing-and-loading-sessions)), `save`¹ (SAVE SESSION, and its OVERWRITE? for a name that exists; proved by the saved time of the session's row, see [Saving a session](#saving-a-session)), `rename`¹, `clear`¹ (CLEAR → Sure?), `notes`. |
 | `aum_midi_routing` | `read` (sources, destinations and the connected cells), `connect` / `disconnect` (`source`, `destination`), `destination` (its panel: MIDI sources, All Notes Off, the filter; `path` taps further). |
 | `aum_midi_control` | `read` (`path` walks into a collection or a control's mapping editor), `filter` (ALL, ASSIGNED, UNUSED), `learn`, `menu` (a section's `⋮`: Set MIDI Channels¹, Save, Load¹, Copy, Paste¹, Clear All¹, Delete All¹), `add` (ADD TEMPO, ADD PRESET), `main_parameter`. |
 | `aum_settings` | `read` every setting (scrolling the panel), `set` a `setting` to a `value` as AUM prints it (ON, INT 24, 48 kHz, …). Settings are global: set them back afterwards. |
@@ -134,6 +134,41 @@ a normal result, not a tool error.
 
 ¹ Changes or loses state: needs `confirm: true`. Iterate on a scratch session
 or the ` (mcp test)` copies ([AGENTS.md](../AGENTS.md)), never an original.
+
+### Listing and loading sessions
+
+`aum_files list` and `load` take `path`, the folders below the root of
+Sessions (`["Songs"]`; none for the root, which AUM prints as `/`). Both open
+FILES from the menu anew and walk to that folder from the root, as `save`
+does: what FILES showed before, and where its list was scrolled to, makes no
+difference ([FILES → Sessions, as the tool reads
+it](#files--sessions-as-the-tool-reads-it)).
+
+**`list` returns the whole folder.** A list holds only the rows on screen, so
+the tool reads it a page at a time, from the top to the end, and returns
+every row once, in the order AUM shows them (the sort picked above the list).
+`data` is the entries: `name`, `detail` (for a session the time it was saved),
+`folder: true` for a folder's row, and `frame`, which only the rows of the
+last page carry: the others are no longer where they were read. The message
+says "the whole list" and how many pages it took. A list that still goes on
+after 60 pages (about 480 rows) comes back `verified: false`, "NOT the whole
+list", with what was read. A page takes about 3 s, and the end of a list
+costs two more: a long folder is a matter of half a minute.
+
+**`load` finds the session wherever the folder lists it** and taps its row,
+which loads it at once and replaces the open session. It taps
+
+- only a session's row: a folder of that name has a chevron and is not it,
+- only once the row is on screen whole: a row the list's edge cuts is read
+  again on the next page, and a tap aimed at it could land beside the list.
+
+A name the folder does not hold is an error that lists the folder, and
+nothing is tapped. After the tap the tool waits for AUM to finish loading
+and reads the session's name in the main menu: `verified: true` means the
+menu names the session that was asked for.
+
+`recordings` is not read this way: it lists the page of FILES → Recordings
+that shows.
 
 ### Saving a session
 
@@ -195,8 +230,9 @@ session file for a look at its size and content.
   icon above the list goes to FILES, whose Sessions row opens the root.
 - FILES opened from the menu shows the folder it showed last, from the top.
   A panel that is left open stays scrolled where it was.
-- So the tool goes up to `/` and down the folder SAVE names, checking the
-  header at each step, every time it reads a row.
+- So `list`, `load` and `save` open FILES from the menu, go up to `/` and
+  down the folder that was asked for (for `save` the one SAVE names),
+  checking the header at each step, every time they read a list.
 - A list has only the rows on screen in its tree (twelve below the header,
   fourteen or fifteen further down), in the order picked above it (name, last
   saved, last opened). The tool drags it 420 points in 0.9 s for the next
@@ -204,12 +240,15 @@ session file for a look at its size and content.
   of 584 points in 0.5 s ran on after the finger lifted (674 points) and
   carried a row past unread. A page that shares no row with the one before is
   therefore an error, not "no such session".
-- A row cut by the list's edge shows one of its two lines; such a row counts
-  once both can be read.
+- A row cut by the list's edge shows one of its two lines, or both with a
+  part of the row out of sight. A row counts once it lies inside the list
+  and both lines can be read; until then it is neither listed nor tapped.
+  (A row cut by the list's top edge can show its saved time alone, which
+  would read as a name.)
 - A folder's row carries a chevron at its right; a session's does not, and
   a tap on it loads that session at once. A folder and a session can share a
   name, so the tool taps only rows with the chevron on its way down, and
-  reads the saved time only from a row without one.
+  reads the saved time, and loads, only from a row without one.
 - The FILES root has a row "Restore Previous State". The tool taps rows by
   their text and never that one.
 
@@ -270,10 +309,13 @@ How AUM shows state in its tree (AUM 1.4.8):
 - **The tempo bar** shows the tempo as a button between `‹` and `›`; **the
   keyboard** covers the mixer's bottom and is closed with its `HIDE↓` button.
 - **FILES** lists cells: a name and a detail line below it (for a session
-  the time it was saved, to the second). It reopens on the view last shown,
-  and a list holds only the rows on screen: `aum_files save` scrolls it to
-  find a row, `list` and `load` read the page that shows (see
-  [Saving a session](#saving-a-session) for how Sessions names its folder).
+  the time it was saved, to the second); a folder's cell has a chevron
+  button as well. It reopens on the view last shown, and a list holds only
+  the rows on screen: `aum_files list`, `load` and `save` scroll a list of
+  Sessions page by page, `recordings` reads the page that shows (see
+  [FILES → Sessions, as the tool reads
+  it](#files--sessions-as-the-tool-reads-it) for how Sessions names its
+  folder).
 - **MIDI routing connections** are not in the tree: `aum_midi_routing` reads
   them from a screenshot (a connected cell's fill is lighter).
 - Opening something from the top bar (Navigator, Engine Info, routing, tempo

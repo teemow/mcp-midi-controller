@@ -401,25 +401,6 @@ func TestAUMNodeAddSlot(t *testing.T) {
 	}
 }
 
-func TestAUMFilesList(t *testing.T) {
-	files := mixer()
-	files.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "FILES", Rows: [][2]string{{"Sessions", ""}, {"Recordings", ""}}}}
-	sessions := mixer()
-	sessions.Overlays = []ipadtest.Overlay{{Kind: "panel", Title: "Sessions", Cells: [][2]string{{"scratch (mcp test)", "today"}, {"other", "yesterday"}}}}
-	w, c := opFake(t, ipadtest.DefaultAUM(), files, sessions)
-	res, err := c.AUMFiles(context.Background(), AUMRequest{Action: "list"})
-	if err != nil || !res.Verified || !strings.Contains(res.Message, "2 entries: scratch (mcp test), other") {
-		t.Fatalf("list: %+v, %v", res, err)
-	}
-	if es, ok := res.Data.([]AUMFileEntry); !ok || len(es) != 2 || es[0].Detail != "today" {
-		t.Fatalf("entries = %#v", res.Data)
-	}
-	// The FILES icon above its caption (965,169), then the Sessions row.
-	if g := w.GestureLog(); len(g) != 2 || g[0] != "tap 997,137" || g[1] != "tap 1026,95" {
-		t.Fatalf("gestures = %v", g)
-	}
-}
-
 func TestAUMFilePlayerSet(t *testing.T) {
 	fp := ipadtest.Strip{Title: "4: File Player", Level: "+0.0 dB", PlayEnable: bptr(true)}
 	base := mixer()

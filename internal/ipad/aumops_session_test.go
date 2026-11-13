@@ -227,13 +227,14 @@ func TestAUMOpenSessionLoadsForever(t *testing.T) {
 }
 
 // TestAUMOpenSessionUnknown checks a session that is not in the folder is an
-// error that lists what is.
+// error that lists what is, and that no other session's row was tapped.
 func TestAUMOpenSessionUnknown(t *testing.T) {
-	_, c := openFake(t, sessionScreens(0))
+	w, aum, c := filesFake(t, "Songs", "Old", [2]string{"Night Drive", "12. Nov 2026 at 21:00:00"})
 	_, err := c.AUMOpenSession(context.Background(), []string{"Songs"}, "Nowhere")
-	if err == nil || !strings.Contains(err.Error(), `no session "Nowhere" in Songs (entries: Night Drive)`) {
+	if err == nil || !strings.Contains(err.Error(), `no session "Nowhere" in FILES → Sessions → /Songs (entries: Night Drive)`) {
 		t.Fatalf("open of an unknown session: %v", err)
 	}
+	wantTouched(t, w, aum)
 }
 
 // freshScreens is AUM, just started, while "Night Drive" is opened from the

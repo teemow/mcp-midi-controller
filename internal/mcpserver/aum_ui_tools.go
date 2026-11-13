@@ -156,7 +156,8 @@ func (s *Server) registerAUMUITools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "aum_files",
-		Description: "AUM's FILES, SAVE, CLEAR and NOTES: list (FILES → Sessions, with path for folders: each row and its saved time), recordings (FILES → Recordings; path into a session's folder lists its takes), load (confirm; taps the session: AUM loads it at once, then the menu's session name is checked), " +
+		Description: "AUM's FILES, SAVE, CLEAR and NOTES: list (FILES → Sessions: the whole folder path names, the root without path, read page by page from its top whatever FILES showed before; data holds every row once, in AUM's order, with name, detail (a session's saved time) and folder true for a folder; only the rows of the last page carry a frame. About 3 s a page of eight rows), " +
+			"recordings (FILES → Recordings; path into a session's folder lists its takes; the page that shows), load (confirm; name in the folder path: the session is looked for through the whole list and its row tapped once it is on screen whole, never a folder's row of that name. AUM loads it at once and replaces the open session; verified means the main menu then names it. A name the folder does not hold is an error that lists the folder), " +
 			"save (confirm; saves the open session under name into the folder SAVE shows, over a session of that name too. It reads the session's row in that folder of FILES → Sessions first, through the whole list: a new name is written by one press of SAVE SESSION; for a name that exists the button reads OVERWRITE? for a second or two and writes only when pressed again in that time, so both presses go out as one gesture. " +
 			"It then reads the row again: verified is true only when the row's saved time has moved, or the row is new and the SAVE panel closed, as it does once AUM has written. data holds folder, existed, saved_before, saved_after and panel_closed. verified false means AUM wrote nothing, with what the row and the button read; the session name in the menu is no proof of a save and is not used. Takes 35 to 80 s), " +
 			"rename (confirm; long-press → share sheet → Rename), clear (confirm; CLEAR → Sure?), notes (open the session notes)." + aumVerifyNote + aumCareNote,
@@ -166,7 +167,7 @@ func (s *Server) registerAUMUITools() {
 				"action": {"type": "string", "enum": ` + enumJSON(ipad.AUMFilesActions) + `},
 				"name": {"type": "string", "description": "Session name (load, save, rename)."},
 				"new_name": {"type": "string", "description": "New session name (rename)."},
-				` + pathProp + `,
+				"path": {"type": "array", "items": {"type": "string"}, "description": "The folders below the root of Sessions (list, load, rename: [\"Songs\"]) or of Recordings (recordings); none for the root."},
 				` + confirmProp + `
 			},
 			"required": ["action"]

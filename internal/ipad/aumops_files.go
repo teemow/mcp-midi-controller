@@ -3,6 +3,7 @@ package ipad
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ func (c *Client) AUMFiles(ctx context.Context, r AUMRequest) (AUMResult, error) 
 		var err error
 		switch r.Action {
 		case "list", "":
-			res, err = d.listFiles("Sessions", r.Path)
+			res, err = d.listSessions(r.Path)
 		case "recordings":
 			res, err = d.listFiles("Recordings", r.Path)
 		case "load":
@@ -81,6 +82,10 @@ func (d *AUMDriver) filesPanel() *AUMOverlay {
 // openFiles opens FILES and walks to view (Sessions or Recordings), then
 // into the folders of path. FILES reopens on its last view, so it backs out
 // to its root first when the view's row is not on screen.
+//
+// The folders of path are looked for among the rows on screen and told by the
+// panel's title, which is right for Recordings alone: every folder of Sessions
+// is titled SESSIONS. A folder of Sessions is opened with openSessions.
 func (d *AUMDriver) openFiles(view string, path []string) (*AUMOverlay, error) {
 	if d.filesPanel() == nil {
 		if ok, err := d.openFromMenu("files"); err != nil || !ok {
@@ -166,7 +171,16 @@ type AUMFileEntry struct {
 	// chevron at its right); a tap on any other row of Sessions loads that
 	// session at once.
 	Folder bool `json:"folder,omitempty"`
-	Frame  Rect `json:"frame"`
+	// Frame is the row on screen. A list that was read through page by page
+	// has it only for the rows still on screen when the reading ended.
+	Frame Rect `json:"frame,omitzero"`
+
+	// text is the name's own frame in the row, where the row is tapped.
+	text Rect
+	// cut says the row is not on screen whole: the list's edge cuts it. Such
+	// a row can show one of its two lines, the second one at the list's top,
+	// which then reads as its name.
+	cut bool
 }
 
 // fileEntries reads the cells of a FILES list: each holds the entry's name
@@ -176,6 +190,7 @@ func fileEntries(p *AUMOverlay) []AUMFileEntry {
 	if p == nil || p.el == nil {
 		return out
 	}
+	list := listFrame(p)
 	p.el.Walk(func(e *Element, _ int) bool {
 		if e.Type != "Cell" || e.Hidden {
 			return true
@@ -193,14 +208,29 @@ func fileEntries(p *AUMOverlay) []AUMFileEntry {
 			return false
 		}
 		sort.SliceStable(texts, func(i, j int) bool { return texts[i].Rect.Y < texts[j].Rect.Y })
-		fe := AUMFileEntry{Name: texts[0].Label, Folder: folder, Frame: e.Rect}
+		fe := AUMFileEntry{Name: texts[0].Label, Folder: folder, Frame: e.Rect, text: texts[0].Rect}
 		if len(texts) > 1 {
 			fe.Detail = texts[1].Label
 		}
+		fe.cut = e.Rect.Y < list.Y-rowSlack || e.Rect.Y+e.Rect.Height > list.Y+list.Height+rowSlack
 		out = append(out, fe)
 		return false
 	})
 	return out
+}
+
+// rowSlack is by how much a row may reach over the edge of its list and
+// still be on screen whole: at the top of a list its twelfth row ends two
+// points below the table's edge (AUM 1.4.8).
+const rowSlack = 3.0
+
+// listFrame is where a FILES panel shows its list: its table, else the panel
+// below its header.
+func listFrame(p *AUMOverlay) Rect {
+	if t := p.el.First(func(e *Element) bool { return e.Type == "Table" && !e.Hidden && !e.Rect.Empty() }); t != nil {
+		return t.Rect
+	}
+	return *listArea(p)
 }
 
 // entryNames lists a FILES panel's entries, else its rows.
@@ -209,6 +239,11 @@ func entryNames(p *AUMOverlay) string {
 	if len(es) == 0 {
 		return rowLabels(p)
 	}
+	return fileNames(es)
+}
+
+// fileNames lists the names of entries, the first forty of a long list.
+func fileNames(es []AUMFileEntry) string {
 	l := make([]string, len(es))
 	for i, e := range es {
 		l[i] = e.Name
@@ -227,13 +262,45 @@ func rowLabels(o *AUMOverlay) string {
 	return strings.Join(limit(l, 40), ", ")
 }
 
+// listFiles lists the page that shows of a view of FILES, in the folder path.
+// It is FILES → Recordings' list; Sessions is read by listSessions.
 func (d *AUMDriver) listFiles(view string, path []string) (AUMResult, error) {
 	p, err := d.openFiles(view, path)
 	if err != nil {
 		return AUMResult{}, err
 	}
+	if p == nil {
+		return AUMResult{}, fmt.Errorf("FILES closed on the way to %s (%s)", view, d.St.overlaySummary())
+	}
 	es := fileEntries(p)
 	return d.result(strings.ToLower(view), true, fmt.Sprintf("%s: %d entries: %s", p.Title, len(es), entryNames(p)), es), nil
+}
+
+// listSessions lists a folder of FILES → Sessions: all of it, read a page at
+// a time from the list's top, in the order AUM shows it. The entries are the
+// result's data; only those on the last page carry a frame.
+func (d *AUMDriver) listSessions(path []string) (AUMResult, error) {
+	if err := d.openSessions(path); err != nil {
+		return AUMResult{}, err
+	}
+	scan, err := d.readFiles(nil)
+	if err != nil {
+		return AUMResult{}, err
+	}
+	where, names := sessionsFolder(path), fileNames(scan.Rows)
+	if len(scan.Rows) > 40 {
+		names += " (data lists all)"
+	}
+	if !scan.End {
+		return d.result("sessions", false, fmt.Sprintf("%s, NOT the whole list: it went on after %d pages: the first %d entries: %s", where, filePages, len(scan.Rows), names), scan.Rows), nil
+	}
+	return d.result("sessions", true, fmt.Sprintf("%s, the whole list (%d pages): %d entries: %s", where, scan.Pages, len(scan.Rows), names), scan.Rows), nil
+}
+
+// sessionsFolder names a folder of Sessions as SAVE prints it, "/" being the
+// root, for a message.
+func sessionsFolder(path []string) string {
+	return "FILES → Sessions → /" + strings.Join(path, "/")
 }
 
 // AUMLoadPause is how long AUM is given to close FILES after a session row
@@ -241,20 +308,29 @@ func (d *AUMDriver) listFiles(view string, path []string) (AUMResult, error) {
 // variable so tests against a stand-in need not sit it out.
 var AUMLoadPause = 2 * time.Second
 
-// loadSession taps a session row in FILES → Sessions: AUM loads it at once.
+// loadSession taps a session's row in FILES → Sessions → path: AUM loads it
+// at once. The folder is reached as save reaches it (openSessions) and the
+// row is looked for through the whole list. What is tapped is a session's
+// row, never a folder's of that name, and only once the row is on screen
+// whole: a tap on any other session's row would load that one.
 func (d *AUMDriver) loadSession(path []string, name string) (AUMResult, error) {
-	p, err := d.openFiles("Sessions", path)
+	if err := d.openSessions(path); err != nil {
+		return AUMResult{}, err
+	}
+	row, scan, err := d.findFile(false, name, name+".aumproj")
 	if err != nil {
 		return AUMResult{}, err
 	}
-	row := d.findText(name, listArea(p))
 	if row == nil {
-		row = d.findText(name+".aumproj", listArea(p))
+		also := ""
+		for _, e := range scan.Rows {
+			if e.Folder && e.Name == name {
+				also = "; there is a folder of that name: its sessions are loaded with it in path"
+			}
+		}
+		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)%s", name, sessionsFolder(path), fileNames(scan.Rows), also)
 	}
-	if row == nil {
-		return AUMResult{}, fmt.Errorf("no session %q in %s (entries: %s)", name, p.Title, entryNames(p))
-	}
-	if err := d.tapRect(row.Rect, "session "+name); err != nil {
+	if err := d.tapRect(row.text, "session "+row.Name); err != nil {
 		return AUMResult{}, err
 	}
 	// Loading takes a moment and closes FILES; the menu then shows the name.
@@ -529,79 +605,88 @@ func saveFolder(p *AUMOverlay) (shown string, path []string, ok bool) {
 }
 
 // sessionEntry reads the row of session name in FILES → Sessions → path, or
-// nil when the folder does not list it.
+// nil when the folder does not list it. The folder is reached with
+// openSessions, and the session is looked for through the whole list, not
+// only its first page.
+func (d *AUMDriver) sessionEntry(path []string, name string) (*AUMFileEntry, error) {
+	if err := d.openSessions(path); err != nil {
+		return nil, err
+	}
+	e, _, err := d.findFile(false, name, name+".aumproj")
+	return e, err
+}
+
+// openSessions opens FILES → Sessions in the folder path, its list at the
+// top. It is how save, list and load reach a folder.
 //
 // AUM titles every folder of Sessions "SESSIONS" and names the folder in a
 // header row above the list: "/" at the root, the folder's name inside one.
-// FILES reopens in the folder it last showed, and its back arrow goes up one
-// folder. So the list is taken to the root first and walked down path from
-// there, checking the header at each step: the row that is read is in the
-// folder SAVE names, in a list AUM has just made. Each folder and the session
-// are looked for through the whole list, not only its first page.
-func (d *AUMDriver) sessionEntry(path []string, name string) (*AUMFileEntry, error) {
+// FILES reopens in the folder it last showed, a panel left open stays
+// scrolled where it was, and its back arrow goes up one folder. So FILES is
+// opened from the menu anew, which shows the list from its top, the list is
+// taken to the root and walked down path from there, checking the header at
+// each step: the list that is read is in the folder that was asked for, and
+// AUM has just made it. Each folder is looked for through the whole list, not
+// only its first page, and what is tapped is a folder's row, on screen whole.
+func (d *AUMDriver) openSessions(path []string) error {
 	if ok, err := d.openFromMenu("files"); err != nil {
-		return nil, err
+		return err
 	} else if !ok {
-		return nil, fmt.Errorf("FILES did not open (%s)", d.St.overlaySummary())
+		return fmt.Errorf("FILES did not open (%s)", d.St.overlaySummary())
 	}
 	for up := 0; ; up++ {
 		p, err := d.openFiles("Sessions", nil)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		at, ok := filesFolder(p)
 		if !ok {
-			return nil, fmt.Errorf("FILES → Sessions names no folder above its list (entries: %s)", entryNames(p))
+			return fmt.Errorf("FILES → Sessions names no folder above its list (entries: %s)", entryNames(p))
 		}
 		if at == "/" {
 			break
 		}
 		if up == 8 {
-			return nil, fmt.Errorf("FILES → Sessions is still in %q after going up %d folders", at, up)
+			return fmt.Errorf("FILES → Sessions is still in %q after going up %d folders", at, up)
 		}
 		if err := d.tap(p.Frame.X+20, 30, "back, out of "+at); err != nil {
-			return nil, err
+			return err
 		}
 		if _, err := d.until(aumWait, func(AUMState) bool {
 			now, ok := filesFolder(d.filesPanel())
 			return !ok || now != at
 		}); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for _, folder := range path {
-		p := d.filesPanel()
-		at, _ := filesFolder(p)
-		e, err := d.fileEntry(true, folder)
+	for i, folder := range path {
+		at, _ := filesFolder(d.filesPanel())
+		// A session of the folder's name would be loaded by the tap: the row
+		// that is tapped is a folder's, by the name inside that row (the
+		// header can read the same).
+		e, scan, err := d.findFile(true, folder)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if e == nil {
-			return nil, &NoFolderError{Folder: folder, In: "Sessions " + at, Entries: entryNames(d.filesPanel())}
+			return &NoFolderError{Folder: folder, In: sessionsFolder(path[:i]), Entries: fileNames(scan.Rows)}
 		}
-		// The folder's row is on screen now, and it is a folder's: a
-		// session of that name would be loaded by this tap. The name can be
-		// the header's too, so it is looked for inside the row.
-		row := d.findText(e.Name, &e.Frame)
-		if row == nil {
-			return nil, fmt.Errorf("lost the row of folder %q in Sessions %s", folder, at)
-		}
-		if err := d.tapRect(row.Rect, "folder "+folder); err != nil {
-			return nil, err
+		if err := d.tapRect(e.text, "folder "+folder); err != nil {
+			return err
 		}
 		in, err := d.until(aumWait, func(AUMState) bool {
 			now, ok := filesFolder(d.filesPanel())
 			return ok && now != at && lastFolder(now) == folder
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if !in {
 			now, _ := filesFolder(d.filesPanel())
-			return nil, fmt.Errorf("FILES → Sessions shows folder %q after a tap on %q in %q", now, folder, at)
+			return fmt.Errorf("FILES → Sessions shows folder %q after a tap on %q in %q", now, folder, at)
 		}
 	}
-	return d.fileEntry(false, name, name+".aumproj")
+	return nil
 }
 
 // filesFolder is the folder a FILES list shows, from the header row above
@@ -625,10 +710,10 @@ func lastFolder(path string) string {
 	return path[strings.LastIndex(path, "/")+1:]
 }
 
-// filePages bounds how far fileEntry scrolls a list (eight rows a page).
+// filePages bounds how often readFiles reads a list (eight new rows a page).
 const filePages = 60
 
-// fileStep is how far fileEntry drags a FILES list for its next page, and
+// fileStep is how far readFiles drags a FILES list for its next page, and
 // fileStepTime how long that drag takes. Measured on the iPad (AUM 1.4.8): a
 // drag of 420 points in 0.9 s moves the list by 404 to 406 points, eight of
 // its 50-point rows, so six of the twelve to fifteen rows on screen are read
@@ -639,66 +724,137 @@ const (
 	fileStepTime = 900 * time.Millisecond
 )
 
-// fileEntry finds the entry called one of names in the open FILES list, or
-// nil. A list holds only the rows on screen, so it is scrolled a page at a
-// time until the entry shows or two pages in a row bring no row that was not
-// seen (one such page can be a drag the list did not follow). Pages overlap;
-// a page that shares no row with the one before means rows went by unread,
-// which is an error and not "no such entry".
-// With folder set it finds a folder's row, else a session's: a folder and a
-// session can share a name, and only one of them may be tapped. A session's
-// row counts only once its second line, the saved time, can be read: a row
-// cut by the list's edge shows one of its lines.
-func (d *AUMDriver) fileEntry(folder bool, names ...string) (*AUMFileEntry, error) {
-	seen := map[string]bool{}
-	var prev map[string]bool
-	cut := ""
-	for page, idle := 0, 0; page < filePages; page++ {
+// fileScan is what readFiles read of a FILES list.
+type fileScan struct {
+	// Rows are the rows that were on screen whole, in the list's order. Only
+	// those of the last page read keep their frame: the others have moved.
+	Rows []AUMFileEntry
+	// Pages is how many pages brought rows: the reads at the list's end,
+	// which show its last page again, are not counted.
+	Pages int
+	// End says the list was read to its end. It is false when a visit ended
+	// the reading, or when the list went on after filePages reads.
+	End bool
+}
+
+// fileKey tells the rows of a list apart: a folder and a session can share a
+// name.
+type fileKey struct {
+	name   string
+	folder bool
+}
+
+// readFiles reads the open FILES list from where it stands to its end. A
+// list holds only the rows on screen, so it is scrolled a page at a time
+// until two pages in a row bring no row that was not seen (one such page can
+// be a drag the list did not follow). Pages overlap; a page that shares no
+// row with the one before means rows went by unread, which is an error and
+// not a shorter list. Only rows on screen whole count: a row the list's edge
+// cuts is read on the page before or after, where it is whole.
+//
+// visit, when set, is shown each page as it is read, the cut rows too, top
+// to bottom; it ends the reading by returning true, with the list left on
+// that page.
+func (d *AUMDriver) readFiles(visit func(page []AUMFileEntry) bool) (fileScan, error) {
+	out := fileScan{Rows: []AUMFileEntry{}}
+	at := map[fileKey]int{}
+	var prev, cur map[fileKey]bool
+	for reads, idle := 0, 0; reads < filePages; reads++ {
 		p := d.filesPanel()
 		if p == nil {
-			return nil, fmt.Errorf("FILES closed (%s)", d.St.overlaySummary())
+			return out, fmt.Errorf("FILES closed (%s)", d.St.overlaySummary())
 		}
-		entries := fileEntries(p)
-		cur := map[string]bool{}
+		page := fileEntries(p)
+		sort.SliceStable(page, func(i, j int) bool { return page[i].Frame.Y < page[j].Frame.Y })
+		cur = map[fileKey]bool{}
 		fresh, overlap := 0, len(prev) == 0
-		for _, e := range entries {
-			for _, n := range names {
-				if e.Name != n || e.Folder != folder {
-					continue
-				}
-				if folder || e.Detail != "" {
-					return &e, nil
-				}
-				cut = e.Name
+		for _, e := range page {
+			if e.cut {
+				continue
 			}
-			cur[e.Name] = true
-			overlap = overlap || prev[e.Name]
-			if !seen[e.Name] {
-				seen[e.Name] = true
+			k := fileKey{e.Name, e.Folder}
+			cur[k] = true
+			overlap = overlap || prev[k]
+			if i, ok := at[k]; ok {
+				out.Rows[i] = e
+			} else {
+				at[k] = len(out.Rows)
+				out.Rows = append(out.Rows, e)
 				fresh++
 			}
 		}
-		if !overlap && len(entries) > 0 {
-			return nil, fmt.Errorf("the list %s scrolled past rows that were not read: no row of one page is on the next", p.Title)
+		if !overlap && len(cur) > 0 {
+			return out, fmt.Errorf("the list %s scrolled past rows that were not read: no row of one page is on the next", p.Title)
 		}
-		prev = cur
+		if fresh > 0 || reads == 0 {
+			out.Pages++
+		}
+		if visit != nil && visit(page) {
+			break
+		}
+		if len(cur) > 0 {
+			prev = cur
+		}
 		if fresh > 0 {
 			idle = 0
 		} else if idle++; idle == 2 {
+			out.End = true
 			break
 		}
 		x, y := p.Frame.X+30, d.win.Height/2+fileStep/2
 		if err := d.drag("the list", DragTiming{Move: fileStepTime, Hold: 200 * time.Millisecond}, Point{x, y}, Point{x, y - fileStep}); err != nil {
-			return nil, err
+			return out, err
 		}
 		if err := d.Read(); err != nil {
-			return nil, err
+			return out, err
+		}
+		cur = nil // the rows have moved: the next read says where they are
+	}
+	for i, e := range out.Rows {
+		if !cur[fileKey{e.Name, e.Folder}] {
+			out.Rows[i].Frame, out.Rows[i].text = Rect{}, Rect{}
 		}
 	}
-	if cut != "" {
-		return nil, fmt.Errorf("the row of %q in %s shows no saved time", cut, d.St.Panel())
+	return out, nil
+}
+
+// findFile finds the entry called one of names in the open FILES list, or
+// nil, reading the list page by page (readFiles) until the entry shows. The
+// list is left on the page that shows it. scan holds the rows read on the
+// way: all of the list's when the entry is not in it.
+//
+// With folder set it finds a folder's row, else a session's: a folder and a
+// session can share a name, and only one of them may be tapped. A row counts
+// only once it is on screen whole, and a session's only once its second
+// line, the saved time, can be read: a row cut by the list's edge shows one
+// of its lines, and a tap aimed at it can land beside the list.
+func (d *AUMDriver) findFile(folder bool, names ...string) (found *AUMFileEntry, scan fileScan, err error) {
+	cut := ""
+	scan, err = d.readFiles(func(page []AUMFileEntry) bool {
+		for i, e := range page {
+			if e.Folder != folder || !slices.Contains(names, e.Name) {
+				continue
+			}
+			if e.cut || (!folder && e.Detail == "") {
+				cut = e.Name
+				continue
+			}
+			found = &page[i]
+			return true
+		}
+		return false
+	})
+	if err != nil || found != nil {
+		return found, scan, err
 	}
-	return nil, nil
+	if cut != "" {
+		what := "shows no saved time"
+		if folder {
+			what = "was never on screen whole"
+		}
+		return nil, scan, fmt.Errorf("the row of %q in %s %s", cut, d.St.Panel(), what)
+	}
+	return nil, scan, nil
 }
 
 // renameSession long-presses a session row, opens Rename from the share

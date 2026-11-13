@@ -9,9 +9,10 @@ import (
 )
 
 // SessionsAUM is an AUM whose main menu, FILES and SAVE answer what is
-// tapped: a stand-in for saving a session and reading it back from the list.
-// It keeps the sessions of the folder SAVE saves into, with the time each was
-// saved. What it does was read off AUM 1.4.8 on an iPad:
+// tapped: a stand-in for saving a session, reading it back from the list and
+// loading one from it. It keeps the sessions of the root of Sessions and of
+// the folders in it, with the time each was saved. What it does was read off
+// AUM 1.4.8 on an iPad:
 //
 //   - SAVE SESSION writes a name the folder does not hold at the first press.
 //     For a name it holds the button reads "OVERWRITE?" for Window and writes
@@ -27,22 +28,27 @@ import (
 //     arrow takes the stand-in to the FILES root; that step was not tried on
 //     the iPad and nothing here relies on it.)
 //   - A list has only the rows on screen, and follows a drag by nearly its
-//     length.
+//     length. A panel that is left open stays scrolled where it was.
+//   - A folder's row has a chevron and opens the folder. A tap on any other
+//     row of Sessions loads that session at once: FILES closes, the main menu
+//     names the session, and SAVE saves into the folder it was loaded from.
 type SessionsAUM struct {
 	mu sync.Mutex
 	w  *WDA
 
-	folder   string // the folder SAVE saves into; "" is the root of Sessions
-	open     string // the open session, which the main menu names
-	sessions []savedSession
+	folder   string                    // the folder SAVE saves into; "" is the root of Sessions
+	open     string                    // the open session, which the main menu names
+	lists    map[string][]savedSession // each folder's sessions, in its list's order; "" is the root
+	dirs     []string                  // the root's folders, listed below its sessions
 	window   time.Duration
 	asked    time.Time // when the button last turned to OVERWRITE?
 	screen   string    // mixer, menu, files (the FILES root), sessions or save
 	last     string    // the FILES view it reopens on: files or sessions
-	dir      string    // the folder the sessions view shows: "" or folder
-	first    int       // that list's first row on screen
+	dir      string    // the folder the sessions view shows: "" is the root
+	first    int       // that list's first whole row on screen
 	closing  bool      // the SAVE panel is about to close after a write
 	runOn    int       // rows a list runs on after a drag's finger lifts
+	cutRows  bool      // a scrolled list rests between two rows
 	writes   int
 	restored bool
 	loaded   []string
@@ -54,11 +60,14 @@ type savedSession struct{ name, saved string }
 // NewSessionsAUM attaches a SessionsAUM to w: the session open is loaded,
 // SAVE saves into folder ("" for the root of Sessions), and the folder holds
 // sessions (name and saved time pairs) in the order the list shows them. The
-// mixer is on screen.
+// root above a folder lists a session of its own that has the folder's name,
+// then the folder. The mixer is on screen.
 func NewSessionsAUM(w *WDA, folder, open string, sessions ...[2]string) *SessionsAUM {
-	m := &SessionsAUM{w: w, folder: folder, open: open, window: time.Second, screen: "mixer", last: "files"}
-	for _, s := range sessions {
-		m.sessions = append(m.sessions, savedSession{s[0], s[1]})
+	m := &SessionsAUM{w: w, folder: folder, open: open, window: time.Second, screen: "mixer", last: "files", lists: map[string][]savedSession{}}
+	m.add(folder, sessions)
+	if folder != "" {
+		m.lists[""] = []savedSession{{folder, "1. Jan 2025 at 10:00:00"}}
+		m.dirs = []string{folder}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -82,6 +91,38 @@ func (m *SessionsAUM) SetRunOn(rows int) {
 	m.runOn = rows
 }
 
+// SetCutRows makes a scrolled list rest between two rows, as AUM's does after
+// a drag: the list's top edge cuts a row, of which only the second line
+// shows, and its bottom edge cuts another.
+func (m *SessionsAUM) SetCutRows(on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cutRows = on
+}
+
+// AddFolder adds a folder to the root of Sessions, below the folders that
+// are there, holding sessions.
+func (m *SessionsAUM) AddFolder(name string, sessions ...[2]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dirs = append(m.dirs, name)
+	m.add(name, sessions)
+}
+
+// AddRoot adds sessions to the root of Sessions, below the ones that are
+// there and above its folders.
+func (m *SessionsAUM) AddRoot(sessions ...[2]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.add("", sessions)
+}
+
+func (m *SessionsAUM) add(folder string, sessions [][2]string) {
+	for _, s := range sessions {
+		m.lists[folder] = append(m.lists[folder], savedSession{s[0], s[1]})
+	}
+}
+
 // ShowFolder opens FILES' last view in the folder SAVE saves into, as after
 // a session was loaded from it, scrolled to the row first.
 func (m *SessionsAUM) ShowFolder(first int) {
@@ -90,13 +131,29 @@ func (m *SessionsAUM) ShowFolder(first int) {
 	m.last, m.dir, m.first = "sessions", m.folder, first
 }
 
+// Show makes folder dir of Sessions ("" for the root) the view FILES last
+// showed: the one it reopens on.
+func (m *SessionsAUM) Show(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.last, m.dir, m.first = "sessions", dir, 0
+}
+
+// LeaveOpen leaves the FILES panel open on folder dir of Sessions ("" for
+// the root), scrolled down to the row first.
+func (m *SessionsAUM) LeaveOpen(dir string, first int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.screen, m.last, m.dir, m.first = "sessions", "sessions", dir, first
+}
+
 // Saved is the time the folder's session name was last saved, and whether
 // the folder holds it.
 func (m *SessionsAUM) Saved(name string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if i := m.index(name); i >= 0 {
-		return m.sessions[i].saved, true
+		return m.lists[m.folder][i].saved, true
 	}
 	return "", false
 }
@@ -115,8 +172,10 @@ func (m *SessionsAUM) Open() string {
 	return m.open
 }
 
-// Touched lists what a tap did that a save must never do: a session row
-// tapped in the list (AUM loads it at once) and Restore Previous State.
+// Touched lists what a tap did that a save must never do, in order: a
+// session row tapped in the list, by its path ("/Songs/name"; AUM loads it
+// at once), which says so when the list's edge cut that row, and Restore
+// Previous State.
 func (m *SessionsAUM) Touched() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,8 +186,9 @@ func (m *SessionsAUM) Touched() []string {
 	return out
 }
 
+// index is where the folder SAVE saves into lists the session name.
 func (m *SessionsAUM) index(name string) int {
-	for i, s := range m.sessions {
+	for i, s := range m.lists[m.folder] {
 		if s.name == name {
 			return i
 		}
@@ -140,18 +200,58 @@ func (m *SessionsAUM) asking() bool {
 	return !m.asked.IsZero() && time.Since(m.asked) <= m.window
 }
 
-// rows is the list of the folder the sessions view shows.
+// rows is the list of the folder the sessions view shows: its sessions and,
+// in the root, the folders below them.
 func (m *SessionsAUM) rows() []FileCell {
 	var out []FileCell
-	if m.dir != m.folder {
-		// The root, above the folder SAVE saves into: a session of the
-		// root's own that has the folder's name, then the folder.
-		return []FileCell{{Name: m.folder, Detail: "1. Jan 2025 at 10:00:00"}, {Name: m.folder, Detail: "12. Nov 2026 at 20:00:00", Folder: true}}
-	}
-	for _, s := range m.sessions {
+	for _, s := range m.lists[m.dir] {
 		out = append(out, FileCell{Name: s.name, Detail: s.saved})
 	}
+	if m.dir == "" {
+		for _, d := range m.dirs {
+			out = append(out, FileCell{Name: d, Detail: "12. Nov 2026 at 20:00:00", Folder: true})
+		}
+	}
 	return out
+}
+
+// whole is how many rows a scrolled list shows whole.
+func (m *SessionsAUM) whole() int {
+	if m.cutRows {
+		return FilesRowsCut
+	}
+	return FilesRowsScrolled
+}
+
+// rowAt is the row of the list at height y of the screen (-1: above the
+// rows), and whether the list's edge cuts that row.
+func (m *SessionsAUM) rowAt(y float64) (int, bool) {
+	switch {
+	case m.first == 0:
+		if y < FilesRowY(0, false) {
+			return -1, false
+		}
+		return int((y - FilesRowY(0, false)) / 50), false
+	case m.cutRows:
+		i := m.first - 1 + int((y-FilesCutY)/50)
+		return i, i < m.first || i >= m.first+FilesRowsCut
+	}
+	return m.first + int((y-FilesRowY(0, true))/50), false
+}
+
+// load is a tap on a session's row: AUM loads the session at once and closes
+// FILES.
+func (m *SessionsAUM) load(name string, cut bool) {
+	path := "/" + name
+	if m.dir != "" {
+		path = "/" + m.dir + path
+	}
+	if cut {
+		path += ", a row cut by the list's edge"
+	}
+	m.loaded = append(m.loaded, path)
+	m.open, m.folder = name, m.dir
+	m.show("mixer")
 }
 
 // source is the screen. The fake's lock is held.
@@ -172,7 +272,11 @@ func (m *SessionsAUM) source() json.RawMessage {
 		if m.dir != "" {
 			header = m.dir
 		}
-		a.Files = &FilesPanel{Title: "SESSIONS", Folder: header, Cells: rows[min(m.first, len(rows)):], Scrolled: m.first > 0}
+		first := min(m.first, len(rows))
+		a.Files = &FilesPanel{Title: "SESSIONS", Folder: header, Cells: rows[first:], Scrolled: first > 0}
+		if m.cutRows && first > 0 {
+			a.Files.Cells, a.Files.Cut = rows[first-1:], true
+		}
 	case "save":
 		name := ""
 		if len(m.w.Fields) > 0 {
@@ -210,7 +314,7 @@ func (m *SessionsAUM) gesture(g Gesture) {
 		n := len(m.rows())
 		last := 0
 		if n > FilesRowsTop {
-			last = max(1, n-FilesRowsScrolled)
+			last = max(1, n-m.whole())
 		}
 		by := -int(math.Round(g.DY * 0.965 / 50))
 		if by > 0 {
@@ -267,15 +371,15 @@ func (m *SessionsAUM) gesture(g Gesture) {
 			} else {
 				m.screen, m.last = "files", "files"
 			}
-		case x >= filesX && y >= FilesRowY(0, m.first > 0) && y < 774:
-			i := m.first + int((y-FilesRowY(0, m.first > 0))/50)
+		case x >= filesX && y >= 60 && y < 774:
+			i, cut := m.rowAt(y)
 			rows := m.rows()
 			switch {
-			case i >= len(rows):
+			case i < 0 || i >= len(rows):
 			case rows[i].Folder:
 				m.dir, m.first = rows[i].Name, 0
 			default:
-				m.loaded = append(m.loaded, rows[i].Name)
+				m.load(rows[i].Name, cut)
 			}
 		}
 	}
@@ -302,13 +406,13 @@ func (m *SessionsAUM) press() {
 	switch {
 	case i < 0:
 	case m.asking():
-		m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
+		m.lists[m.folder] = append(m.lists[m.folder][:i], m.lists[m.folder][i+1:]...)
 	default:
 		m.asked = time.Now()
 		return
 	}
 	// The list is in the order of last use: what was saved is first.
-	m.sessions = append([]savedSession{{name, m.stamp()}}, m.sessions...)
+	m.lists[m.folder] = append([]savedSession{{name, m.stamp()}}, m.lists[m.folder]...)
 	m.asked = time.Time{}
 	m.open = name
 	m.writes++
