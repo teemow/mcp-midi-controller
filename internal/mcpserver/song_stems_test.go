@@ -59,13 +59,25 @@ type rigDeck struct {
 	// afterTake is called when a folder's list has grown since it was last
 	// read: the daemon has found a take and loads the next session.
 	afterTake func(folder string)
+	// slow is how long a reading of a list takes.
+	slow time.Duration
 	// armTaps counts the taps on REC the daemon needed.
 	armTaps int
 	// missing are the strips whose File Player came up without its file.
 	missing map[string]bool
 }
 
-func (d *rigDeck) Recordings(_ context.Context, folder string) ([]ipad.AUMFileEntry, error) {
+func (d *rigDeck) Recordings(ctx context.Context, folder string) ([]ipad.AUMFileEntry, error) {
+	d.mu.Lock()
+	slow := d.slow
+	d.mu.Unlock()
+	if slow > 0 {
+		select {
+		case <-time.After(slow):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	d.r.mu.Lock()
 	takes := slices.Clone(d.r.Takes[folder])
 	d.r.mu.Unlock()
@@ -640,8 +652,15 @@ func TestRecordSongStemsFailures(t *testing.T) {
 	r.opens("Stem Song stem bass", stemBassStrips)
 	// The stopped pass above left a take in the folder: the next session is
 	// loaded when this run's take has been found, not when that one is seen.
+	// One reading of the list takes longer than a take is given to appear,
+	// as on an iPad with many recordings: the recorder is switched off and
+	// the list read once more all the same.
+	wait = stemListWait
+	stemListWait = stemOffAfter + 50*time.Millisecond
+	defer func() { stemListWait = wait }()
 	deck.mu.Lock()
 	deck.seen = nil
+	deck.slow = stemListWait + 50*time.Millisecond
 	deck.mu.Unlock()
 	deck.afterTake = func(folder string) {
 		if folder == "Stem Song stem bass" {

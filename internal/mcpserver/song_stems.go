@@ -67,7 +67,10 @@ var (
 	// stemListWait is how long a finished take is given to appear in AUM's
 	// list of recordings, which is read every stemListPoll. A take that has
 	// not appeared after stemOffAfter was not ended by the stem's sequence:
-	// the daemon then switches the recorder off itself, once.
+	// the daemon then switches the recorder off itself, once, and reads the
+	// list again. One reading can take longer than all of stemListWait (36
+	// to 115 s on an iPad whose Recordings held 90 folders): the recorder is
+	// switched off and the list read once more all the same.
 	stemListWait = 20 * time.Second
 	stemListPoll = 2 * time.Second
 	stemOffAfter = 6 * time.Second
@@ -1041,17 +1044,19 @@ func (s *Server) recordStem(ctx context.Context, job *stemsJob, cs *compiledSong
 				break
 			}
 		}
-		if time.Since(looking) > stemListWait {
-			break
-		}
 		if !nudged && time.Since(looking) > stemOffAfter {
 			// No take: the sequence did not end it, and the recorder may be
 			// recording on through the stopped transport. Switched off now it
 			// ends at once, later than the stem: such a take is not whole
-			// beats long, which the mix's load says.
+			// beats long, which the mix's load says. This comes before the
+			// wait is given up, which a single slow reading of the list can
+			// use up.
 			nudged = true
 			recorderOff()
 			continue
+		}
+		if time.Since(looking) > stemListWait {
+			break
 		}
 		if err := sleepContext(ctx, stemListPoll); err != nil {
 			if !nudged {
