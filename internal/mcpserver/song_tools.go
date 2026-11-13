@@ -661,11 +661,11 @@ func (s *Server) summarize(cs *compiledSong) (string, songSummary) {
 		fmt.Fprintf(&b, "files: %d track(s) play a recording, which starts at the top of AUM's transport: the song plays from its session's sequencer and from the top only, with a lead-in of %d bar(s) before bar 1 (session lead_bars; a recording begins with the lead-in of the session it was made in)\n",
 			sum.Files, tl.Sequence().LeadBars)
 	}
-	if stems, err := cs.song.Stems(nil); err == nil && len(stems) < len(cs.song.Tracks) {
+	if stems, err := cs.song.Stems(nil); err == nil && (len(stems) < len(cs.song.Tracks) || len(cs.song.StemStrips) > 0) {
 		sum.Stems = stems
 		b.WriteString("stems (record_song_stems records each alone with AUM's recorder, mix_song_stems mixes the files):\n")
 		for _, st := range stems {
-			fmt.Fprintf(&b, "  %-10s %s%s\n", st.Name, strings.Join(st.Tracks, ", "), stemStripText(cs.song, st.Name, cs.catalog))
+			fmt.Fprintf(&b, "  %-10s %s%s\n", st.Name, strings.Join(st.Tracks, ", "), stemStripText(cs.song, st, cs.catalog))
 		}
 	}
 	if rows := cs.plan.Calibration(); rows != nil {

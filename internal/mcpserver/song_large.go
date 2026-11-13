@@ -92,7 +92,7 @@ func (s *Server) summarizeStems(p *stemPlan) (string, songSummary) {
 	var calibration []song.TrackVoicing
 	for k, st := range p.stems {
 		cs := p.songs[k]
-		fmt.Fprintf(&b, "  %s: %d track(s)%s\n", st.Name, len(st.Tracks), stemStripText(src, st.Name, p.songs[k].catalog))
+		fmt.Fprintf(&b, "  %s: %d track(s)%s\n", st.Name, len(st.Tracks), stemStripText(src, st, p.songs[k].catalog))
 		for i := range cs.plan.Tracks {
 			row := trackRow(&b, "  ", cs, i, groups[cs.plan.Tracks[i].ID])
 			if row.File != "" {
@@ -165,11 +165,11 @@ func (s *Server) summarizeStems(p *stemPlan) (string, songSummary) {
 	return b.String(), sum
 }
 
-// stemStripText says what a stem's strip in the mix is (song.StemStrip), as a
+// stemStripText says what a stem's strip in the mix is (song.StripOf), as a
 // suffix to the line that lists the stem: "" for a stem without one, which
 // plays at unity and dry.
-func stemStripText(sg *song.Song, stem string, cat song.Catalog) string {
-	strip, ok := sg.StemStrips[stem]
+func stemStripText(sg *song.Song, stem song.Stem, cat song.Catalog) string {
+	strip, ok := sg.StripOf(stem)
 	if !ok {
 		return ""
 	}
@@ -185,4 +185,16 @@ func stemStripText(sg *song.Song, stem string, cat song.Catalog) string {
 		parts = append(parts, name)
 	}
 	return "; in the mix: " + strings.Join(parts, " > ")
+}
+
+// stripsLeftOutText says which of the song's strips a mix of these stems plays
+// through none of (song.StripsLeftOut), as a line of an answer: "" when there
+// are none.
+func stripsLeftOutText(sg *song.Song, stems []song.Stem) string {
+	left := sg.StripsLeftOut(stems)
+	if len(left) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("note: the song's strip(s) for %s are in no mix of these takes: the takes are of stems grouped otherwise (record_song_stems groups), so their recordings play at unity and dry; the song's own stems, recorded without groups, play through them\n",
+		strings.Join(left, ", "))
 }

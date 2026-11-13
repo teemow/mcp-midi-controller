@@ -193,6 +193,17 @@ func TestLargeSongTools(t *testing.T) {
 		!strings.Contains(text, "session: not authored yet (load_song)") || strings.Contains(text, "no session of its own") {
 		t.Errorf("a song of twelve tracks: %s", text)
 	}
+	// One without groups is twelve stems of a track each, listed when it
+	// gives one of them a strip in the mix.
+	single := strings.ReplaceAll(strings.ReplaceAll(twelve, "    group: low\n", ""), "    group: high\n", "")
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": single, "dry_run": true}); res.IsError || strings.Contains(resultText(res), "stems (") {
+		t.Errorf("a song of one session without groups or strips lists stems: %s", resultText(res))
+	}
+	single = strings.Replace(single, "patterns:\n", "stems:\n  t3: {level: -3}\npatterns:\n", 1)
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": single, "dry_run": true}); res.IsError ||
+		!strings.Contains(resultText(res), "  t3         t3; in the mix: -3 dB\n") || !strings.Contains(resultText(res), "  t2         t2\n") {
+		t.Errorf("a song of one session with a strip: %s", resultText(res))
+	}
 }
 
 // TestRecordLargeSongStems records a song of thirteen tracks with the rig's

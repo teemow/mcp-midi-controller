@@ -3,6 +3,7 @@ package song
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -525,6 +526,43 @@ func TestStemStrips(t *testing.T) {
 	back := mustParse(t, string(body))
 	if !strings.Contains(string(body), "level: -2.5") || len(back.Tracks[0].Effects) != 2 || back.Tracks[0].Effects[0].EffectID() != "echo" {
 		t.Errorf("the stored mix lost the strip:\n%s", body)
+	}
+
+	if left := s.StripsLeftOut(stems); len(left) != 0 {
+		t.Errorf("the document's own stems leave out the strips %v", left)
+	}
+
+	// Takes of another grouping are of other stems: a strip was written for
+	// the tracks of the document's stem, and plays for no other, not even a
+	// stem of its name. The strips a mix of them leaves out are named.
+	for _, tc := range []struct {
+		name   string
+		groups map[string][]string
+		left   []string
+	}{
+		{"other names", map[string][]string{"front": {"t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"}, "back": {"t9", "t10", "t11", "t12", "t13", "t14", "t15"}}, []string{"g1", "g3"}},
+		{"a strip's name for other tracks", map[string][]string{"g1": {"t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"}, "g3": {"t9", "t10", "t11", "t12", "t13", "t14", "t15"}}, []string{"g1", "g3"}},
+	} {
+		other, err := s.Stems(tc.groups)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		for _, st := range other {
+			files[st.Name] = st.Name + "/Master - 120 bpm - 001.wav"
+		}
+		m, err := s.MixSong(other, files, "Many mix", l)
+		if err != nil {
+			t.Fatalf("%s: MixSong: %v", tc.name, err)
+		}
+		for _, tr := range m.Tracks {
+			if tr.Level != nil || len(tr.Effects) != 0 {
+				t.Errorf("%s: the mix's %s plays through %v dB, %+v; want unity and dry", tc.name, tr.ID, tr.Level, tr.Effects)
+			}
+		}
+		if left := s.StripsLeftOut(other); !slices.Equal(left, tc.left) {
+			t.Errorf("%s: strips left out = %v, want %v", tc.name, left, tc.left)
+		}
 	}
 
 	// A song of one session has stems too, and strips for them: a track

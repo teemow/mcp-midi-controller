@@ -1288,11 +1288,12 @@ recording running it reports the takes kept for that song, and whether each is
 still of the song as it is.
 
 **The mix.** `mix_song_stems` writes a song `<song>_mix` (`mix` names another
-id): one track per stem that plays the stem's file at unity, the whole song's
-master effects with their scenes and ramps, the same sections, lead-in and
-tail. It is a song like any other. A stem's level in the mix is its track's
-`level` there, and `load_song`, `play_song`, `check_song` and `mix_song` take
-it. Running `mix_song_stems` again writes it anew. Then the call loads it and
+id): one track per stem that plays the stem's file through the stem's strip
+(below; at unity and dry for a stem without one), the whole song's master
+effects with their scenes and ramps, the same sections, lead-in and tail. It
+is a song like any other: `load_song`, `play_song`, `check_song` and
+`mix_song` take it. Running `mix_song_stems` again writes it anew, so a stem's
+level and effects in the mix are changed in the song. Then the call loads it and
 plays it from its sequencer, recorded at the master's tap as `play_song` with
 `record: true` does (`record: false`, `play: false` and `upload` as there).
 
@@ -1325,6 +1326,11 @@ checks the strips' plugins, presets and parameters against the staged
 plugins, and names a mistake with its place under `stems`; a strip for a stem
 the song does not have is an error. `get_song` lists each stem with its strip,
 and the mix's report each file with the strip it plays through.
+
+A strip is written for the tracks of the document's own stem. Takes recorded
+with `groups` (another grouping) are of other stems: their mix plays them at
+unity and dry, even a stem that has a strip's name but other tracks, and
+`mix_song_stems` and `get_song_stems` name the strips left out.
 
 **Length.** A take's exact length is read where the daemon can read it: in the
 panel of the File Player that has it loaded. So it is the mix's load that
