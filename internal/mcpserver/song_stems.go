@@ -2,7 +2,8 @@ package mcpserver
 
 // This file records a song a group of tracks at a time with AUM's own
 // recorder, and mixes the groups from their recordings: for a song the iPad
-// cannot compute in one pass.
+// cannot compute in one pass, and for one of more tracks than a session
+// hosts, which plays in no other way (song_large.go).
 //
 // A stem is a group of the song's tracks (song.Stems). record_song_stems takes
 // them one after another: it authors and loads the stem's own session, which
@@ -191,6 +192,10 @@ type stemPlan struct {
 	layout song.StemLayout
 	stems  []song.Stem
 	songs  []*compiledSong
+	// notes is the whole song's notes without a session's controls, where a
+	// summary of a song of more tracks than one session hosts needs its form
+	// (compileStems); nil otherwise.
+	notes *song.Timeline
 }
 
 // stemSongID is the id a stem's song is known by. No stored song has it: a
@@ -210,7 +215,16 @@ func (s *Server) planStems(id string, groups map[string][]string, tailBars int) 
 	if err != nil {
 		return nil, fmt.Errorf("/song: %w", err)
 	}
-	p := &stemPlan{id: song.ID(id), src: src}
+	return s.planStemsOf(song.ID(id), src, groups, tailBars)
+}
+
+// planStemsOf takes a song apart, stored or not: each stem is planned and
+// compiled as the song it is recorded from, and nothing is asked of the whole
+// song but that it is a valid document. So a song of more tracks than one
+// session hosts is planned here, and nowhere else.
+func (s *Server) planStemsOf(id string, src *song.Song, groups map[string][]string, tailBars int) (*stemPlan, error) {
+	var err error
+	p := &stemPlan{id: id, src: src}
 	if p.stems, err = src.Stems(groups); err != nil {
 		return nil, err
 	}
@@ -596,7 +610,7 @@ func (s *Server) stemsBusy(tool string) *mcp.CallToolResult {
 func (s *Server) registerSongStemTools(songArg string) {
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "record_song_stems",
-		Description: "Record a song a group of tracks at a time with AUM's own recorder, for a song the iPad cannot compute in one pass (AUM's load near 100 %, dropped audio). " +
+		Description: "Record a song a group of tracks at a time with AUM's own recorder, for a song the iPad cannot compute in one pass (AUM's load near 100 %, dropped audio), and for one of more than 12 tracks, which no single session hosts and which plays in no other way. " +
 			"A stem is the tracks that share a group (group: on a track; a track without one is a stem of its own), or the grouping given as groups. For each stem the daemon authors and loads a session of its own that hosts only those tracks, with their effects, faders, scenes and ramps and nothing on the master, arms the master strip, and has AUM record while the session's sequencer plays the stem from the transport's top; then it finds the take in AUM's Recordings. " +
 			"AUM's recorder writes on the iPad: no wireless link, a file that begins with the transport's first sample and ends on a beat, in the bit depth of AUM's settings. So the takes line up on the sample. Every stem's session plays the same lead-in and the same tail of bars after the last one. " +
 			"The master's effects are left to the mix, all of them. A stem that is already recorded from the song as it is now is kept (again: true records it again). Each load replaces the session open in AUM, so it needs confirm: true. " +
@@ -605,7 +619,7 @@ func (s *Server) registerSongStemTools(songArg string) {
 			"type": "object",
 			"properties": {
 				` + songArg + `,
-				"groups": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}, "description": "The grouping, in place of the document's: stem name to track ids. A track left out is a stem of its own."},
+				"groups": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}, "description": "The grouping, in place of the document's: stem name to track ids. A track left out is a stem of its own. At most 12 tracks to a stem and 12 stems."},
 				"stems": {"type": "array", "items": {"type": "string"}, "description": "Record only these stems (default: every stem that has no take of the song as it is now)."},
 				"again": {"type": "boolean", "description": "Record a stem again although its take is of the song as it is now."},
 				"tail_bars": {"type": "integer", "minimum": 1, "maximum": 32, "description": "How many bars every stem runs on after the song's last, for what rings out (default: the bars that cover four seconds). The mix has the same tail."},

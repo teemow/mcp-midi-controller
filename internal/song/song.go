@@ -435,9 +435,16 @@ func (e *errs) err() error {
 	return e.list
 }
 
-// maxTracks is how many tracks a song may have: each takes a MIDI channel, and
-// the channels above them carry the session's control messages.
+// maxTracks is how many tracks one session hosts: each takes a MIDI channel,
+// and the channels above them carry the session's control messages. A song of
+// more tracks has no session of its own (StemsOnly): it is recorded a stem at
+// a time, each stem of at most maxTracks tracks from a session of its own, and
+// played as the mix of the recordings, which has a track per stem and so at
+// most maxTracks stems.
 const maxTracks = 12
+
+// MaxSessionTracks is how many tracks one session hosts, for a message.
+const MaxSessionTracks = maxTracks
 
 // Bounds on a song's size. They are far beyond any song and only keep a
 // mistyped number from compiling into millions of events.
@@ -480,11 +487,29 @@ func (s *Song) Validate() error {
 	if len(s.Tracks) == 0 {
 		e.addf("/tracks: a song needs at least one track")
 	}
-	if len(s.Tracks) > maxTracks {
-		e.addf("/tracks: %d tracks, at most %d fit", len(s.Tracks), maxTracks)
+	// MIDI channels are counted among the tracks that share a session: the
+	// whole song's, or, in a song of more tracks than a session hosts, each
+	// stem's. Whether such a song's stems fit is Stems' to say, below.
+	type slot struct {
+		stem    string // "" in a song that is one session
+		channel int
+	}
+	scope := func(i int) string {
+		if s.StemsOnly() {
+			return s.stemOf(i)
+		}
+		return ""
+	}
+	// in says which session a channel is taken in, where there are several.
+	in := func(i int) string {
+		if s.StemsOnly() {
+			return fmt.Sprintf(" in the stem %q", s.stemOf(i))
+		}
+		return ""
 	}
 	tracks := map[string]*Track{}
-	channels := map[int]string{}
+	channels := map[slot]string{} // the track that plays on a channel
+	scopes := map[string]string{} // track id -> the stem its channels are counted in
 	for i := range s.Tracks {
 		t := &s.Tracks[i]
 		at := fmt.Sprintf("/tracks/%d", i)
@@ -498,16 +523,22 @@ func (s *Song) Validate() error {
 			e.addf("%s/id: duplicate track %q", at, t.ID)
 		}
 		tracks[t.ID] = t
+		scopes[t.ID] = scope(i)
 		if t.Kind != "" && t.Kind != "drums" {
 			e.addf("%s/kind: %q is not \"drums\" (or empty for a melodic track)", at, t.Kind)
 		}
 		ch := s.TrackChannel(i)
+		here := slot{scope(i), ch}
 		if ch < 1 || ch > maxTracks {
-			e.addf("%s/channel: %d is not within 1..%d", at, ch, maxTracks)
-		} else if other, taken := channels[ch]; taken {
-			e.addf("%s/channel: MIDI channel %d is already track %q's", at, ch, other)
+			// A position past the last channel is a stem of too many tracks,
+			// which Stems reports.
+			if t.Channel != 0 || !s.StemsOnly() {
+				e.addf("%s/channel: %d is not within 1..%d", at, ch, maxTracks)
+			}
+		} else if other, taken := channels[here]; taken {
+			e.addf("%s/channel: MIDI channel %d is already track %q's%s", at, ch, other, in(i))
 		}
-		channels[ch] = t.ID
+		channels[here] = t.ID
 		switch {
 		case t.Instrument.File != "":
 			checkFileTrack(&e, at, t)
@@ -530,7 +561,7 @@ func (s *Song) Validate() error {
 	}
 	// A control channel is its track's alone: what is sent on it reaches that
 	// track's instrument and nothing else.
-	listens := map[int]string{}
+	listens := map[slot]string{}
 	for i := range s.Tracks {
 		t := &s.Tracks[i]
 		if t.ID == "" {
@@ -538,25 +569,28 @@ func (s *Song) Validate() error {
 		}
 		for j, ch := range t.ControlChannels {
 			at := fmt.Sprintf("/tracks/%d/control_channels/%d", i, j)
-			other, taken := listens[ch]
+			here := slot{scope(i), ch}
+			other, taken := listens[here]
 			switch {
 			case ch < 1 || ch > maxTracks:
 				e.addf("%s: %d is not within 1..%d", at, ch, maxTracks)
-			case channels[ch] == t.ID:
+			case channels[here] == t.ID:
 				e.addf("%s: MIDI channel %d is the track's own channel", at, ch)
-			case channels[ch] != "":
-				e.addf("%s: MIDI channel %d is track %q's (give that track another channel)", at, ch, channels[ch])
+			case channels[here] != "":
+				e.addf("%s: MIDI channel %d is track %q's%s (give that track another channel)", at, ch, channels[here], in(i))
 			case taken && other == t.ID:
 				e.addf("%s: MIDI channel %d is listed twice", at, ch)
 			case taken:
-				e.addf("%s: MIDI channel %d is already a control channel of track %q", at, ch, other)
+				e.addf("%s: MIDI channel %d is already a control channel of track %q%s", at, ch, other, in(i))
 			}
-			listens[ch] = t.ID
+			listens[here] = t.ID
 		}
 	}
 	checkEffects(&e, "/master", s.Master)
 	// The grouping holds together: a song that cannot be taken apart into
 	// its stems says so when it is saved, not when its stems are recorded.
+	// For a song of more tracks than a session hosts this is also the check
+	// of its size: its stems are all there is to play of it.
 	if _, serr := s.Stems(nil); serr != nil {
 		if list, ok := serr.(Errors); ok {
 			e.list = append(e.list, list...)
@@ -690,7 +724,7 @@ func (s *Song) Validate() error {
 				for _, ch := range p.channels() {
 					switch {
 					case slices.Contains(t.ControlChannels, ch):
-					case channels[ch] == tid:
+					case channels[slot{scopes[tid], ch}] == tid:
 						e.addf("%s/play/%s/%d: pattern %q sends on channel %d, which is %q's own channel; leave the channel out", at, tid, i, pid, ch, tid)
 					default:
 						e.addf("%s/play/%s/%d: pattern %q sends on channel %d, which is not one of %q's control_channels (%s)", at, tid, i, pid, ch, tid, channelList(slices.Sorted(slices.Values(t.ControlChannels))))
@@ -883,12 +917,40 @@ func (s *Song) laneTrack(t *Track) *Track {
 	return &open
 }
 
-// TrackChannel returns the MIDI channel (1-based) track i plays on.
+// StemsOnly reports whether the song has more tracks than one session hosts.
+// Such a song has no session of its own and no plan: it is recorded a stem at
+// a time, each stem from a session that hosts its tracks alone (StemSong), and
+// played as the mix of the recordings (MixSong). Its MIDI channels are counted
+// in each stem, not in the song.
+func (s *Song) StemsOnly() bool { return len(s.Tracks) > maxTracks }
+
+// stemOf names the stem the document's grouping puts track i into: its group,
+// or itself (Stems).
+func (s *Song) stemOf(i int) string {
+	if g := strings.TrimSpace(s.Tracks[i].Group); g != "" {
+		return g
+	}
+	return s.Tracks[i].ID
+}
+
+// TrackChannel returns the MIDI channel (1-based) track i plays on: the one it
+// names, or its position among the tracks it shares a session with. That is
+// its position in the song, and in a song of more tracks than a session hosts
+// (StemsOnly) its position in its stem, by the document's grouping.
 func (s *Song) TrackChannel(i int) int {
 	if c := s.Tracks[i].Channel; c != 0 {
 		return c
 	}
-	return i + 1
+	if !s.StemsOnly() {
+		return i + 1
+	}
+	stem, pos := s.stemOf(i), 1
+	for j := range i {
+		if s.stemOf(j) == stem {
+			pos++
+		}
+	}
+	return pos
 }
 
 // channels lists the control channels the pattern sends notes on, its own and

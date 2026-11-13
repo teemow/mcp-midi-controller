@@ -62,9 +62,12 @@ the end of every one. Each had taken the song before it for its model. So:
   a few lines. Give parts phrases of 8 or 16 bars beside the one- to four-bar
   loops, and let a repeat end differently with a pattern list
   (`[beat, beat, beat, fill]`).
-- **Tracks.** Up to twelve. Beside drums, bass, chords and a lead there is
-  room for a second harmony part, a counter-melody, percussion, a texture, an
-  effects track. A track that rests is heard when it comes in.
+- **Tracks.** Up to twelve in a song that plays from one session; a larger
+  piece is recorded in stems
+  ([More than twelve tracks](#more-than-twelve-tracks)). Beside drums, bass,
+  chords and a lead there is room for a second harmony part, a
+  counter-melody, percussion, a texture, an effects track. A track that rests
+  is heard when it comes in.
 - **Sounds.** Choose from everything installed, not from what the stored
   songs use: `list_song_plugins` lists the instruments and the effects, and
   `audition_sound` measures a preset in seconds. What it reports describes the
@@ -197,7 +200,10 @@ arrangement: [verse, chorus, verse, chorus]
   [calibrated](#calibration) song needs none). `instrument: {file: …}` in
   place of a plugin makes the track play a recording: see
   [A track that plays a file](#a-track-that-plays-a-file). `group` names the
-  stem the track is recorded into: see [Stems](#stems).
+  stem the track is recorded into: see [Stems](#stems). A song may have more
+  than twelve tracks when its groups make stems of at most twelve tracks each;
+  its channels are then counted in each stem: see
+  [More than twelve tracks](#more-than-twelve-tracks).
 - **master** — effects on the master strip, after its fader.
 - **patterns** — the phrases; see [Notation](#notation).
 - **scenes** — named sound settings; see [Sound](#sound).
@@ -630,6 +636,10 @@ problem with its place in the document:
 - channels: two tracks on one channel, a control channel that is a track's
   channel or another track's control channel, a pattern that sends on a
   channel the track playing it does not list;
+- size: more than twelve tracks that are not grouped into at most twelve
+  stems of at most twelve tracks each. In a song of
+  [more than twelve tracks](#more-than-twelve-tracks) the channels above are
+  checked within each stem;
 - plugins, against the staged AUv3 probes: an unknown plugin, preset or
   parameter (with the names that come close), a value outside a parameter's
   range;
@@ -649,7 +659,9 @@ problem with its place in the document:
 
 ## The session
 
-`author_song_session` builds one strip per part:
+`author_song_session` builds one strip per part (a song of
+[more than twelve tracks](#more-than-twelve-tracks) has no session of its own:
+each of its stems has one, built the same way):
 
 ```
 Brain     ProbeMidiBrain, the sequencer (a MIDI strip)
@@ -1315,6 +1327,140 @@ file: sessions are authored without a pre-roll.
 stem are not recorded one by one. A stem whose tracks alone are still too
 heavy has to be split into two groups.
 
+### More than twelve tracks
+
+One session hosts twelve tracks: each takes a MIDI channel, and the channels
+above them carry the session's controls ([The session](#the-session)). A song
+may have more when its stems are all that is played of it: every stem holds
+at most twelve tracks, and there are at most twelve stems, because the mix
+has a track for each. So a large piece is one document:
+
+```yaml
+title: Chamber Piece
+tempo: 96
+
+tracks:
+  - {id: violins1, group: strings, instrument: {plugin: bowed, preset: Violins}}
+  - {id: violins2, group: strings, instrument: {plugin: bowed, preset: Violins}}
+  - {id: violas,   group: strings, instrument: {plugin: bowed, preset: Violas}}
+  - {id: cellos,   group: strings, instrument: {plugin: bowed, preset: Cellos}}
+  - {id: basses,   group: strings, instrument: {plugin: bowed, preset: Basses}}
+  - {id: flute,    group: winds,   instrument: {plugin: reed, preset: Flute}}
+  - {id: oboe,     group: winds,   instrument: {plugin: reed, preset: Oboe}}
+  - {id: clarinet, group: winds,   instrument: {plugin: reed, preset: Clarinet}}
+  - {id: bassoon,  group: winds,   instrument: {plugin: reed, preset: Bassoon}}
+  - {id: horns,    group: brass,   instrument: {plugin: brass, preset: Horns}}
+  - {id: trumpets, group: brass,   instrument: {plugin: brass, preset: Trumpets}}
+  - {id: trombone, group: brass,   instrument: {plugin: brass, preset: Trombone}}
+  - {id: piano,    instrument: {plugin: grand}}              # a stem of its own
+  - {id: timpani,  kind: drums, instrument: {plugin: drumbox}}
+
+master:
+  - {id: hall, plugin: hall, params: {Mix: 0.2}}
+  - {id: limiter, plugin: limiter}
+
+patterns:
+  line:  {step: 1/8, notes: "A4 . C5 . E5 . C5 . | F4 . A4 . C5 . A4 ."}
+  chord: {step: 1/4, gate: 1, notes: "[A3 C4 E4] - - - | [A3 C4 F4] - - -"}
+  low:   {step: 1/2, gate: 1, notes: "A1 - | F1 -"}
+  roll:  {drums: {tom_low: "x.......x......."}}
+
+sections:
+  strings:
+    bars: 8
+    play: {violins1: line, violins2: chord, violas: chord, cellos: low, basses: low}
+  tutti:
+    bars: 8
+    play: {violins1: line, violins2: chord, violas: chord, cellos: low, basses: low,
+           flute: line, oboe: line, clarinet: chord, bassoon: low,
+           horns: chord, trumpets: line, trombone: low,
+           piano: chord, timpani: roll}
+
+arrangement: [strings, tutti]
+```
+
+`save_song` checks it and lists it by its stems:
+
+```
+saved "Chamber Piece" (chamber_piece): 96 BPM, 16 bars, 0:40
+14 tracks in 5 stems: more than the 12 one session hosts, so the song has no session of its own and plays as its stems and their mix
+arrangement:
+   1  strings      bars 1-8  0:00
+   2  tutti        bars 9-16  0:20
+stems (each is recorded alone, from a session of its own that hosts its tracks; a track's MIDI channel is its channel there):
+  strings: 5 track(s)
+    ch1  violins1   Bowed Strings  (64 notes)
+    ch2  violins2   Bowed Strings  (48 notes)
+    ch3  violas     Bowed Strings  (48 notes)
+    ch4  cellos     Bowed Strings  (16 notes)
+    ch5  basses     Bowed Strings  (16 notes)
+  winds: 4 track(s)
+    ch1  flute      Reeds  (32 notes)
+    ...
+  piano: 1 track(s)
+    ch1  piano      Grand Piano  (24 notes)
+  timpani: 1 track(s)
+    ch1  timpani    DrumBox  (16 notes)
+  master: Hall > Limiter (in the mix: a stem is recorded without the master's effects)
+takes: 0 of the 5 stems have a take of the song as it is now
+next: record_song_stems {song: "chamber_piece", confirm: true} records the stems without a current take (get_song_stems follows it), then mix_song_stems {song: "chamber_piece", confirm: true}
+```
+
+```
+record_song_stems {song: chamber_piece, confirm: true}
+get_song_stems    {wait_ms: 55000}                     # until it is done
+mix_song_stems    {song: chamber_piece, confirm: true}
+```
+
+That loads five sessions, one after the other, records a pass of each, and
+leaves the song `chamber_piece_mix`: five file tracks under the hall and the
+limiter. From then on the mix is the song that is loaded, played, checked and
+measured, and a stem's level is its track's `level` there. After a change to
+the flute, `record_song_stems` records `winds` again and nothing else.
+
+**The check.** More than twelve tracks are accepted only when the grouping
+fits: at most twelve tracks in every stem, and at most twelve stems. A track
+without a group is a stem of its own, so thirteen tracks without a `group`
+are thirteen stems and refused; the error names the stems and what does not
+fit. Twelve stems of twelve tracks, 144 tracks, are the most. A grouping
+given to `record_song_stems` as `groups` is held to the same.
+
+**MIDI channels are counted in each stem.** A stem's session hosts its tracks
+and no others, so a track plays on its place in its stem: the first track of
+every stem on channel 1 (`violins1`, `flute`, `horns`, `piano` and `timpani`
+above). `channel` names another of the twelve and `control_channels` further
+ones, and both are taken within the stem alone: two tracks of different stems
+may name the same channel, two of one stem may not, and a control channel
+must be free in its track's stem. A stem's controls fill the channels above
+its own tracks (see [The session](#the-session)), so a stem of five tracks
+has channels 6 to 14 for its bypasses and parameters. With `groups` as an
+argument the channels are counted in those groups; a track that names its
+`channel` keeps it there.
+
+**What the tools do with such a song:**
+
+| Tool | |
+|------|-|
+| `save_song`, `get_song` | Every plugin, preset and parameter is resolved on the whole document, so a problem is reported with its place there. Then each stem is planned and compiled as the song it is recorded from, which says what only a session can: more controls than its channels hold, a calibrated preset's lanes. The summary lists the tracks stem by stem, each with its channel in its stem, and says which stems have a take of the song as it is now. |
+| `list_songs` | Lists it with its tracks and its stems. |
+| `record_song_stems`, `get_song_stems`, `mix_song_stems` | As for any song: a session and a pass for each stem, then the mix. |
+| `load_song`, `play_song`, `check_song`, `mix_song`, `author_song_session`, `audition_sound` with the song | Refuse: the song has no session of its own. The answer names `record_song_stems`, `mix_song_stems` and the mix, which all of them take. |
+| `export_song_midi` | Exports the notes alone, a track per song track on its channel in its stem. The control messages belong to a stem's session each and are left out. |
+
+**A song of twelve tracks or fewer is one session, as before**, whether or
+not it names groups, and its stems keep the channels the tracks have in the
+whole song. A song that grows past twelve tracks counts its channels in its
+stems from then on. Every stem whose tracks move to another channel by that
+is another session, and its take is of the song as it was: `record_song_stems`
+records those stems again, and keeps the takes of the others.
+
+**Not done.** The whole song cannot be heard in one pass, by its nature:
+`play_song` of a section or of some tracks, and `mix_song`'s measurement of
+every track, need a session that hosts them. A stem's tracks can be heard and
+measured together by saving them as a song of their own. The mix has a fader
+for each stem, not for each track: a track's level is changed in the song,
+and its stem recorded again.
+
 ## The sequencer's state
 
 A sequencer can only play a song the daemon wrote if its content can be
@@ -1823,6 +1969,10 @@ Not yet measured:
   recorder latches by value, withdraws an end at a second off, ends a take
   on a bar line and lists it the way AUM does, and whose File Players show
   what the rig's showed;
+- a song of [more than twelve tracks](#more-than-twelve-tracks): none has
+  been recorded on the rig. The tests record and mix one of thirteen tracks in
+  two stems against the stand-in, each stem from a session whose channels
+  begin at 1;
 - `mix_song` and `check_song` called by themselves on a song of file tracks
   (the check ran as part of the mix's load);
 - the check's note held for the catalogue's attack, its 1.5 s second try and

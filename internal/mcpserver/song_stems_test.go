@@ -160,6 +160,13 @@ func stagedFilePlayers(t *testing.T, id string) map[string]string {
 // recorder and screen stood in for, and the waits of a take cut short.
 func stemsRig(t *testing.T) (*songRig, *rigDeck) {
 	t.Helper()
+	return stemsRigWith(t, stemSong, "Songs/Stem Song stem bass.aumproj", "Songs/Stem Song stem band.aumproj", "Songs/Stem Song mix.aumproj")
+}
+
+// stemsRigWith is stemsRig for another song at the stem song's tempo: doc is
+// stored, and the rig's iPad pulls the staged files when they are offered.
+func stemsRigWith(t *testing.T, doc string, files ...string) (*songRig, *rigDeck) {
+	t.Helper()
 	r := newSongRig(t)
 	stageSequencer(t)
 	arm, margin, wait, poll, off := stemArmSettle, stemEndMargin, stemListWait, stemListPoll, stemOffAfter
@@ -180,10 +187,10 @@ func stemsRig(t *testing.T) (*songRig, *rigDeck) {
 	}
 	deck := &rigDeck{r: r}
 	r.s.deck = deck
-	if res := call(t, r.s.handleSaveSong, map[string]any{"yaml": stemSong}); res.IsError {
+	if res := call(t, r.s.handleSaveSong, map[string]any{"yaml": doc}); res.IsError {
 		t.Fatalf("save: %s", resultText(res))
 	}
-	for _, file := range []string{"Songs/Stem Song stem bass.aumproj", "Songs/Stem Song stem band.aumproj", "Songs/Stem Song mix.aumproj"} {
+	for _, file := range files {
 		r.pullStaged(file)
 	}
 	return r, deck
