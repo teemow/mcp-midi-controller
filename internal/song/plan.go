@@ -165,6 +165,8 @@ type NodePlan struct {
 	Bypass  Assignment   `json:"-"`
 	Presets []PresetPlan `json:"presets,omitempty"`
 	Params  []ParamPlan  `json:"params,omitempty"`
+	// Mod is what a modulator moves (modulator.go); nil for any other node.
+	Mod *ModPlan `json:"modulator,omitempty"`
 
 	dump device.ProbeDump
 	home NodeState // the plugin's own declaration
@@ -219,7 +221,7 @@ type TrackPlan struct {
 
 	Level Assignment `json:"-"`
 	Mute  Assignment `json:"-"`
-	// Nodes is the instrument followed by the effects.
+	// Nodes is the instrument followed by the effects and the modulators.
 	Nodes []*NodePlan `json:"nodes"`
 
 	homeLevel float64
@@ -435,6 +437,14 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 		for j, fx := range t.Effects {
 			tp.Nodes = append(tp.Nodes, newNode(fmt.Sprintf("%s/effects/%d", at, j), t.ID, tp.Strip, firstInsertSlot+j, fx, fx.EffectID()))
 		}
+		// The modulators follow the effects: inserts that pass the audio
+		// through, as one is hosted by hand.
+		for j, m := range t.Modulators {
+			mat := fmt.Sprintf("%s/modulators/%d", at, j)
+			n := newNode(mat, t.ID, tp.Strip, firstInsertSlot+len(t.Effects)+j, Plugin{ID: m.ID, Plugin: m.Plugin, NodeState: m.NodeState}, m.ModulatorID())
+			n.Mod = &ModPlan{at: mat}
+			tp.Nodes = append(tp.Nodes, n)
+		}
 		p.Tracks = append(p.Tracks, tp)
 	}
 	// The master strip is [bus source, hardware output, effects…]; its
@@ -462,6 +472,10 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 	if err := e.err(); err != nil {
 		return nil, err
 	}
+	p.checkModulatorKinds(&e)
+	if err := e.err(); err != nil {
+		return nil, err
+	}
 
 	// Collect what the song sets on each node, in a stable order: the
 	// plugin's own declaration first, then scenes and ramps by name.
@@ -480,14 +494,19 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 					p.collect(&e, n, st.Effects[fx], where+"/effects/"+fx)
 				}
 			}
+			for _, mid := range sortedKeys(st.Modulators) {
+				if n := p.nodes[tid+"/"+mid]; n != nil {
+					p.collect(&e, n, st.Modulators[mid].NodeState, where+"/modulators/"+mid)
+				}
+			}
 		}
 	}
 	for _, name := range sortedKeys(s.Sections) {
 		for i, r := range s.Sections[name].Automation {
-			if r.Effect == "" && strings.EqualFold(r.Param, "level") {
+			if r.fader() {
 				continue
 			}
-			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
+			if n := p.nodes[r.Track+"/"+r.node()]; n != nil {
 				where := fmt.Sprintf("/sections/%s/automation/%d", name, i)
 				if _, err := n.param(r.Param); err != nil {
 					e.addf("%s/param: %v", where, err)
@@ -495,6 +514,10 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			}
 		}
 	}
+	if err := e.err(); err != nil {
+		return nil, err
+	}
+	p.resolveModulators(&e)
 	if err := e.err(); err != nil {
 		return nil, err
 	}
@@ -597,6 +620,9 @@ func (p *Plan) address() error {
 
 	for ch := lowest; ch <= 16; ch++ {
 		p.ControlChannels = append(p.ControlChannels, ch)
+	}
+	for _, n := range p.modulators() {
+		n.Mod.At = n.Mod.targetParam().At
 	}
 	return nil
 }
@@ -777,14 +803,17 @@ func (p *Plan) checkHomes(e *errs) {
 			for _, fx := range sortedKeys(st.Effects) {
 				check(p.nodes[tid+"/"+fx], st.Effects[fx], where+"/effects/"+fx)
 			}
+			for _, mid := range sortedKeys(st.Modulators) {
+				check(p.nodes[tid+"/"+mid], st.Modulators[mid].NodeState, where+"/modulators/"+mid)
+			}
 		}
 	}
 	for _, name := range sortedKeys(s.Sections) {
 		for i, r := range s.Sections[name].Automation {
-			if r.Effect == "" && strings.EqualFold(r.Param, "level") {
+			if r.fader() {
 				continue
 			}
-			if n := p.nodes[r.Track+"/"+r.Effect]; n != nil {
+			if n := p.nodes[r.Track+"/"+r.node()]; n != nil {
 				needParam(n, r.Param, fmt.Sprintf("/sections/%s/automation/%d", name, i))
 			}
 		}
@@ -826,8 +855,11 @@ func (p *Plan) checkSequences(e *errs) {
 
 // nodeLabel names a node for a message.
 func nodeLabel(n *NodePlan) string {
-	if n.Effect == "" {
+	switch {
+	case n.Effect == "":
 		return fmt.Sprintf("%s's instrument", n.Track)
+	case n.Mod != nil:
+		return fmt.Sprintf("%s's modulator %s", n.Track, n.Effect)
 	}
 	return fmt.Sprintf("%s's effect %s", n.Track, n.Effect)
 }
@@ -1147,6 +1179,11 @@ func (p *Plan) Fingerprint() string {
 			continue
 		}
 		fmt.Fprintf(&b, "N%s/%s:%s:%d:%d:%v:%s|", n.Track, n.Effect, n.Plugin, n.Strip, n.Slot, n.MIDI, n.Bypass)
+		if n.Mod != nil {
+			// A modulator's output is routed to MIDI Control. What it moves
+			// is in the state the song sends, not in the session.
+			fmt.Fprintf(&b, "R%s|", n.Mod.Port())
+		}
 		for _, pr := range n.Presets {
 			fmt.Fprintf(&b, "P%s:%d:%d|", pr.Name, pr.Number, pr.Program)
 			if pr.Channel != GlobalChannel {

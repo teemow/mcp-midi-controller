@@ -146,6 +146,10 @@ type Track struct {
 
 	Instrument Plugin   `yaml:"instrument" json:"instrument"`
 	Effects    []Plugin `yaml:"effects,omitempty" json:"effects,omitempty"`
+	// Modulators move parameters of the track's instrument and effects by
+	// themselves (modulator.go). They sit on the track's strip after its
+	// effects.
+	Modulators []Modulator `yaml:"modulators,omitempty" json:"modulators,omitempty"`
 
 	// Level is the strip's fader in dB (0 is unity, the default) and Mute its
 	// mute, wherever no scene says otherwise.
@@ -221,6 +225,8 @@ type TrackState struct {
 
 	// Effects is the state of the track's effects by effect id.
 	Effects map[string]NodeState `yaml:"effects,omitempty" json:"effects,omitempty"`
+	// Modulators is the state of the track's modulators by modulator id.
+	Modulators map[string]ModulatorState `yaml:"modulators,omitempty" json:"modulators,omitempty"`
 }
 
 // MasterTrack is the id scenes address the master strip's effects by.
@@ -245,6 +251,9 @@ type Section struct {
 type Ramp struct {
 	Track  string `yaml:"track" json:"track"`
 	Effect string `yaml:"effect,omitempty" json:"effect,omitempty"`
+	// Modulator names one of the track's modulators, whose parameter (its
+	// rate, say) the ramp moves instead.
+	Modulator string `yaml:"modulator,omitempty" json:"modulator,omitempty"`
 	// Param names the parameter; "level" (and no Effect) is the strip's fader.
 	Param string `yaml:"param" json:"param"`
 	From  Value  `yaml:"from" json:"from"`
@@ -568,6 +577,7 @@ func (s *Song) Validate() error {
 			checkStepSequence(&e, at+"/instrument/sequence", t.Instrument.Sequence, meter)
 		}
 		checkEffects(&e, at+"/effects", t.Effects)
+		checkModulators(&e, at, t)
 		for lane, note := range t.DrumMap {
 			if _, err := parseNote(note); err != nil {
 				e.addf("%s/drum_map/%s: %v", at, lane, err)
@@ -639,11 +649,12 @@ func (s *Song) Validate() error {
 			at := fmt.Sprintf("/scenes/%s/%s", name, tid)
 			st := s.Scenes[name][tid]
 			effects := s.Master
+			t := tracks[tid]
 			if tid == MasterTrack {
-				if st.Level != nil || st.Mute != nil || st.Preset != "" || st.Bypass != nil || len(st.Params) > 0 {
+				if st.Level != nil || st.Mute != nil || st.Preset != "" || st.Bypass != nil || len(st.Params) > 0 || len(st.Modulators) > 0 {
 					e.addf("%s: only the master's effects can be set", at)
 				}
-			} else if t := tracks[tid]; t != nil {
+			} else if t != nil {
 				effects = t.Effects
 				if t.IsFile() && (st.Preset != "" || st.Bypass != nil || len(st.Params) > 0) {
 					e.addf("%s: %q plays a file: a scene can set its level, its mute and its effects, and nothing of a plugin", at, tid)
@@ -654,8 +665,21 @@ func (s *Song) Validate() error {
 			}
 			for _, fx := range sortedKeys(st.Effects) {
 				if findEffect(effects, fx) < 0 {
-					e.addf("%s/effects/%s: %q has no effect %q (it has %s)", at, fx, tid, fx, effectIDs(effects))
+					hint := ""
+					if t != nil && findModulator(t.Modulators, fx) >= 0 {
+						hint = "; it is a modulator: set it under modulators"
+					}
+					e.addf("%s/effects/%s: %q has no effect %q (it has %s)%s", at, fx, tid, fx, effectIDs(effects), hint)
 				}
+			}
+			if t == nil {
+				continue
+			}
+			for _, mid := range sortedKeys(st.Modulators) {
+				if findModulator(t.Modulators, mid) < 0 {
+					e.addf("%s/modulators/%s: %q has no modulator %q (it has %s)", at, mid, tid, mid, modulatorIDs(t.Modulators))
+				}
+				checkDepth(&e, fmt.Sprintf("%s/modulators/%s/depth", at, mid), st.Modulators[mid].Depth)
 			}
 		}
 	}
@@ -780,6 +804,14 @@ func (s *Song) Validate() error {
 				e.addf("%s/track: no track %q", rat, r.Track)
 			case r.Param == "":
 				e.addf("%s/param: name the parameter to move", rat)
+			case r.Modulator != "" && r.Effect != "":
+				e.addf("%s/modulator: a ramp moves a parameter of an effect or of a modulator, not both", rat)
+			case r.Modulator != "" && t == nil:
+				e.addf("%s/modulator: the master has no modulators", rat)
+			case r.Modulator != "":
+				if findModulator(t.Modulators, r.Modulator) < 0 {
+					e.addf("%s/modulator: %q has no modulator %q (it has %s)", rat, r.Track, r.Modulator, modulatorIDs(t.Modulators))
+				}
 			case r.Effect != "":
 				effects := s.Master
 				if t != nil {

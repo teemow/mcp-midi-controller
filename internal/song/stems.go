@@ -237,7 +237,7 @@ func (s *Song) tailOf(bars int, keep func(Ramp) bool) Section {
 	tail.Scene = slices.Clone(last.Scene)
 	for _, r := range last.Automation {
 		if keep(r) {
-			tail.Automation = append(tail.Automation, Ramp{Track: r.Track, Effect: r.Effect, Param: r.Param, From: r.To, To: r.To})
+			tail.Automation = append(tail.Automation, Ramp{Track: r.Track, Effect: r.Effect, Modulator: r.Modulator, Param: r.Param, From: r.To, To: r.To})
 		}
 	}
 	return tail
