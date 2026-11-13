@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -512,4 +513,49 @@ func mustParse(t *testing.T, src json.RawMessage) *Element {
 		t.Fatal(err)
 	}
 	return root
+}
+
+// TestAUMMixerFailedNodes checks every node AUM draws as failed is named with
+// its strip and its selector, which aum_node reload takes, and that a strip
+// with two of them is reported once among the problems.
+func TestAUMMixerFailedNodes(t *testing.T) {
+	bare := mixer()
+	w, c := opFake(t, bare)
+	st := ParseAUM(mustParse(t, bare.Source()), Size{Width: 1210, Height: 834})
+	ring := func(strip int, role string, slot int) [4]float64 {
+		for _, n := range st.Channels[strip-1].Nodes {
+			if n.Role == role && n.Slot == slot {
+				return [4]float64{n.Frame.X, n.Frame.Y, n.Frame.Width, n.Frame.Height}
+			}
+		}
+		t.Fatalf("no %s node (slot %d) on strip %d: %+v", role, slot, strip, st.Channels[strip-1].Nodes)
+		return [4]float64{}
+	}
+	w.RedRings = [][4]float64{ring(2, "source", 0), ring(2, "insert", 1), ring(4, "source", 0)}
+	res, err := c.AUMMixer(context.Background())
+	if err != nil {
+		t.Fatalf("mixer: %v", err)
+	}
+	got := res.Data.(AUMLoaded)
+	want := []AUMFailedNode{
+		{Strip: "2: Synth One", Node: "source", Role: "source"},
+		{Strip: "2: Synth One", Node: "1", Role: "insert", Slot: 1, Label: "LP"},
+		{Strip: "4: Synth Two", Node: "source", Role: "source"},
+	}
+	if len(got.FailedNodes) != len(want) {
+		t.Fatalf("failed nodes = %+v, want %+v", got.FailedNodes, want)
+	}
+	for i := range want {
+		// A source node's label repeats the strip's title in the stand-in.
+		got.FailedNodes[i].Label = strings.TrimPrefix(got.FailedNodes[i].Label, got.FailedNodes[i].Strip)
+		if got.FailedNodes[i] != want[i] {
+			t.Errorf("failed node %d = %+v, want %+v", i, got.FailedNodes[i], want[i])
+		}
+	}
+	if !slices.Equal(got.Failed, []string{"2: Synth One", "4: Synth Two"}) || len(got.Problems) != 2 {
+		t.Errorf("failed strips = %v, problems = %v, want each strip once", got.Failed, got.Problems)
+	}
+	if s := want[1].String(); s != `insert slot 1 "LP" of "2: Synth One"` {
+		t.Errorf("the insert is named %s", s)
+	}
 }

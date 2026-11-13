@@ -990,8 +990,23 @@ and stops at the first one that fails, with what it saw and what to do:
 | author | The session is built and staged. Skipped when the staged file is already this song's session: its layout, its options and, when it hosts the sequencer, the notes as they are now. |
 | pull | The iPad's auv3-probe app fetches the file into AUM's folder. The app does that while it is in front; when the file is not fetched within a few seconds the daemon brings the app forward, starts its sync, and waits up to a minute: for the file, and for the app's report of what its sync made of it. A conflict or an error the app reports ends the wait at once: see below. The screen of an app that sends no report is read instead. Skipped when the iPad already has this very file. When the step fails, the daemon brings AUM back to the front: the app is not left there. |
 | load | AUM is told to open the session (over WebDriverAgent: plugin windows and panels are closed first), and the call waits until AUM's main menu shows the session's name and AUM has finished restoring the plugins, up to 2 minutes in all. A heavy session can keep AUM's UI from answering for a minute, so the name is waited for as long as AUM shows that it is loading, and the menu is opened again when the load closed it; once the load is over the name gets 10 s more. The step fails, saying which session AUM shows, when AUM ends up with another session or none. When AUM is not running any more (it crashed under the load, or was closed), the step starts it again and loads the session once more: see below. |
+| reload | Only when AUM draws a node of the session as failed after the load: the daemon reloads that node (RELOAD in its long-press menu, as `aum_node reload` does), waits 3 s for the plugin to come up and reads the mixer again, up to three times. The step names each plugin by the song (`pad's Perforator (insert slot 1)`) and says whether it came up. One that stays failed is the check's to report, and `next` then says to load the session again. `reload: false` leaves a failed node as it is. See below. |
 | connect | The new session's ProbeMidiBrain and ProbeAudioTap dial the daemon. The master's tap dials in under the session's id, which tells the daemon that this very session is the one that came up. A tap that gives no name is taken after a few seconds, and the step says so. The session is the daemon's current one from then on: see "The current session" below. |
 | check | `check_song`, below. |
+
+**A plugin that failed to load.** AUM says that a plugin did not load only by
+drawing its node with a ring of red stripes (the check reads that off a
+screenshot, below). Some plugins fail as AUM initialises them on nearly every
+load of a session, and come up when the node is reloaded: on the rig
+Perforator came up failed after each of seven loads of the sessions that
+hosted it, and a reload brought it back
+([research/house-effects.md](research/house-effects.md#perforator)). Loading
+the whole session again only throws the dice once more, so the load reloads
+the node itself. A reload starts the plugin anew, and what was set on it is
+gone: Perforator came back at its Init preset. The song's opening sound puts
+its preset and parameters back: the check sends it before it plays a note,
+and the sequencer sends it in the lead-in, at the transport's start, before
+the song's first bar.
 
 Loading replaces the session open in AUM, so `load_song` needs
 `confirm: true`. Without the iPad UI tools (`ipad_wda_url` empty) it stops
@@ -1162,8 +1177,13 @@ WebDriverAgent session bound to AUM does.
   `track_taps` the check also says which tracks' taps are connected;
 - the mixer has a strip for the brain, every track and the master, and no
   failed plugin. AUM says that a plugin did not load only by drawing its node
-  with a ring of red stripes, so the check takes a screenshot and looks at
-  the ring of every node on screen;
+  with a ring of red stripes, so the check takes a screenshot at every stop
+  of its walk along the mixer and looks at the ring of every node, strips
+  scrolled out of the window included. A screenshot that cannot be had fails
+  the read rather than passing the mixer as clean, so a stem is not recorded
+  on it. `check_song` reloads nothing: for a
+  failed node its `next` names `load_song`, which reloads it, and the
+  `aum_node reload` call (strip and node) that reloads it once;
 - every track answers a note. The daemon sets each track's own sound (its
   declaration, no scene) and mutes every strip. Then, one track at a time, it
   unmutes the strip, waits up to 3 s for the master tap to fall silent, plays
@@ -1445,8 +1465,15 @@ scenes, and every control it ramped held where the ramp ended, so a fade that
 ended at silence stays there. What rings out in a stem is in its file.
 
 **A pass.** The daemon loads the stem's session (`load_song`'s steps, the
-check included; what the check finds is noted with the take and does not stop
-it). It switches AUM's recorder off, in case one was left on, reads AUM's list
+reload of a failed plugin and the check included; what the check finds is
+noted with the take and does not stop it). A plugin that AUM still draws as
+failed after the load reloaded it does stop it: the stem is not recorded over
+a plugin that plays nothing or passes nothing on. The stem's report says which
+plugin stayed failed and how often it was reloaded, and the recording ends
+there; `record_song_stems` again loads the stem's session anew. A plugin that
+came up when it was reloaded is noted with the take. The reload started it
+anew, and the stem's sequence loads its preset and sets its parameters in the
+lead-in, at the transport's start, as for any other plugin. It switches AUM's recorder off, in case one was left on, reads AUM's list
 of the session's recordings, and arms the master strip: by the master's mapped
 Rec enable, and then it reads the REC button off AUM's screen, which it taps
 when the mapping did not arm it. Then it switches the recorder on, which

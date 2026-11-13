@@ -401,23 +401,33 @@ func (w *mixerWalk) settled(sel string) bool {
 type mixerRead struct {
 	// Channels are the strips left to right, numbered from 1.
 	Channels []AUMChannel
-	// Failed are the titles of the strips with a node AUM draws as failed;
-	// Problems what on screen reports a fault (see problems), at each stop
-	// of the walk.
-	Failed   []string
+	// Failed are the nodes AUM draws as failed; Problems what on screen
+	// reports a fault (see problems), at each stop of the walk.
+	Failed   []AUMFailedNode
 	Problems []string
 }
 
 // readMixer reads every strip of the mixer. When the tree does not hold the
 // whole mixer, the mixer is walked to its add tile and back to its first
 // strip, where it is left. With faults it also looks for failed nodes and
-// fault reports at every stop.
+// fault reports at every stop; a stop whose failed nodes cannot be checked
+// fails the read (it is no clean bill of health).
 func (d *AUMDriver) readMixer(faults bool) (mixerRead, error) {
 	var out mixerRead
 	var visit func(AUMState)
+	var unchecked error
 	if faults {
 		visit = func(AUMState) {
-			out.Failed = appendNew(out.Failed, d.failedStrips()...)
+			nodes, err := d.failedNodes()
+			if err != nil && unchecked == nil {
+				unchecked = err
+			}
+			for _, n := range nodes {
+				// A strip seen at two stops of the walk is read twice.
+				if !slices.ContainsFunc(out.Failed, func(f AUMFailedNode) bool { return f.Strip == n.Strip && f.Node == n.Node }) {
+					out.Failed = append(out.Failed, n)
+				}
+			}
 			out.Problems = appendNew(out.Problems, d.problems()...)
 		}
 	}
@@ -431,7 +441,7 @@ func (d *AUMDriver) readMixer(faults bool) (mixerRead, error) {
 		}
 	}
 	out.Channels = w.channels()
-	return out, nil
+	return out, unchecked
 }
 
 // appendNew appends the items of add that list does not hold yet.

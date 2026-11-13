@@ -142,8 +142,9 @@ func TestAUMMixerFindsAMissingStrip(t *testing.T) {
 }
 
 // TestAUMMixerSeesAFailedNodeOffScreen checks a node AUM draws as failed on a
-// strip right of the window is reported: the read looks for failed nodes at
-// every stop of its walk.
+// strip right of the window is reported, once and by its node (which
+// load_song reloads): the read looks for failed nodes at every stop of its
+// walk.
 func TestAUMMixerSeesAFailedNodeOffScreen(t *testing.T) {
 	_, m, c := wideFake(t, wideStrips)
 	m.FailNode("brass")
@@ -154,6 +155,9 @@ func TestAUMMixerSeesAFailedNodeOffScreen(t *testing.T) {
 	got := res.Data.(AUMLoaded)
 	if !slices.Equal(got.Failed, []string{"brass"}) || len(got.Problems) != 1 || !strings.Contains(got.Problems[0], `AUM draws a node of "brass" as failed`) {
 		t.Fatalf("failed = %v, problems = %v, want brass's node", got.Failed, got.Problems)
+	}
+	if len(got.FailedNodes) != 1 || got.FailedNodes[0].Strip != "brass" || got.FailedNodes[0].Node != "source" {
+		t.Fatalf("failed nodes = %+v, want brass's source once", got.FailedNodes)
 	}
 }
 

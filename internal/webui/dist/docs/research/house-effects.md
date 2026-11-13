@@ -65,7 +65,9 @@ plugin's state, so a song gets it from a preset.
   of its own, and Perforator sits on the pad's file track in the mix song:
   `load_song`, `aum_node reload` on the failed node, then `play_song`, whose
   sequencer loads the preset at the transport's start. It stayed up through a
-  measurement and the take.
+  measurement and the take. Since then the load reloads a failed node itself
+  (its reload step, up to three times) and `record_song_stems` records no
+  stem over one that stays failed ([songs.md](../songs.md#loading)).
 - **How much it takes.** The pad's track in the mix read -32.3 dBFS rms where
   the gate ran and -25.4 in the break, where a scene bypassed it and the pad
   plays other chords: about 7 dB, so the pad's track is 5 dB up in the mix.
