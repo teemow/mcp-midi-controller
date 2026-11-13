@@ -173,7 +173,11 @@ func (c *Client) aumOpenSession(ctx context.Context, path []string, name string,
 			return err
 		}
 		out.Strips, out.Problems = d.stripTitles(), d.problems()
-		out.setFailed(d.failedNodes())
+		nodes, err := d.failedNodes()
+		if err != nil {
+			return err
+		}
+		out.setFailed(nodes)
 		ok := loaded.Verified && done
 		msg := fmt.Sprintf("AUM has %q open: %d strip(s)", out.Session, len(out.Strips))
 		switch {
@@ -223,7 +227,11 @@ func (c *Client) readAUM(ctx context.Context, menu bool) (AUMResult, error) {
 		if err := d.clearScreen(); err != nil {
 			return err
 		}
-		out.setFailed(d.failedNodes())
+		nodes, err := d.failedNodes()
+		if err != nil {
+			return err
+		}
+		out.setFailed(nodes)
 		if !menu {
 			out.Strips = d.stripTitles()
 			res = d.result("mixer", true, fmt.Sprintf("AUM's mixer has %d strip(s)", len(out.Strips)), out)
@@ -295,20 +303,20 @@ const (
 
 // failedNodes returns the nodes AUM draws as failed. AUM says so only in the
 // node's colour, a ring of red stripes, so this takes a screenshot; it
-// reports nothing when that cannot be had. Strips scrolled out of the window
-// are not seen.
-func (d *AUMDriver) failedNodes() []AUMFailedNode {
+// returns an error when that cannot be checked, never a clean bill of health.
+// Strips scrolled out of the window are not seen.
+func (d *AUMDriver) failedNodes() ([]AUMFailedNode, error) {
 	raw, err := d.s.c.screenshot(d.ctx)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("check failed nodes: screenshot: %w", err)
 	}
 	scr, err := d.s.c.ScreenInfo(d.ctx)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("check failed nodes: screen info: %w", err)
 	}
 	img, err := DecodePNG(raw)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("check failed nodes: decode screenshot: %w", err)
 	}
 	var out []AUMFailedNode
 	for _, ch := range d.St.Channels {
@@ -322,7 +330,7 @@ func (d *AUMDriver) failedNodes() []AUMFailedNode {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // problems collects what on screen reports a fault: every alert, and every

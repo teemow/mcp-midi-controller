@@ -69,6 +69,8 @@ type WDA struct {
 	// RedRings lists node frames (x, y, w, h in points) whose ring is drawn
 	// red in the screenshot, the way AUM draws a node whose plugin failed.
 	RedRings [][4]float64
+	// FailScreenshot makes screenshot capture unavailable.
+	FailScreenshot bool
 	// BrightScreens, when set, replaces Bright after each gesture like
 	// Screens: BrightScreens[n] after n gestures.
 	BrightScreens [][][4]float64
@@ -341,6 +343,10 @@ func (w *WDA) serve(rw http.ResponseWriter, r *http.Request) {
 		reply(rw, 200, map[string]any{"bundleId": front, "pid": 1214, "name": ""}, "")
 		return
 	case r.Method == http.MethodGet && path == "/screenshot":
+		if w.FailScreenshot {
+			wdaError(rw, 500, "unknown error", "screenshot capture failed")
+			return
+		}
 		reply(rw, 200, base64.StdEncoding.EncodeToString(w.png()), "")
 		return
 	case r.Method == http.MethodGet && path == "/wda/locked":
