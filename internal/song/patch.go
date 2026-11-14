@@ -19,11 +19,16 @@ import (
 // chain, and a stem strip's effects — are addressed in the patch as maps keyed
 // by that id: null removes the entry, an existing id merges in place (and moves
 // if place is given), and a new id inserts the entry at place ("first", "last",
-// "after: <id>" or "before: <id>", defaulting to "last"). Lists of values (play
-// lists, arrangement, notes, automation, events, pedal, depth, locks,
-// control_channels) are replaced whole.
+// "after: <id>" or "before: <id>", defaulting to "last"). Several entries placed
+// "first" (or "last") in one patch keep the patch's key order; the key order of
+// a JSON object is not guaranteed to survive (a craft tool's patch is sorted by
+// id), so chain entries with "after: <id>" when their order matters. Lists of
+// values (play lists, arrangement, notes, automation, events, pedal, depth,
+// locks, control_channels) are replaced whole.
 //
-// Comments and formatting on untouched parts of songYAML are preserved.
+// Comments on untouched parts of songYAML are kept. The patched document is
+// written out again with a 2-space indent, so the first patch normalizes the
+// author's indentation and spacing.
 func Patch(songYAML, patchData []byte) ([]byte, error) {
 	songDoc, err := decodeMappingDoc("parse song", songYAML)
 	if err != nil {
@@ -336,13 +341,21 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 
 	// Pass 3: resolve placements across passes so chained insertions
 	// (e.g. comp "after: hp" alongside hp "first") work regardless of key order.
+	// Each "first" entry goes right after the one placed "first" before it, so
+	// several keep the patch's key order the way "last" entries do.
+	var lastFirst *yaml.Node
 	for len(pending) > 0 {
 		progressed := false
 		rest := pending[:0]
 		for _, p := range pending {
 			switch p.place.kind {
 			case placeFirst:
-				items = slices.Insert(items, 0, p.node)
+				at := 0
+				if lastFirst != nil {
+					at = slices.Index(items, lastFirst) + 1
+				}
+				items = slices.Insert(items, at, p.node)
+				lastFirst = p.node
 				progressed = true
 			case placeLast:
 				items = append(items, p.node)

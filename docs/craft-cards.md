@@ -216,9 +216,12 @@ it leaves out come after the ones it names, by name.
   through `save_song`, refusing a patch whose `revision` is no longer current.
   Tracks, a track's `effects` and `modulators`, `master` and `stems.<stem>.effects`
   are addressed by id (`place`: `first`, `last`, `after: <id>`, `before: <id>`;
-  `null` removes an entry); lists of values (play lists, `arrangement`) are
+  `null` removes an entry; several entries placed `first` or `last` keep the
+  patch's key order); lists of values (play lists, `arrangement`) are
   replaced whole. Every craft tool answers in one `craft.Answer` shape (`craft`,
-  `techniques`, `patch`, `revision`, `why`, `checks`, `applied`).
+  `techniques`, `patch`, `revision`, `why`, `checks`, `applied`), whose
+  `revision` is the one the patch was made against, applied or not; an
+  applied answer's text names the stored revision too.
 
 A plugin carries a capability when it is on the rig (its probe dump is staged,
 `import_auv3_probe`), its card names parameters the dump has, and it can set

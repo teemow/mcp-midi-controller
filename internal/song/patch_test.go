@@ -159,6 +159,34 @@ func TestPatchPlacementsAndChaining(t *testing.T) {
 	}
 }
 
+// TestPatchSeveralFirstAndLastKeepPatchOrder checks that several new entries
+// placed "first" (or "last") in one patch keep the patch's key order, and that
+// an entry placed before one of them in the same patch stays before it.
+func TestPatchSeveralFirstAndLastKeepPatchOrder(t *testing.T) {
+	jsonPatch := `{
+		"master": {
+			"hp": {"place": "first", "plugin": "sub_hp"},
+			"trim": {"place": "before: hp", "plugin": "gain"},
+			"air": {"place": "first", "plugin": "eq_air"},
+			"lim": {"place": "last", "plugin": "limiter"},
+			"clip": {"place": "last", "plugin": "clipper"}
+		}
+	}`
+	out, err := Patch([]byte(testSong), []byte(jsonPatch))
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	sg := mustParse(t, string(out))
+	got := make([]string, len(sg.Master))
+	for i, fx := range sg.Master {
+		got[i] = fx.EffectID()
+	}
+	want := []string{"trim", "hp", "air", "glue", "lim", "clip"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("master chain = %v, want %v\n%s", got, want, out)
+	}
+}
+
 // TestPatchTracksModulatorsMasterAndStems checks every id-keyed list in a song:
 // tracks (including adding a new track whose own effects and modulators are
 // written as id-keyed maps), effects addressed by default plugin id, modulators

@@ -62,6 +62,7 @@ func (s *Server) registerCraftTools() {
 		Description: "Apply an id-keyed merge patch to a stored song through save_song, refusing a patch whose revision is no longer current (ADR 0002). " +
 			"Maps merge recursively and null removes a key. Lists whose entries carry an id — tracks, tracks.<id>.effects, tracks.<id>.modulators, master and stems.<stem>.effects — are keyed by that id: " +
 			"null removes an entry, an existing id merges in place, and a new entry carries place (\"first\", \"last\" by default, \"after: <id>\" or \"before: <id>\"). " +
+			"Several entries placed first or last keep the patch's key order, which a JSON object need not keep: chain them with \"after: <id>\" when their order matters. " +
 			"Lists of values (play lists, arrangement, notes, automation, events, pedal, depth, locks, control_channels) are replaced whole. " +
 			"The patched document is checked, compiled and reviewed like save_song, and returns the new revision.",
 		InputSchema: json.RawMessage(`{
@@ -418,7 +419,8 @@ type CraftPlan struct {
 // the patch, applying it and storing the result through save_song, so no
 // concurrent edit can land between read and store. With apply false, it reads
 // the song, builds and dry-run checks the patch against save_song, and returns
-// the answer naming the base revision without storing.
+// the answer without storing. Either way the answer's revision is the one the
+// patch was made against; an applied answer's text adds the stored revision.
 func (s *Server) RunCraftTool(
 	craftID, songID string,
 	apply bool,
@@ -440,6 +442,7 @@ func (s *Server) RunCraftTool(
 		if err != nil {
 			return textResult("/song: "+err.Error(), true), nil
 		}
+		baseRev := song.Revision(raw)
 		plan, err := build(id, sg, raw)
 		if err != nil {
 			return textResult(err.Error(), true), nil
@@ -460,7 +463,11 @@ func (s *Server) RunCraftTool(
 		if err != nil {
 			return textResult(err.Error(), true), nil
 		}
-		ans := craft.NewAnswer(craftID, plan.Techniques, patchMap, newRev, plan.Why, plan.Checks, true)
+		// The answer keeps the revision the patch was made against (ADR 0002);
+		// the saved summary names the stored one and where it came from, as
+		// patch_song's does.
+		saveText = strings.Replace(saveText, "\nrevision: "+newRev, fmt.Sprintf("\nrevision: %s (from %s)", newRev, baseRev), 1)
+		ans := craft.NewAnswer(craftID, plan.Techniques, patchMap, baseRev, plan.Why, plan.Checks, true)
 		return structResult(ans.Summary()+"\n\nsaved "+saveText, ans), nil
 	}
 
