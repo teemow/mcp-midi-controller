@@ -1,6 +1,7 @@
 package craft
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -166,5 +167,112 @@ func TestBindWithoutCards(t *testing.T) {
 	b := lib.Bind(glue, nil)
 	if len(b) != 1 || b[0].Plugin != "" || !strings.Contains(b[0].Missing, "no plugin card provides dynamics.compressor") {
 		t.Errorf("bindings = %+v", b)
+	}
+}
+
+// cutoffDump is a high-pass whose Cutoff Frequency runs from 10 Hz to
+// 22050 Hz, shown on a log scale (as Apple's AUHighPassFilter shows it) or
+// linearly.
+func cutoffDump(subtype string, log bool) device.ProbeDump {
+	return device.ProbeDump{
+		Component: device.ProbeComponent{Type: "aufx", Subtype: subtype, Manufacturer: "Test"},
+		Name:      "High-pass " + subtype,
+		Parameters: []device.ProbeParam{
+			{Address: 0, Identifier: "cutoff", DisplayName: "Cutoff Frequency", Min: 10, Max: 22050, UnitName: "Hz", Writable: true, DisplayLogarithmic: log},
+		},
+	}
+}
+
+// cutoffCard returns a plugin card that sets a high-pass's frequency over a
+// mapping range, or over the parameter's whole range without one.
+func cutoffCard(subtype, rng string) []byte {
+	freq := `"Cutoff Frequency"`
+	if rng != "" {
+		freq = `{param: "Cutoff Frequency", range: ` + rng + `}`
+	}
+	return []byte("plugin: aufx/" + subtype + "/Test\nname: " + subtype + `
+capabilities:
+  eq.highpass:
+    write: cc
+    params:
+      freq: ` + freq + "\n")
+}
+
+// TestBindStepAlongALogScale checks a binding's CC step follows the scale the
+// plugin shows the parameter on, as AUM moves it (song.Travel): on a log
+// scale it is fine low in the range and coarse high in it, so 80 Hz within
+// 5 % is in reach over the whole range, where a linear step of 174 Hz is not,
+// and 1500 Hz within 1 % is out of reach over 100..2000 Hz, where a linear
+// step of 15 Hz is fine.
+func TestBindStepAlongALogScale(t *testing.T) {
+	technique := func(id, freq, precision string) []byte {
+		return []byte("id: mixing." + id + "\ncraft: mixing\ntitle: A high-pass at " + freq + ` Hz
+applies_to: track
+needs: [eq.highpass]
+set:
+  eq.highpass: {freq: ` + freq + `}
+precision:
+  eq.highpass: {freq: "` + precision + `"}
+place: first
+`)
+	}
+	lib := bindingLibrary(t, fstest.MapFS{
+		"techniques/low.yaml":  {Data: technique("highpass_low", "80", "5%")},
+		"techniques/high.yaml": {Data: technique("highpass_high", "1500", "1%")},
+		"plugins/logw.yaml":    {Data: cutoffCard("LogW", "")},
+		"plugins/linw.yaml":    {Data: cutoffCard("LinW", "")},
+		"plugins/logn.yaml":    {Data: cutoffCard("LogN", "[100, 2000]")},
+		"plugins/linn.yaml":    {Data: cutoffCard("LinN", "[100, 2000]")},
+	})
+	rig := Rig{cutoffDump("LogW", true), cutoffDump("LinW", false), cutoffDump("LogN", true), cutoffDump("LinN", false)}
+
+	type want struct {
+		step    [2]float64 // the step's bounds, Hz
+		problem string     // "": it can carry it
+	}
+	for _, tc := range []struct {
+		technique string
+		plugin    string
+		want      map[string]want
+	}{
+		{"mixing.highpass_low", "aufx/LogW/Test", map[string]want{
+			// 80·(2205^(1/127) - 1)
+			"LogW": {[2]float64{4.95, 5.05}, ""},
+			"LinW": {[2]float64{22040.0 / 127, 22040.0 / 127}, "too coarse for 80 within 5%"},
+			"LogN": {[2]float64{0, 1e9}, "80 lies outside the mapping range 100..2000"},
+			"LinN": {[2]float64{0, 1e9}, "80 lies outside the mapping range 100..2000"},
+		}},
+		{"mixing.highpass_high", "aufx/LinN/Test", map[string]want{
+			"LogW": {[2]float64{93.5, 94}, "too coarse for 1500 within 1%"},
+			"LinW": {[2]float64{22040.0 / 127, 22040.0 / 127}, "too coarse for 1500 within 1%"},
+			// 1500·(20^(1/127) - 1)
+			"LogN": {[2]float64{35.7, 35.9}, "too coarse for 1500 within 1%"},
+			"LinN": {[2]float64{1900.0 / 127, 1900.0 / 127}, ""},
+		}},
+	} {
+		tech, ok := lib.Technique(tc.technique)
+		if !ok {
+			t.Fatalf("no technique %s", tc.technique)
+		}
+		b := lib.Bind(tech, rig)[0]
+		if b.Plugin != tc.plugin {
+			t.Errorf("%s: bound to %q, want %q (%+v)", tc.technique, b.Plugin, tc.plugin, b.Candidates)
+		}
+		for _, c := range b.Candidates {
+			w := tc.want[c.Name]
+			if len(c.Params) != 1 {
+				t.Errorf("%s on %s: params %+v", tc.technique, c.Name, c.Params)
+				continue
+			}
+			if step := c.Params[0].Step; step < w.step[0] || step > w.step[1] || math.IsNaN(step) {
+				t.Errorf("%s on %s: a CC step of %g Hz, want %g..%g", tc.technique, c.Name, step, w.step[0], w.step[1])
+			}
+			switch {
+			case w.problem == "" && len(c.Problems) != 0:
+				t.Errorf("%s on %s: problems %q, want none", tc.technique, c.Name, c.Problems)
+			case w.problem != "" && (len(c.Problems) != 1 || !strings.Contains(c.Problems[0], w.problem)):
+				t.Errorf("%s on %s: problems %q, want %q", tc.technique, c.Name, c.Problems, w.problem)
+			}
+		}
 	}
 }
