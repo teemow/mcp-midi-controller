@@ -20,7 +20,7 @@ import (
 	"github.com/teemow/midi-device/device"
 )
 
-var craftToolNames = []string{"list_techniques", "get_technique", "patch_song", "apply_technique"}
+var craftToolNames = []string{"list_techniques", "get_technique", "patch_song", "apply_technique", "get_craft_job", "profile_plugin"}
 
 func TestCraftToolsAreSwitchedOnByTheConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

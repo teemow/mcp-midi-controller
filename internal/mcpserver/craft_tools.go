@@ -78,6 +78,8 @@ func (s *Server) registerCraftTools() {
 	}, s.handlePatchSong)
 
 	s.registerApplyTechnique()
+	s.registerCraftJobTool()
+	s.registerProfilePlugin()
 }
 
 // loadCraft reads the cards and the rig the bindings are made on: the probe

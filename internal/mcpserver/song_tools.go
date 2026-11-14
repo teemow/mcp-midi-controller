@@ -1309,6 +1309,11 @@ func (s *Server) handleStopSong(_ context.Context, _ *mcp.CallToolRequest) (*mcp
 	}
 	s.mixMu.Unlock()
 	// So does a stem recording: end it, not only the pass that is playing.
+	s.craftMu.Lock()
+	if s.craftJob != nil && !s.craftJob.finished() {
+		s.craftJob.cancel()
+	}
+	s.craftMu.Unlock()
 	s.stemsJobMu.Lock()
 	if s.stems != nil && !s.stems.finished() {
 		s.stems.cancel()

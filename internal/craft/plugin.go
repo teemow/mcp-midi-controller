@@ -33,7 +33,18 @@ type PluginCard struct {
 	Name      string                `json:"name"`
 	Provides  []Provision           `json:"capabilities"`
 	Notes     []string              `json:"notes,omitempty"`
-	Source    string                `json:"source"`
+	// Measured says what profile_plugin measured of the plugin and when;
+	// nil for a card written by hand.
+	Measured *Measured `json:"measured,omitempty"`
+	Source   string    `json:"source"`
+}
+
+// Measured is what profile_plugin measured of a plugin: when, and what each
+// sweep showed.
+type Measured struct {
+	At     string   `json:"at" yaml:"at"`
+	By     string   `json:"by,omitempty" yaml:"by,omitempty"`
+	Checks []string `json:"checks,omitempty" yaml:"checks,omitempty"`
 }
 
 // Provision is how the plugin provides one capability.
@@ -91,6 +102,7 @@ type pluginFile struct {
 	Name         string                   `yaml:"name"`
 	Capabilities map[string]provisionFile `yaml:"capabilities"`
 	Notes        stringList               `yaml:"notes"`
+	Measured     *Measured                `yaml:"measured"`
 }
 
 type provisionFile struct {
@@ -162,7 +174,10 @@ func ParsePluginCard(data []byte, vocab Vocabulary) (*PluginCard, error) {
 		return nil, err
 	}
 	var p problems
-	card := &PluginCard{Plugin: strings.TrimSpace(f.Plugin), Name: strings.TrimSpace(f.Name), Notes: f.Notes}
+	card := &PluginCard{Plugin: strings.TrimSpace(f.Plugin), Name: strings.TrimSpace(f.Name), Notes: f.Notes, Measured: f.Measured}
+	if f.Measured != nil && strings.TrimSpace(f.Measured.At) == "" {
+		p.addf("measured: at: missing; when the plugin was measured")
+	}
 	if card.Plugin == "" {
 		p.addf("plugin: missing; the component tuple type/subtype/manufacturer")
 	} else if c, err := ParseComponent(card.Plugin); err != nil {
