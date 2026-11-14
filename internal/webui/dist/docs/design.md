@@ -308,6 +308,11 @@ Global tools:
   sign the daemon in to the user's Google Drive with the user's own OAuth
   client, and `upload_recording` puts a recording there and returns its link.
   See `docs/recording.md`.
+- Craft cards (`internal/craft`), switched on by `craft_tools: true`:
+  `list_techniques` / `get_technique` show the technique cards (what a craft
+  does, by the capabilities it needs) and, per capability, the plugin of the
+  rig that would carry it, from the plugin cards and the rig's order of
+  preference. See `docs/craft-cards.md`.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
   BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
   per-device settle baked into the event order) and optionally HTTP-POST it to
@@ -451,6 +456,10 @@ $XDG_CONFIG_HOME/mcp-midi-controller/     # rig-as-code — git init here
   device-types/*.yaml                     #   custom/learned device types (override bundled by id)
   devices.yaml                            #   your devices (type + where it is) → the rig
   scenes/*.yaml                           #   saved scenes
+  craft/                                  #   the rig's craft cards (docs/craft-cards.md)
+    techniques/*.yaml                     #     technique cards (replace shipped ones by id)
+    plugins/*.yaml                        #     plugin cards, by component tuple
+    prefer.yaml                           #     the order of preference per capability
 $XDG_STATE_HOME/mcp-midi-controller/      # volatile — not versioned
   desired-state.json                      #   last applied state (resume on restart)
   *.log

@@ -174,6 +174,10 @@ type Server struct {
 	// made of each file. See song_pull_report.go.
 	syncReports aumreceiver.SyncReports
 
+	// craftTools switches the craft tools on (config craft_tools): the
+	// technique and plugin cards and the tools over them. See craft_tools.go.
+	craftTools bool
+
 	// probeMu serializes probe_sound for the whole excite→settle→capture cycle
 	// so two probes never overlap on the shared audio tap. This is what makes
 	// each probe analyse a clean, isolated segment (and replaces the harness's
@@ -188,6 +192,12 @@ type Option func(*Server)
 // usb_allow_writes). Default (no option) is false: read-only over USB.
 func WithUSBAllowWrites(allow bool) Option {
 	return func(s *Server) { s.usbAllowWrites = allow }
+}
+
+// WithCraftTools switches the craft tools on (config craft_tools). Default
+// (no option) is off: the tools are not registered.
+func WithCraftTools(on bool) Option {
+	return func(s *Server) { s.craftTools = on }
 }
 
 // WithAudioTap attaches the ProbeAudioTap registry so the read-only
