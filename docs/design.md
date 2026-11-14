@@ -281,7 +281,8 @@ Global tools:
 - `discover_endpoints` / `pair_endpoint` — BLE discovery + pairing.
 - `save_scene` / `recall_scene` / `list_scenes`.
 - Songs (`internal/song`): `list_songs` / `get_song` / `save_song` /
-  `delete_song` store a multi-track song as one YAML document;
+  `delete_song` store a multi-track song as one YAML document and report its
+  stored `revision`;
   `list_song_plugins` / `get_song_plugin` show what it can host;
   `author_song_session` builds the AUM session that hosts it, with the song
   written into a sequencer plugin when one is installed; `load_song`
@@ -308,11 +309,14 @@ Global tools:
   sign the daemon in to the user's Google Drive with the user's own OAuth
   client, and `upload_recording` puts a recording there and returns its link.
   See `docs/recording.md`.
-- Craft cards (`internal/craft`), switched on by `craft_tools: true`:
+- Craft tools (`internal/craft`), switched on by `craft_tools: true`:
   `list_techniques` / `get_technique` show the technique cards (what a craft
   does, by the capabilities it needs) and, per capability, the plugin of the
   rig that would carry it, from the plugin cards and the rig's order of
-  preference. See `docs/craft-cards.md`.
+  preference; `patch_song` applies an id-keyed merge patch against the song's
+  current `revision` through `save_song`; and every craft tool answers in one
+  `craft.Answer` shape (`craft`, `techniques`, `patch`, `revision`, `why`,
+  `checks`, `applied`). See `docs/craft-tools.md` and `docs/craft-cards.md`.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
   BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
   per-device settle baked into the event order) and optionally HTTP-POST it to

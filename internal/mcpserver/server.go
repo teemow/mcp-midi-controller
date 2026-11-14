@@ -120,11 +120,14 @@ type Server struct {
 	audioSnaps   map[string]audiotap.Snapshot
 	lastProbe    *audiotap.Snapshot
 
-	// songs is the song store behind the song tools and player the one song
+	// songs is the song store behind the song tools, guarded for mutations by
+	// songsMu (save_song, delete_song, patch_song and craft tools with apply:
+	// true, which read, patch and store under one lock), and player the one song
 	// playback the daemon runs at a time (play_song / stop_song). See
-	// song_tools.go.
-	songs  *song.Store
-	player song.Player
+	// song_tools.go and craft_tools.go.
+	songsMu sync.Mutex
+	songs   *song.Store
+	player  song.Player
 
 	// mix is the mix measurement that runs or ran last (mix_song), guarded
 	// by mixMu. See song_mix.go.

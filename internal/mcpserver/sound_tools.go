@@ -209,7 +209,10 @@ func (s *Server) handleOpenSoundLab(ctx context.Context, req *mcp.CallToolReques
 	if err != nil {
 		return textResult("the lab: "+err.Error(), true), nil
 	}
-	if _, err := s.songs.Save(soundLabID, data); err != nil {
+	s.songsMu.Lock()
+	_, err = s.songs.Save(soundLabID, data)
+	s.songsMu.Unlock()
+	if err != nil {
 		return textResult("save the lab: "+err.Error(), true), nil
 	}
 	// The lab plays no notes of its own, so there is nothing to check by
