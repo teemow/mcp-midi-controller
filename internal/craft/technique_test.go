@@ -18,7 +18,7 @@ when: A track whose role is not bass has energy below its lowest note.
 when_not:
   - A sub pad or an 808 that is meant to fill the low end.
   - Low strings in an orchestral piece.
-targets: track
+applies_to: track
 needs: [eq.highpass]
 set:
   eq.highpass:
@@ -38,7 +38,7 @@ func TestParseSettingsCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tc.Kind != KindSettings || tc.Craft != "mixing" || !slices.Equal(tc.Targets, []string{"track"}) {
+	if tc.Kind != KindSettings || tc.Craft != "mixing" || !slices.Equal(tc.AppliesTo, []string{"track"}) {
 		t.Fatalf("card = %+v", tc)
 	}
 	if len(tc.WhenNot) != 2 || !slices.Equal(tc.Needs, []string{"eq.highpass"}) {
@@ -92,7 +92,7 @@ func TestParseSettingsCardDefaults(t *testing.T) {
 id: mastering.level
 craft: mastering
 title: A level
-targets: [master, track]
+applies_to: [master, track]
 needs: [level.gain, stereo.mono_bass]
 set:
   level.gain: {gain: -3}
@@ -108,8 +108,8 @@ precision:
 	if len(tc.Settings) != 1 || tc.Settings[0].Values[0].Precision.Amount != 0.5 {
 		t.Errorf("settings = %+v", tc.Settings)
 	}
-	if !slices.Equal(tc.Targets, []string{"master", "track"}) || !slices.Equal(tc.Needs, []string{"level.gain", "stereo.mono_bass"}) {
-		t.Errorf("targets %v, needs %v", tc.Targets, tc.Needs)
+	if !slices.Equal(tc.AppliesTo, []string{"master", "track"}) || !slices.Equal(tc.Needs, []string{"level.gain", "stereo.mono_bass"}) {
+		t.Errorf("applies_to %v, needs %v", tc.AppliesTo, tc.Needs)
 	}
 	if tc.Verify != nil {
 		t.Errorf("verify = %+v", tc.Verify)
@@ -118,7 +118,7 @@ precision:
 
 func TestParseTechniqueErrors(t *testing.T) {
 	base := func(extra string) string {
-		return "id: mastering.x\ncraft: mastering\ntitle: X\ntargets: master\n" + extra
+		return "id: mastering.x\ncraft: mastering\ntitle: X\napplies_to: master\n" + extra
 	}
 	for _, tc := range []struct {
 		name, card string
@@ -145,10 +145,10 @@ func TestParseTechniqueErrors(t *testing.T) {
 		{"no expectation", base("needs: [eq.highpass]\nverify: {measure: true_peak}\n"), []string{"exactly one of"}},
 		{"falls by nothing", base("needs: [eq.highpass]\nverify: {measure: crest_factor, falls: 0}\n"), []string{"falls: 0 is not above 0"}},
 		{"unknown field", base("needs: [eq.highpass]\nroles: [eq]\n"), []string{"field roles not found"}},
-		{"unknown craft", "id: mix.x\ncraft: mix\ntitle: X\ntargets: track\nneeds: [eq.highpass]\n", []string{`"mix" is not a craft`}},
-		{"id not of its craft", "id: mixing.x\ncraft: mastering\ntitle: X\ntargets: track\nneeds: [eq.highpass]\n", []string{"does not start with its craft"}},
-		{"bad id", "id: X\ncraft: mastering\ntitle: X\ntargets: track\nneeds: [eq.highpass]\n", []string{"is not <craft>.<name>"}},
-		{"missing id, title, targets", "craft: mastering\nneeds: [eq.highpass]\n", []string{"id: missing", "title: missing", "targets: missing"}},
+		{"unknown craft", "id: mix.x\ncraft: mix\ntitle: X\napplies_to: track\nneeds: [eq.highpass]\n", []string{`"mix" is not a craft`}},
+		{"id not of its craft", "id: mixing.x\ncraft: mastering\ntitle: X\napplies_to: track\nneeds: [eq.highpass]\n", []string{"does not start with its craft"}},
+		{"bad id", "id: X\ncraft: mastering\ntitle: X\napplies_to: track\nneeds: [eq.highpass]\n", []string{"is not <craft>.<name>"}},
+		{"missing id, title, applies_to", "craft: mastering\nneeds: [eq.highpass]\n", []string{"id: missing", "title: missing", "applies_to: missing"}},
 		{"both kinds", base("needs: [eq.highpass]\ntransform: lock_bass\n"), []string{"not both"}},
 		{"neither kind", base(""), []string{"needs capabilities (needs, set) or a transform"}},
 		{"unknown transform", base("transform: lock_bass\n"), []string{`"lock_bass" is not a transform (there are none yet)`}},
@@ -169,9 +169,14 @@ func TestParseTechniqueErrors(t *testing.T) {
 		}
 	}
 
-	_, err := ParseTechnique([]byte("id: mastering.x\ncraft: mastering\ntitle: X\ntargets: [master, desk]\nneeds: [eq.highpass]\n"), Default())
-	if err == nil || !strings.Contains(err.Error(), `"desk" is not a target`) {
-		t.Errorf("unknown target: %v", err)
+	_, err := ParseTechnique([]byte("id: mastering.x\ncraft: mastering\ntitle: X\napplies_to: [master, desk]\nneeds: [eq.highpass]\n"), Default())
+	if err == nil || !strings.Contains(err.Error(), `applies_to: "desk" is not one of track, section, master, song`) {
+		t.Errorf("unknown applies_to: %v", err)
+	}
+
+	_, err = ParseTechnique([]byte("id: mastering.x\ncraft: mastering\ntitle: X\ntargets: master\nneeds: [eq.highpass]\n"), Default())
+	if err == nil || !strings.Contains(err.Error(), "targets: renamed to applies_to") {
+		t.Errorf("the old field name: %v", err)
 	}
 }
 
@@ -195,7 +200,7 @@ func TestParseWritingCard(t *testing.T) {
 id: composition.lock_bass_to_kick
 craft: composition
 title: Lock the bass to the kick
-targets: [section, song]
+applies_to: [section, song]
 transform: lock_bass
 options:
   amount: "clamp(section.energy * 10, 20, 90)"
@@ -224,12 +229,12 @@ options:
 		{"{feel: 3}", "feel takes one of"},
 		{"{swing: 3}", `lock_bass has no option "swing"`},
 	} {
-		_, err := ParseTechnique([]byte("id: composition.x\ncraft: composition\ntitle: X\ntargets: song\ntransform: lock_bass\noptions: "+bad.options+"\n"), writingVocab())
+		_, err := ParseTechnique([]byte("id: composition.x\ncraft: composition\ntitle: X\napplies_to: song\ntransform: lock_bass\noptions: "+bad.options+"\n"), writingVocab())
 		if err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("options %s: %v, want %q", bad.options, err, bad.want)
 		}
 	}
-	_, err = ParseTechnique([]byte("id: composition.x\ncraft: composition\ntitle: X\ntargets: song\ntransform: voice\n"), writingVocab())
+	_, err = ParseTechnique([]byte("id: composition.x\ncraft: composition\ntitle: X\napplies_to: song\ntransform: voice\n"), writingVocab())
 	if err == nil || !strings.Contains(err.Error(), "known: lock_bass") {
 		t.Errorf("unknown transform: %v", err)
 	}
@@ -240,7 +245,7 @@ func TestParseTechniqueReportsEverything(t *testing.T) {
 id: mastering.x
 craft: mastering
 title: X
-targets: master
+applies_to: master
 needs: [eq.highpass, dynamics.limiter]
 set:
   eq.highpass: {freq: 1, sloap: 12}

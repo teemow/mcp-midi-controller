@@ -7,7 +7,7 @@ intent: >-
 when: Every master, first in its chain.
 when_not:
   - A master that is clean below 30 Hz already; the cut then changes only the phase of the low end.
-targets: master
+applies_to: master
 needs: [eq.highpass]
 set:
   eq.highpass:

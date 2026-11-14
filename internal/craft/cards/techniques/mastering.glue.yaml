@@ -9,7 +9,7 @@ when: A mix whose parts sound side by side rather than together, with a peak to 
 when_not:
   - A dense, flat mix (peak to loudness under 8 dB); it only loses its punch.
   - A piece meant to breathe, mastered to a dynamic target.
-targets: master
+applies_to: master
 needs: [dynamics.compressor]
 set:
   dynamics.compressor:

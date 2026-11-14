@@ -8,7 +8,7 @@ intent: >-
 when: A master whose side signal carries bass (a wide pad, a stereo bass patch, a reverb's low end).
 when_not:
   - A sparse acoustic piece whose low end is a room's and is meant to stay wide.
-targets: master
+applies_to: master
 needs: [stereo.mono_bass]
 set:
   stereo.mono_bass:

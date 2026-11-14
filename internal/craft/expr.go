@@ -21,7 +21,7 @@ const (
 	VarTempo         = "tempo"          // beats per minute
 	VarBeatMS        = "beat_ms"        // one beat in milliseconds
 	VarBarMS         = "bar_ms"         // one bar in milliseconds
-	VarLowestNoteHz  = "lowest_note_hz" // the lowest note of the target, in Hz
+	VarLowestNoteHz  = "lowest_note_hz" // the lowest note of what the card is applied to, in Hz
 	VarSectionEnergy = "section.energy" // the section's energy, 1 to 10
 )
 
