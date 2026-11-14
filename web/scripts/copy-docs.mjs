@@ -24,6 +24,7 @@ const files = [
   { src: join(docsDir, "songs.md"), dest: "songs.md" },
   { src: join(docsDir, "song-authoring.md"), dest: "song-authoring.md" },
   { src: join(docsDir, "craft-tools.md"), dest: "craft-tools.md" },
+  { src: resolve(repoRoot, "GLOSSARY.md"), dest: "GLOSSARY.md" },
   { src: join(docsDir, "recording.md"), dest: "recording.md" },
 ];
 
@@ -49,12 +50,14 @@ for (const f of files) {
   add(f.src, f.dest, title);
 }
 
-// docs/research/*.md
-const researchDir = join(docsDir, "research");
-if (existsSync(researchDir)) {
-  for (const name of readdirSync(researchDir)) {
-    if (name.endsWith(".md")) {
-      add(join(researchDir, name), join("research", name), `research/${name.replace(/\.md$/, "")}`);
+// docs/research/*.md, then the decision records in docs/adr/*.md
+for (const sub of ["research", "adr"]) {
+  const subDir = join(docsDir, sub);
+  if (existsSync(subDir)) {
+    for (const name of readdirSync(subDir)) {
+      if (name.endsWith(".md")) {
+        add(join(subDir, name), join(sub, name), `${sub}/${name.replace(/\.md$/, "")}`);
+      }
     }
   }
 }
