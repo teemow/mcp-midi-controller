@@ -339,27 +339,33 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 		pending = append(pending, pendingItem{id: key, node: entryMap, place: pl, segs: entrySegs})
 	}
 
-	// Pass 3: resolve placements across passes so chained insertions
+	// Pass 3: place the "first" and "last" entries before any anchored one, so
+	// several of them keep the patch's key order as one block at either end,
+	// and an entry anchored on one of them ("after: hp") stays right next to it
+	// however the keys are ordered: a later "first" entry cannot land between
+	// hp and the entry chained after it, as a later "last" one never could.
+	firsts := 0
+	anchored := pending[:0]
+	for _, p := range pending {
+		switch p.place.kind {
+		case placeFirst:
+			items = slices.Insert(items, firsts, p.node)
+			firsts++
+		case placeLast:
+			items = append(items, p.node)
+		default:
+			anchored = append(anchored, p)
+		}
+	}
+	pending = anchored
+
+	// Pass 4: resolve anchored placements across passes so chained insertions
 	// (e.g. comp "after: hp" alongside hp "first") work regardless of key order.
-	// Each "first" entry goes right after the one placed "first" before it, so
-	// several keep the patch's key order the way "last" entries do.
-	var lastFirst *yaml.Node
 	for len(pending) > 0 {
 		progressed := false
 		rest := pending[:0]
 		for _, p := range pending {
 			switch p.place.kind {
-			case placeFirst:
-				at := 0
-				if lastFirst != nil {
-					at = slices.Index(items, lastFirst) + 1
-				}
-				items = slices.Insert(items, at, p.node)
-				lastFirst = p.node
-				progressed = true
-			case placeLast:
-				items = append(items, p.node)
-				progressed = true
 			case placeAfter:
 				if idx := findItem(p.place.anchor); idx >= 0 {
 					items = slices.Insert(items, idx+1, p.node)

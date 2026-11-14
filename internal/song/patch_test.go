@@ -160,15 +160,19 @@ func TestPatchPlacementsAndChaining(t *testing.T) {
 }
 
 // TestPatchSeveralFirstAndLastKeepPatchOrder checks that several new entries
-// placed "first" (or "last") in one patch keep the patch's key order, and that
-// an entry placed before one of them in the same patch stays before it.
+// placed "first" (or "last") in one patch keep the patch's key order, that an
+// entry placed before one of them in the same patch stays before it, and that
+// an entry chained after one of them stays right after it even when a later
+// key places another entry "first" (or "last").
 func TestPatchSeveralFirstAndLastKeepPatchOrder(t *testing.T) {
 	jsonPatch := `{
 		"master": {
 			"hp": {"place": "first", "plugin": "sub_hp"},
+			"comp": {"place": "after: hp", "plugin": "bus_comp"},
 			"trim": {"place": "before: hp", "plugin": "gain"},
 			"air": {"place": "first", "plugin": "eq_air"},
 			"lim": {"place": "last", "plugin": "limiter"},
+			"tail": {"place": "after: lim", "plugin": "dither"},
 			"clip": {"place": "last", "plugin": "clipper"}
 		}
 	}`
@@ -181,7 +185,7 @@ func TestPatchSeveralFirstAndLastKeepPatchOrder(t *testing.T) {
 	for i, fx := range sg.Master {
 		got[i] = fx.EffectID()
 	}
-	want := []string{"trim", "hp", "air", "glue", "lim", "clip"}
+	want := []string{"trim", "hp", "comp", "air", "glue", "lim", "tail", "clip"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("master chain = %v, want %v\n%s", got, want, out)
 	}
