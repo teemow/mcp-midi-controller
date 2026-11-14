@@ -134,6 +134,12 @@ type Server struct {
 	mixMu sync.Mutex
 	mix   *mixJob
 
+	// craftJob is the craft tool that plays (apply_technique's verify,
+	// profile_plugin), running or run last, guarded by craftMu. See
+	// craft_job.go.
+	craftMu  sync.Mutex
+	craftJob *craftJob
+
 	// stems is the stem recording that runs or ran last (record_song_stems),
 	// guarded by stemsJobMu; stemsMu serializes the record of the takes kept.
 	// deck replaces AUM's screen as the stems tools read and tap it; nil

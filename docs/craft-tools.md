@@ -235,7 +235,7 @@ A capability names its write path:
 
 | Path | How | Precision |
 |------|-----|-----------|
-| `cc` | The song's `params`, as today, through the binding's mapping range | the 128 steps of the mapping range, measured by `profile_plugin` |
+| `cc` | The song's `params`, as today, through the binding's mapping range | the 128 steps of the mapping range, along the parameter's travel; `profile_plugin` records them on the card |
 | `state` | A field of the plugin's saved state, where it is text (JSON, JUCE XML): capture-and-mutate, see [auv3-state-authoring.md](auv3-state-authoring.md). Only for a setting no parameter exposes | exact |
 | `preset` | A factory preset, or a state captured from a node set by hand and named | exact, for the settings the preset holds |
 
@@ -249,9 +249,13 @@ says which plugin came closest and how far off it is.
   capabilities by name, unit and range, and then measures: it sweeps a
   parameter at the tap and checks that the expected thing moves (a cutoff
   moves the spectral centroid, a high-pass the low band, a threshold the crest
-  factor). It also measures each parameter's step size within its mapping
-  range. The result is a card in the config dir that says what was measured
-  and when.
+  factor). It also gives each parameter's step size within its mapping
+  range: it follows from the travel AUM was measured to move a parameter
+  along (ADR 0003, [songs.md](songs.md#mapping-ranges)), linear or the log
+  scale its plugin shows it on, and is not measured again per plugin. The
+  result is a card in the config dir that says what was measured and when; a
+  card of the plugin the rig has already keeps its notes and the
+  capabilities that were not swept.
 - What the research notes found about a plugin (a synth that needs its gain
   staged first, a glide that only sounds legato, a drum machine's own
   variation) is the rest of the plugin's knowledge entry; the card's `notes`

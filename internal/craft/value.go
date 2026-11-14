@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -94,6 +95,9 @@ func compileNumber(raw any, allowed []string) (*Expr, error) {
 	case uint64:
 		return Number(float64(x)), nil
 	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return nil, fmt.Errorf("%v is not a finite number", x)
+		}
 		return Number(x), nil
 	case string:
 		e, err := ParseExpr(x, allowed)

@@ -314,9 +314,15 @@ Global tools:
   does, by the capabilities it needs) and, per capability, the plugin of the
   rig that would carry it, from the plugin cards and the rig's order of
   preference; `patch_song` applies an id-keyed merge patch against the song's
-  current `revision` through `save_song`; and every craft tool answers in one
-  `craft.Answer` shape (`craft`, `techniques`, `patch`, `revision`, `why`,
-  `checks`, `applied`). See `docs/craft-tools.md` and `docs/craft-cards.md`.
+  current `revision` through `save_song`; `apply_technique` applies a
+  settings card to a track, a section, the master or the song (and with
+  `verify` plays and measures before and after); `profile_plugin` matches an
+  effect's parameters to the capabilities, sweeps them at the tap in a lab
+  song and writes its plugin card; `get_craft_job` follows the two that play
+  (measured over the tap's PCM by `internal/measure`). Every craft tool
+  answers in one `craft.Answer` shape (`craft`, `techniques`, `patch`,
+  `revision`, `why`, `checks`, `applied`). See `docs/craft-tools.md` and
+  `docs/craft-cards.md`.
 - `export_scene_to_footswitch` — compile a saved scene into a standalone
   BLE-MIDI footswitch's on-device JSON schema (program-change before CC, with
   per-device settle baked into the event order) and optionally HTTP-POST it to

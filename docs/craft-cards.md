@@ -130,8 +130,10 @@ writing card loads once its transform does.
 ### Values
 
 A value is a number, one of an enumerated parameter's labels, or arithmetic:
-numbers, `+ - * /`, parentheses, `min(a, b, …)`, `max(a, b, …)` and
-`clamp(x, low, high)`, with what the song tells:
+numbers, `+ - * /`, parentheses, `min(a, b, …)`, `max(a, b, …)`,
+`clamp(x, low, high)` and `log2(x)` (for a plugin card whose plugin takes a
+frequency as its octaves above 1 Hz, as Pro-Q 3 does: `value: "log2(freq)"`),
+with what the song tells:
 
 | Name | Is |
 |------|----|
@@ -143,8 +145,11 @@ numbers, `+ - * /`, parentheses, `min(a, b, …)`, `max(a, b, …)` and
 
 A delay of `beat_ms * 0.75` stays in time when the tempo changes. Values are
 parsed and checked when the card loads; a constant outside its parameter's
-range is an error there, and one that follows the song is checked when it is
-worked out. There is nothing more: no conditions, no other functions.
+range, or one that is not a finite number, is an error there, and one that
+follows the song is checked when it is worked out. Before a song is known it
+is checked over the span a song can give it: `clamp(0.5 * lowest_note_hz, 20,
+35)` is 20..35 Hz, and a plugin binds only if it reaches all of that. There is
+nothing more: no conditions, no other functions.
 
 ## Plugin cards
 
@@ -185,6 +190,9 @@ notes:
   the capability's parameters by name (`attack / 1000` for a plugin in
   seconds). Without it the number is passed on as it is.
 - `notes` hold what is learnt about the plugin, for the next session.
+- `measured` says what `profile_plugin` measured of the plugin and when
+  (`at`, `by`, and under `checks` a line per sweep and per parameter's step
+  size); a card written by hand has none.
 
 There is no `roles` field: what a plugin is for is the capabilities it
 provides.
@@ -223,20 +231,62 @@ it leaves out come after the ones it names, by name.
   `revision` is the one the patch was made against, applied or not; an
   applied answer's text names the stored revision too.
 
+- **`apply_technique`** applies a settings card to a track, one section of a
+  track or the master (the effect declared bypassed, a scene switching it on
+  there), or the master or the song. It works out the card's values for the
+  song (its tempo, beat and bar, the lowest note of what it is applied to),
+  binds every capability with them, converts each value into the plugin's
+  units and places the effect as the card says: `before`/`after` a
+  capability is before or after the effect whose plugin provides it, before
+  one the chain lacks is last, after one it lacks is first, and an effect the
+  chain has already (the card applied again) is set where it is; applied to
+  the whole track or the master, it plays everywhere again, though a
+  section's card declared it bypassed. Without
+  `apply` the patch is checked only; with it the song is stored. When a
+  capability has no plugin that carries it, it changes nothing and names the
+  closest plugin and how far off it comes. `verify: true` (with `apply` and
+  `confirm`) plays a pass of what the card is applied to, stores the change,
+  loads the session again, plays the same pass, and judges the card's
+  `verify` on what the master tap read before and after: a miss is reported
+  in the answer's `checks`, and the change stays.
+- **`profile_plugin`** measures an effect and writes its plugin card. It
+  matches the probe dump's parameters to the capabilities by name, unit and
+  range (a time in seconds gets `value: "attack / 1000"`, a share of 1 `mix /
+  100`, and a parameter whose range is wider than the capability's gets the
+  capability's part as its mapping range), or takes the capabilities an
+  agent passes as `card` (a multi-band EQ's band and shape). Then a lab song
+  (`plugin_lab`) plays white noise in bursts through the plugin, a section
+  per value of each capability's sweep (a high-pass's cutoff at 40, 160 and
+  640 Hz, a compressor's threshold at -40, -20 and 0 dB …), and the
+  capability's measurement has to move the way it says. The capabilities
+  that pass are written to `craft/plugins/` with `measured`, which also gives
+  each parameter's step size over its mapping range (along its travel); the
+  others are reported with their readings. A card of the plugin the rig has
+  already is replaced, but keeps its notes and the capabilities that were not
+  swept, with what was measured of them. `dry_run` only proposes the card.
+- **`get_craft_job`** follows a craft tool that plays (`verify`,
+  `profile_plugin`) and gives its report. Such a tool runs in the background
+  like `mix_song`, one at a time, counts as busy and holds the host awake;
+  `stop_song` ends it.
+
 A plugin carries a capability when it is on the rig (its probe dump is staged,
-`import_auv3_probe`), its card names parameters the dump has, and it can set
-what the card sets. For a value that is a number in the plugin's units, the
-step of a CC over the mapping range has to reach the card's precision: a
+`import_auv3_probe`), its card names parameters the dump has with the values
+its `enable` sets, and it can set what the card sets. For a value that is a
+number in the plugin's units, the value has to lie within the mapping range,
+and the step of a CC there, along the parameter's travel (linear, or the log
+scale its plugin shows it on, [songs.md](songs.md#mapping-ranges)), has to
+reach the card's precision carried through the card's `value` conversion: a
 ceiling of -1 dBFS within 0.1 dB is out of reach of a CC over 30 dB (steps of
 0.24 dB), and in reach over 6 dB (0.05 dB). The step is the one near the
-value: a parameter its plugin shows on a log scale moves along it
-([songs.md](songs.md#mapping-ranges)), so its steps grow with the value, and
-an Apple high-pass's cutoff over its whole range (10 Hz to 22050 Hz) moves in
-steps of about 5 Hz near 80 Hz and 94 Hz near 1500 Hz. Where the value
-follows the song, the step shown is the coarsest, at the top of the range.
-The tools only read; applying a
-technique is `apply_technique`'s
-(https://github.com/teemow/mcp-midi-controller/issues/230).
+value: a parameter its plugin shows on a log scale moves along it, so its
+steps grow with the value, and an Apple high-pass's cutoff over its whole
+range (10 Hz to 22050 Hz) moves in steps of about 5 Hz near 80 Hz and 94 Hz
+near 1500 Hz. Where the value follows the song, every value of its span is
+checked, and the coarsest step is shown. A conversion that fails is a
+problem of that plugin, not a binding. A plugin whose only trouble is its
+reach has a **closeness**: its worst setting's error as a multiple of the
+precision asked for (`off` in the bindings), and the binding names the
+closest such plugin when none carries the capability.
 
 ## The shipped cards
 
@@ -252,8 +302,8 @@ The first mastering cards, for the master's chain in its order:
 | `mastering.ceiling` | `dynamics.limiter` ceiling -1 dBFS, release 100 ms, its gain raised to the target, last | true peak at most -1 dBTP |
 
 No plugin card ships yet: a card names a plugin's own parameters, which are
-read from a probe dump and measured by `profile_plugin`. Until then a rig
-writes its own in `craft/plugins/`.
+read from a probe dump and measured by `profile_plugin` on a rig, into the
+rig's `craft/plugins/`.
 
 ## Not known
 

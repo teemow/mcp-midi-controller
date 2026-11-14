@@ -2,6 +2,7 @@ package craft
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +33,18 @@ type PluginCard struct {
 	Name      string                `json:"name"`
 	Provides  []Provision           `json:"capabilities"`
 	Notes     []string              `json:"notes,omitempty"`
-	Source    string                `json:"source"`
+	// Measured says what profile_plugin measured of the plugin and when;
+	// nil for a card written by hand.
+	Measured *Measured `json:"measured,omitempty"`
+	Source   string    `json:"source"`
+}
+
+// Measured is what profile_plugin measured of a plugin: when, and what each
+// sweep showed.
+type Measured struct {
+	At     string   `json:"at" yaml:"at"`
+	By     string   `json:"by,omitempty" yaml:"by,omitempty"`
+	Checks []string `json:"checks,omitempty" yaml:"checks,omitempty"`
 }
 
 // Provision is how the plugin provides one capability.
@@ -90,6 +102,7 @@ type pluginFile struct {
 	Name         string                   `yaml:"name"`
 	Capabilities map[string]provisionFile `yaml:"capabilities"`
 	Notes        stringList               `yaml:"notes"`
+	Measured     *Measured                `yaml:"measured"`
 }
 
 type provisionFile struct {
@@ -161,7 +174,10 @@ func ParsePluginCard(data []byte, vocab Vocabulary) (*PluginCard, error) {
 		return nil, err
 	}
 	var p problems
-	card := &PluginCard{Plugin: strings.TrimSpace(f.Plugin), Name: strings.TrimSpace(f.Name), Notes: f.Notes}
+	card := &PluginCard{Plugin: strings.TrimSpace(f.Plugin), Name: strings.TrimSpace(f.Name), Notes: f.Notes, Measured: f.Measured}
+	if f.Measured != nil && strings.TrimSpace(f.Measured.At) == "" {
+		p.addf("measured: at: missing; when the plugin was measured")
+	}
 	if card.Plugin == "" {
 		p.addf("plugin: missing; the component tuple type/subtype/manufacturer")
 	} else if c, err := ParseComponent(card.Plugin); err != nil {
@@ -258,7 +274,10 @@ func compileParamMap(c Capability, cp Param, write string, f paramMapFile) (Para
 		if err != nil {
 			return m, fmt.Errorf("fixed: %v", err)
 		}
-		v, _ := e.Const()
+		v, ok := e.Const()
+		if !ok {
+			return m, fmt.Errorf("fixed: %s is not a number", e)
+		}
 		if v < cp.Min || v > cp.Max {
 			return m, fmt.Errorf("fixed: %g is outside %s's range %s", v, cp.Name, cp.Range())
 		}
@@ -296,8 +315,8 @@ func compileParamMap(c Capability, cp Param, write string, f paramMapFile) (Para
 		m.Value = e
 	}
 	if f.Range != nil {
-		if len(f.Range) != 2 || f.Range[0] >= f.Range[1] {
-			return m, fmt.Errorf("range: write [low, high] in the plugin's units, low below high")
+		if len(f.Range) != 2 || !finite(f.Range[0]) || !finite(f.Range[1]) || f.Range[0] >= f.Range[1] {
+			return m, fmt.Errorf("range: write [low, high] in the plugin's units, two finite numbers, low below high")
 		}
 		m.Range = f.Range
 	}
@@ -313,6 +332,8 @@ func (c *PluginCard) Provision(capability string) (Provision, bool) {
 	}
 	return Provision{}, false
 }
+
+func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 // rangeString renders a mapping range.
 func rangeString(r []float64) string {

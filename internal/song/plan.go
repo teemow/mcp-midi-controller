@@ -1077,6 +1077,20 @@ func paramWire(p device.ProbeParam, v Value) (int, error) {
 	return clamp7(int(math.Round(pos * 127))), nil
 }
 
+// ValuePlace is where a value written in a song lies on a parameter's travel,
+// 0 at its lowest and 1 at its highest, or why the parameter cannot take it
+// (outside its range, not one of its labels).
+func ValuePlace(p device.ProbeParam, v Value) (float64, error) { return paramPos(p, v) }
+
+// ParseValue reads a value written as text the way a song document reads it:
+// a number, or else a string ("60%", a value label, on or off).
+func ParseValue(s string) Value {
+	if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+		return Number(f)
+	}
+	return Value{Str: s, IsStr: true}
+}
+
 // paramPos is where a value written in a song lies on the parameter's travel,
 // 0 at its lowest and 1 at its highest: a number by its value (along a log
 // scale for a parameter its plugin shows on one, see Travel), "NN%" by the
