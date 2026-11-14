@@ -34,10 +34,10 @@ technique by its `id`, a plugin card by its component tuple). The cards are
 read on every call, so an edit counts at once.
 
 Every card is checked against the capabilities when it loads: an unknown
-capability, parameter, field, craft, target or measurement is an error, and so
-is a value outside its parameter's range. A card that does not load is left
-out and named in the tools' `problems`; the others stay usable, and a shipped
-card stays when the rig's card of the same id is broken.
+capability, parameter, field, craft, `applies_to` value or measurement is an
+error, and so is a value outside its parameter's range. A card that does not
+load is left out and named in the tools' `problems`; the others stay usable,
+and a shipped card stays when the rig's card of the same id is broken.
 
 ## Capabilities
 
@@ -71,8 +71,8 @@ LUFS), `loudness_range` (LU), `peak_to_loudness` (dB), `crest_factor` (dB),
 
 A card belongs to one craft: `production`, `composition`, `drums`,
 `sound_design`, `orchestration`, `mixing` or `mastering`. Its id is the craft,
-a dot and a name: `mastering.ceiling`. It applies to `targets`: `track`,
-`section`, `master` or `song` (one, or a list). `intent`, `when` and
+a dot and a name: `mastering.ceiling`. `applies_to` says what it is applied
+to: `track`, `section`, `master` or `song` (one, or a list). `intent`, `when` and
 `when_not` say what it is for and when it is not.
 
 There are two kinds.
@@ -87,7 +87,7 @@ intent: Leave the low end to the kick and the bass.
 when: A track whose role is not bass has energy below its lowest note.
 when_not:
   - A sub pad or an 808 that is meant to fill the low end.
-targets: track
+applies_to: track
 needs: [eq.highpass]                 # the capabilities, in chain order
 set:
   eq.highpass:
@@ -106,7 +106,7 @@ verify:
   in `needs` without values goes in as its plugin has it.
 - `precision` is a share of the value (`"10%"`) or an amount in the
   parameter's unit (`0.1`).
-- `verify` measures the target before and after: `falls` and `rises` compare
+- `verify` measures what the card is applied to before and after: `falls` and `rises` compare
   after with before (by at least the amount), `at_most` and `at_least` read
   the result.
 
@@ -116,7 +116,7 @@ verify:
 id: composition.lock_bass_to_kick
 craft: composition
 title: Lock the bass to the kick
-targets: section
+applies_to: section
 transform: lock_bass
 options:
   amount: "clamp(section.energy * 10, 20, 90)"
@@ -138,7 +138,7 @@ numbers, `+ - * /`, parentheses, `min(a, b, …)`, `max(a, b, …)` and
 | `tempo` | beats per minute |
 | `beat_ms` | one beat in ms |
 | `bar_ms` | one bar in ms |
-| `lowest_note_hz` | the lowest note of the target, in Hz |
+| `lowest_note_hz` | the lowest note of what the card is applied to, in Hz |
 | `section.energy` | the section's energy, 1 to 10 |
 
 A delay of `beat_ms * 0.75` stays in time when the tempo changes. Values are
@@ -204,7 +204,7 @@ it leaves out come after the ones it names, by name.
 
 ## The tools
 
-- **`list_techniques`** lists the cards, filtered by `craft`, `target`,
+- **`list_techniques`** lists the cards, filtered by `craft`, `applies_to`,
   `capability`, `kind` or a word (`query`). With each, per capability it
   needs, the plugin of this rig that would carry it, or that none can.
 - **`get_technique`** shows one card in full, the capabilities it needs with

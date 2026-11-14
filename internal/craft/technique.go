@@ -17,8 +17,8 @@ import (
 // its id starts with it.
 var Crafts = []string{"production", "composition", "drums", "sound_design", "orchestration", "mixing", "mastering"}
 
-// Targets are what a technique can be applied to.
-var Targets = []string{"track", "section", "master", "song"}
+// AppliesTo are what a technique can be applied to.
+var AppliesTo = []string{"track", "section", "master", "song"}
 
 // Kind is the kind of a technique card.
 type Kind string
@@ -32,14 +32,14 @@ const (
 
 // Technique is one technique of one craft, checked against the vocabulary.
 type Technique struct {
-	ID      string   `json:"id"`
-	Craft   string   `json:"craft"`
-	Kind    Kind     `json:"kind"`
-	Title   string   `json:"title"`
-	Intent  string   `json:"intent,omitempty"`
-	When    string   `json:"when,omitempty"`
-	WhenNot []string `json:"when_not,omitempty"`
-	Targets []string `json:"targets"`
+	ID        string   `json:"id"`
+	Craft     string   `json:"craft"`
+	Kind      Kind     `json:"kind"`
+	Title     string   `json:"title"`
+	Intent    string   `json:"intent,omitempty"`
+	When      string   `json:"when,omitempty"`
+	WhenNot   []string `json:"when_not,omitempty"`
+	AppliesTo []string `json:"applies_to"`
 
 	// A settings card: the capabilities it needs in the order they go into
 	// the chain, what it sets, where in the chain, and how its result is
@@ -112,8 +112,8 @@ func (p Precision) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p.Amount)
 }
 
-// Place is where a settings card's capabilities go in the target's chain:
-// first, last, or before or after the plugin of another capability.
+// Place is where a settings card's capabilities go in the chain of what it is
+// applied to: first, last, or before or after the plugin of another capability.
 type Place struct {
 	Where      string `json:"where"` // first | last | before | after
 	Capability string `json:"capability,omitempty"`
@@ -126,8 +126,8 @@ func (p Place) String() string {
 	return p.Where
 }
 
-// Verify is how a settings card's result is checked: a measurement of the
-// target before and after, and what it has to show.
+// Verify is how a settings card's result is checked: a measurement of what
+// it is applied to before and after, and what it has to show.
 type Verify struct {
 	Measure Measurement `json:"measure"`
 	Band    []*Expr     `json:"band,omitempty"` // from and to, in Hz
@@ -184,7 +184,7 @@ type techniqueFile struct {
 	Intent    string                    `yaml:"intent"`
 	When      string                    `yaml:"when"`
 	WhenNot   stringList                `yaml:"when_not"`
-	Targets   stringList                `yaml:"targets"`
+	AppliesTo stringList                `yaml:"applies_to"`
 	Needs     []string                  `yaml:"needs"`
 	Set       map[string]map[string]any `yaml:"set"`
 	Precision map[string]map[string]any `yaml:"precision"`
@@ -192,6 +192,9 @@ type techniqueFile struct {
 	Verify    *verifyFile               `yaml:"verify"`
 	Transform string                    `yaml:"transform"`
 	Options   map[string]any            `yaml:"options"`
+
+	// Targets is applies_to's name until 2026-11-14, read only to say so.
+	Targets stringList `yaml:"targets"`
 }
 
 type verifyFile struct {
@@ -240,18 +243,21 @@ func ParseTechnique(data []byte, vocab Vocabulary) (*Technique, error) {
 	if t.Title == "" {
 		p.addf("title: missing")
 	}
-	if len(f.Targets) == 0 {
-		p.addf("targets: missing (%s)", strings.Join(Targets, ", "))
+	switch {
+	case len(f.Targets) > 0:
+		p.addf("targets: renamed to applies_to")
+	case len(f.AppliesTo) == 0:
+		p.addf("applies_to: missing (%s)", strings.Join(AppliesTo, ", "))
 	}
-	for _, tg := range f.Targets {
-		tg = strings.TrimSpace(tg)
+	for _, at := range f.AppliesTo {
+		at = strings.TrimSpace(at)
 		switch {
-		case !slices.Contains(Targets, tg):
-			p.addf("targets: %q is not a target (%s)", tg, strings.Join(Targets, ", "))
-		case slices.Contains(t.Targets, tg):
-			p.addf("targets: %s twice", tg)
+		case !slices.Contains(AppliesTo, at):
+			p.addf("applies_to: %q is not one of %s", at, strings.Join(AppliesTo, ", "))
+		case slices.Contains(t.AppliesTo, at):
+			p.addf("applies_to: %s twice", at)
 		default:
-			t.Targets = append(t.Targets, tg)
+			t.AppliesTo = append(t.AppliesTo, at)
 		}
 	}
 

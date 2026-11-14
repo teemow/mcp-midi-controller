@@ -8,7 +8,7 @@ when: A master asked for a warm character, or one that sounds thin and clean bes
 when_not:
   - A master asked to stay transparent.
   - A mix that is distorted already (a driven bass, a crushed drum bus).
-targets: master
+applies_to: master
 needs: [color.saturation]
 set:
   color.saturation:

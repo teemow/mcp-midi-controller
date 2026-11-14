@@ -30,13 +30,13 @@ func (s *Server) registerCraftTools() {
 		Name: "list_techniques",
 		Description: "List the technique cards: what a craft does, as data. A settings card names the capabilities it needs (eq.highpass, dynamics.limiter), never a plugin; a writing card names a transform. " +
 			"Each card comes with the plugin of this rig that would carry each capability it needs (the first in the rig's order of preference, craft/prefer.yaml, that has a plugin card and a staged probe dump), or why none can. " +
-			"Filter by craft (production, composition, drums, sound_design, orchestration, mixing, mastering), target (track, section, master, song), capability, kind (settings, writing) or a word. " +
+			"Filter by craft (production, composition, drums, sound_design, orchestration, mixing, mastering), what a card applies to (applies_to: track, section, master, song), capability, kind (settings, writing) or a word. " +
 			"The cards ship with the daemon; the rig's own in craft/ of the config dir replace a shipped card of the same id. get_technique shows one in full.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"craft": {"type": "string", "enum": ["production", "composition", "drums", "sound_design", "orchestration", "mixing", "mastering"], "description": "Only this craft's cards."},
-				"target": {"type": "string", "enum": ["track", "section", "master", "song"], "description": "Only cards that apply to this."},
+				"applies_to": {"type": "string", "enum": ["track", "section", "master", "song"], "description": "Only cards that apply to this."},
 				"capability": {"type": "string", "description": "Only cards that need this capability (e.g. dynamics.limiter)."},
 				"kind": {"type": "string", "enum": ["settings", "writing"], "description": "Only this kind of card."},
 				"query": {"type": "string", "description": "Only cards whose id, title, intent or when contain this text."}
@@ -98,7 +98,7 @@ type techniqueSummary struct {
 	Craft     string    `json:"craft"`
 	Kind      string    `json:"kind"`
 	Title     string    `json:"title"`
-	Targets   []string  `json:"targets"`
+	AppliesTo []string  `json:"applies_to"`
 	Needs     []string  `json:"needs,omitempty"`
 	Transform string    `json:"transform,omitempty"`
 	CarriedBy []carrier `json:"carried_by,omitempty"`
@@ -108,7 +108,7 @@ type techniqueSummary struct {
 func (s *Server) handleListTechniques(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Craft      string `json:"craft"`
-		Target     string `json:"target"`
+		AppliesTo  string `json:"applies_to"`
 		Capability string `json:"capability"`
 		Kind       string `json:"kind"`
 		Query      string `json:"query"`
@@ -130,13 +130,13 @@ func (s *Server) handleListTechniques(_ context.Context, req *mcp.CallToolReques
 	for _, t := range lib.Techniques() {
 		switch {
 		case args.Craft != "" && t.Craft != args.Craft,
-			args.Target != "" && !slices.Contains(t.Targets, args.Target),
+			args.AppliesTo != "" && !slices.Contains(t.AppliesTo, args.AppliesTo),
 			args.Capability != "" && !slices.Contains(t.Needs, args.Capability),
 			args.Kind != "" && string(t.Kind) != args.Kind,
 			query != "" && !strings.Contains(strings.ToLower(t.ID+"\n"+t.Title+"\n"+t.Intent+"\n"+t.When), query):
 			continue
 		}
-		sum := techniqueSummary{ID: t.ID, Craft: t.Craft, Kind: string(t.Kind), Title: t.Title, Targets: t.Targets, Needs: t.Needs, Transform: t.Transform, Source: t.Source}
+		sum := techniqueSummary{ID: t.ID, Craft: t.Craft, Kind: string(t.Kind), Title: t.Title, AppliesTo: t.AppliesTo, Needs: t.Needs, Transform: t.Transform, Source: t.Source}
 		var carried []string
 		for _, bd := range lib.Bind(t, rig) {
 			c := carrier{Capability: bd.Capability, Plugin: bd.Plugin, Missing: bd.Missing}
@@ -149,7 +149,7 @@ func (s *Server) handleListTechniques(_ context.Context, req *mcp.CallToolReques
 			sum.CarriedBy = append(sum.CarriedBy, c)
 		}
 		list = append(list, sum)
-		fmt.Fprintf(&b, "%s [%s, %s] %s", t.ID, t.Kind, strings.Join(t.Targets, "/"), t.Title)
+		fmt.Fprintf(&b, "%s [%s, %s] %s", t.ID, t.Kind, strings.Join(t.AppliesTo, "/"), t.Title)
 		switch {
 		case len(carried) > 0:
 			fmt.Fprintf(&b, " — %s", strings.Join(carried, "; "))
@@ -218,7 +218,7 @@ func (s *Server) handleGetTechnique(_ context.Context, req *mcp.CallToolRequest)
 
 // writeTechnique renders a card for a person.
 func writeTechnique(b *strings.Builder, t *craft.Technique) {
-	fmt.Fprintf(b, "%s (%s, %s card for %s; %s)\n%s\n", t.ID, t.Craft, t.Kind, strings.Join(t.Targets, ", "), t.Source, t.Title)
+	fmt.Fprintf(b, "%s (%s, %s card for %s; %s)\n%s\n", t.ID, t.Craft, t.Kind, strings.Join(t.AppliesTo, ", "), t.Source, t.Title)
 	if t.Intent != "" {
 		fmt.Fprintf(b, "intent: %s\n", t.Intent)
 	}

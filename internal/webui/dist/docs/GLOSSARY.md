@@ -131,8 +131,8 @@ What a mix or a master aims for, kept as a target card by name: `streaming`,
 loudness and true peak, a tonal curve, and each track role's level against an
 anchor role. The brief's `loudness` and `genre` pick the targets;
 `master_song` and `balance_mix` work toward them. A reference is a recording
-to compare with, not a target. The `targets` field of a technique card is
-something else: what the technique applies to.
+to compare with, not a target. What a technique card is applied to is its
+`applies_to`, not a target.
 
 ## Technique
 

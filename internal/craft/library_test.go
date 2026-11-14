@@ -69,14 +69,14 @@ func TestRigCardsReplaceShippedOnes(t *testing.T) {
 id: mastering.ceiling
 craft: mastering
 title: A ceiling for a loud master
-targets: master
+applies_to: master
 needs: [dynamics.limiter]
 set:
   dynamics.limiter: {ceiling: -2}
 place: last
 `)},
 		"techniques/hp.yaml":     {Data: []byte(highpassCard)},
-		"techniques/broken.yaml": {Data: []byte("id: mastering.air\ncraft: mastering\ntitle: X\ntargets: master\nneeds: [eq.tilt]\n")},
+		"techniques/broken.yaml": {Data: []byte("id: mastering.air\ncraft: mastering\ntitle: X\napplies_to: master\nneeds: [eq.tilt]\n")},
 		"techniques/notes.txt":   {Data: []byte("not a card")},
 		"plugins/eq.yaml":        {Data: []byte(eqCard)},
 	}
@@ -104,7 +104,7 @@ place: last
 }
 
 func TestRigDuplicates(t *testing.T) {
-	card := "id: mastering.x\ncraft: mastering\ntitle: X\ntargets: master\nneeds: [level.gain]\n"
+	card := "id: mastering.x\ncraft: mastering\ntitle: X\napplies_to: master\nneeds: [level.gain]\n"
 	rig := fstest.MapFS{
 		"techniques/a.yaml": {Data: []byte(card)},
 		"techniques/b.yaml": {Data: []byte(card)},

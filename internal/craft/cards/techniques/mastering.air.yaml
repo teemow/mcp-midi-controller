@@ -7,7 +7,7 @@ intent: >-
 when: A master darker above 8 kHz than its reference or its genre's tonal balance.
 when_not:
   - A master that is harsh already (cymbals, sibilance, a bright saw lead); that is cut between 2 and 5 kHz in the mix.
-targets: master
+applies_to: master
 needs: [eq.high_shelf]
 set:
   eq.high_shelf:

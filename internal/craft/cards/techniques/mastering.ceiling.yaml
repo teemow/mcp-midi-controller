@@ -8,7 +8,7 @@ intent: >-
 when: Every master, last in its chain.
 when_not:
   - A master for a medium that asks for another ceiling (-2 dBTP for a loud master that is encoded at a low bit rate).
-targets: master
+applies_to: master
 needs: [dynamics.limiter]
 set:
   dynamics.limiter:

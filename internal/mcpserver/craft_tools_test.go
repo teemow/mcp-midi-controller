@@ -214,7 +214,7 @@ func TestListTechniques(t *testing.T) {
 	}
 
 	// A broken card of the rig is named; the others stay usable.
-	writeFile(t, filepath.Join(config.CraftDir(), craft.TechniquesDir, "broken.yaml"), []byte("id: mastering.broken\ncraft: mastering\ntitle: X\ntargets: master\nneeds: [eq.tilt]\n"))
+	writeFile(t, filepath.Join(config.CraftDir(), craft.TechniquesDir, "broken.yaml"), []byte("id: mastering.broken\ncraft: mastering\ntitle: X\napplies_to: master\nneeds: [eq.tilt]\n"))
 	var broken listed
 	res = call(t, s.handleListTechniques, nil)
 	decodeStructured(t, res, &broken)
@@ -228,7 +228,7 @@ func TestListTechniques(t *testing.T) {
 func TestCraftToolsThroughAClient(t *testing.T) {
 	s, _ := craftRig(t)
 	cs := connectClient(t, s)
-	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_techniques", Arguments: map[string]any{"craft": "mastering", "target": "master"}})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_techniques", Arguments: map[string]any{"craft": "mastering", "applies_to": "master"}})
 	if err != nil {
 		t.Fatalf("list_techniques: %v", err)
 	}

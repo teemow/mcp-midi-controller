@@ -156,7 +156,7 @@ when: A track whose role is not bass has energy below its lowest note.
 when_not:
   - A sub pad or an 808 that is meant to fill the low end.
   - Low strings in an orchestral piece.
-targets: track                       # track | section | master | song
+applies_to: track                    # track | section | master | song
 needs: [eq.highpass]
 set:
   eq.highpass:
@@ -318,7 +318,7 @@ in the background like `mix_song`, counts as busy, and reports through
 
 | Tool | Does |
 |------|------|
-| `list_techniques` | The cards, by craft, target or capability, each with the plugins of the rig that can carry it |
+| `list_techniques` | The cards, by craft, what they apply to or capability, each with the plugins of the rig that can carry it |
 | `get_technique` | One card in full, with the bindings it would get on this rig |
 | `apply_technique` | Applies a card to a track, a section, the master or the song |
 | `patch_song` | Applies a patch a tool returned without `apply`, through `save_song`; refuses a patch whose revision is no longer current |
