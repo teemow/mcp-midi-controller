@@ -106,3 +106,41 @@ func TestSweepJudge(t *testing.T) {
 		}
 	}
 }
+
+// TestProposeSkipsWhatOnlyLooksAlike checks an expander's ratio is not taken
+// for a compressor's (AUDynamicsProcessor), and that a threshold without a
+// unit (FabFilter's) is taken in dB.
+func TestProposeSkipsWhatOnlyLooksAlike(t *testing.T) {
+	dyn := device.ProbeDump{
+		Component: device.ProbeComponent{Type: "aufx", Subtype: "dcmp", Manufacturer: "appl"},
+		Name:      "AUDynamicsProcessor",
+		Parameters: []device.ProbeParam{
+			{Address: 0, Identifier: "0", DisplayName: "Compression Threshold", Min: -100, Max: 20, UnitName: "dB", Writable: true},
+			{Address: 2, Identifier: "2", DisplayName: "Expansion Ratio", Min: 1, Max: 50, Writable: true},
+			{Address: 3, Identifier: "3", DisplayName: "Expansion Threshold", Min: -120, Max: 0, UnitName: "dB", Writable: true},
+			{Address: 4, Identifier: "4", DisplayName: "Attack Time", Min: 0.001, Max: 0.3, UnitName: "Seconds", Writable: true},
+		},
+	}
+	pv, ok := Propose(dyn, Default()).Capabilities["dynamics.compressor"]
+	if !ok {
+		t.Fatal("AUDynamicsProcessor is not proposed as a compressor")
+	}
+	if pv.Params["threshold"].Param != "Compression Threshold" {
+		t.Errorf("threshold = %+v", pv.Params["threshold"])
+	}
+	if r, ok := pv.Params["ratio"]; ok {
+		t.Errorf("an expander's ratio was taken for the compressor's: %+v", r)
+	}
+	fab := device.ProbeDump{
+		Component: device.ProbeComponent{Type: "aumf", Subtype: "FC2p", Manufacturer: "FabF"},
+		Name:      "Pro-C 2",
+		Parameters: []device.ProbeParam{
+			{Address: 1, Identifier: "p1", DisplayName: "Threshold", Min: -60, Max: 0, UnitName: "generic", Writable: true},
+			{Address: 2, Identifier: "p2", DisplayName: "Ratio", Min: 0, Max: 1, UnitName: "generic", Writable: true},
+		},
+	}
+	// Its ratio is a share of 1, another scale than 1..20: not matched.
+	if pv, ok := Propose(fab, Default()).Capabilities["dynamics.compressor"]; !ok || pv.Params["threshold"].Param != "Threshold" || pv.Params["ratio"].Param != "" {
+		t.Errorf("Pro-C 2: %+v", Propose(fab, Default()).Capabilities)
+	}
+}

@@ -135,6 +135,9 @@ func matchParam(dump device.ProbeDump, cp Param, used map[int]bool) (int, ParamS
 			continue
 		}
 		name := strings.ToLower(device.FirstNonEmpty(pp.DisplayName, pp.Identifier))
+		if excluded(name) {
+			continue
+		}
 		score := 0
 		for k, w := range synonyms[cp.Name] {
 			if name == w {
@@ -157,6 +160,20 @@ func matchParam(dump device.ProbeDump, cp Param, used map[int]bool) (int, ParamS
 		}
 	}
 	return best, bestSpec, best >= 0
+}
+
+// notMatched are words that mark a plugin parameter as something else than
+// it seems: an expander's ratio and threshold are not a compressor's, and a
+// side chain's frequency or level is not the signal's.
+var notMatched = []string{"expansion", "expander", "side chain", "sidechain", "lookahead"}
+
+func excluded(name string) bool {
+	for _, w := range notMatched {
+		if strings.Contains(name, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // wordIn reports whether w is in name as a word (or the start of one).
@@ -191,7 +208,9 @@ func fitUnits(pp device.ProbeParam, cp Param) (ParamSpec, bool) {
 			return spec, false
 		}
 	case UnitDB, UnitDBFS:
-		if unit != "db" && unit != "decibels" && unit != "dbfs" {
+		// Some plugins (FabFilter's) give their parameters no unit: a
+		// threshold of -60..0 is in dB all the same, and the sweep checks it.
+		if unit != "db" && unit != "decibels" && unit != "dbfs" && unit != "" && unit != "generic" {
 			return spec, false
 		}
 	case UnitMS:
@@ -218,8 +237,8 @@ func fitUnits(pp device.ProbeParam, cp Param) (ParamSpec, bool) {
 		}
 	}
 	lo, hi := cp.Min*scale, cp.Max*scale
-	if pp.Max < lo || pp.Min > hi {
-		return spec, false
+	if pp.Max <= lo || pp.Min >= hi {
+		return spec, false // no more than a point in common: another scale
 	}
 	// The part of the plugin's range the capability uses, when that is less.
 	rlo, rhi := math.Max(lo, pp.Min), math.Min(hi, pp.Max)
