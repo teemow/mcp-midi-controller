@@ -176,6 +176,9 @@ type NodePlan struct {
 	// refs is where the session keeps each of the dump's parameters, worked
 	// out when the first one is asked for.
 	refs []aum.ParamRef
+	// ranges are the mapping ranges the plugin's declaration gives, by
+	// parameter key (Plugin.Range).
+	ranges map[string][]float64
 }
 
 // PresetPlan is one factory preset the session can load into a node: the
@@ -199,6 +202,10 @@ type ParamPlan struct {
 	Key  string     `json:"key"`
 	Name string     `json:"name"`
 	At   Assignment `json:"-"`
+	// Range is the parameter's mapping range, the lowest and the highest
+	// value its CC reaches; nil spans the parameter's whole range. See
+	// range.go.
+	Range []float64 `json:"range,omitempty"`
 
 	param device.ProbeParam
 	// ref is where the session keeps the parameter's mapping: below the
@@ -401,6 +408,9 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 			MIDI: track != MasterTrack && (pl.MIDI || effect == ""),
 			dump: dump, home: pl.NodeState,
 		}
+		if err == nil {
+			n.resolveRanges(&e, at, pl)
+		}
 		if effect == "" && pl.writesState() {
 			m, _ := parseMeter(s.TimeSignature) // checked by Validate
 			n.kit = newKitState(&e, at, pl, m)
@@ -464,6 +474,7 @@ func resolve(s *Song, cat Catalog, o PlanOptions) (*Plan, error) {
 				continue
 			}
 			n := &NodePlan{Track: name, Effect: fx.EffectID(), Plugin: id, Name: cat[id].Name, dump: cat[id], home: fx.NodeState}
+			n.resolveRanges(&e, at, fx)
 			p.collect(&e, n, fx.NodeState, at)
 		}
 	}
@@ -755,7 +766,7 @@ func (p *Plan) collect(e *errs, n *NodePlan, st NodeState, where string) {
 			e.addf("%s/params/%s: %v", where, name, err)
 			continue
 		}
-		if _, err := paramWire(pp.param, st.Params[name]); err != nil {
+		if _, err := pp.wire(st.Params[name]); err != nil {
 			e.addf("%s/params/%s: %v", where, name, err)
 		}
 	}
@@ -924,6 +935,7 @@ func (n *NodePlan) param(name string) (*ParamPlan, error) {
 	n.Params = append(n.Params, ParamPlan{
 		Key:   key,
 		Name:  device.FirstNonEmpty(pr.DisplayName, pr.Identifier, key),
+		Range: n.ranges[key],
 		param: pr,
 		ref:   n.refs[at],
 	})
@@ -1055,8 +1067,20 @@ func suggestPlugins(cat Catalog, want string) string {
 
 // paramWire converts a value written in a song into the 0..127 a CC carries
 // for the parameter. AUM maps a CC's range onto the parameter's own range, so
-// the wire value is the value's position in that range.
+// the wire value is the value's position in that range. A parameter with a
+// mapping range takes ParamPlan.wire's instead.
 func paramWire(p device.ProbeParam, v Value) (int, error) {
+	pos, err := paramPos(p, v)
+	if err != nil {
+		return 0, err
+	}
+	return clamp7(int(math.Round(pos * 127))), nil
+}
+
+// paramPos is where a value written in a song lies in the parameter's own
+// range, 0 at its lowest and 1 at its highest: a number by its value, "NN%"
+// by the share, a value label by its place among the labels.
+func paramPos(p device.ProbeParam, v Value) (float64, error) {
 	span := p.Max - p.Min
 	pos := 0.0 // position in the range, 0..1
 	switch {
@@ -1097,7 +1121,7 @@ func paramWire(p device.ProbeParam, v Value) (int, error) {
 			return 0, fmt.Errorf("%q is not a value of %s (%s)", v.Str, device.FirstNonEmpty(p.DisplayName, p.Identifier), hint)
 		}
 	}
-	return clamp7(int(math.Round(pos * 127))), nil
+	return pos, nil
 }
 
 // The fader. A strip's level is stored as a linear gain (1 is unity). Its MIDI
@@ -1217,6 +1241,11 @@ func (p *Plan) Fingerprint() string {
 		}
 		for _, pa := range n.Params {
 			fmt.Fprintf(&b, "A%s:%s|", pa.Key, pa.At)
+			// A mapping range is in the session's mapping: another range is
+			// another session. A parameter without one keeps its fingerprint.
+			if len(pa.Range) == 2 {
+				fmt.Fprintf(&b, "~%g:%g|", pa.Range[0], pa.Range[1])
+			}
 			// A parameter inside a group of its plugin's tree is mapped in
 			// that group's collection. A session authored before that was
 			// known keeps it where AUM does not look, so it is another

@@ -273,7 +273,7 @@ func (m *ModPlan) depth(d []Value) ([2]int, error) {
 	pp := m.targetParam()
 	var out [2]int
 	for i, v := range d {
-		w, err := paramWire(pp.param, v)
+		w, err := pp.wire(v)
 		if err != nil {
 			return out, err
 		}

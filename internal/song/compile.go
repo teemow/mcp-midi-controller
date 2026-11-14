@@ -714,7 +714,7 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 					continue
 				}
 				var err error
-				if wire, err = paramWire(pp.param, v); err != nil {
+				if wire, err = pp.wire(v); err != nil {
 					return nil, fmt.Errorf("/sections/%s: %s: %w", name, nodeLabel(n), err)
 				}
 			}
@@ -750,7 +750,7 @@ func (p *Plan) sectionState(name string, sec Section) (*state, error) {
 			if _, held := st.held[t]; held {
 				continue // the modulator moves it here
 			}
-			wire, err := paramWire(pp.param, v)
+			wire, err := pp.wire(v)
 			if err != nil {
 				return nil, fmt.Errorf("/sections/%s: %s: %w", name, nodeLabel(n), err)
 			}
@@ -878,11 +878,11 @@ func (p *Plan) sectionRamps(name string, sec Section, start, end, barTicks int64
 			if err != nil {
 				return nil, fmt.Errorf("%s/param: %w", where, err)
 			}
-			from, err := paramWire(pp.param, a.From)
+			from, err := pp.wire(a.From)
 			if err != nil {
 				return nil, fmt.Errorf("%s/from: %w", where, err)
 			}
-			to, err := paramWire(pp.param, a.To)
+			to, err := pp.wire(a.To)
 			if err != nil {
 				return nil, fmt.Errorf("%s/to: %w", where, err)
 			}

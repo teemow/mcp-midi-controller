@@ -388,8 +388,18 @@ func (p *Plan) BuildSession(o SessionOptions) (*aum.Session, SessionReport, erro
 			return nil, rep, err
 		}
 		for _, pp := range n.Params {
-			if _, err := assign(pp.ref.Collection(coll), pp.ref.Target, pp.At); err != nil {
+			m, err := assign(pp.ref.Collection(coll), pp.ref.Target, pp.At)
+			if err != nil {
 				return nil, rep, err
+			}
+			if len(pp.Range) == 2 {
+				// The mapping spans the parameter's mapping range alone, so
+				// the CC's 128 steps fall there (range.go). A mapping without
+				// one keeps the whole range it had.
+				lo, hi := pp.mapRange()
+				if err := m.SetRange(lo, hi); err != nil {
+					return nil, rep, fmt.Errorf("%s %s: %w", nodeLabel(n), pp.Name, err)
+				}
 			}
 		}
 		for _, pr := range n.Presets {

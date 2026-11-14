@@ -24,7 +24,7 @@ import (
 // a JSON object is not guaranteed to survive (a craft tool's patch is sorted by
 // id), so chain entries with "after: <id>" when their order matters. Lists of
 // values (play lists, arrangement, notes, automation, events, pedal, depth,
-// locks, control_channels) are replaced whole.
+// locks, control_channels, a mapping range) are replaced whole.
 //
 // Comments on untouched parts of songYAML are kept. The patched document is
 // written out again with a 2-space indent, so the first patch normalizes the

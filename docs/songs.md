@@ -386,6 +386,41 @@ sections:
 instrument, or of `effect`. `bar` (1-based, default 1) and `bars` (default: to
 the section's end) place the ramp.
 
+### Mapping ranges
+
+A parameter's value reaches its plugin as a 7-bit Control Change, and AUM
+spreads the CC's 128 steps over the parameter's whole range. That is enough
+for movement, but not for every setting: a frequency exposed from 10 Hz to
+30 kHz moves in steps of about 236 Hz, so an 80 Hz high-pass cannot be set.
+`range` on an instrument or an effect narrows AUM's mapping of a parameter to
+part of its range, its **mapping range**, and the 128 steps are spread over
+that part ([ADR 0003](adr/0003-exact-settings-from-mapping-ranges.md)):
+
+```yaml
+effects:
+  - id: hp
+    plugin: …
+    params: {"Band 1 Frequency": 80}
+    range:  {"Band 1 Frequency": [40, 250]}   # 128 steps about 1.7 Hz apart
+```
+
+- A range is two numbers in the parameter's own units, the lowest first, and
+  lies within the parameter's range. It names a parameter the plugin's own
+  `params` set.
+- It is the session's, not a section's: a scene cannot change it. Every value
+  the song gives the parameter, in its declaration, a scene, a ramp or a
+  [modulator](#modulators)'s depth, lies within it, and a modulator's default
+  depth is the whole mapping range. A value means what it means without a
+  range: `"60%"` is a share of the parameter's whole range, a label its value
+  there.
+- A value within the range plays live. A changed range is a changed session:
+  it is authored and loaded again, as for a new parameter.
+- A song without `range` compiles to the same session and the same MIDI as
+  before.
+
+How AUM spreads a CC over a narrowed range, for a parameter its plugin shows
+on a log scale, is [measured](#status).
+
 ## Modulators
 
 A modulator moves one parameter by itself: an LFO that sweeps a synth's filter
@@ -839,6 +874,10 @@ problem with its place in the document:
 - plugins, against the staged AUv3 probes: an unknown plugin, preset or
   parameter (with the names that come close), a value outside a parameter's
   range;
+- a [mapping range](#mapping-ranges): one that is not two numbers, the lowest
+  first, lies outside its parameter's range, names a parameter the plugin's
+  params do not set or one parameter twice, and a value the song sets outside
+  it;
 - a [file track](#a-track-that-plays-a-file): a plugin beside the file, a path
   that is not inside AUM's Recordings or has no extension, a preset,
   parameter, kind or transposition, a pattern to play, a scene or a ramp that
@@ -893,7 +932,9 @@ destinations through the same filters.
 **Mappings.** Every strip's level and mute and every plugin's bypass are mapped,
 along with each parameter and each preset the song names. So is the master's
 Rec enable, which arms it for AUM's own recorder ([Stems](#stems)); a File
-Player has no mapping. A preset becomes one
+Player has no mapping. A parameter with a [mapping range](#mapping-ranges) has
+its mapping's range (AUM's 0 % and 100 %) set to it; every other mapping spans
+its whole range. A preset becomes one
 of the plugin's "Preset Load" actions in AUM, fired by a Program Change. With
 `full_control: true` every other parameter of every plugin is mapped as well,
 around the song's own mappings.
@@ -912,7 +953,8 @@ The daemon records which session a song was authored into, for which layout,
 and which notes its sequencer holds. Changing notes, patterns or the
 arrangement leaves the layout alone, but not the sequencer: it keeps playing
 the song as it was authored. Adding a plugin, a preset or a parameter changes
-the layout, and so do the tempo (it is the session's clock) and an
+the layout, and so do a parameter's mapping range, the tempo (it is the
+session's clock) and an
 instrument's [sequence](#a-drum-machines-own-sequence) (it is in a plugin's
 saved state): the session must then be authored and loaded again, and until it
 is `get_song` and `play_song` say so.
@@ -1885,6 +1927,16 @@ a device, in sessions authored from a song:
   switched on with a new mix wet and the other dry (43 of 43).
 - **Parameters.** A parameter's CC runs linearly over the parameter's range:
   0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
+- **Mapping ranges.** Not measured on a device yet. The session stores a
+  [mapping range](#mapping-ranges) as its two ends' places in the
+  parameter's range, and the song sends a value as its place between those
+  two ends, both linear in the parameter's value, as AUM maps a whole range.
+  Whether AUM does the same for a parameter its plugin shows on a log scale
+  (a filter's frequency), or follows the plugin's taper, is the measurement
+  of https://github.com/teemow/mcp-midi-controller/issues/229, with an 80 Hz
+  high-pass set through a range and read at the tap. Until then a range's
+  precision is the step it is measured to have, not the one computed
+  (`aumPosition` and `along` in `internal/song/range.go` are the law).
 - **Modulators.** A scratch song of one NuSaw pad, whose Cutoff an LFOH
   swept between 0.1 and 0.9 in sync at 120 BPM, recorded at the master tap
   and measured every 100 ms. Its spectral centroid ran between about 60 Hz
