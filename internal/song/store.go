@@ -1,6 +1,8 @@
 package song
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +11,14 @@ import (
 
 	"github.com/teemow/midi-device/device/sanitize"
 )
+
+// Revision returns the identity of a stored song document: the first 8 bytes
+// of its SHA-256 digest as 16 lowercase hex characters. Any change to the
+// stored bytes gives another revision.
+func Revision(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
 
 // Store keeps songs as YAML files in a directory, one file per song, so a
 // song is part of the rig's configuration like a scene is. A song is stored as
@@ -45,10 +55,39 @@ func (s *Store) Save(id string, data []byte) (*Song, error) {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(p, data, 0o644); err != nil {
+	if err := writeFileAtomic(p, data, 0o644); err != nil {
 		return nil, err
 	}
 	return sg, nil
+}
+
+// writeFileAtomic writes data to a temporary file in the same directory and
+// renames it into place so concurrent readers never see a torn song file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	cleanup := func() { _ = os.Remove(name) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chmod(name, perm); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
 
 // Load reads a song by id, returning it and the text it is stored as.

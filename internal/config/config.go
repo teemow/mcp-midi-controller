@@ -62,6 +62,13 @@ type Config struct {
 
 	// GoogleDrive says where upload_recording puts recordings.
 	GoogleDrive GoogleDrive `yaml:"google_drive"`
+
+	// CraftTools switches the craft tools on (list_techniques,
+	// get_technique, …): what the crafts of making a song know, as technique
+	// and plugin cards (docs/craft-cards.md). Default false: every connected
+	// agent reads the whole tool list, so the craft tools are a set of their
+	// own that a rig switches on.
+	CraftTools bool `yaml:"craft_tools"`
 }
 
 // GoogleDrive holds the upload settings. Nothing in it is secret: the OAuth
@@ -124,6 +131,12 @@ func ScenesDir() string { return filepath.Join(ConfigDir(), "scenes") }
 // dir. A song names the plugins of one rig, so a user who considers that
 // private keeps the directory out of a public repository.
 func SongsDir() string { return filepath.Join(ConfigDir(), "songs") }
+
+// CraftDir holds the rig's own craft cards: technique cards in techniques/,
+// plugin cards in plugins/ and the order of preference between plugins in
+// prefer.yaml (docs/craft-cards.md). A card here replaces a shipped card of the
+// same id. Rig-as-code, like songs.
+func CraftDir() string { return filepath.Join(ConfigDir(), "craft") }
 
 // SoundsDir holds the rig's sound catalogue: one YAML file per plugin with
 // what its presets were measured to sound like. Part of the rig's

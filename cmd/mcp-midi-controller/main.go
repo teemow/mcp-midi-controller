@@ -130,6 +130,7 @@ func main() {
 		mcpserver.WithDiagnostics(diagStore),
 		mcpserver.WithMidiControl(midiHub),
 		mcpserver.WithAUMAutoImport(cfg.AUMAutoImport),
+		mcpserver.WithCraftTools(cfg.CraftTools),
 	}
 	// The iPad UI tools talk to WebDriverAgent over the go-ios USB stack (run by
 	// auv3-probe's scripts/ipad). Nothing is contacted until a tool is called,

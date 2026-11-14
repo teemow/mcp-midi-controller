@@ -18,13 +18,13 @@ const outDir = resolve(here, "..", "public", "docs");
 // Explicit allow-list of files/dirs for the public manifest.
 const files = [
   { src: resolve(repoRoot, "README.md"), dest: "README.md" },
-  { src: resolve(repoRoot, "GLOSSARY.md"), dest: "GLOSSARY.md" },
   { src: join(docsDir, "design.md"), dest: "design.md" },
   { src: join(docsDir, "usb-tools.md"), dest: "usb-tools.md" },
   { src: join(docsDir, "ipad-control.md"), dest: "ipad-control.md" },
   { src: join(docsDir, "songs.md"), dest: "songs.md" },
   { src: join(docsDir, "song-authoring.md"), dest: "song-authoring.md" },
   { src: join(docsDir, "craft-tools.md"), dest: "craft-tools.md" },
+  { src: resolve(repoRoot, "GLOSSARY.md"), dest: "GLOSSARY.md" },
   { src: join(docsDir, "recording.md"), dest: "recording.md" },
 ];
 
@@ -50,13 +50,14 @@ for (const f of files) {
   add(f.src, f.dest, title);
 }
 
-// docs/research/*.md and the decision records in docs/adr/*.md
+// docs/research/*.md, then the decision records in docs/adr/*.md
 for (const sub of ["research", "adr"]) {
-  const dir = join(docsDir, sub);
-  if (!existsSync(dir)) continue;
-  for (const name of readdirSync(dir)) {
-    if (name.endsWith(".md")) {
-      add(join(dir, name), join(sub, name), `${sub}/${name.replace(/\.md$/, "")}`);
+  const subDir = join(docsDir, sub);
+  if (existsSync(subDir)) {
+    for (const name of readdirSync(subDir)) {
+      if (name.endsWith(".md")) {
+        add(join(subDir, name), join(sub, name), `${sub}/${name.replace(/\.md$/, "")}`);
+      }
     }
   }
 }

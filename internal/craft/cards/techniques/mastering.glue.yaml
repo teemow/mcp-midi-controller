@@ -1,0 +1,26 @@
+id: mastering.glue
+craft: mastering
+title: Glue the mix with gentle bus compression
+intent: >-
+  A low ratio, a slow attack and a release in time with the song turn the
+  loudest moments down by a dB or two, so the parts move together and the
+  transients still come through.
+when: A mix whose parts sound side by side rather than together, with a peak to loudness above about 12 dB.
+when_not:
+  - A dense, flat mix (peak to loudness under 8 dB); it only loses its punch.
+  - A piece meant to breathe, mastered to a dynamic target.
+targets: master
+needs: [dynamics.compressor]
+set:
+  dynamics.compressor:
+    threshold: -18
+    ratio: 2
+    attack: 30
+    release: "clamp(beat_ms / 2, 50, 400)"
+    makeup: 0
+precision:
+  dynamics.compressor: {threshold: 1, ratio: 0.25, attack: "25%", release: "25%"}
+place: before dynamics.limiter
+verify:
+  measure: crest_factor
+  falls: 1

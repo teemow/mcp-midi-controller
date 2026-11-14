@@ -997,3 +997,88 @@ arrangement: [idle]
 		t.Errorf("the lab counts as a song with sounds to share:\n%s", text)
 	}
 }
+
+func TestGetAndSaveSongReturnRevision(t *testing.T) {
+	s := newSongServer(t)
+
+	// A dry run stores nothing, so it reports no stored revision.
+	dry := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong, "dry_run": true})
+	if dry.IsError {
+		t.Fatalf("dry run: %s", resultText(dry))
+	}
+	var dryOut map[string]any
+	decodeStructured(t, dry, &dryOut)
+	if _, has := dryOut["revision"]; has {
+		t.Errorf("dry_run returned a stored revision: %+v", dryOut)
+	}
+
+	save1 := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong})
+	if save1.IsError {
+		t.Fatalf("save: %s", resultText(save1))
+	}
+	wantRev1 := song.Revision([]byte(toolSong))
+	var saveOut1 struct {
+		ID       string `json:"id"`
+		Saved    bool   `json:"saved"`
+		Revision string `json:"revision"`
+		Summary  struct {
+			Revision string `json:"revision"`
+		} `json:"summary"`
+	}
+	decodeStructured(t, save1, &saveOut1)
+	if !saveOut1.Saved || saveOut1.Revision != wantRev1 || saveOut1.Summary.Revision != wantRev1 {
+		t.Fatalf("save_song revision = %+v, want %s", saveOut1, wantRev1)
+	}
+	if !strings.Contains(resultText(save1), "revision: "+wantRev1+"\n") {
+		t.Errorf("save_song text lacks revision line:\n%s", resultText(save1))
+	}
+
+	get1 := call(t, s.handleGetSong, map[string]any{"song": "night_drive"})
+	if get1.IsError {
+		t.Fatalf("get: %s", resultText(get1))
+	}
+	var getOut1 struct {
+		ID       string `json:"id"`
+		Revision string `json:"revision"`
+		Summary  struct {
+			Revision string `json:"revision"`
+		} `json:"summary"`
+	}
+	decodeStructured(t, get1, &getOut1)
+	if getOut1.Revision != wantRev1 || getOut1.Summary.Revision != wantRev1 {
+		t.Fatalf("get_song revision = %+v, want %s", getOut1, wantRev1)
+	}
+	if !strings.Contains(resultText(get1), "revision: "+wantRev1+"\n") {
+		t.Errorf("get_song text lacks revision line:\n%s", resultText(get1))
+	}
+
+	// Changing the stored YAML changes the revision.
+	edited := strings.Replace(toolSong, "tempo: 300", "tempo: 280", 1)
+	save2 := call(t, s.handleSaveSong, map[string]any{"yaml": edited})
+	if save2.IsError {
+		t.Fatalf("save edited: %s", resultText(save2))
+	}
+	var saveOut2 struct {
+		Revision string `json:"revision"`
+	}
+	decodeStructured(t, save2, &saveOut2)
+	if saveOut2.Revision == "" || saveOut2.Revision == wantRev1 {
+		t.Fatalf("edited song revision = %q, want distinct from %q", saveOut2.Revision, wantRev1)
+	}
+
+	// Even if a stored song fails to parse on disk, get_song still returns its
+	// stored revision alongside its text.
+	brokenRaw := []byte("title: Broken\ntempo: 5\n")
+	if err := os.WriteFile(filepath.Join(config.SongsDir(), "broken_song.yaml"), brokenRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	brokenGet := call(t, s.handleGetSong, map[string]any{"song": "broken_song"})
+	var brokenOut struct {
+		Revision string `json:"revision"`
+		Error    string `json:"error"`
+	}
+	decodeStructured(t, brokenGet, &brokenOut)
+	if brokenOut.Error == "" || brokenOut.Revision != song.Revision(brokenRaw) {
+		t.Errorf("broken get_song = %+v, want revision %s", brokenOut, song.Revision(brokenRaw))
+	}
+}

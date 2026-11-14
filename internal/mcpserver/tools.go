@@ -143,6 +143,9 @@ func (s *Server) registerGlobalTools() {
 	// client.
 	s.registerIPadTools()
 	s.registerAUMUITools()
+	// The craft tools (list_techniques, get_technique) over the technique
+	// and plugin cards, when the config switches them on (craft_tools).
+	s.registerCraftTools()
 }
 
 func (s *Server) handleListDevices(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

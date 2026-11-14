@@ -222,7 +222,7 @@ What this does not do: widen what is measured (the catalogue holds a few
 presets of nine instruments and no effect), or make a varied repeat cheaper
 to write than it is. [craft-tools.md](craft-tools.md) designs the next
 step: agents that work on a song as a producer, a composer, a drummer, a
-sound designer, a conductor and a mixing and mastering engineer would, with
+synth player, a conductor and a mixing and mastering engineer would, with
 tools that change and check what they write.
 
 ## What stays as it is
