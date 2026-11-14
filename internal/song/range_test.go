@@ -469,4 +469,9 @@ func TestLogTravelRange(t *testing.T) {
 	if v, _ := stateValue(home, freq.At); v != 48 {
 		t.Errorf("the declaration's 80 Hz is sent as %d, want 48", v)
 	}
+	// A session authored with the linear places has another fingerprint, so
+	// it is authored again; a linear parameter's range keeps its own.
+	if lin := rangePlan(t, rangeSong).Fingerprint(); lin == p.Fingerprint() {
+		t.Error("a range on a log scale has the fingerprint of the same range on a linear one")
+	}
 }

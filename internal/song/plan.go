@@ -1260,6 +1260,12 @@ func (p *Plan) Fingerprint() string {
 			// another session. A parameter without one keeps its fingerprint.
 			if len(pa.Range) == 2 {
 				fmt.Fprintf(&b, "~%g:%g|", pa.Range[0], pa.Range[1])
+				// On a log scale the mapping's ends are places on that scale
+				// (range.go), not the linear places a session authored
+				// before that was known holds.
+				if LogTravel(pa.param) {
+					b.WriteString("log|")
+				}
 			}
 			// A parameter inside a group of its plugin's tree is mapped in
 			// that group's collection. A session authored before that was
