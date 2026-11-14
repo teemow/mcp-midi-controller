@@ -225,7 +225,9 @@ be set.
 
 So a binding narrows AUM's CC mapping to a fixed range, its **mapping range**,
 and the 128 steps are spread over that range: from 40 Hz to 250 Hz they are
-about 1.7 Hz apart. The range is fixed per binding and not derived from the
+about 1.7 Hz apart, or along the scale a plugin shows the frequency on: on a
+log scale about 1.2 Hz apart near 80 Hz (measured,
+[songs.md](songs.md#mapping-ranges)). The range is fixed per binding and not derived from the
 song's values, so a changed value still plays live without loading the
 session again ([ADR 0003](adr/0003-exact-settings-from-mapping-ranges.md)).
 
@@ -550,9 +552,6 @@ cards with its per-plugin knowledge entries
 
 ## Not known
 
-- How AUM maps a CC onto a mapping range for a parameter its plugin shows on
-  a log scale: linearly in the parameter's units, or along the plugin's own
-  taper. https://github.com/teemow/mcp-midi-controller/issues/229 measures it.
 - What the first target cards hold. They are written by hand and checked
   against reference recordings (https://github.com/teemow/mcp-midi-controller/issues/232).
 - Which plugins take a sidechain in AUM, and how a session routes one. Until
