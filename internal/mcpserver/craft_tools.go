@@ -61,7 +61,7 @@ func (s *Server) registerCraftTools() {
 		Name: "patch_song",
 		Description: "Apply an id-keyed merge patch to a stored song through save_song, refusing a patch whose revision is no longer current (ADR 0002). " +
 			"Maps merge recursively and null removes a key. Lists whose entries carry an id — tracks, tracks.<id>.effects, tracks.<id>.modulators, master and stems.<stem>.effects — are keyed by that id: " +
-			"null removes an entry, an existing id merges in place, and a new entry carries place (\"first\", \"last\" by default, \"after: <id>\" or \"before: <id>\"). " +
+			"null removes an entry (an id the list does not have is refused), an existing id merges in place, and a new entry carries place (\"first\", \"last\" by default, \"after: <id>\" or \"before: <id>\"). " +
 			"Several entries placed first or last keep the patch's key order, which a JSON object need not keep: chain them with \"after: <id>\" when their order matters. " +
 			"Lists of values (play lists, arrangement, notes, automation, events, pedal, depth, locks, control_channels) are replaced whole. " +
 			"The patched document is checked, compiled and reviewed like save_song, and returns the new revision.",
@@ -372,9 +372,8 @@ func (s *Server) handlePatchSong(_ context.Context, req *mcp.CallToolRequest) (*
 	}
 	id := song.ID(args.Song)
 	curRev := song.Revision(raw)
-	if !strings.EqualFold(curRev, wantRev) {
-		return textResult(fmt.Sprintf("/revision: song %q is at revision %s, not %s: read it again with get_song and make the patch against %s",
-			id, curRev, wantRev, curRev), true), nil
+	if stale := staleRevision(id, curRev, wantRev, "patch"); stale != "" {
+		return textResult(stale, true), nil
 	}
 	patched, err := song.Patch(raw, rawPatch)
 	if err != nil {
@@ -404,6 +403,8 @@ func (s *Server) handlePatchSong(_ context.Context, req *mcp.CallToolRequest) (*
 
 // CraftPlan is what a craft tool computes from a song before RunCraftTool
 // checks (or, with apply, stores) its patch and formats the shared craft.Answer.
+// In Patch a key set to nil removes what the song has there; a nil map, slice
+// or pointer is as if the key were not set (craft.CleanPatch).
 type CraftPlan struct {
 	Techniques []string
 	Patch      map[string]any
@@ -447,15 +448,7 @@ func (s *Server) RunCraftTool(
 		if err != nil {
 			return textResult(err.Error(), true), nil
 		}
-		patchMap := plan.Patch
-		if patchMap == nil {
-			patchMap = map[string]any{}
-		}
-		patchJSON, err := json.Marshal(patchMap)
-		if err != nil {
-			return textResult("marshal patch: "+err.Error(), true), nil
-		}
-		patched, err := song.Patch(raw, patchJSON)
+		patchMap, patched, err := applyCraftPatch(plan, raw)
 		if err != nil {
 			return textResult(err.Error(), true), nil
 		}
@@ -482,15 +475,7 @@ func (s *Server) RunCraftTool(
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
-	patchMap := plan.Patch
-	if patchMap == nil {
-		patchMap = map[string]any{}
-	}
-	patchJSON, err := json.Marshal(patchMap)
-	if err != nil {
-		return textResult("marshal patch: "+err.Error(), true), nil
-	}
-	patched, err := song.Patch(raw, patchJSON)
+	patchMap, patched, err := applyCraftPatch(plan, raw)
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
@@ -499,4 +484,25 @@ func (s *Server) RunCraftTool(
 	}
 	ans := craft.NewAnswer(craftID, plan.Techniques, patchMap, baseRev, plan.Why, plan.Checks, false)
 	return structResult(ans.Summary(), ans), nil
+}
+
+// applyCraftPatch applies a plan's patch to the song text raw. The patch is
+// cleaned first (craft.CleanPatch): a typed nil a tool left in it, such as a
+// nil params map, would be written as null and remove what the song has there,
+// so only a key set to an untyped nil removes. The cleaned patch is the one
+// the answer carries, so handing it to patch_song applies the same change.
+func applyCraftPatch(plan CraftPlan, raw []byte) (map[string]any, []byte, error) {
+	patchMap, err := craft.CleanPatch(plan.Patch)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal patch: %w", err)
+	}
+	patchJSON, err := json.Marshal(patchMap)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal patch: %w", err)
+	}
+	patched, err := song.Patch(raw, patchJSON)
+	if err != nil {
+		return nil, nil, err
+	}
+	return patchMap, patched, nil
 }

@@ -583,3 +583,85 @@ func TestRunCraftToolAnswerShapeAndOneLockApply(t *testing.T) {
 		t.Fatal("refused patch_song altered the stored song")
 	}
 }
+
+// TestRunCraftToolLeavesWhatANilMapDoesNotSet checks that a typed-nil map a
+// craft tool leaves in its patch is not written as null, which would remove
+// what the song has there, on both the check and the apply path, and that an
+// untyped nil still removes.
+func TestRunCraftToolLeavesWhatANilMapDoesNotSet(t *testing.T) {
+	s := newSongServer(t, WithCraftTools(true))
+	build := func(_ string, _ *song.Song, _ []byte) (CraftPlan, error) {
+		return CraftPlan{
+			Techniques: []string{"mixing.echo_trim"},
+			Patch: map[string]any{
+				"tracks": map[string]any{
+					"pad": map[string]any{
+						"instrument": map[string]any{"params": map[string]any(nil)},
+						"effects": map[string]any{
+							"echo": map[string]any{"params": map[string]any(nil), "bypass": false},
+						},
+					},
+					"bass": map[string]any{"instrument": map[string]any{"preset": nil}},
+				},
+			},
+			Why: []string{"turn the pad's echo on"},
+		}, nil
+	}
+	checkStored := func(t *testing.T) {
+		t.Helper()
+		sg, _, err := s.songs.Load("night_drive")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		pad, bass := sg.Tracks[1], sg.Tracks[0]
+		if cutoff, ok := pad.Instrument.Params["Cutoff"]; !ok || cutoff.Num != 0.3 {
+			t.Errorf("pad params = %v, want the stored Cutoff 0.3 left alone", pad.Instrument.Params)
+		}
+		if fx := pad.Effects; len(fx) != 1 || fx[0].Bypass == nil || *fx[0].Bypass {
+			t.Errorf("pad echo = %+v, want bypass false", fx)
+		}
+		if bass.Instrument.Preset != "" {
+			t.Errorf("bass preset = %q, want it removed by the untyped nil", bass.Instrument.Preset)
+		}
+	}
+	save := func(t *testing.T) string {
+		t.Helper()
+		res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong})
+		if res.IsError {
+			t.Fatalf("save: %s", resultText(res))
+		}
+		var out struct {
+			Revision string `json:"revision"`
+		}
+		decodeStructured(t, res, &out)
+		return out.Revision
+	}
+
+	t.Run("check, then patch_song", func(t *testing.T) {
+		rev := save(t)
+		res, err := s.RunCraftTool("mixing", "night_drive", false, build)
+		if err != nil || res.IsError {
+			t.Fatalf("RunCraftTool apply=false: %v %s", err, resultText(res))
+		}
+		var ans craft.Answer
+		decodeStructured(t, res, &ans)
+		raw, _ := json.Marshal(ans.Patch)
+		if strings.Contains(string(raw), "params") || !strings.Contains(string(raw), `"preset":null`) {
+			t.Errorf("answer patch = %s, want no params and the preset removal", raw)
+		}
+		applied := call(t, s.handlePatchSong, map[string]any{"song": "night_drive", "revision": rev, "patch": ans.Patch})
+		if applied.IsError {
+			t.Fatalf("patch_song with the answer: %s", resultText(applied))
+		}
+		checkStored(t)
+	})
+
+	t.Run("apply", func(t *testing.T) {
+		save(t)
+		res, err := s.RunCraftTool("mixing", "night_drive", true, build)
+		if err != nil || res.IsError {
+			t.Fatalf("RunCraftTool apply=true: %v %s", err, resultText(res))
+		}
+		checkStored(t)
+	})
+}

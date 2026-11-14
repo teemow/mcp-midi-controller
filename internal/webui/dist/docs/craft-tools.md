@@ -306,10 +306,18 @@ applied: false
 
 In a patch, tracks, effects and every other entry with an id are keyed by
 that id, as scenes already address effects. A new entry carries its place
-(`first`, `last`, `after: <id>`, `before: <id>`), `null` removes an entry,
-and a list of values (a play list, the `arrangement`) is replaced whole. Several entries
+(`first`, `last`, `after: <id>`, `before: <id>`), `null` removes an entry
+(an id the list does not have is refused, with the ids it has), and a list
+of values (a play list, the `arrangement`) is replaced whole. Several entries
 placed `first` (or `last`) keep the patch's key order, which a JSON object
 need not keep, so an entry whose order matters is chained with `after: <id>`.
+A patch changes only the places it names, whatever YAML anchors, aliases
+and merge keys (`<<`) the song shares values with: a value it changes
+through an alias becomes a copy changed there only, the aliases of an
+anchored value it changes keep the value they had, and a merge key in a
+mapping it changes is written out as the keys it brings. A craft tool's own
+patch is a Go map: a key set to `nil` removes, a nil map or slice is left
+out as if not set.
 With `apply: true` the tool reads, patches and stores the song under one
 lock. Its `revision` is still the one the patch was made against, so `patch`
 and `revision` always belong together: handed to `patch_song`, an applied

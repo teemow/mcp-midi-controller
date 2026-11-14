@@ -1082,3 +1082,60 @@ func TestGetAndSaveSongReturnRevision(t *testing.T) {
 		t.Errorf("broken get_song = %+v, want revision %s", brokenOut, song.Revision(brokenRaw))
 	}
 }
+
+// TestSaveSongRefusesAStaleRevision checks save_song's optional revision: a
+// save made from a revision that is no longer stored is refused like a stale
+// patch_song, and a save without one replaces the song as before.
+func TestSaveSongRefusesAStaleRevision(t *testing.T) {
+	s := newSongServer(t)
+	saveRev := func(t *testing.T, args map[string]any) string {
+		t.Helper()
+		res := call(t, s.handleSaveSong, args)
+		if res.IsError {
+			t.Fatalf("save_song(%v): %s", args["revision"], resultText(res))
+		}
+		var out struct {
+			Revision string `json:"revision"`
+		}
+		decodeStructured(t, res, &out)
+		return out.Revision
+	}
+
+	// A song not stored yet has no revision to match.
+	res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong, "revision": "0123456789abcdef"})
+	if !res.IsError || !strings.Contains(resultText(res), `song "night_drive" is not stored`) {
+		t.Fatalf("save with a revision of a song not stored = %s", resultText(res))
+	}
+
+	rev0 := saveRev(t, map[string]any{"yaml": toolSong})
+	edit1 := strings.Replace(toolSong, "tempo: 300", "tempo: 280", 1)
+	rev1 := saveRev(t, map[string]any{"yaml": edit1, "revision": rev0})
+	if rev1 == rev0 {
+		t.Fatalf("save with the current revision stored nothing new (%s)", rev1)
+	}
+
+	// Another edit made from rev0 would overwrite rev1 unseen: refused, with
+	// patch_song's wording, on a dry run too.
+	edit2 := strings.Replace(toolSong, "tempo: 300", "tempo: 260", 1)
+	for _, dry := range []bool{true, false} {
+		res := call(t, s.handleSaveSong, map[string]any{"yaml": edit2, "revision": rev0, "dry_run": dry})
+		want := `/revision: song "night_drive" is at revision ` + rev1 + ", not " + rev0 + ": read it again with get_song and make the change against " + rev1
+		if !res.IsError || resultText(res) != want {
+			t.Errorf("stale save (dry_run %v) = %s\nwant %s", dry, resultText(res), want)
+		}
+	}
+	if _, raw, _ := s.songs.Load("night_drive"); song.Revision(raw) != rev1 {
+		t.Fatal("a refused save changed the stored song")
+	}
+
+	// patch_song's refusal reads the same.
+	stale := call(t, s.handlePatchSong, map[string]any{"song": "night_drive", "revision": rev0, "patch": map[string]any{"tempo": 250}})
+	if want := "/revision: song \"night_drive\" is at revision " + rev1 + ", not " + rev0 + ": read it again with get_song and make the patch against " + rev1; resultText(stale) != want {
+		t.Errorf("stale patch_song = %s\nwant %s", resultText(stale), want)
+	}
+
+	// Without a revision save_song replaces the song whatever its revision.
+	if rev := saveRev(t, map[string]any{"yaml": edit2}); rev != song.Revision([]byte(edit2)) {
+		t.Errorf("save without revision stored %s, want %s", rev, song.Revision([]byte(edit2)))
+	}
+}

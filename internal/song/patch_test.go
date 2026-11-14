@@ -375,3 +375,254 @@ func TestPatchErrors(t *testing.T) {
 		})
 	}
 }
+
+// aliasSong shares values through YAML anchors, aliases and a merge key: the
+// chorus scene takes the bass's params, the lead's instrument merges the
+// bass's, and the lead's first effect is the bass's echo.
+const aliasSong = `title: Alias Song
+tempo: 120
+tracks:
+  - id: bass
+    instrument: &synth {plugin: synth, preset: Deep Bass, params: &bass_params {Cutoff: 0.25, Res: 0.1}}
+    effects:
+      - &echo {id: echo, plugin: delay, params: {Mix: 0.2}}
+  - id: lead
+    instrument: {<<: *synth, preset: Warm Pad}
+    effects:
+      - *echo # the bass's echo
+      - {id: space, plugin: reverb}
+patterns:
+  bass_a: {step: 1/8, notes: "A1 . A1 . A1 . A1 ."}
+scenes:
+  chorus:
+    bass:
+      params: *bass_params
+sections:
+  verse: {bars: 1, play: {bass: bass_a}}
+  chorus: {bars: 1, scene: chorus, play: {bass: bass_a}}
+arrangement: [verse, chorus]
+`
+
+// TestPatchThroughAliases checks that a patch changes only the place it names
+// when the song shares values through anchors, aliases and merge keys.
+func TestPatchThroughAliases(t *testing.T) {
+	mustParse(t, aliasSong)
+
+	params := func(m map[string]Value) [2]float64 { return [2]float64{m["Cutoff"].Num, m["Res"].Num} }
+	track := func(t *testing.T, sg *Song, id string) Track {
+		t.Helper()
+		for _, tr := range sg.Tracks {
+			if tr.ID == id {
+				return tr
+			}
+		}
+		t.Fatalf("no track %q", id)
+		return Track{}
+	}
+	effect := func(t *testing.T, tr Track, id string) Plugin {
+		t.Helper()
+		for _, fx := range tr.Effects {
+			if fx.EffectID() == id {
+				return fx
+			}
+		}
+		t.Fatalf("track %q has no effect %q (%+v)", tr.ID, id, tr.Effects)
+		return Plugin{}
+	}
+	// unchanged checks the values the patch does not name.
+	type want struct {
+		bass, lead, chorus [2]float64
+		bassMix, leadMix   float64
+	}
+	orig := want{bass: [2]float64{0.25, 0.1}, lead: [2]float64{0.25, 0.1}, chorus: [2]float64{0.25, 0.1}, bassMix: 0.2, leadMix: 0.2}
+	check := func(t *testing.T, sg *Song, w want) {
+		t.Helper()
+		bass, lead := track(t, sg, "bass"), track(t, sg, "lead")
+		if got := params(bass.Instrument.Params); got != w.bass {
+			t.Errorf("bass params = %v, want %v", got, w.bass)
+		}
+		if got := params(lead.Instrument.Params); got != w.lead {
+			t.Errorf("lead params = %v, want %v", got, w.lead)
+		}
+		if got := params(sg.Scenes["chorus"]["bass"].Params); got != w.chorus {
+			t.Errorf("chorus bass params = %v, want %v", got, w.chorus)
+		}
+		if lead.Instrument.Plugin != "synth" || lead.Instrument.Preset != "Warm Pad" {
+			t.Errorf("lead instrument = %+v, want the merged synth with its own preset", lead.Instrument)
+		}
+		if w.bassMix != 0 {
+			if got := effect(t, bass, "echo").Params["Mix"].Num; got != w.bassMix {
+				t.Errorf("bass echo Mix = %v, want %v", got, w.bassMix)
+			}
+		}
+		if fx := effect(t, lead, "echo"); fx.Plugin != "delay" || fx.Params["Mix"].Num != w.leadMix {
+			t.Errorf("lead echo = %+v, want delay with Mix %v", fx, w.leadMix)
+		}
+	}
+
+	cases := []struct {
+		name  string
+		patch string
+		want  func(w want) want
+		then  func(t *testing.T, sg *Song, out string)
+	}{
+		{
+			name:  "a scene's aliased params change there only",
+			patch: `scenes: {chorus: {bass: {params: {Cutoff: 0.9}}}}`,
+			want:  func(w want) want { w.chorus = [2]float64{0.9, 0.1}; return w },
+			then: func(t *testing.T, _ *Song, out string) {
+				if !strings.Contains(out, "*echo") || !strings.Contains(out, "&bass_params") {
+					t.Errorf("anchors and aliases the patch does not reach were not kept:\n%s", out)
+				}
+			},
+		},
+		{
+			name:  "an anchored value changes, its aliases keep theirs",
+			patch: `tracks: {bass: {instrument: {params: {Cutoff: 0.5}}}}`,
+			want:  func(w want) want { w.bass = [2]float64{0.5, 0.1}; return w },
+		},
+		{
+			name:  "an aliased effect entry changes there only",
+			patch: `tracks: {lead: {effects: {echo: {params: {Mix: 0.5}}}}}`,
+			want:  func(w want) want { w.leadMix = 0.5; return w },
+		},
+		{
+			name:  "an anchored effect entry changes, its alias keeps its value",
+			patch: `tracks: {bass: {effects: {echo: {params: {Mix: 0.3}}}}}`,
+			want:  func(w want) want { w.bassMix = 0.3; return w },
+		},
+		{
+			name:  "an anchored effect entry removed leaves its alias a copy",
+			patch: `tracks: {bass: {effects: {echo: null}}}`,
+			want:  func(w want) want { w.bassMix = 0; return w },
+			then: func(t *testing.T, sg *Song, _ string) {
+				if fx := track(t, sg, "bass").Effects; len(fx) != 0 {
+					t.Errorf("bass effects = %+v, want none", fx)
+				}
+			},
+		},
+		{
+			name:  "a track moved before the anchor its alias names",
+			patch: `tracks: {lead: {place: first}}`,
+			want:  func(w want) want { return w },
+			then: func(t *testing.T, sg *Song, _ string) {
+				if sg.Tracks[0].ID != "lead" {
+					t.Errorf("tracks start with %q, want lead", sg.Tracks[0].ID)
+				}
+			},
+		},
+		{
+			name:  "an entry moved next to an alias leaves the alias",
+			patch: `tracks: {lead: {effects: {space: {place: first}}}}`,
+			want:  func(w want) want { return w },
+			then: func(t *testing.T, sg *Song, out string) {
+				if fx := track(t, sg, "lead").Effects; len(fx) != 2 || fx[0].EffectID() != "space" || fx[1].EffectID() != "echo" {
+					t.Errorf("lead effects = %+v, want [space, echo]", fx)
+				}
+				if !strings.Contains(out, "*echo") {
+					t.Errorf("an alias the patch only moved past was written out:\n%s", out)
+				}
+			},
+		},
+		{
+			name:  "a value a merge key brings changes there only",
+			patch: `tracks: {lead: {instrument: {params: {Cutoff: 0.6}}}}`,
+			want:  func(w want) want { w.lead = [2]float64{0.6, 0.1}; return w },
+		},
+		{
+			name:  "a value a merge key brings is removed with null",
+			patch: `tracks: {lead: {instrument: {params: null}}}`,
+			want:  func(w want) want { w.lead = [2]float64{}; return w },
+			then: func(t *testing.T, sg *Song, _ string) {
+				if p := track(t, sg, "lead").Instrument.Params; len(p) != 0 {
+					t.Errorf("lead params = %v, want none", p)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Patch([]byte(aliasSong), []byte(tc.patch))
+			if err != nil {
+				t.Fatalf("Patch: %v", err)
+			}
+			sg := mustParse(t, string(out))
+			check(t, sg, tc.want(orig))
+			if tc.then != nil {
+				tc.then(t, sg, string(out))
+			}
+		})
+	}
+}
+
+// TestPatchRefusesRemovingAnIDTheListLacks checks that null on an id that is
+// not in an id-keyed list is refused with the list's ids, not passed over.
+func TestPatchRefusesRemovingAnIDTheListLacks(t *testing.T) {
+	cases := map[string]struct {
+		patch string
+		want  string
+	}{
+		"an index": {
+			patch: `tracks: {bass: {effects: {"0": null}}}`,
+			want:  `/tracks/bass/effects/0: no entry "0" to remove (have echo)`,
+		},
+		"a misspelt track": {
+			patch: `tracks: {bas: null}`,
+			want:  `/tracks/bas: no entry "bas" to remove (have bass, lead, drums)`,
+		},
+		"an effect named by its plugin's id": {
+			patch: `tracks: {lead: {effects: {reverb: null}}}`,
+			want:  `/tracks/lead/effects/reverb: no entry "reverb" to remove (have delay, space)`,
+		},
+		"a list the track does not have": {
+			patch: `tracks: {drums: {effects: {echo: null}}}`,
+			want:  `/tracks/drums/effects/echo: no entry "echo" to remove (have none)`,
+		},
+		"the master chain": {
+			patch: `master: {limiter: null}`,
+			want:  `/master/limiter: no entry "limiter" to remove (have glue)`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Patch([]byte(testSong), []byte(tc.patch))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Patch(%s) error = %v, want %q", tc.patch, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestPatchRefusesAnchorsAliasesAndMergeKeys checks that a patch names every
+// value it sets in its place.
+func TestPatchRefusesAnchorsAliasesAndMergeKeys(t *testing.T) {
+	cases := map[string]struct {
+		patch string
+		want  string
+	}{
+		"an anchor": {
+			patch: `tempo: &t 130`,
+			want:  `/tempo: a patch cannot set an anchor (&t)`,
+		},
+		"an anchor an alias names": {
+			patch: "x: &p {Cutoff: 0.5}\nscenes: {chorus: {bass: {params: *p}}}",
+			want:  `/x: a patch cannot set an anchor (&p)`,
+		},
+		"an anchored key": {
+			patch: `&k tempo: 130`,
+			want:  `/tempo: a patch cannot set an anchor (&k)`,
+		},
+		"a merge key": {
+			patch: `tracks: {bass: {<<: {level: -1}}}`,
+			want:  `/tracks/bass: a patch cannot use a merge key (<<)`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Patch([]byte(testSong), []byte(tc.patch))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Patch(%s) error = %v, want %q", tc.patch, err, tc.want)
+			}
+		})
+	}
+}
