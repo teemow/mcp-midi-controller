@@ -8,9 +8,16 @@ import (
 
 // Answer is the one shape every craft tool answers in (ADR 0002): which craft
 // spoke, the technique cards it used, the id-keyed merge patch on the song,
-// the song's revision (the revision the patch was made against when Applied is
-// false; the stored revision after saving when Applied is true), why each
-// change was made, what checks found, and whether the song was stored.
+// the revision the patch was made against, why each change was made, what
+// checks found, and whether the song was stored.
+//
+// Revision names the revision the patch was made against whether or not it
+// was applied, so Patch and Revision always belong together: handed to
+// patch_song, an answer that was not applied stores its patch while the song
+// is unchanged, and one that was applied is refused as stale instead of being
+// applied twice (unless its patch changed nothing, leaving the stored revision
+// at the base). An applied answer's text names the revision the song was
+// stored at, too ("revision: <stored> (from <revision>)").
 type Answer struct {
 	Craft      string         `json:"craft" yaml:"craft"`
 	Techniques []string       `json:"techniques" yaml:"techniques"`
@@ -77,7 +84,7 @@ func (a Answer) Summary() string {
 	if a.Applied {
 		state = "applied"
 	}
-	fmt.Fprintf(&b, "%s: %s, revision %s", a.Craft, state, a.Revision)
+	fmt.Fprintf(&b, "%s: %s, made against revision %s", a.Craft, state, a.Revision)
 	if len(a.Techniques) > 0 {
 		fmt.Fprintf(&b, " [%s]", strings.Join(a.Techniques, ", "))
 	}

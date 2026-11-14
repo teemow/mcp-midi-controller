@@ -53,7 +53,7 @@ func TestAnswerShapeAndNormalization(t *testing.T) {
 	)
 	sum := full.Summary()
 	for _, want := range []string{
-		"mixing: applied, revision 0123456789abcdef [mixing.highpass_non_bass]",
+		"mixing: applied, made against revision 0123456789abcdef [mixing.highpass_non_bass]",
 		"why: pad has low-end energy below its lowest note",
 		"check: 20..80 Hz fell by 8 dB",
 	} {
