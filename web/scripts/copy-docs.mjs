@@ -18,6 +18,7 @@ const outDir = resolve(here, "..", "public", "docs");
 // Explicit allow-list of files/dirs for the public manifest.
 const files = [
   { src: resolve(repoRoot, "README.md"), dest: "README.md" },
+  { src: resolve(repoRoot, "GLOSSARY.md"), dest: "GLOSSARY.md" },
   { src: join(docsDir, "design.md"), dest: "design.md" },
   { src: join(docsDir, "usb-tools.md"), dest: "usb-tools.md" },
   { src: join(docsDir, "ipad-control.md"), dest: "ipad-control.md" },
@@ -49,12 +50,13 @@ for (const f of files) {
   add(f.src, f.dest, title);
 }
 
-// docs/research/*.md
-const researchDir = join(docsDir, "research");
-if (existsSync(researchDir)) {
-  for (const name of readdirSync(researchDir)) {
+// docs/research/*.md and the decision records in docs/adr/*.md
+for (const sub of ["research", "adr"]) {
+  const dir = join(docsDir, sub);
+  if (!existsSync(dir)) continue;
+  for (const name of readdirSync(dir)) {
     if (name.endsWith(".md")) {
-      add(join(researchDir, name), join("research", name), `research/${name.replace(/\.md$/, "")}`);
+      add(join(dir, name), join(sub, name), `${sub}/${name.replace(/\.md$/, "")}`);
     }
   }
 }
