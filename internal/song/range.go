@@ -192,6 +192,12 @@ func CCStep(p device.ProbeParam, lo, hi, x float64) float64 {
 	if lo >= hi {
 		lo, hi = p.Min, p.Max
 	}
+	if hi <= lo || p.Max <= p.Min {
+		return 0
+	}
+	if !LogTravel(p) {
+		return (hi - lo) / 127
+	}
 	a, b := Travel(p, lo), Travel(p, hi)
 	if b <= a {
 		return 0
