@@ -229,7 +229,7 @@ func TestRangeChangesNothingElse(t *testing.T) {
 		}
 		var out []Event
 		for _, ev := range tl.Events {
-			if !(ev.Kind == Control && ev.Channel == freq.At.Channel && ev.Data1 == freq.At.Number) {
+			if ev.Kind != Control || ev.Channel != freq.At.Channel || ev.Data1 != freq.At.Number {
 				out = append(out, ev)
 			}
 		}
