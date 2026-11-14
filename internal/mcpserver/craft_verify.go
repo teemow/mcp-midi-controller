@@ -138,7 +138,7 @@ func (s *Server) runVerify(ctx context.Context, job *craftJob, args applyArgs, l
 	began := time.Now()
 	cs, fail := s.loadSong(args.Song)
 	if fail != nil {
-		return nil, fmt.Errorf("%s", resultText(fail))
+		return nil, fmt.Errorf("%s", callText(fail))
 	}
 	target, err := techniqueTarget(cs, t, args)
 	if err != nil {
@@ -190,7 +190,7 @@ func (s *Server) runVerify(ctx context.Context, job *craftJob, args applyArgs, l
 		return CraftPlan{Techniques: []string{t.ID}, Patch: a.Patch, Why: a.Why, Checks: a.Checks}, nil
 	})
 	if err != nil || res.IsError {
-		return nil, fmt.Errorf("storing the change: %s", resultText(res))
+		return nil, fmt.Errorf("storing the change: %s", callText(res))
 	}
 	if ans, ok := res.StructuredContent.(craft.Answer); ok {
 		rep.Answer = ans
@@ -199,7 +199,7 @@ func (s *Server) runVerify(ctx context.Context, job *craftJob, args applyArgs, l
 	job.setPhase("loading the session with the change")
 	cs, fail = s.loadSong(args.Song)
 	if fail != nil {
-		return nil, fmt.Errorf("%s", resultText(fail))
+		return nil, fmt.Errorf("%s", callText(fail))
 	}
 	lr, err := s.runLoadSong(ctx, cs, loadSongArgs{Check: false})
 	if err != nil {

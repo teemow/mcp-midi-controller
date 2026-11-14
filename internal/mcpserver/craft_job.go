@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,4 +147,19 @@ func (s *Server) handleGetCraftJob(ctx context.Context, req *mcp.CallToolRequest
 	res := structResult(text, out)
 	res.IsError = job.err != ""
 	return res, nil
+}
+
+// callText is the text of a tool result a craft job called for itself; a nil
+// result has none.
+func callText(res *mcp.CallToolResult) string {
+	if res == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			sb.WriteString(tc.Text)
+		}
+	}
+	return sb.String()
 }

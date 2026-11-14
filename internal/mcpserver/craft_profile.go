@@ -325,7 +325,7 @@ func (s *Server) runProfile(ctx context.Context, job *craftJob, dump device.Prob
 	job.setPhase("loading the lab")
 	cs, fail := s.loadSong(pluginLab)
 	if fail != nil {
-		return nil, fmt.Errorf("%s", resultText(fail))
+		return nil, fmt.Errorf("%s", callText(fail))
 	}
 	lr, err := s.runLoadSong(ctx, cs, loadSongArgs{Check: false})
 	if err != nil {
