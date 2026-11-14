@@ -116,7 +116,8 @@ config dir.
 
 The identity of a song's stored content. `get_song` and `save_song` return
 it. `patch_song` refuses a patch made against a revision that is no longer
-current, so a craft agent never overwrites a change it has not seen.
+current, and so does `save_song` when it is given the revision the document
+was made from, so a craft agent never overwrites a change it has not seen.
 [ADR 0002](docs/adr/0002-patches-by-id-with-a-revision.md).
 
 ## Rig
