@@ -192,6 +192,15 @@ type Plugin struct {
 
 	NodeState `yaml:",inline"`
 
+	// Range is the mapping range of parameters the plugin's params set, by
+	// parameter name: the lowest and the highest value, in the parameter's
+	// own units, that AUM's mapping of it spans. The 128 steps of its CC are
+	// spread over that part of the range instead of the whole, so a setting
+	// such as an 80 Hz high-pass can be reached (ADR 0003). It belongs to the
+	// session, not to a section: a scene cannot change it, and every value
+	// the song sets the parameter to lies within it. See range.go.
+	Range map[string][]float64 `yaml:"range,omitempty" json:"range,omitempty"`
+
 	// Sequence is an instrument's own step sequence (a drum machine's steps
 	// and lanes per voice), written into its saved state. See stepseq.go.
 	Sequence StepSequence `yaml:"sequence,omitempty" json:"sequence,omitempty"`
@@ -592,6 +601,7 @@ func (s *Song) Validate() error {
 		if t.Instrument.File == "" {
 			checkSamples(&e, at+"/instrument/samples", t.Instrument.Samples)
 			checkLocks(&e, at+"/instrument/locks", t.Instrument.Locks)
+			checkRanges(&e, at+"/instrument/range", t.Instrument.Range)
 		}
 		checkEffects(&e, at+"/effects", t.Effects)
 		checkModulators(&e, at, t)
@@ -885,6 +895,7 @@ func checkEffects(e *errs, at string, effects []Plugin) {
 		if len(fx.Locks) > 0 {
 			e.addf("%s/%d/locks: only an instrument has locks", at, i)
 		}
+		checkRanges(e, fmt.Sprintf("%s/%d/range", at, i), fx.Range)
 		id := fx.EffectID()
 		if seen[id] {
 			e.addf("%s/%d/id: duplicate effect %q (give effects that share a plugin their own ids)", at, i, id)
@@ -933,6 +944,7 @@ func checkFileTrack(e *errs, at string, t *Track) {
 	no(in.Plugin != "", "instrument/plugin", "an instrument is a plugin or a file, not both")
 	no(in.Preset != "", "instrument/preset", "a file has no preset")
 	no(len(in.Params) > 0, "instrument/params", "a file has no parameters; its level is the track's")
+	no(len(in.Range) > 0, "instrument/range", "a file has no parameters to map")
 	no(in.Bypass != nil, "instrument/bypass", "a file is not bypassed; mute the track")
 	no(in.MIDI, "instrument/midi", "a file hears no notes")
 	no(len(in.Sequence) > 0, "instrument/sequence", "a file has no step sequence")

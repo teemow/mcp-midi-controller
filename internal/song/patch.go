@@ -21,7 +21,7 @@ import (
 // if place is given), and a new id inserts the entry at place ("first", "last",
 // "after: <id>" or "before: <id>", defaulting to "last"). Lists of values (play
 // lists, arrangement, notes, automation, events, pedal, depth, locks,
-// control_channels) are replaced whole.
+// control_channels, a mapping range) are replaced whole.
 //
 // Comments and formatting on untouched parts of songYAML are preserved.
 func Patch(songYAML, patchData []byte) ([]byte, error) {
