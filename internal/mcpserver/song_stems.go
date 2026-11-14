@@ -1305,21 +1305,27 @@ func (s *Server) handleMixSongStems(ctx context.Context, req *mcp.CallToolReques
 	if mixID == id {
 		return textResult("/mix: the mix needs an id of its own, not the song's", true), nil
 	}
-	if old, _, err := s.songs.Load(mixID); err == nil && old != nil && !old.HasFiles() {
+	s.songsMu.Lock()
+	if old, _, lerr := s.songs.Load(mixID); lerr == nil && old != nil && !old.HasFiles() {
+		s.songsMu.Unlock()
 		return textResult(fmt.Sprintf("/mix: a song %q is stored already and is no mix of files; name another id with mix", mixID), true), nil
 	}
 	mix, err := plan.src.MixSong(plan.stems, files, sessionFileName(plan.src.Title+" mix"), plan.layout)
 	if err != nil {
+		s.songsMu.Unlock()
 		return textResult("mix_song_stems: "+err.Error(), true), nil
 	}
 	body, err := mix.Marshal()
 	if err != nil {
+		s.songsMu.Unlock()
 		return textResult("mix_song_stems: "+err.Error(), true), nil
 	}
 	head := fmt.Sprintf("# The mix of %q (%s) from the recordings of its stems, written by mix_song_stems on %s.\n"+
 		"# A track's level and effects are that stem's strip, from the song's stems; change them there: mix_song_stems writes this document anew.\n",
 		plan.src.Title, id, time.Now().Format("2006-01-02 15:04"))
-	if _, err := s.songs.Save(mixID, append([]byte(head), body...)); err != nil {
+	_, err = s.songs.Save(mixID, append([]byte(head), body...))
+	s.songsMu.Unlock()
+	if err != nil {
 		return textResult("mix_song_stems: the mix could not be stored: "+err.Error(), true), nil
 	}
 	cs, err := s.compileSong(mixID, mix)

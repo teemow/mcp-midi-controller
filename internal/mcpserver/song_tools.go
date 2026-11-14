@@ -83,14 +83,14 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "get_song",
-		Description: "Get a stored song: its YAML document and what it compiles to — the arrangement with each section's bars and start time, the tracks with their MIDI channel, plugins and note count, and a review of it as music (see save_song). A song of more than 12 tracks is listed stem by stem, with which of its stems have a take of the song as it is now. " +
-			"Edit the document and hand it back to save_song to change the song. A stored song shows how one is written; it is no model for the next one's form, sounds or ending.",
+		Description: "Get a stored song: its revision (the identity of its stored content, for patch_song), its YAML document and what it compiles to — the arrangement with each section's bars and start time, the tracks with their MIDI channel, plugins and note count, and a review of it as music (see save_song). A song of more than 12 tracks is listed stem by stem, with which of its stems have a take of the song as it is now. " +
+			"Edit the document and hand it back to save_song to change the song, or change parts by id with patch_song. A stored song shows how one is written; it is no model for the next one's form, sounds or ending.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + songArg + `},"required":["song"]}`),
 	}, s.handleGetSong)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "save_song",
-		Description: "Create or replace a song. The document is checked before it is stored: every reference, every pattern (a miscounted bar is an error), and — against the staged AUv3 probes — every plugin, preset and parameter it names; problems come back with their place in the document and what would have matched. " +
+		Description: "Create or replace a song and return its revision. The document is checked before it is stored: every reference, every pattern (a miscounted bar is an error), and — against the staged AUv3 probes — every plugin, preset and parameter it names; problems come back with their place in the document and what would have matched. " +
 			"The answer ends with a review of the song as music: its length, a fade-out at its end, sections heard unchanged several times, few tracks, and the sounds it shares with the other stored songs. That is advice and keeps nothing from being stored. " +
 			"Then load_song puts its session into AUM and play_song plays it. A song of more than 12 tracks has no session of its own and is checked stem by stem: record_song_stems and mix_song_stems play it.\n\n" + songFormat,
 		InputSchema: json.RawMessage(`{
@@ -573,6 +573,7 @@ func clock(d time.Duration) string {
 // songSummary is the machine-readable summary of a compiled song.
 type songSummary struct {
 	ID       string           `json:"id"`
+	Revision string           `json:"revision,omitempty"`
 	Title    string           `json:"title"`
 	Tempo    float64          `json:"tempo"`
 	Bars     int              `json:"bars"`
@@ -879,16 +880,55 @@ func (s *Server) handleGetSong(_ context.Context, req *mcp.CallToolRequest) (*mc
 		return textResult("/song: "+err.Error(), true), nil
 	}
 	id := song.ID(args.Song)
+	rev := song.Revision(raw)
 	if err != nil {
 		// Stored but no longer valid: hand the text back so it can be fixed.
-		return structResult(fmt.Sprintf("%v\n\n%s", err, raw), map[string]any{"id": id, "yaml": string(raw), "error": err.Error()}), nil
+		return structResult(fmt.Sprintf("%v\nrevision: %s\n\n%s", err, rev, raw),
+			map[string]any{"id": id, "revision": rev, "yaml": string(raw), "error": err.Error()}), nil
 	}
 	text, sum, err := s.describeSong(id, sg)
 	if err != nil {
-		return structResult(fmt.Sprintf("song %q does not compile against the staged plugins: %v\n\n%s", id, err, raw),
-			map[string]any{"id": id, "yaml": string(raw), "error": err.Error()}), nil
+		return structResult(fmt.Sprintf("song %q does not compile against the staged plugins: %v\nrevision: %s\n\n%s", id, err, rev, raw),
+			map[string]any{"id": id, "revision": rev, "yaml": string(raw), "error": err.Error()}), nil
 	}
-	return structResult(text+"\n"+string(raw), map[string]any{"id": id, "summary": sum, "yaml": string(raw)}), nil
+	sum.Revision = rev
+	return structResult(withRevisionLine(text, rev)+"\n"+string(raw),
+		map[string]any{"id": id, "revision": rev, "summary": sum, "yaml": string(raw)}), nil
+}
+
+// withRevisionLine places a "revision: <rev>" line right after the summary's
+// opening title line.
+func withRevisionLine(text, rev string) string {
+	if rev == "" {
+		return text
+	}
+	head, rest, ok := strings.Cut(text, "\n")
+	if !ok {
+		return head + "\nrevision: " + rev
+	}
+	return head + "\nrevision: " + rev + "\n" + rest
+}
+
+// saveSongLocked checks, compiles and (when !dryRun) stores data under id.
+// Callers that store (!dryRun) must hold s.songsMu.
+func (s *Server) saveSongLocked(id string, data []byte, dryRun bool) (string, songSummary, string, error) {
+	sg, err := song.Parse(data)
+	if err != nil {
+		return "", songSummary{}, "", err
+	}
+	text, sum, err := s.describeSong(id, sg)
+	if err != nil {
+		return "", songSummary{}, "", err
+	}
+	if dryRun {
+		return text, sum, "", nil
+	}
+	if _, err := s.songs.Save(id, data); err != nil {
+		return "", songSummary{}, "", fmt.Errorf("save song: %w", err)
+	}
+	rev := song.Revision(data)
+	sum.Revision = rev
+	return withRevisionLine(text, rev), sum, rev, nil
 }
 
 // describeSong checks a song against the staged plugins and summarizes what
@@ -948,18 +988,20 @@ func (s *Server) handleSaveSong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if id == "" {
 		return textResult("/song: give the song an id or a title", true), nil
 	}
-	text, sum, err := s.describeSong(id, sg)
+	if args.DryRun {
+		text, sum, _, err := s.saveSongLocked(id, data, true)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		return structResult("checked "+text, map[string]any{"id": id, "saved": false, "summary": sum}), nil
+	}
+	s.songsMu.Lock()
+	text, sum, rev, err := s.saveSongLocked(id, data, false)
+	s.songsMu.Unlock()
 	if err != nil {
 		return textResult(err.Error(), true), nil
 	}
-	verb := "checked"
-	if !args.DryRun {
-		if _, err := s.songs.Save(id, data); err != nil {
-			return textResult("save song: "+err.Error(), true), nil
-		}
-		verb = "saved"
-	}
-	return structResult(verb+" "+text, map[string]any{"id": id, "saved": !args.DryRun, "summary": sum}), nil
+	return structResult("saved "+text, map[string]any{"id": id, "saved": true, "revision": rev, "summary": sum}), nil
 }
 
 func (s *Server) handleDeleteSong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -969,7 +1011,10 @@ func (s *Server) handleDeleteSong(_ context.Context, req *mcp.CallToolRequest) (
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 		return textResult("invalid arguments: "+err.Error(), true), nil
 	}
-	if err := s.songs.Delete(args.Song); err != nil {
+	s.songsMu.Lock()
+	err := s.songs.Delete(args.Song)
+	s.songsMu.Unlock()
+	if err != nil {
 		return textResult("/song: "+err.Error(), true), nil
 	}
 	return textResult(fmt.Sprintf("deleted song %q", song.ID(args.Song)), false), nil

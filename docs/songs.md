@@ -18,12 +18,12 @@ that plays inside AUM.
 |------|------|-|
 | 1. Look | `list_song_plugins`, `get_song_plugin` | Which instruments and effects are installed (the staged AUv3 probes), their factory presets and parameters. |
 | | `open_sound_lab`, `audition_sound`, `list_sounds` | What a preset sounds like, before it is in a song. See [Sounds](#sounds). |
-| 2. Write | `save_song` | Store the document. It is checked first, and reviewed as a song; see [What is checked](#what-is-checked) and [A full song](#a-full-song). |
+| 2. Write | `save_song` | Store the document and get its `revision`. It is checked first, and reviewed as a song; see [What is checked](#what-is-checked) and [A full song](#a-full-song). |
 | 3. Load | `load_song` | Author the song's `.aumproj`, have the iPad pull it, load it in AUM, wait for its brain and tap, and check that every track answers. See [Loading](#loading). |
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
 | 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap, known to the daemon as `<session id>/master`. See [Taps](#taps). |
 | | `mix_song`, `get_song_mix` | The level of every bar, every section and every track. See [The mix](#the-mix). |
-| 6. Change | `get_song` → edit → `save_song` | New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
+| 6. Change | `get_song` → edit → `save_song` (or `patch_song` with `craft_tools: true`) | `get_song` and `save_song` return the song's `revision`; `patch_song` applies an id-keyed merge patch against that revision through `save_song` and refuses a stale one ([ADR 0002](adr/0002-patches-by-id-with-a-revision.md)). New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
 
 `check_song` tells at any time whether the loaded session will sound.
 `author_song_session` does only the first part of step 3: it builds the

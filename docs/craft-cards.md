@@ -9,8 +9,8 @@ carry it and how a value reaches them. The rig's **order of preference** picks
 the plugin. A technique so stays true when the rig changes, and a new plugin
 is usable by every technique once it has a card.
 
-The code is `internal/craft`; the tools are `list_techniques` and
-`get_technique`.
+The code is `internal/craft`; the shared tools registered so far are
+`list_techniques`, `get_technique` and `patch_song`.
 
 ## Switching the tools on
 
@@ -211,6 +211,14 @@ it leaves out come after the ones it names, by name.
   their parameters, the song values it uses, and its **bindings** on this rig:
   per capability every plugin with a card for it in the rig's order, the one
   it would use, how each parameter reaches it, and why any other cannot.
+- **`patch_song`** applies an id-keyed merge patch
+  ([ADR 0002](adr/0002-patches-by-id-with-a-revision.md)) to a stored song
+  through `save_song`, refusing a patch whose `revision` is no longer current.
+  Tracks, a track's `effects` and `modulators`, `master` and `stems.<stem>.effects`
+  are addressed by id (`place`: `first`, `last`, `after: <id>`, `before: <id>`;
+  `null` removes an entry); lists of values (play lists, `arrangement`) are
+  replaced whole. Every craft tool answers in one `craft.Answer` shape (`craft`,
+  `techniques`, `patch`, `revision`, `why`, `checks`, `applied`).
 
 A plugin carries a capability when it is on the rig (its probe dump is staged,
 `import_auv3_probe`), its card names parameters the dump has, and it can set

@@ -1,11 +1,14 @@
 package mcpserver
 
 // This file is the MCP surface over internal/craft: the technique cards a
-// craft works with, and how each would be carried by the plugins of this rig.
+// craft works with, how each would be carried by the plugins of this rig,
+// patch_song for applying id-keyed patches against a song's revision, and the
+// shared craft.Answer runner that every craft tool speaks through.
 // The tools are registered only when the config switches them on
-// (craft_tools: true). See docs/craft-cards.md.
+// (craft_tools: true). See docs/craft-tools.md and docs/craft-cards.md.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/craft"
+	"github.com/teemow/mcp-midi-controller/internal/song"
 )
 
 func (s *Server) registerCraftTools() {
@@ -52,6 +56,25 @@ func (s *Server) registerCraftTools() {
 			"required": ["id"]
 		}`),
 	}, s.handleGetTechnique)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name: "patch_song",
+		Description: "Apply an id-keyed merge patch to a stored song through save_song, refusing a patch whose revision is no longer current (ADR 0002). " +
+			"Maps merge recursively and null removes a key. Lists whose entries carry an id — tracks, tracks.<id>.effects, tracks.<id>.modulators, master and stems.<stem>.effects — are keyed by that id: " +
+			"null removes an entry, an existing id merges in place, and a new entry carries place (\"first\", \"last\" by default, \"after: <id>\" or \"before: <id>\"). " +
+			"Lists of values (play lists, arrangement, notes, automation, events, pedal, depth, locks, control_channels) are replaced whole. " +
+			"The patched document is checked, compiled and reviewed like save_song, and returns the new revision.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"song": {"type": "string", "description": "Song id (see list_songs)."},
+				"revision": {"type": "string", "description": "The song's revision the patch was made against (from get_song, save_song, patch_song or a craft tool)."},
+				"patch": {"type": "object", "description": "Merge patch on the song document, with id-bearing lists keyed by id."},
+				"dry_run": {"type": "boolean", "description": "Check and compile the patched song without storing it."}
+			},
+			"required": ["song", "revision", "patch"]
+		}`),
+	}, s.handlePatchSong)
 }
 
 // loadCraft reads the cards and the rig the bindings are made on: the probe
@@ -315,4 +338,158 @@ func suggestTechniques(lib *craft.Library, want string) string {
 		return " (did you mean: " + strings.Join(hits, ", ") + "?)"
 	}
 	return fmt.Sprintf(" (%d cards; see list_techniques)", len(ids))
+}
+
+func (s *Server) handlePatchSong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Song     string          `json:"song"`
+		Revision string          `json:"revision"`
+		Patch    json.RawMessage `json:"patch"`
+		DryRun   bool            `json:"dry_run"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return textResult("invalid arguments: "+err.Error(), true), nil
+	}
+	if strings.TrimSpace(args.Song) == "" {
+		return textResult("/song: name the song (see list_songs)", true), nil
+	}
+	wantRev := strings.TrimSpace(args.Revision)
+	if wantRev == "" {
+		return textResult("/revision: name the song's revision the patch was made against (see get_song)", true), nil
+	}
+	rawPatch := bytes.TrimSpace(args.Patch)
+	if len(rawPatch) == 0 || string(rawPatch) == "null" {
+		return textResult("/patch: provide the patch object", true), nil
+	}
+
+	s.songsMu.Lock()
+	defer s.songsMu.Unlock()
+
+	_, raw, err := s.songs.Load(args.Song)
+	if err != nil && raw == nil {
+		return textResult("/song: "+err.Error(), true), nil
+	}
+	id := song.ID(args.Song)
+	curRev := song.Revision(raw)
+	if !strings.EqualFold(curRev, wantRev) {
+		return textResult(fmt.Sprintf("/revision: song %q is at revision %s, not %s: read it again with get_song and make the patch against %s",
+			id, curRev, wantRev, curRev), true), nil
+	}
+	patched, err := song.Patch(raw, rawPatch)
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	text, sum, newRev, err := s.saveSongLocked(id, patched, args.DryRun)
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	if args.DryRun {
+		return structResult("checked "+text, map[string]any{
+			"id":                id,
+			"saved":             false,
+			"previous_revision": curRev,
+			"summary":           sum,
+		}), nil
+	}
+	text = strings.Replace(text, "\nrevision: "+newRev, fmt.Sprintf("\nrevision: %s (from %s)", newRev, curRev), 1)
+	return structResult("patched "+text, map[string]any{
+		"id":                id,
+		"saved":             true,
+		"previous_revision": curRev,
+		"revision":          newRev,
+		"summary":           sum,
+	}), nil
+}
+
+// CraftPlan is what a craft tool computes from a song before RunCraftTool
+// checks (or, with apply, stores) its patch and formats the shared craft.Answer.
+type CraftPlan struct {
+	Techniques []string
+	Patch      map[string]any
+	Why        []string
+	Checks     []string
+}
+
+// RunCraftTool executes a craft tool against songID and returns the one shape
+// every craft tool answers in (craft.Answer: craft, techniques, patch,
+// revision, why, checks, applied).
+//
+// With apply true, it holds s.songsMu across reading the stored song, building
+// the patch, applying it and storing the result through save_song, so no
+// concurrent edit can land between read and store. With apply false, it reads
+// the song, builds and dry-run checks the patch against save_song, and returns
+// the answer naming the base revision without storing.
+func (s *Server) RunCraftTool(
+	craftID, songID string,
+	apply bool,
+	build func(id string, sg *song.Song, raw []byte) (CraftPlan, error),
+) (*mcp.CallToolResult, error) {
+	if !slices.Contains(craft.Crafts, craftID) {
+		return textResult(fmt.Sprintf("unknown craft %q", craftID), true), nil
+	}
+	if strings.TrimSpace(songID) == "" {
+		return textResult("/song: name the song (see list_songs)", true), nil
+	}
+	id := song.ID(songID)
+
+	if apply {
+		s.songsMu.Lock()
+		defer s.songsMu.Unlock()
+
+		sg, raw, err := s.songs.Load(songID)
+		if err != nil {
+			return textResult("/song: "+err.Error(), true), nil
+		}
+		plan, err := build(id, sg, raw)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		patchMap := plan.Patch
+		if patchMap == nil {
+			patchMap = map[string]any{}
+		}
+		patchJSON, err := json.Marshal(patchMap)
+		if err != nil {
+			return textResult("marshal patch: "+err.Error(), true), nil
+		}
+		patched, err := song.Patch(raw, patchJSON)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		saveText, _, newRev, err := s.saveSongLocked(id, patched, false)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		ans := craft.NewAnswer(craftID, plan.Techniques, patchMap, newRev, plan.Why, plan.Checks, true)
+		return structResult(ans.Summary()+"\n\nsaved "+saveText, ans), nil
+	}
+
+	s.songsMu.Lock()
+	sg, raw, err := s.songs.Load(songID)
+	s.songsMu.Unlock()
+	if err != nil {
+		return textResult("/song: "+err.Error(), true), nil
+	}
+	baseRev := song.Revision(raw)
+	plan, err := build(id, sg, raw)
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	patchMap := plan.Patch
+	if patchMap == nil {
+		patchMap = map[string]any{}
+	}
+	patchJSON, err := json.Marshal(patchMap)
+	if err != nil {
+		return textResult("marshal patch: "+err.Error(), true), nil
+	}
+	patched, err := song.Patch(raw, patchJSON)
+	if err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	if _, _, _, err := s.saveSongLocked(id, patched, true); err != nil {
+		return textResult(err.Error(), true), nil
+	}
+	ans := craft.NewAnswer(craftID, plan.Techniques, patchMap, baseRev, plan.Why, plan.Checks, false)
+	return structResult(ans.Summary(), ans), nil
 }

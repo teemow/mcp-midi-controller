@@ -5,18 +5,22 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teemow/mcp-midi-controller/internal/config"
 	"github.com/teemow/mcp-midi-controller/internal/craft"
 	"github.com/teemow/mcp-midi-controller/internal/engine"
+	"github.com/teemow/mcp-midi-controller/internal/song"
 	"github.com/teemow/midi-device/device"
 )
 
-var craftToolNames = []string{"list_techniques", "get_technique"}
+var craftToolNames = []string{"list_techniques", "get_technique", "patch_song"}
 
 func TestCraftToolsAreSwitchedOnByTheConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -243,5 +247,306 @@ func TestCraftToolsThroughAClient(t *testing.T) {
 	}
 	if !strings.Contains(resultText(res), "uses from the song: lowest_note_hz") {
 		t.Errorf("get:\n%s", resultText(res))
+	}
+
+	stageSongPlugins(t)
+	saved, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "save_song",
+		Arguments: map[string]any{"yaml": toolSong},
+	})
+	if err != nil || saved.IsError {
+		t.Fatalf("save_song via client: %v %s", err, resultText(saved))
+	}
+	var savedOut struct {
+		Revision string `json:"revision"`
+	}
+	decodeStructured(t, saved, &savedOut)
+	patched, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "patch_song",
+		Arguments: map[string]any{
+			"song":     "night_drive",
+			"revision": savedOut.Revision,
+			"patch": map[string]any{
+				"tracks": map[string]any{
+					"pad": map[string]any{
+						"effects": map[string]any{
+							"echo": map[string]any{"params": map[string]any{"Mix": 0.45}},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil || patched.IsError {
+		t.Fatalf("patch_song via client: %v %s", err, resultText(patched))
+	}
+}
+
+func TestPatchSongAndStaleRevisionRefusal(t *testing.T) {
+	s := newSongServer(t, WithCraftTools(true))
+	writeFile(t, filepath.Join(config.AUv3ProbesDir(), "eq1.json"), []byte(`{
+		"component": {"type": "aufx", "subtype": "Eq01", "manufacturer": "Acme"},
+		"name": "CleanEQ",
+		"parameters": [{"address": 0, "identifier": "freq", "displayName": "Freq", "min": 20, "max": 2000, "value": 80, "writable": true}]
+	}`))
+
+	saveRes := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong})
+	if saveRes.IsError {
+		t.Fatalf("save: %s", resultText(saveRes))
+	}
+	var saved struct {
+		Revision string `json:"revision"`
+	}
+	decodeStructured(t, saveRes, &saved)
+	rev0 := saved.Revision
+
+	// Dry run checks the patch through save_song without changing the stored song.
+	dryRes := call(t, s.handlePatchSong, map[string]any{
+		"song":     "night_drive",
+		"revision": rev0,
+		"dry_run":  true,
+		"patch": map[string]any{
+			"tracks": map[string]any{
+				"pad": map[string]any{
+					"effects": map[string]any{
+						"hp": map[string]any{"place": "first", "plugin": "eq1", "params": map[string]any{"Freq": 90}},
+					},
+				},
+			},
+		},
+	})
+	if dryRes.IsError {
+		t.Fatalf("dry_run patch_song: %s", resultText(dryRes))
+	}
+	var dryOut struct {
+		Saved            bool   `json:"saved"`
+		PreviousRevision string `json:"previous_revision"`
+		Revision         string `json:"revision"`
+	}
+	decodeStructured(t, dryRes, &dryOut)
+	if dryOut.Saved || dryOut.PreviousRevision != rev0 || dryOut.Revision != "" {
+		t.Fatalf("dry_run patch_song = %+v", dryOut)
+	}
+
+	// Apply patch: insert hp first on pad, update echo params, add fill pattern and
+	// replace verse's drum play list whole.
+	patchRes := call(t, s.handlePatchSong, map[string]any{
+		"song":     "night_drive",
+		"revision": rev0,
+		"patch": map[string]any{
+			"tracks": map[string]any{
+				"pad": map[string]any{
+					"effects": map[string]any{
+						"hp":   map[string]any{"place": "first", "plugin": "eq1", "params": map[string]any{"Freq": 90}},
+						"echo": map[string]any{"params": map[string]any{"Mix": 0.4}},
+					},
+				},
+			},
+			"patterns": map[string]any{
+				"fill": map[string]any{"drums": map[string]any{"kick": "x.......x.......", "snare": "....x.x.xxxxXXXX"}},
+			},
+			"sections": map[string]any{
+				"verse": map[string]any{"bars": 2, "play": map[string]any{"drums": []any{"beat", "fill"}}},
+			},
+		},
+	})
+	if patchRes.IsError {
+		t.Fatalf("patch_song: %s", resultText(patchRes))
+	}
+	var patched struct {
+		Saved            bool   `json:"saved"`
+		PreviousRevision string `json:"previous_revision"`
+		Revision         string `json:"revision"`
+	}
+	decodeStructured(t, patchRes, &patched)
+	if !patched.Saved || patched.PreviousRevision != rev0 || patched.Revision == "" || patched.Revision == rev0 {
+		t.Fatalf("patched = %+v", patched)
+	}
+	if !strings.Contains(resultText(patchRes), "PolySynth > CleanEQ > TapeDelay") {
+		t.Errorf("patch_song summary lacks updated effect chain:\n%s", resultText(patchRes))
+	}
+	rev1 := patched.Revision
+
+	// get_song returns the new revision and preserves author comments.
+	getRes := call(t, s.handleGetSong, map[string]any{"song": "night_drive"})
+	if getRes.IsError || !strings.Contains(resultText(getRes), "# a comment that must survive being stored") {
+		t.Fatalf("get after patch: %s", resultText(getRes))
+	}
+	var got struct {
+		Revision string `json:"revision"`
+	}
+	decodeStructured(t, getRes, &got)
+	if got.Revision != rev1 {
+		t.Fatalf("get_song revision = %q, want %q", got.Revision, rev1)
+	}
+
+	// A patch made against the older revision rev0 is refused and names rev1.
+	stale := call(t, s.handlePatchSong, map[string]any{
+		"song":     "night_drive",
+		"revision": rev0,
+		"patch":    map[string]any{"tempo": 140},
+	})
+	if !stale.IsError || !strings.Contains(resultText(stale), "at revision "+rev1+", not "+rev0) {
+		t.Fatalf("stale patch was not refused with revisions: %s", resultText(stale))
+	}
+
+	// save_song's plugin/parameter validation applies to patch_song too: an
+	// out-of-range parameter is refused without changing the stored song.
+	badParam := call(t, s.handlePatchSong, map[string]any{
+		"song":     "night_drive",
+		"revision": rev1,
+		"patch": map[string]any{
+			"tracks": map[string]any{
+				"pad": map[string]any{
+					"effects": map[string]any{
+						"hp": map[string]any{"params": map[string]any{"Freq": 99999}},
+					},
+				},
+			},
+		},
+	})
+	if !badParam.IsError || !strings.Contains(resultText(badParam), "20..2000") {
+		t.Fatalf("out-of-range patched param was not refused by save_song check: %s", resultText(badParam))
+	}
+	_, rawAfter, err := s.songs.Load("night_drive")
+	if err != nil || song.Revision(rawAfter) != rev1 {
+		t.Fatalf("failed patch altered stored song: err=%v rev=%s want=%s", err, song.Revision(rawAfter), rev1)
+	}
+}
+
+func TestRunCraftToolAnswerShapeAndOneLockApply(t *testing.T) {
+	s := newSongServer(t, WithCraftTools(true))
+	saveRes := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong})
+	if saveRes.IsError {
+		t.Fatalf("save: %s", resultText(saveRes))
+	}
+	var saved struct {
+		Revision string `json:"revision"`
+	}
+	decodeStructured(t, saveRes, &saved)
+	rev0 := saved.Revision
+
+	// apply: false returns the 7-field craft.Answer against rev0 without storing,
+	// and its patch applies cleanly through patch_song.
+	res, err := s.RunCraftTool("mixing", "night_drive", false, func(_ string, _ *song.Song, _ []byte) (CraftPlan, error) {
+		return CraftPlan{
+			Techniques: []string{"mixing.echo_trim"},
+			Patch: map[string]any{
+				"tracks": map[string]any{
+					"pad": map[string]any{
+						"effects": map[string]any{
+							"echo": map[string]any{"params": map[string]any{"Mix": 0.25}},
+						},
+					},
+				},
+			},
+			Why:    []string{"pull pad delay back so chords stay clear"},
+			Checks: []string{"pad wet level checked"},
+		}, nil
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("RunCraftTool apply=false: %v %s", err, resultText(res))
+	}
+	var rawMap map[string]any
+	decodeStructured(t, res, &rawMap)
+	keys := make([]string, 0, len(rawMap))
+	for k := range rawMap {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	wantKeys := []string{"applied", "checks", "craft", "patch", "revision", "techniques", "why"}
+	if !slices.Equal(keys, wantKeys) {
+		t.Fatalf("craft answer keys = %v, want %v", keys, wantKeys)
+	}
+	var ans craft.Answer
+	decodeStructured(t, res, &ans)
+	if ans.Applied || ans.Craft != "mixing" || ans.Revision != rev0 {
+		t.Fatalf("apply=false answer = %+v, want applied=false revision=%s", ans, rev0)
+	}
+	if _, diskRaw, _ := s.songs.Load("night_drive"); song.Revision(diskRaw) != rev0 {
+		t.Fatal("apply=false modified the stored song")
+	}
+
+	// Handing the returned patch + revision to patch_song stores it.
+	appliedViaTool := call(t, s.handlePatchSong, map[string]any{
+		"song":     "night_drive",
+		"revision": ans.Revision,
+		"patch":    ans.Patch,
+	})
+	if appliedViaTool.IsError {
+		t.Fatalf("patch_song from craft answer: %s", resultText(appliedViaTool))
+	}
+	var patchedOut struct {
+		Revision string `json:"revision"`
+	}
+	decodeStructured(t, appliedViaTool, &patchedOut)
+	rev1 := patchedOut.Revision
+
+	// apply: true holds one lock across read, patch and store: a concurrent
+	// patch_song against rev1 launched while build is running must wait for the
+	// lock and then fail as stale against the newly stored rev2.
+	inBuild := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	patchDone := make(chan *mcp.CallToolResult, 1)
+
+	var applyRes *mcp.CallToolResult
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var rerr error
+		applyRes, rerr = s.RunCraftTool("drums", "night_drive", true, func(_ string, _ *song.Song, _ []byte) (CraftPlan, error) {
+			close(inBuild)
+			<-releaseBuild
+			return CraftPlan{
+				Techniques: []string{"drums.fill_into_section"},
+				Patch: map[string]any{
+					"patterns": map[string]any{
+						"fill": map[string]any{"drums": map[string]any{"kick": "x.......x.......", "snare": "....x.x.xxxxXXXX"}},
+					},
+					"sections": map[string]any{
+						"verse": map[string]any{"play": map[string]any{"drums": []string{"beat"}}},
+					},
+				},
+				Why: []string{"add fill vocabulary"},
+			}, nil
+		})
+		if rerr != nil {
+			t.Errorf("RunCraftTool apply=true: %v", rerr)
+		}
+	}()
+
+	<-inBuild
+	go func() {
+		patchDone <- call(t, s.handlePatchSong, map[string]any{
+			"song":     "night_drive",
+			"revision": rev1,
+			"patch":    map[string]any{"tempo": 240},
+		})
+	}()
+
+	// Give the concurrent patch_song goroutine a moment to contend on s.songsMu;
+	// it must not complete while RunCraftTool is still inside build.
+	select {
+	case early := <-patchDone:
+		t.Fatalf("concurrent patch_song completed while apply=true held lock: %s", resultText(early))
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseBuild)
+	wg.Wait()
+
+	if applyRes == nil || applyRes.IsError {
+		t.Fatalf("RunCraftTool apply=true failed: %v", resultText(applyRes))
+	}
+	var appliedAns craft.Answer
+	decodeStructured(t, applyRes, &appliedAns)
+	if !appliedAns.Applied || appliedAns.Revision == "" || appliedAns.Revision == rev1 {
+		t.Fatalf("apply=true answer = %+v (rev1=%s)", appliedAns, rev1)
+	}
+
+	concurrentRes := <-patchDone
+	if !concurrentRes.IsError || !strings.Contains(resultText(concurrentRes), "at revision "+appliedAns.Revision+", not "+rev1) {
+		t.Fatalf("concurrent patch_song against rev1 = %s, want stale-revision refusal naming %s",
+			resultText(concurrentRes), appliedAns.Revision)
 	}
 }
