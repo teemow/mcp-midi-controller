@@ -29,6 +29,10 @@
       "title": "craft-tools"
     },
     {
+      "path": "GLOSSARY.md",
+      "title": "GLOSSARY"
+    },
+    {
       "path": "recording.md",
       "title": "recording"
     },
@@ -115,6 +119,22 @@
     {
       "path": "research/x32.md",
       "title": "research/x32"
+    },
+    {
+      "path": "adr/0001-transforms-not-generators.md",
+      "title": "adr/0001-transforms-not-generators"
+    },
+    {
+      "path": "adr/0002-patches-by-id-with-a-revision.md",
+      "title": "adr/0002-patches-by-id-with-a-revision"
+    },
+    {
+      "path": "adr/0003-exact-settings-from-mapping-ranges.md",
+      "title": "adr/0003-exact-settings-from-mapping-ranges"
+    },
+    {
+      "path": "adr/0004-crafts-as-subagents.md",
+      "title": "adr/0004-crafts-as-subagents"
     }
   ]
 }
