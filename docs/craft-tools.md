@@ -281,14 +281,15 @@ applied: false
 
 In a patch, tracks, effects and every other entry with an id are keyed by
 that id, as scenes already address effects. A new entry carries its place
-(`first`, `last`, `after: <id>`), `null` removes an entry, and a list of
-values (a play list, the `arrangement`) is replaced whole. Several entries
+(`first`, `last`, `after: <id>`, `before: <id>`), `null` removes an entry,
+and a list of values (a play list, the `arrangement`) is replaced whole. Several entries
 placed `first` (or `last`) keep the patch's key order, which a JSON object
 need not keep, so an entry whose order matters is chained with `after: <id>`.
 With `apply: true` the tool reads, patches and stores the song under one
 lock. Its `revision` is still the one the patch was made against, so `patch`
 and `revision` always belong together: handed to `patch_song`, an applied
-answer is refused as stale instead of being applied twice. Its text also
+answer is refused as stale instead of being applied twice, unless its patch
+changed nothing and the stored revision is still the base. Its text also
 names the stored revision (`revision: <stored> (from <revision>)`), so an
 agent can report the revision before and after.
 

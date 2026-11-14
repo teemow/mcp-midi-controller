@@ -15,7 +15,8 @@ import (
 // was applied, so Patch and Revision always belong together: handed to
 // patch_song, an answer that was not applied stores its patch while the song
 // is unchanged, and one that was applied is refused as stale instead of being
-// applied twice. An applied answer's text names the revision the song was
+// applied twice (unless its patch changed nothing, leaving the stored revision
+// at the base). An applied answer's text names the revision the song was
 // stored at, too ("revision: <stored> (from <revision>)").
 type Answer struct {
 	Craft      string         `json:"craft" yaml:"craft"`
