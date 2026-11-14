@@ -85,7 +85,9 @@ It is written as `range` on the parameter in the song. The 128 steps of a
 7-bit CC are spread over the mapping range rather than over the parameter's
 whole range, so a setting such as an 80 Hz high-pass can be reached. The range
 is fixed per binding, not derived from the song's values, so a changed value
-still plays live without loading the session again.
+still plays live without loading the session again. The steps lie evenly
+along the parameter's travel, which follows the scale its plugin shows it on:
+a log scale for a frequency an Apple filter shows on one.
 [ADR 0003](docs/adr/0003-exact-settings-from-mapping-ranges.md).
 
 ## Patch

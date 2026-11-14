@@ -228,7 +228,13 @@ A plugin carries a capability when it is on the rig (its probe dump is staged,
 what the card sets. For a value that is a number in the plugin's units, the
 step of a CC over the mapping range has to reach the card's precision: a
 ceiling of -1 dBFS within 0.1 dB is out of reach of a CC over 30 dB (steps of
-0.24 dB), and in reach over 6 dB (0.05 dB). The tools only read; applying a
+0.24 dB), and in reach over 6 dB (0.05 dB). The step is the one near the
+value: a parameter its plugin shows on a log scale moves along it
+([songs.md](songs.md#mapping-ranges)), so its steps grow with the value, and
+an Apple high-pass's cutoff over its whole range (10 Hz to 22050 Hz) moves in
+steps of about 5 Hz near 80 Hz and 94 Hz near 1500 Hz. Where the value
+follows the song, the step shown is the coarsest, at the top of the range.
+The tools only read; applying a
 technique is `apply_technique`'s
 (https://github.com/teemow/mcp-midi-controller/issues/230).
 

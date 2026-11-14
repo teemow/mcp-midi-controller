@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/teemow/midi-device/device"
+
+	"github.com/teemow/mcp-midi-controller/internal/song"
 )
 
 // Rig is the plugins a rig has: the probe dumps staged for it, which is also
@@ -71,8 +73,12 @@ type BoundParam struct {
 	Fixed *float64  `json:"fixed,omitempty"`
 	Range []float64 `json:"range,omitempty"`
 	Unit  string    `json:"unit,omitempty"`
-	// Step is how far apart the 128 values of a CC lie, in the plugin's
-	// units, over the mapping range or else the parameter's whole range.
+	// Step is how far apart two neighbouring values of a CC lie, in the
+	// plugin's units, over the mapping range or else the parameter's whole
+	// range. A parameter shown linearly has one step everywhere; one shown on
+	// a log scale moves along it, and its step grows with the value: near the
+	// technique's value where that is a constant, else at the top of the
+	// range, the coarsest.
 	Step float64 `json:"step,omitempty"`
 }
 
@@ -183,7 +189,10 @@ func checkParam(c *Candidate, bp *BoundParam, dump *device.ProbeDump, m ParamMap
 	if c.Write != WriteCC || hi <= lo {
 		return
 	}
-	bp.Step = (hi - lo) / 127
+	// AUM spreads the CC along the parameter's travel (song.Travel): on a
+	// log scale the steps grow with the value, so until a constant value says
+	// where, the step is the coarsest, at the top of the range.
+	bp.Step = song.CCStep(pp, lo, hi, hi)
 	v, isConst := pvv.Value.Const()
 	if !isConst {
 		return // it follows the song; it is worked out when the card is applied
@@ -204,6 +213,7 @@ func checkParam(c *Candidate, bp *BoundParam, dump *device.ProbeDump, m ParamMap
 		}
 		return
 	}
+	bp.Step = song.CCStep(pp, lo, hi, at)
 	if pvv.Precision == nil || m.Value != nil {
 		return
 	}

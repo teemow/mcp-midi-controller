@@ -64,3 +64,9 @@ effects:
   the rest a plugin needs no parsing of its state.
 - Until AUM's mapping onto a range is measured, a binding's precision is the
   measured step size, not the computed one.
+- Measured on 2026-11-14 (issue 229): AUM spreads a CC along the parameter's
+  travel, which follows the scale the plugin shows it on. A parameter shown
+  on a log scale travels along it, over its whole range and within a mapping
+  range, whose ends AUM keeps as places on that travel. The song works out
+  both along the same travel ([songs.md](../songs.md#mapping-ranges)), and a
+  CC's step near a value follows from it.

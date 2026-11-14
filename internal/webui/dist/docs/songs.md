@@ -386,6 +386,50 @@ sections:
 instrument, or of `effect`. `bar` (1-based, default 1) and `bars` (default: to
 the section's end) place the ramp.
 
+### Mapping ranges
+
+A parameter's value reaches its plugin as a 7-bit Control Change, and AUM
+spreads the CC's 128 steps over the parameter's whole range. That is enough
+for movement, but not for every setting: a frequency exposed from 10 Hz to
+30 kHz moves in steps of about 236 Hz, so an 80 Hz high-pass cannot be set.
+`range` on an instrument or an effect narrows AUM's mapping of a parameter to
+part of its range, its **mapping range**, and the 128 steps are spread over
+that part ([ADR 0003](adr/0003-exact-settings-from-mapping-ranges.md)):
+
+```yaml
+effects:
+  - id: hp
+    plugin: …
+    params: {"Band 1 Frequency": 80}
+    range:  {"Band 1 Frequency": [40, 250]}   # 128 steps about 1.7 Hz apart
+```
+
+- A range is two numbers in the parameter's own units, the lowest first, and
+  lies within the parameter's range. It names a parameter the plugin's own
+  `params` set.
+- It is the session's, not a section's: a scene cannot change it. Every value
+  the song gives the parameter, in its declaration, a scene, a ramp or a
+  [modulator](#modulators)'s depth, lies within it, and a modulator's default
+  depth is the whole mapping range. A value means what it means without a
+  range: `"60%"` is a share of the parameter's whole range, a label its value
+  there.
+- A value within the range plays live. A changed range is a changed session:
+  it is authored and loaded again, as for a new parameter.
+- A song without `range` compiles to the same session and the same MIDI as
+  before.
+
+AUM spreads the 128 steps evenly along the parameter's **travel**, which
+follows the scale its plugin shows the parameter on. Most parameters are shown
+linearly, and the steps are equally far apart in the parameter's units. A
+parameter its plugin shows on a log scale (the AU flag `DisplayLogarithmic`,
+as Apple's filters show a frequency) travels along that scale: over 40..250 Hz
+the steps run from about 0.6 Hz apart at 40 Hz to 3.6 Hz at 250 Hz, about
+1.2 Hz near 80 Hz. The song sends every value along the same travel, so a
+number is the value the plugin is set to either way, and `"NN%"` is a share of
+the travel, the place AUM's slider shows. That was [measured](#status) at the
+tap. Other display scales (square root, squared, cubed, exponential) are not
+measured and are sent as linear.
+
 ## Modulators
 
 A modulator moves one parameter by itself: an LFO that sweeps a synth's filter
@@ -839,6 +883,10 @@ problem with its place in the document:
 - plugins, against the staged AUv3 probes: an unknown plugin, preset or
   parameter (with the names that come close), a value outside a parameter's
   range;
+- a [mapping range](#mapping-ranges): one that is not two numbers, the lowest
+  first, lies outside its parameter's range, names a parameter the plugin's
+  params do not set or one parameter twice, and a value the song sets outside
+  it;
 - a [file track](#a-track-that-plays-a-file): a plugin beside the file, a path
   that is not inside AUM's Recordings or has no extension, a preset,
   parameter, kind or transposition, a pattern to play, a scene or a ramp that
@@ -893,7 +941,9 @@ destinations through the same filters.
 **Mappings.** Every strip's level and mute and every plugin's bypass are mapped,
 along with each parameter and each preset the song names. So is the master's
 Rec enable, which arms it for AUM's own recorder ([Stems](#stems)); a File
-Player has no mapping. A preset becomes one
+Player has no mapping. A parameter with a [mapping range](#mapping-ranges) has
+its mapping's range (AUM's 0 % and 100 %) set to it; every other mapping spans
+its whole range. A preset becomes one
 of the plugin's "Preset Load" actions in AUM, fired by a Program Change. With
 `full_control: true` every other parameter of every plugin is mapped as well,
 around the song's own mappings.
@@ -912,7 +962,8 @@ The daemon records which session a song was authored into, for which layout,
 and which notes its sequencer holds. Changing notes, patterns or the
 arrangement leaves the layout alone, but not the sequencer: it keeps playing
 the song as it was authored. Adding a plugin, a preset or a parameter changes
-the layout, and so do the tempo (it is the session's clock) and an
+the layout, and so do a parameter's mapping range, the tempo (it is the
+session's clock) and an
 instrument's [sequence](#a-drum-machines-own-sequence) (it is in a plugin's
 saved state): the session must then be authored and loaded again, and until it
 is `get_song` and `play_song` say so.
@@ -1883,8 +1934,30 @@ a device, in sessions authored from a song:
   [Sound](#sound)). Replayed through `probe_sound` with the messages and the
   timing the song compiles to, both sections sounded as written, the one
   switched on with a new mix wet and the other dry (43 of 43).
-- **Parameters.** A parameter's CC runs linearly over the parameter's range:
-  0, 51, 64 and 127 put a reverb's mix at 0 %, 40 %, 50 % and 100 %.
+- **Parameters.** A parameter's CC runs linearly over the range of a
+  parameter its plugin shows linearly: 0, 51, 64 and 127 put a reverb's mix
+  at 0 %, 40 %, 50 % and 100 %. One shown on a log scale is below.
+- **Mapping ranges and log scales.** A scratch song played Model D's white
+  noise through AUHighPassFilter, whose Cutoff Frequency (10 Hz to 22050 Hz)
+  its plugin shows on a log scale, and every section was read at the master
+  tap against a section with the filter bypassed. Over the whole range a CC of
+  76 set a cutoff of about 1060 Hz and a CC of 102 about 5300 Hz: AUM moves
+  the parameter along its log scale (10·2205^(cc/127): 1002 Hz and 4845 Hz,
+  where a linear travel gives 13.2 kHz and 17.7 kHz). A mapping range of
+  40..250 Hz, stored then as the two ends' linear places (0.0014 and 0.011 of
+  the travel), set every value of the range to about 10 Hz, as those places
+  are on the log scale; a linear travel would have put the 80 Hz high-pass at
+  80 Hz. So a mapping's ends and the CC's steps are places on the travel, and
+  the song works out both along it (`Travel` and `ValueAt` in
+  `internal/song/range.go`). Of the rig's 15870 writable parameters in 203
+  plugins, 49 of 20 plugins are shown on a log scale, nearly all of Apple's AU
+  effects, and 4 on another scale; no stored song but two scratch songs set
+  one. In the same run a filter switched back on by a section stayed bypassed
+  for that whole section in one pass, and took effect from the next section
+  on (see **Bypass and mute**). An 80 Hz high-pass set through a range of
+  40..250 Hz on the log scale is
+  https://github.com/teemow/mcp-midi-controller/issues/229's last
+  measurement.
 - **Modulators.** A scratch song of one NuSaw pad, whose Cutoff an LFOH
   swept between 0.1 and 0.9 in sync at 120 BPM, recorded at the master tap
   and measured every 100 ms. Its spectral centroid ran between about 60 Hz

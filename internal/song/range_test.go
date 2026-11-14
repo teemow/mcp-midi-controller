@@ -9,9 +9,14 @@ import (
 	"github.com/teemow/midi-device/device"
 )
 
-// hpFreq is a frequency exposed linearly from 10 Hz to 30 kHz, as many filters
-// expose theirs: a CC over all of it moves in steps of about 236 Hz.
-var hpFreq = device.ProbeParam{Identifier: "freq", DisplayName: "Frequency", KeyPath: "freq", Min: 10, Max: 30000, Writable: true, UnitName: "Hz", DisplayLogarithmic: true}
+// hpFreq is a frequency exposed and shown linearly from 10 Hz to 30 kHz: a CC
+// over all of it moves in steps of about 236 Hz.
+var hpFreq = device.ProbeParam{Identifier: "freq", DisplayName: "Frequency", KeyPath: "freq", Min: 10, Max: 30000, Writable: true, UnitName: "Hz"}
+
+// cutoff is AUHighPassFilter's Cutoff Frequency as its probe dump has it: 10 Hz
+// to 22050 Hz, shown on a log scale (flags 0xc0c00000: writable, readable,
+// high resolution, DisplayLogarithmic). AUM moves it along that scale.
+var cutoff = device.ProbeParam{Identifier: "0", DisplayName: "Cutoff Frequency", KeyPath: "0", Min: 10, Max: 22050, Writable: true, Readable: true, UnitName: "Hz", Flags: 0xc0c00000}
 
 // rangeCatalog is the test rig with a high-pass whose frequency is hpFreq.
 func rangeCatalog() Catalog {
@@ -360,5 +365,113 @@ func TestRangeStemStrip(t *testing.T) {
 	low, err := p.Node("pad", "low").param("Frequency")
 	if err != nil || len(low.Range) != 2 || low.Range[0] != 40 || low.Range[1] != 250 {
 		t.Errorf("the mix's pad/low Frequency has range %v (%v), want [40 250]", low.Range, err)
+	}
+}
+
+// TestLogTravel checks a parameter its plugin shows on a log scale is sent
+// along that scale, as AUM moves it: the cutoffs measured on AUHighPassFilter
+// at the tap (docs/songs.md, Status, "Mapping ranges").
+func TestLogTravel(t *testing.T) {
+	if !LogTravel(cutoff) {
+		t.Fatal("the DisplayLogarithmic flag alone does not make a log travel")
+	}
+	withBool := hpFreq
+	withBool.DisplayLogarithmic = true
+	if !LogTravel(withBool) || LogTravel(hpFreq) {
+		t.Errorf("LogTravel: DisplayLogarithmic %v, plain %v; want true, false", LogTravel(withBool), LogTravel(hpFreq))
+	}
+	fromZero := withBool
+	fromZero.Min = 0
+	if LogTravel(fromZero) {
+		t.Error("a range from 0 has no log scale, yet LogTravel says it has")
+	}
+	// The CCs played on the rig, and the cutoffs they set: 10·2205^(cc/127).
+	for _, tc := range []struct {
+		cc   int
+		want float64 // Hz
+	}{{0, 10}, {23, 40.3}, {76, 1001.8}, {102, 4844.6}, {127, 22050}} {
+		if got := ValueAt(cutoff, float64(tc.cc)/127); math.Abs(got-tc.want) > 0.001*tc.want+0.05 {
+			t.Errorf("CC %d sets %.1f Hz, want %.1f", tc.cc, got, tc.want)
+		}
+		if w, err := paramWire(cutoff, Number(tc.want)); err != nil || w != tc.cc {
+			t.Errorf("paramWire(%g Hz) = %d, %v; want %d", tc.want, w, err, tc.cc)
+		}
+	}
+	// A share is of the travel: 50 % is the middle of the scale, about
+	// 470 Hz, as AUM's slider shows it.
+	if w, _ := paramWire(cutoff, Value{Str: "50%", IsStr: true}); w != 64 {
+		t.Errorf("50%% is sent as %d, want 64", w)
+	}
+	for _, x := range []float64{10, 33.3, 80, 1000, 22050} {
+		if got := ValueAt(cutoff, Travel(cutoff, x)); math.Abs(got-x) > 1e-9*x {
+			t.Errorf("ValueAt(Travel(%g)) = %g", x, got)
+		}
+	}
+}
+
+// TestLogTravelRange checks a mapping range of a log parameter: AUM stores
+// its ends as places on the log scale, and spreads the CC's steps evenly
+// along it, so an 80 Hz high-pass over 40..250 Hz is within a step of 80 Hz.
+func TestLogTravelRange(t *testing.T) {
+	w, err := rangeWire(cutoff, 40, 250, Number(80))
+	if err != nil || w != 48 {
+		t.Fatalf("rangeWire(80 Hz over 40..250) = %d, %v; want 48", w, err)
+	}
+	a, b := Travel(cutoff, 40), Travel(cutoff, 250)
+	got := ValueAt(cutoff, a+float64(w)/127*(b-a))
+	step := CCStep(cutoff, 40, 250, 80)
+	if math.Abs(got-80) > step/2 {
+		t.Errorf("CC %d sets %.2f Hz, more than half a step (%.2f Hz) from 80", w, got, step/2)
+	}
+	// 40·6.25^(1/127) - 40: the steps grow along the scale, about 1.2 Hz at 80 Hz.
+	if step < 1.1 || step > 1.3 {
+		t.Errorf("a CC step near 80 Hz over 40..250 is %.3f Hz, want about 1.2", step)
+	}
+	if lin := CCStep(hpFreq, 40, 250, 80); math.Abs(lin-210.0/127) > 1e-9 {
+		t.Errorf("a linear parameter's step is %g, want %g everywhere", lin, 210.0/127)
+	}
+	if whole := CCStep(cutoff, 0, 0, 1000); whole < 55 || whole > 65 {
+		t.Errorf("a CC step near 1 kHz over the whole range is %.1f Hz, want about 61", whole)
+	}
+	for _, tc := range []struct {
+		v    Value
+		want int
+	}{{Number(40), 0}, {Number(250), 127}, {Number(100), 64}} {
+		if got, err := rangeWire(cutoff, 40, 250, tc.v); err != nil || got != tc.want {
+			t.Errorf("rangeWire(%s) = %d, %v; want %d", tc.v, got, err, tc.want)
+		}
+	}
+	if _, err := rangeWire(cutoff, 40, 250, Value{Str: "50%", IsStr: true}); err == nil || !strings.Contains(err.Error(), "Cutoff Frequency at 50% is 469.574") {
+		t.Errorf("50%% over 40..250: %v, want it refused as 469.6 Hz", err)
+	}
+
+	// The session's mapping spans the two ends' places on the log scale.
+	cat := rangeCatalog()
+	dump := cat["hipass"]
+	dump.Parameters[0] = cutoff
+	dump.Parameters[0].Identifier, dump.Parameters[0].KeyPath, dump.Parameters[0].DisplayName = "freq", "freq", "Frequency"
+	cat["hipass"] = dump
+	p, err := NewPlan(mustParse(t, rangeSong), cat)
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	freq, err := p.Node("pad", "hp").param("Frequency")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lo, hi := freq.mapRange(); math.Abs(lo-a) > 1e-12 || math.Abs(hi-b) > 1e-12 {
+		t.Errorf("the mapping spans %g..%g, want %g..%g", lo, hi, a, b)
+	}
+	home, err := p.HomeState()
+	if err != nil {
+		t.Fatalf("HomeState: %v", err)
+	}
+	if v, _ := stateValue(home, freq.At); v != 48 {
+		t.Errorf("the declaration's 80 Hz is sent as %d, want 48", v)
+	}
+	// A session authored with the linear places has another fingerprint, so
+	// it is authored again; a linear parameter's range keeps its own.
+	if lin := rangePlan(t, rangeSong).Fingerprint(); lin == p.Fingerprint() {
+		t.Error("a range on a log scale has the fingerprint of the same range on a linear one")
 	}
 }
