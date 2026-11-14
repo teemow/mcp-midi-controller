@@ -19,11 +19,16 @@ import (
 // chain, and a stem strip's effects — are addressed in the patch as maps keyed
 // by that id: null removes the entry, an existing id merges in place (and moves
 // if place is given), and a new id inserts the entry at place ("first", "last",
-// "after: <id>" or "before: <id>", defaulting to "last"). Lists of values (play
-// lists, arrangement, notes, automation, events, pedal, depth, locks,
-// control_channels) are replaced whole.
+// "after: <id>" or "before: <id>", defaulting to "last"). Several entries placed
+// "first" (or "last") in one patch keep the patch's key order; the key order of
+// a JSON object is not guaranteed to survive (a craft tool's patch is sorted by
+// id), so chain entries with "after: <id>" when their order matters. Lists of
+// values (play lists, arrangement, notes, automation, events, pedal, depth,
+// locks, control_channels) are replaced whole.
 //
-// Comments and formatting on untouched parts of songYAML are preserved.
+// Comments on untouched parts of songYAML are kept. The patched document is
+// written out again with a 2-space indent, so the first patch normalizes the
+// author's indentation and spacing.
 func Patch(songYAML, patchData []byte) ([]byte, error) {
 	songDoc, err := decodeMappingDoc("parse song", songYAML)
 	if err != nil {
@@ -334,19 +339,33 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 		pending = append(pending, pendingItem{id: key, node: entryMap, place: pl, segs: entrySegs})
 	}
 
-	// Pass 3: resolve placements across passes so chained insertions
+	// Pass 3: place the "first" and "last" entries before any anchored one, so
+	// several of them keep the patch's key order as one block at either end,
+	// and an entry anchored on one of them ("after: hp") stays right next to it
+	// however the keys are ordered: a later "first" entry cannot land between
+	// hp and the entry chained after it, as a later "last" one never could.
+	firsts := 0
+	anchored := pending[:0]
+	for _, p := range pending {
+		switch p.place.kind {
+		case placeFirst:
+			items = slices.Insert(items, firsts, p.node)
+			firsts++
+		case placeLast:
+			items = append(items, p.node)
+		default:
+			anchored = append(anchored, p)
+		}
+	}
+	pending = anchored
+
+	// Pass 4: resolve anchored placements across passes so chained insertions
 	// (e.g. comp "after: hp" alongside hp "first") work regardless of key order.
 	for len(pending) > 0 {
 		progressed := false
 		rest := pending[:0]
 		for _, p := range pending {
 			switch p.place.kind {
-			case placeFirst:
-				items = slices.Insert(items, 0, p.node)
-				progressed = true
-			case placeLast:
-				items = append(items, p.node)
-				progressed = true
 			case placeAfter:
 				if idx := findItem(p.place.anchor); idx >= 0 {
 					items = slices.Insert(items, idx+1, p.node)

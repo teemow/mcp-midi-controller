@@ -540,13 +540,46 @@ func TestRunCraftToolAnswerShapeAndOneLockApply(t *testing.T) {
 	}
 	var appliedAns craft.Answer
 	decodeStructured(t, applyRes, &appliedAns)
-	if !appliedAns.Applied || appliedAns.Revision == "" || appliedAns.Revision == rev1 {
-		t.Fatalf("apply=true answer = %+v (rev1=%s)", appliedAns, rev1)
+	// The applied answer names the revision its patch was made against (ADR
+	// 0002), rev1; its text names the stored revision too.
+	if !appliedAns.Applied || appliedAns.Revision != rev1 {
+		t.Fatalf("apply=true answer = %+v, want applied=true revision=%s (the patch's base)", appliedAns, rev1)
+	}
+	_, storedRaw, err := s.songs.Load("night_drive")
+	if err != nil {
+		t.Fatalf("load after apply: %v", err)
+	}
+	rev2 := song.Revision(storedRaw)
+	if rev2 == rev1 {
+		t.Fatalf("apply=true did not store a new revision (still %s)", rev1)
+	}
+	applyText := resultText(applyRes)
+	for _, want := range []string{
+		"drums: applied, made against revision " + rev1,
+		"revision: " + rev2 + " (from " + rev1 + ")",
+	} {
+		if !strings.Contains(applyText, want) {
+			t.Errorf("apply=true text lacks %q:\n%s", want, applyText)
+		}
 	}
 
 	concurrentRes := <-patchDone
-	if !concurrentRes.IsError || !strings.Contains(resultText(concurrentRes), "at revision "+appliedAns.Revision+", not "+rev1) {
+	if !concurrentRes.IsError || !strings.Contains(resultText(concurrentRes), "at revision "+rev2+", not "+rev1) {
 		t.Fatalf("concurrent patch_song against rev1 = %s, want stale-revision refusal naming %s",
-			resultText(concurrentRes), appliedAns.Revision)
+			resultText(concurrentRes), rev2)
+	}
+
+	// Handed to patch_song, the applied answer's patch and revision are refused
+	// as stale: the patch is not applied a second time.
+	again := call(t, s.handlePatchSong, map[string]any{
+		"song":     "night_drive",
+		"revision": appliedAns.Revision,
+		"patch":    appliedAns.Patch,
+	})
+	if !again.IsError || !strings.Contains(resultText(again), "at revision "+rev2+", not "+rev1) {
+		t.Fatalf("patch_song with the applied answer = %s, want stale-revision refusal naming %s", resultText(again), rev2)
+	}
+	if _, afterRaw, _ := s.songs.Load("night_drive"); song.Revision(afterRaw) != rev2 {
+		t.Fatal("refused patch_song altered the stored song")
 	}
 }
