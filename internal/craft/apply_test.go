@@ -170,6 +170,17 @@ func TestApplyToASection(t *testing.T) {
 	if p.Node("pad", "cut") == nil {
 		t.Error("the plan has no node for the cut")
 	}
+
+	// Applied to the whole track afterwards, it plays everywhere: the
+	// section's bypass is dropped.
+	chain := []ChainEntry{{ID: "lim", Plugin: "aufx/LimA/Test"}, {ID: "cut", Plugin: "aufx/Fits/Test"}}
+	all, err := lib.Apply(cut, Target{Track: "pad", Chain: chain}, rig, map[string]float64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := patched(t, doc, all, cat); strings.Contains(again, "bypass: true") {
+		t.Errorf("applied to the whole track, the cut stays bypassed:\n%s", again)
+	}
 }
 
 func TestApplyRefuses(t *testing.T) {

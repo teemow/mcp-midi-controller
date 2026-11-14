@@ -9,11 +9,14 @@ package craft
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/teemow/midi-device/device"
 	"gopkg.in/yaml.v3"
+
+	"github.com/teemow/mcp-midi-controller/internal/song"
 )
 
 // CardSpec is a plugin card as it is written: what profile_plugin proposes
@@ -51,6 +54,144 @@ func (c CardSpec) Render(vocab Vocabulary) ([]byte, error) {
 		return nil, fmt.Errorf("the card does not load: %v", err)
 	}
 	return data, nil
+}
+
+// Over renders the card to replace prev, the rig's earlier card of the same
+// plugin as it is written, after a profile that swept the capabilities in
+// swept. The capabilities swept now are decided by the sweep; what prev says
+// besides stays: its other capabilities (kept, sorted), what was measured of
+// those, marked with when, and its notes, which are what is known of the
+// plugin. Without prev it is Render.
+func (c CardSpec) Over(prev []byte, swept []string, vocab Vocabulary) (data []byte, kept []string, err error) {
+	if len(prev) == 0 {
+		data, err = c.Render(vocab)
+		return data, nil, err
+	}
+	var old struct {
+		Capabilities map[string]any `yaml:"capabilities"`
+		Notes        stringList     `yaml:"notes"`
+		Measured     *Measured      `yaml:"measured"`
+	}
+	if err := yaml.Unmarshal(prev, &old); err != nil {
+		return nil, nil, fmt.Errorf("the rig's earlier card: %v", err)
+	}
+	caps := map[string]any{}
+	for name, pv := range old.Capabilities {
+		if !slices.Contains(swept, name) {
+			caps[name] = pv
+			kept = append(kept, name)
+		}
+	}
+	sort.Strings(kept)
+	for name, pv := range c.Capabilities {
+		caps[name] = pv
+	}
+	notes := append([]string{}, old.Notes...)
+	for _, n := range c.Notes {
+		if !slices.Contains(notes, n) {
+			notes = append(notes, n)
+		}
+	}
+	measured := c.Measured
+	if old.Measured != nil {
+		var earlier []string
+		for _, check := range old.Measured.Checks {
+			if !slices.Contains(kept, checkedCapability(check)) {
+				continue
+			}
+			if !strings.HasPrefix(check, "(") {
+				check = "(" + old.Measured.At + ") " + check
+			}
+			earlier = append(earlier, check)
+		}
+		if len(earlier) > 0 {
+			m := Measured{At: old.Measured.At, By: old.Measured.By}
+			if measured != nil {
+				m = *measured
+			}
+			m.Checks = append(append([]string{}, m.Checks...), earlier...)
+			measured = &m
+		}
+	}
+	out := struct {
+		Plugin       string         `yaml:"plugin"`
+		Name         string         `yaml:"name"`
+		Capabilities map[string]any `yaml:"capabilities"`
+		Notes        []string       `yaml:"notes,omitempty"`
+		Measured     *Measured      `yaml:"measured,omitempty"`
+	}{c.Plugin, c.Name, caps, notes, measured}
+	if data, err = yaml.Marshal(out); err != nil {
+		return nil, nil, err
+	}
+	if _, err := ParsePluginCard(data, vocab); err != nil {
+		return nil, nil, fmt.Errorf("the card does not load: %v", err)
+	}
+	return data, kept, nil
+}
+
+// displayOther are the AU flags of a display scale other than linear and log
+// (square root, squared, cubed, cube root, exponential): kAudioUnitParameter
+// Flag_DisplayMask without DisplayLogarithmic.
+const displayOther = 7 << 16
+
+// Steps is the step size of every parameter a card sets over CC, one line per
+// parameter for the card's measured checks: how far apart the values of two
+// neighbouring CCs lie at the low and the high end of its mapping range (or
+// its whole range). It follows the parameter's travel, the mapping law AUM was
+// measured to move a parameter by (linear, or the log scale its plugin shows
+// it on: songs.md, "Mapping ranges"); a parameter shown on another scale,
+// which is not measured, says so.
+func Steps(card *PluginCard, dump device.ProbeDump) []string {
+	var out []string
+	for _, pv := range card.Provides {
+		if pv.Write != WriteCC {
+			continue
+		}
+		for _, m := range pv.Params {
+			if m.Param == "" || m.Fixed != nil {
+				continue
+			}
+			i, err := findParam(dump, m.Param)
+			if err != nil {
+				continue
+			}
+			pp := dump.Parameters[i]
+			if len(pp.ValueStrings) > 0 || pp.Max <= pp.Min {
+				continue
+			}
+			lo, hi := pp.Min, pp.Max
+			if len(m.Range) == 2 {
+				lo, hi = m.Range[0], m.Range[1]
+			}
+			travel := "its linear travel"
+			switch {
+			case song.LogTravel(pp):
+				travel = "its log travel"
+			case pp.Flags&displayOther != 0:
+				travel = "a linear travel, though its plugin shows it on another scale, which is not measured"
+			}
+			unit := pp.UnitName
+			if unit != "" {
+				unit = " " + unit
+			}
+			out = append(out, fmt.Sprintf("%s %s: a CC moves %s in steps of %.3g%s at %g to %.3g%s at %g, along %s over %g..%g",
+				pv.Capability, m.Name, m.Param, song.CCStep(pp, lo, hi, lo), unit, lo, song.CCStep(pp, lo, hi, hi), unit, hi, travel, lo, hi))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkedCapability is the capability a measured check is of: its first
+// word, after the time it was measured when one is marked.
+func checkedCapability(check string) string {
+	if strings.HasPrefix(check, "(") {
+		if _, rest, ok := strings.Cut(check, ") "); ok {
+			check = rest
+		}
+	}
+	name, _, _ := strings.Cut(check, " ")
+	return name
 }
 
 // synonyms are the words a plugin's parameter is called by, per capability

@@ -191,8 +191,8 @@ notes:
   seconds). Without it the number is passed on as it is.
 - `notes` hold what is learnt about the plugin, for the next session.
 - `measured` says what `profile_plugin` measured of the plugin and when
-  (`at`, `by`, and a line per sweep under `checks`); a card written by hand
-  has none.
+  (`at`, `by`, and under `checks` a line per sweep and per parameter's step
+  size); a card written by hand has none.
 
 There is no `roles` field: what a plugin is for is the capabilities it
 provides.
@@ -239,7 +239,9 @@ it leaves out come after the ones it names, by name.
   units and places the effect as the card says: `before`/`after` a
   capability is before or after the effect whose plugin provides it, before
   one the chain lacks is last, after one it lacks is first, and an effect the
-  chain has already (the card applied again) is set where it is. Without
+  chain has already (the card applied again) is set where it is; applied to
+  the whole track or the master, it plays everywhere again, though a
+  section's card declared it bypassed. Without
   `apply` the patch is checked only; with it the song is stored. When a
   capability has no plugin that carries it, it changes nothing and names the
   closest plugin and how far off it comes. `verify: true` (with `apply` and
@@ -257,8 +259,11 @@ it leaves out come after the ones it names, by name.
   per value of each capability's sweep (a high-pass's cutoff at 40, 160 and
   640 Hz, a compressor's threshold at -40, -20 and 0 dB …), and the
   capability's measurement has to move the way it says. The capabilities
-  that pass are written to `craft/plugins/` with `measured`; the others are
-  reported with their readings. `dry_run` only proposes the card.
+  that pass are written to `craft/plugins/` with `measured`, which also gives
+  each parameter's step size over its mapping range (along its travel); the
+  others are reported with their readings. A card of the plugin the rig has
+  already is replaced, but keeps its notes and the capabilities that were not
+  swept, with what was measured of them. `dry_run` only proposes the card.
 - **`get_craft_job`** follows a craft tool that plays (`verify`,
   `profile_plugin`) and gives its report. Such a tool runs in the background
   like `mix_song`, one at a time, counts as busy and holds the host awake;

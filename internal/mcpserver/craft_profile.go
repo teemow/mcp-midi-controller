@@ -53,7 +53,7 @@ func (s *Server) registerProfilePlugin() {
 		Name: "profile_plugin",
 		Description: "Measure what an effect plugin can do and write its plugin card. Its probe dump's parameters are matched to the capabilities by name, unit and range (eq.highpass, dynamics.compressor …), each with the conversion its units need and, where a capability uses only part of a parameter's range, that part as the mapping range; or pass card with the capabilities yourself (plugin-card form: {capability: {write: cc, params: {param: {param, value, range}}, enable: {…}}}), as a multi-band EQ needs to say which band and shape. " +
 			"Then every capability is swept at the tap: a lab song (stored as \"plugin_lab\" and loaded like load_song, so it needs confirm: true) plays white noise in bursts through the plugin, a section per value of the swept parameter, and the capability's measurement has to move the way it says (a high-pass's cutoff lowers the band below it, a compressor's threshold raises the crest factor, a limiter's ceiling the true peak). " +
-			"The capabilities that pass are written to craft/plugins/ of the config dir as the plugin's card, with what was measured and when (it replaces the rig's earlier card of the plugin); the others are reported with what was read. Runs in the background: get_craft_job follows it, stop_song ends it. dry_run: true only proposes the card.",
+			"The capabilities that pass are written to craft/plugins/ of the config dir as the plugin's card, with what was measured and when and each parameter's step size over its mapping range (it replaces the rig's earlier card of the plugin, keeping that card's notes and the capabilities not swept); the others are reported with what was read. Runs in the background: get_craft_job follows it, stop_song ends it. dry_run: true only proposes the card.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -83,13 +83,18 @@ type profileArgs struct {
 
 // profileReport is what profile_plugin found.
 type profileReport struct {
-	Plugin  string          `json:"plugin"`
-	Probe   string          `json:"probe"`
-	Name    string          `json:"name"`
-	Sweeps  []profileSweep  `json:"sweeps"`
-	Card    *craft.CardSpec `json:"card,omitempty"`
-	File    string          `json:"file,omitempty"`
-	Seconds float64         `json:"seconds"`
+	Plugin string          `json:"plugin"`
+	Probe  string          `json:"probe"`
+	Name   string          `json:"name"`
+	Sweeps []profileSweep  `json:"sweeps"`
+	Card   *craft.CardSpec `json:"card,omitempty"`
+	File   string          `json:"file,omitempty"`
+	// Steps are the step sizes of the card's parameters (craft.Steps).
+	Steps []string `json:"steps,omitempty"`
+	// Kept are the capabilities of the rig's earlier card that were not
+	// swept, which the card written keeps.
+	Kept    []string `json:"kept,omitempty"`
+	Seconds float64  `json:"seconds"`
 }
 
 type profileSweep struct {
@@ -109,7 +114,12 @@ func (r *profileReport) text() string {
 		}
 		fmt.Fprintf(&b, "  %-6s %s\n", mark, sw.Said)
 	}
+	for _, st := range r.Steps {
+		fmt.Fprintf(&b, "  %-6s %s\n", "step", st)
+	}
 	switch {
+	case r.File != "" && len(r.Kept) > 0:
+		fmt.Fprintf(&b, "card written: %s (%s; kept from the rig's earlier card: %s)\n", r.File, strings.Join(r.Card.CapabilityNames(), ", "), strings.Join(r.Kept, ", "))
 	case r.File != "":
 		fmt.Fprintf(&b, "card written: %s (%s)\n", r.File, strings.Join(r.Card.CapabilityNames(), ", "))
 	case r.Card != nil:
@@ -368,16 +378,36 @@ func (s *Server) runProfile(ctx context.Context, job *craftJob, dump device.Prob
 		rep.Card = &card
 		return rep, nil
 	}
-	passed.Measured = &craft.Measured{At: time.Now().UTC().Format(time.RFC3339), By: "profile_plugin", Checks: said}
-	passed.Notes = append(passed.Notes, "Profiled at the tap with white noise in bursts; parameters matched by name, unit and range. A CC's step follows the parameter's travel (linear, or its log scale).")
-	data, err := passed.Render(lib.Vocab)
+	// The step size of every parameter the card sets over CC, over its
+	// mapping range, goes with what was measured.
+	spec, err := passed.Render(lib.Vocab)
 	if err != nil {
 		return rep, err
 	}
+	parsed, err := craft.ParsePluginCard(spec, lib.Vocab)
+	if err != nil {
+		return rep, err
+	}
+	rep.Steps = craft.Steps(parsed, dump)
+	passed.Measured = &craft.Measured{At: time.Now().UTC().Format(time.RFC3339), By: "profile_plugin", Checks: append(said, rep.Steps...)}
+	passed.Notes = append(passed.Notes, "Profiled at the tap with white noise in bursts; parameters matched by name, unit and range. A CC's step follows the parameter's travel (linear, or its log scale).")
 	file := filepath.Join(config.CraftDir(), craft.PluginsDir, probe+".yaml")
+	var prev []byte
 	if old, ok := lib.Plugin(card.Plugin); ok && strings.HasPrefix(old.Source, "craft/") {
-		// The rig's earlier card of the plugin is replaced, not doubled.
+		// The rig's earlier card of the plugin is replaced, not doubled; what
+		// it says of what was not swept now stays.
 		file = filepath.Join(config.CraftDir(), strings.TrimPrefix(old.Source, "craft/"))
+		if prev, err = os.ReadFile(file); err != nil {
+			return rep, fmt.Errorf("the rig's card of %s: %v", dump.Name, err)
+		}
+	}
+	swept := make([]string, 0, len(sweeps))
+	for _, sw := range sweeps {
+		swept = append(swept, sw.Capability)
+	}
+	data, kept, err := passed.Over(prev, swept, lib.Vocab)
+	if err != nil {
+		return rep, err
 	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return rep, err
@@ -385,6 +415,6 @@ func (s *Server) runProfile(ctx context.Context, job *craftJob, dump device.Prob
 	if err := os.WriteFile(file, data, 0o644); err != nil {
 		return rep, err
 	}
-	rep.Card, rep.File = &passed, file
+	rep.Card, rep.File, rep.Kept = &passed, file, kept
 	return rep, nil
 }
