@@ -184,9 +184,9 @@ func TestApplyRefuses(t *testing.T) {
 		env    map[string]float64
 		want   string
 	}{
-		"a master card on a track": {hp, Target{Track: "pad"}, map[string]float64{VarLowestNoteHz: 55}, "applies to master, not to a track"},
-		"no lowest note":           {hp, Target{Track: song.MasterTrack}, map[string]float64{}, "follows the song's lowest_note_hz, which the master does not tell"},
-		"no plugin card":           {glue, Target{Track: song.MasterTrack}, map[string]float64{VarBeatMS: 500}, "dynamics.compressor: no plugin card provides dynamics.compressor"},
+		"a master card on a track":   {hp, Target{Track: "pad"}, map[string]float64{VarLowestNoteHz: 55}, "applies to master, not to a track"},
+		"no lowest note":             {hp, Target{Track: song.MasterTrack}, map[string]float64{}, "follows the song's lowest_note_hz, which the master does not tell"},
+		"no plugin card":             {glue, Target{Track: song.MasterTrack}, map[string]float64{VarBeatMS: 500}, "dynamics.compressor: no plugin card provides dynamics.compressor"},
 		"a track card on the master": {cut, Target{Track: song.MasterTrack}, nil, "applies to track, section, not to the master"},
 	} {
 		if _, err := lib.Apply(tc.t, tc.target, rig, tc.env); err == nil || !strings.Contains(err.Error(), tc.want) {

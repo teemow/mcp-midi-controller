@@ -322,9 +322,9 @@ func TestCardsRefuseWhatCannotBeChecked(t *testing.T) {
 	for name, tc := range map[string]struct {
 		dir, card, want string
 	}{
-		"nan range": {"plugins", "plugin: aufx/Nann/Test\ncapabilities:\n  dynamics.limiter:\n    write: cc\n    params:\n      ceiling: {param: Ceiling, range: [.nan, 0]}\n", "two finite numbers"},
-		"inf fixed": {"plugins", "plugin: aufx/Infd/Test\ncapabilities:\n  dynamics.limiter:\n    write: cc\n    params:\n      ceiling: Ceiling\n      gain: {fixed: .inf}\n", "not a finite number"},
-		"nan value": {"techniques", "id: mastering.nan\ncraft: mastering\ntitle: x\napplies_to: master\nneeds: [dynamics.limiter]\nset:\n  dynamics.limiter: {ceiling: .nan}\n", "not a finite number"},
+		"nan range":  {"plugins", "plugin: aufx/Nann/Test\ncapabilities:\n  dynamics.limiter:\n    write: cc\n    params:\n      ceiling: {param: Ceiling, range: [.nan, 0]}\n", "two finite numbers"},
+		"inf fixed":  {"plugins", "plugin: aufx/Infd/Test\ncapabilities:\n  dynamics.limiter:\n    write: cc\n    params:\n      ceiling: Ceiling\n      gain: {fixed: .inf}\n", "not a finite number"},
+		"nan value":  {"techniques", "id: mastering.nan\ncraft: mastering\ntitle: x\napplies_to: master\nneeds: [dynamics.limiter]\nset:\n  dynamics.limiter: {ceiling: .nan}\n", "not a finite number"},
 		"share of 0": {"techniques", "id: mastering.zero\ncraft: mastering\ntitle: x\napplies_to: master\nneeds: [level.gain]\nset:\n  level.gain: {gain: 0}\nprecision:\n  level.gain: {gain: \"10%\"}\n", "a share of 0 is 0"},
 	} {
 		_, err := LoadFrom(Shipped(), fstest.MapFS{tc.dir + "/x.yaml": {Data: []byte(tc.card)}}, Default())
