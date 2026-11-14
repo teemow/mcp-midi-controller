@@ -248,6 +248,7 @@ writes its own in `craft/plugins/`.
 
 ## Not known
 
-- Whether a plugin card and the per-plugin knowledge entry of
-  https://github.com/teemow/mcp-midi-controller/issues/167 are one record or
-  two.
+- When the per-plugin knowledge entry of
+  https://github.com/teemow/mcp-midi-controller/issues/167 lands. A plugin card
+  is to become a section of it, not a second record (decided 2026-11-14);
+  until then the cards live in `craft/plugins/`.

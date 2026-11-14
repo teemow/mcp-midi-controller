@@ -36,7 +36,7 @@ https://github.com/teemow/mcp-midi-controller/issues/225.
 | `production` | `producer` | form, energy and contrast, the sound palette, references, when a song is done | the brief, the sections' energy, the arrangement, the palette | length, contrast between sections, where the song peaks, sounds the other songs already use, the song against its brief |
 | `composition` | `composer` | harmony, voice leading, melody, motif and its development, bass lines | the pitched patterns | chord tones on strong beats, voice leading, notes of two tracks that clash, repeats without development |
 | `drums` | `drummer` | grooves by style, feel (swing, ghost notes, a lane ahead of or behind the beat), fills, variation, the kit | drum patterns, play lists, a drum machine's own variation | a fill before a section that rises, a crash on its first beat, kick and bass together, the spread of velocities |
-| `sound_design` | `sound_designer` | synthesis by archetype, each synth's controls and quirks, the measured presets, movement | an instrument's preset and parameters, modulators, automation of a sound | measured pitch, envelope and brightness against what was asked for |
+| `sound_design` | `sound_designer` | synthesis by archetype, each synth's controls and quirks, the measured presets, movement | an instrument's preset and parameters, modulators, automation of a sound | measured pitch, envelope and brightness against the archetype |
 | `orchestration` | `conductor` | ranges, orchestration, balance between parts, dynamics and phrasing, tempo, entries | which track plays which voice, velocities, gate, level arcs, the tempo's shape | the register each track takes, ranges, flat dynamics, parts that never rest |
 | `mixing` | `mixing_engineer` | gain staging, EQ and masking, dynamics, space, width, automation | track levels, effect chains, pan, sends, rides | levels and bands per track, tracks that mask each other, mud and harshness, wet and dry, width |
 | `mastering` | `mastering_engineer` | loudness targets, tonal balance, limiting, translation | the master's chain | integrated loudness, true peak, peak to loudness, the tonal curve against a target, a mono low end |
@@ -44,14 +44,15 @@ https://github.com/teemow/mcp-midi-controller/issues/225.
 The craft's id names its text (`docs/crafts/<craft>.md`), its technique cards
 and its lens. The agent is named after the person who does the work.
 
-## Four layers
+## The layers
 
 | Layer | Holds | Form |
 |-------|-------|------|
 | Craft agents | How a craft judges and works: what it listens for, its order of work, when it hands over | Subagents in a Claude Code plugin from this repository, generated from `docs/crafts/<craft>.md`, each with only its craft's tools; `produce_song` is a skill that runs them in order ([ADR 0004](adr/0004-crafts-as-subagents.md)) |
 | Craft tools | The verbs: transform, review, apply, measure | Go: music theory (voice leading, onsets against the kick, development of a motif) and measurement (loudness, bands, stereo) |
 | Technique cards | Recipes: "high-pass every track that is not bass", "a fill into a section that rises", "parallel compression on drums" | YAML. A card names the capabilities it needs, never a plugin, and how its result is checked |
-| Plugin cards | What an installed plugin can do and how it is set: capability to parameter, write path, mapping range, quirks | YAML. General cards ship with the daemon; the rig's own cards and its order of preference live in the config dir |
+| Plugin cards | What an installed plugin can do and how it is set: capability to parameter, write path, mapping range | YAML, a section of the plugin's knowledge entry (https://github.com/teemow/mcp-midi-controller/issues/167). General cards ship with the daemon; the rig's own cards and its order of preference live in the config dir |
+| Target cards | What a mix or a master aims for: loudness and true peak, a tonal curve, each track role's level against an anchor | YAML, by name: `streaming`, `club`, `dynamic`, or a genre |
 
 Between the cards sit the **capabilities**, a closed list in Go (below). A
 technique says what it needs (`eq.highpass`); a plugin card says how one
@@ -189,7 +190,9 @@ replaces the shipped one.
 
 ## Plugin cards
 
-A card says which capabilities one plugin provides and how each is set:
+A plugin card is a section of the plugin's knowledge entry
+(https://github.com/teemow/mcp-midi-controller/issues/167), not a second record. It says which capabilities the plugin
+provides and how each is set:
 
 ```yaml
 plugin: aumf/FQ3p/FabF               # matched by the component tuple
@@ -249,11 +252,33 @@ says which plugin came closest and how far off it is.
   and when.
 - What the research notes found about a plugin (a synth that needs its gain
   staged first, a glide that only sounds legato, a drum machine's own
-  variation) goes into the card's `notes`, which `get_song_plugin` and the
-  craft agents show.
+  variation) is the rest of the plugin's knowledge entry; the card's `notes`
+  are the entry's, which `get_song_plugin` and the craft agents show.
 - General cards for widely used plugins ship with the daemon. The rig's order
   of preference per capability is its own (`craft/prefer.yaml` in the config
   dir).
+
+## Target cards
+
+A target is what a mix or a master aims for:
+
+```yaml
+id: synthwave
+loudness: {integrated: -14, true_peak: -1}     # LUFS, dBTP
+tonal: [[30, -2], [120, 0], [1000, -3], [8000, -9], [16000, -14]]   # Hz, dB
+levels:                                         # each role against the anchor, dB
+  anchor: drums
+  bass: -2
+  pad: -9
+  lead: -4
+```
+
+The brief's `loudness` and `genre` pick the targets: `master_song` meets the
+loudness, `balance_mix` the levels, and both read the tonal curve. The first
+targets are written by hand and checked with `measure_master` against
+reference recordings. The values above are illustrative. Target cards ship
+with the daemon, and a rig may add its own in the config dir, as with
+technique cards (https://github.com/teemow/mcp-midi-controller/issues/232).
 
 ## The tools
 
@@ -331,10 +356,17 @@ ahead of or behind the beat is a timing offset in the core, below.
 
 | Tool | Takes | Gives |
 |------|-------|-------|
-| `find_sound` | role, character, register, attack, sustain | Presets ranked from the catalogue and by what the rig's other songs have not used, and a plan to audition those not measured yet |
-| `design_sound` | plugin, archetype (sub bass, reese, acid, pluck, supersaw, pad, brass, bell), a preset to start from | Parameters mapped from the archetype onto the plugin's own, checked with `audition_sound` (pitch, envelope, brightness) |
+| `find_sound` | role, register, attack, sustain, brightness | Presets ranked from the catalogue by what is measured and by what the rig's other songs have not used, and a plan to audition those not measured yet |
 | `add_movement` | the target (filter, wavetable, pitch, an effect's mix), shape, rate, depth, sections | A modulator or automation |
 | `profile_plugin` | a plugin | Its plugin card, measured |
+
+The sound designer sets an instrument's parameters itself; no tool maps an
+archetype onto a plugin. An **archetype** (sub bass, reese, acid, pluck,
+supersaw, pad, brass, bell) is a technique card of `sound_design` that says
+what such a sound measures as: its pitch, envelope and brightness.
+`audition_sound` takes a `technique` and compares what it measured with the
+card. For that, the sound catalogue gains a brightness per preset; today only
+drum pads have a spectral centroid.
 
 ### Orchestration
 
@@ -351,7 +383,7 @@ The `orchestration` lens of `review_song` is the conductor's check.
 | Tool | Takes | Gives |
 |------|-------|-------|
 | `review_mix` | a `mix_song` report | Findings without playing again, per track and section: balance against an anchor track, tracks that mask each other, mud, harshness, low end outside the bass, a mix all dry or all wet, everything in the middle. Every finding names its techniques |
-| `balance_mix` | an anchor track, targets, iterations | Levels set by measuring, adjusting and measuring again |
+| `balance_mix` | an anchor track, a target, iterations | Levels set by measuring, adjusting and measuring again |
 
 The rest of the craft is technique cards: high-pass on every track that is not
 bass, carving out masking, bus glue, parallel compression, a pump in time with
@@ -414,6 +446,7 @@ song written by hand, a mixing engineer for a song that is otherwise done.
 | Bands, crest factor and onsets per track and section | masking, mud and harshness, dynamics, kick and bass together | the track taps' PCM in `mix_song`'s pass; the tap already computes eight log-spaced bands per window |
 | Stereo correlation and the share of the side signal, in total and below about 150 Hz | width, a mono low end | the taps' stereo PCM in `mix_song`'s pass |
 | Onsets against the grid | the feel of a groove | a recording |
+| Brightness per preset | archetypes, `find_sound` | the sound catalogue's audition of the preset |
 
 `mix_song` already plays the whole song once, and the taps send raw float32
 PCM on every channel, so the measuring happens in that one pass. `review_mix`
@@ -433,7 +466,7 @@ and `master_song`'s checks read its report.
 
 ## The number of tools
 
-The daemon serves more than 110 tools, and the crafts add about 23. Every
+The daemon serves more than 110 tools, and the crafts add about 22. Every
 connected agent reads the whole list, so the craft tools form a set of their
 own that the config switches on (`craft_tools: true`). Each craft agent sees
 only its own craft's tools.
@@ -512,18 +545,8 @@ cards with its per-plugin knowledge entries
 - How AUM maps a CC onto a mapping range for a parameter its plugin shows on
   a log scale: linearly in the parameter's units, or along the plugin's own
   taper. https://github.com/teemow/mcp-midi-controller/issues/229 measures it.
-- Whether a plugin card and a per-plugin knowledge entry of
-  https://github.com/teemow/mcp-midi-controller/issues/167 are one record or
-  two (https://github.com/teemow/mcp-midi-controller/issues/227).
-- Where the targets of a genre come from: loudness, true peak, a tonal curve,
-  and each track role's level against an anchor. One proposal is a target
-  card per name, written by hand and checked against reference recordings
-  (https://github.com/teemow/mcp-midi-controller/issues/232).
-- Whether `design_sound` should give way to the agent setting parameters
-  itself, with archetypes as sound-design technique cards checked by
-  `audition_sound`. The catalogue measures no brightness per preset yet; only
-  drum pads have a centroid
-  (https://github.com/teemow/mcp-midi-controller/issues/238).
+- What the first target cards hold. They are written by hand and checked
+  against reference recordings (https://github.com/teemow/mcp-midi-controller/issues/232).
 - Which plugins take a sidechain in AUM, and how a session routes one. Until
   that is known, a pump in time with the kick is a rhythmic gate or a
   modulator.

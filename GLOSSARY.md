@@ -6,6 +6,14 @@ are the ADRs in [docs/adr](docs/adr/). Where a term means one thing here and
 another elsewhere, this meaning holds in the craft tools, their cards, their
 issues and their code.
 
+## Archetype
+
+A kind of sound, such as a sub bass, a reese, an acid line or a pluck. An
+archetype is a technique card of `sound_design` that says what such a sound
+measures as: its pitch, envelope and brightness. The sound designer sets the
+parameters itself, and `audition_sound` checks the result against the card.
+"Character" is not a term here: it is not measured.
+
 ## Binding
 
 How a capability is carried on this rig: the plugin that carries it, the
@@ -55,6 +63,13 @@ reads it: the drummer for density and fills, the conductor for dynamics, the
 mixing engineer for rides, the producer for contrast and where the song
 peaks. The compiler ignores it.
 
+## Knowledge entry
+
+Everything known about one installed plugin that is not obvious from its
+name, its interface or its parameter labels
+(https://github.com/teemow/mcp-midi-controller/issues/167). A plugin's card is a section of its knowledge entry, not a second
+record.
+
 ## Lens
 
 One craft's reading of a song by `review_song`, done without playing the
@@ -86,10 +101,11 @@ against. Every craft tool returns one. `patch_song` stores it through
 
 ## Plugin card
 
-What one plugin can do and how it is set. The card lists the capabilities
-the plugin provides, and maps each one to the plugin's own parameters, with
-a write path, a mapping range and `notes` on the plugin's quirks. A card
-matches its plugin by the component tuple. `profile_plugin` writes a card by
+What one plugin can do and how it is set: the section of the plugin's
+knowledge entry that lists the capabilities the plugin provides, and maps each
+one to the plugin's own parameters, with a write path and a mapping range. Its
+`notes` are the knowledge entry's. A card matches its plugin by the component
+tuple. `profile_plugin` writes a card by
 measuring. General cards ship with the daemon; a rig's own cards live in its
 config dir.
 
@@ -107,6 +123,16 @@ there, and the hardware and MIDI around them. What belongs to one rig lives in
 the daemon's config dir, not in this repository: its plugin cards, its order
 of preference per capability (`craft/prefer.yaml`) and its own technique
 cards.
+
+## Target
+
+What a mix or a master aims for, kept as a target card by name: `streaming`,
+`club`, `dynamic`, or a genre such as `synthwave`. A target holds integrated
+loudness and true peak, a tonal curve, and each track role's level against an
+anchor role. The brief's `loudness` and `genre` pick the targets;
+`master_song` and `balance_mix` work toward them. A reference is a recording
+to compare with, not a target. The `targets` field of a technique card is
+something else: what the technique applies to.
 
 ## Technique
 
