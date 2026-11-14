@@ -137,3 +137,41 @@ func TestExprVarsConstAndJSON(t *testing.T) {
 		t.Errorf("a name where none is allowed: %v", err)
 	}
 }
+
+func TestBounds(t *testing.T) {
+	for src, want := range map[string][2]float64{
+		"clamp(0.5 * lowest_note_hz, 20, 35)": {20, 35},
+		"clamp(beat_ms / 2, 50, 400)":         {100, 400},
+		"log2(clamp(lowest_note_hz, 16, 64))": {4, 6},
+		"min(tempo, 100) - 10":                {10, 90},
+		"-section.energy * 2":                 {-20, -2},
+	} {
+		e, err := ParseExpr(src, SongVars())
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		lo, hi, err := e.Bounds(SongSpans())
+		if err != nil || math.Abs(lo-want[0]) > 1e-9 || math.Abs(hi-want[1]) > 1e-9 {
+			t.Errorf("%s: %g..%g, %v; want %g..%g", src, lo, hi, err, want[0], want[1])
+		}
+	}
+	e, _ := ParseExpr("100 / (section.energy - 5)", SongVars())
+	if _, _, err := e.Bounds(SongSpans()); err == nil {
+		t.Error("a division by a span that holds 0 has bounds")
+	}
+	if _, err := ParseExpr("log2(8)\n", nil); err != nil {
+		t.Errorf("a trailing newline: %v", err)
+	}
+	if v, _ := mustExpr(t, "log2(8)").Const(); v != 3 {
+		t.Errorf("log2(8) = %g", v)
+	}
+}
+
+func mustExpr(t *testing.T, src string) *Expr {
+	t.Helper()
+	e, err := ParseExpr(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}

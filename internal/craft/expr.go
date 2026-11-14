@@ -4,8 +4,11 @@ package craft
 // expression: numbers, + - * /, parentheses, min, max and clamp, and the names
 // the context allows (in a technique card what the song tells: tempo, beat_ms,
 // bar_ms, lowest_note_hz, section.energy). It is parsed and checked when the
-// card loads, so a card with a typo never reaches a rig. There is deliberately
-// nothing more: no comparisons, no conditions, no other functions.
+// card loads, so a card with a typo never reaches a rig. log2 is there for a
+// plugin card whose plugin takes a frequency as its octaves above 1 Hz (Pro-Q
+// 3's band frequencies run from 3.32 to 14.87): value: "log2(freq)". There is
+// deliberately nothing more: no comparisons, no conditions, no other
+// functions.
 
 import (
 	"errors"
@@ -114,6 +117,9 @@ func (e *Expr) MarshalJSON() ([]byte, error) {
 type node interface {
 	eval(env map[string]float64) (float64, error)
 	collect(names map[string]bool)
+	// bounds is the span of values the node can take when each name lies
+	// within its span (bounds.go).
+	bounds(spans map[string][2]float64) (lo, hi float64, err error)
 }
 
 type numNode float64
@@ -201,6 +207,11 @@ func (n callNode) eval(env map[string]float64) (float64, error) {
 			out = math.Max(out, v)
 		}
 		return out, nil
+	case "log2":
+		if vals[0] <= 0 {
+			return 0, fmt.Errorf("log2 of %g, which is not above 0", vals[0])
+		}
+		return math.Log2(vals[0]), nil
 	default: // clamp
 		if vals[1] > vals[2] {
 			return 0, fmt.Errorf("clamp's low end %g is above its high end %g", vals[1], vals[2])
@@ -217,7 +228,7 @@ func (n callNode) collect(names map[string]bool) {
 
 // functions are the only ones a card may call, with the number of arguments
 // each takes (-1: two or more).
-var functions = map[string]int{"min": -1, "max": -1, "clamp": 3}
+var functions = map[string]int{"min": -1, "max": -1, "clamp": 3, "log2": 1}
 
 // --- the parser -----------------------------------------------------------------
 
@@ -260,7 +271,7 @@ func isNameChar(c byte) bool  { return isNameStart(c) || (c >= '0' && c <= '9') 
 func isDigit(c byte) bool     { return c >= '0' && c <= '9' }
 
 func (p *exprParser) next() error {
-	for p.pos < len(p.src) && (p.src[p.pos] == ' ' || p.src[p.pos] == '\t') {
+	for p.pos < len(p.src) && (p.src[p.pos] == ' ' || p.src[p.pos] == '\t' || p.src[p.pos] == '\n' || p.src[p.pos] == '\r') {
 		p.pos++
 	}
 	start := p.pos
@@ -408,7 +419,7 @@ func (p *exprParser) primary() (node, error) {
 func (p *exprParser) call(name string) (node, error) {
 	arity, ok := functions[name]
 	if !ok {
-		return nil, p.errorf("%s is not a function of a card's arithmetic (min, max, clamp)", name)
+		return nil, p.errorf("%s is not a function of a card's arithmetic (min, max, clamp, log2)", name)
 	}
 	if err := p.next(); err != nil { // the "("
 		return nil, err

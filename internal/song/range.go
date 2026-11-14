@@ -7,6 +7,10 @@ package song
 // about 236 Hz, and an 80 Hz high-pass cannot be set. With a range of 40 to
 // 250 Hz the steps are about 1.7 Hz apart.
 //
+// AUM spreads the steps along the parameter's travel, which follows the scale
+// its plugin shows it on: linear for most, a log scale for a frequency an
+// Apple filter shows on one (see Travel).
+//
 // The range is the session's, fixed per parameter where the plugin is
 // declared, and never derived from the values the song sets: a changed value
 // still plays live, and only a changed range needs the session loaded again
@@ -97,62 +101,109 @@ func (pp *ParamPlan) wire(v Value) (int, error) {
 
 // rangeWire converts a value into the CC that sets the parameter to it through
 // a mapping that spans lo..hi of it. The value means what it means without a
-// range ("NN%" is a share of the parameter's whole range, a label is its value
+// range ("NN%" is a share of the parameter's whole travel, a label is its value
 // there); it has to lie within the mapping range.
 func rangeWire(p device.ProbeParam, lo, hi float64, v Value) (int, error) {
 	pos, err := paramPos(p, v)
 	if err != nil {
 		return 0, err
 	}
-	x := v.Num
-	if v.IsStr {
-		x = p.Min + pos*(p.Max-p.Min)
-	}
-	// A value within a hair of an end, as a share of the range comes out of
+	a, b := Travel(p, lo), Travel(p, hi)
+	// A value within a hair of an end, as a share of the travel comes out of
 	// floating point, is that end.
-	const eps = 1e-9
-	tol := eps * math.Max(1, hi-lo)
+	const tol = 1e-9
 	switch {
-	case x < lo-tol || x > hi+tol:
+	case pos < a-tol || pos > b+tol:
 		name := device.FirstNonEmpty(p.DisplayName, p.Identifier)
 		if v.IsStr {
-			return 0, fmt.Errorf("%s at %s is %.6g, outside its mapping range %g..%g; set a value within it, or widen the range (a new session)", name, v.Str, x, lo, hi)
+			return 0, fmt.Errorf("%s at %s is %.6g, outside its mapping range %g..%g; set a value within it, or widen the range (a new session)", name, v.Str, ValueAt(p, pos), lo, hi)
 		}
-		return 0, fmt.Errorf("%g is outside %s's mapping range %g..%g; set a value within it, or widen the range (a new session)", x, name, lo, hi)
-	case x < lo:
-		x = lo
-	case x > hi:
-		x = hi
+		return 0, fmt.Errorf("%g is outside %s's mapping range %g..%g; set a value within it, or widen the range (a new session)", v.Num, name, lo, hi)
+	case pos < a:
+		pos = a
+	case pos > b:
+		pos = b
 	}
-	return clamp7(int(math.Round(along(lo, hi, x) * 127))), nil
+	return clamp7(int(math.Round((pos - a) / (b - a) * 127))), nil
 }
 
 // mapRange is the mapping range as AUM stores it on the mapping: the two
-// ends' positions in the parameter's range, 0..1 (AUM's 0 % and 100 %).
+// ends' places on the parameter's travel, 0..1 (AUM's 0 % and 100 %).
 func (pp *ParamPlan) mapRange() (lo, hi float64) {
-	return aumPosition(pp.param, pp.Range[0]), aumPosition(pp.param, pp.Range[1])
+	return Travel(pp.param, pp.Range[0]), Travel(pp.param, pp.Range[1])
 }
 
-// AUM's mapping law. aumPosition is where AUM puts a value of a parameter on
-// the 0..1 its mapping's range is stored on, and along is where a value lies
-// between a mapping's two ends as AUM spreads a CC over them: CC 0 at lo,
-// 127 at hi.
+// AUM's mapping law. A mapping moves a parameter along its travel, 0 at its
+// lowest value and 1 at its highest, and spreads a CC's 128 steps evenly over
+// the travel between the mapping's two ends: CC 0 at one, 127 at the other.
+// AUM stores those ends as places on the travel (0 % and 100 % in its
+// mapping's range).
 //
-// Both are linear in the parameter's value, as AUM spreads a CC over a
-// parameter's whole range (docs/songs.md, "Parameters": a CC of 64 puts a
-// reverb's mix at 50 %). Whether a narrowed mapping does the same for a
-// parameter its plugin shows on a log scale (a frequency), or follows the
-// plugin's taper, is ADR 0003's measurement (docs/songs.md, "Mapping
-// ranges"); should AUM follow the taper, these two are what change.
+// The travel follows the scale the plugin shows the parameter on. Most
+// parameters are shown linearly, and their travel is linear in their value (a
+// CC of 64 puts a reverb's mix at 50 %). A parameter its plugin shows on a log
+// scale (the AU flag DisplayLogarithmic, as Apple's filters show a frequency)
+// travels along that scale: measured on AUHighPassFilter, whose Cutoff
+// Frequency runs from 10 Hz to 22050 Hz, a CC of 76 over the whole range set
+// about 1 kHz (10·2205^(76/127)) and not the 13.2 kHz a linear travel gives,
+// and a mapping range of 40..250 Hz stored as linear places came out at about
+// 10 Hz (docs/songs.md, Status, "Mapping ranges").
+//
+// Other display scales (square root, squared, cubed, cube root, exponential)
+// are not measured; such a parameter is taken to travel linearly.
 
-func aumPosition(p device.ProbeParam, x float64) float64 {
-	span := p.Max - p.Min
-	if span <= 0 {
+// flagDisplayLogarithmic is kAudioUnitParameterFlag_DisplayLogarithmic.
+const flagDisplayLogarithmic = 1 << 22
+
+// LogTravel reports whether AUM moves a parameter along a log scale: its
+// plugin shows it on one, and its range lies above 0, as a log scale needs.
+func LogTravel(p device.ProbeParam) bool {
+	return (p.DisplayLogarithmic || p.Flags&flagDisplayLogarithmic != 0) && p.Min > 0 && p.Max > p.Min
+}
+
+// Travel is where a value of a parameter lies on its travel, 0 at its lowest
+// value and 1 at its highest, as AUM's mapping moves it.
+func Travel(p device.ProbeParam, x float64) float64 {
+	if p.Max <= p.Min {
 		return 0
 	}
-	return (x - p.Min) / span
+	if LogTravel(p) {
+		if x <= p.Min {
+			return 0
+		}
+		return math.Log(x/p.Min) / math.Log(p.Max/p.Min)
+	}
+	return (x - p.Min) / (p.Max - p.Min)
 }
 
-func along(lo, hi, x float64) float64 {
-	return (x - lo) / (hi - lo)
+// ValueAt is the parameter's value at a place on its travel, Travel's inverse.
+func ValueAt(p device.ProbeParam, t float64) float64 {
+	if LogTravel(p) {
+		return p.Min * math.Pow(p.Max/p.Min, t)
+	}
+	return p.Min + t*(p.Max-p.Min)
+}
+
+// CCStep is how far apart, in the parameter's units, the values of two
+// neighbouring CCs lie near x, over a mapping that spans lo..hi of the
+// parameter (its whole range when lo >= hi): the finest a CC can set it there.
+// Linear travel has one step everywhere; a log travel's step grows with x.
+func CCStep(p device.ProbeParam, lo, hi, x float64) float64 {
+	if lo >= hi {
+		lo, hi = p.Min, p.Max
+	}
+	if hi <= lo || p.Max <= p.Min {
+		return 0
+	}
+	if !LogTravel(p) {
+		return (hi - lo) / 127
+	}
+	a, b := Travel(p, lo), Travel(p, hi)
+	if b <= a {
+		return 0
+	}
+	t := Travel(p, x)
+	d := (b - a) / 127
+	up, down := ValueAt(p, math.Min(t+d, b)), ValueAt(p, math.Max(t-d, a))
+	return math.Max(up-ValueAt(p, t), ValueAt(p, t)-down)
 }

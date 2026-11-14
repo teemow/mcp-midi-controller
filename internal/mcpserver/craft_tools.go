@@ -76,6 +76,10 @@ func (s *Server) registerCraftTools() {
 			"required": ["song", "revision", "patch"]
 		}`),
 	}, s.handlePatchSong)
+
+	s.registerApplyTechnique()
+	s.registerCraftJobTool()
+	s.registerProfilePlugin()
 }
 
 // loadCraft reads the cards and the rig the bindings are made on: the probe
@@ -139,7 +143,7 @@ func (s *Server) handleListTechniques(_ context.Context, req *mcp.CallToolReques
 		}
 		sum := techniqueSummary{ID: t.ID, Craft: t.Craft, Kind: string(t.Kind), Title: t.Title, AppliesTo: t.AppliesTo, Needs: t.Needs, Transform: t.Transform, Source: t.Source}
 		var carried []string
-		for _, bd := range lib.Bind(t, rig) {
+		for _, bd := range lib.Bind(t, rig, nil) {
 			c := carrier{Capability: bd.Capability, Plugin: bd.Plugin, Missing: bd.Missing}
 			if cand, ok := bd.Bound(); ok {
 				c.Name, c.Probe = cand.Name, cand.Probe
@@ -200,7 +204,7 @@ func (s *Server) handleGetTechnique(_ context.Context, req *mcp.CallToolRequest)
 			c, _ := lib.Vocab.Capability(name)
 			caps = append(caps, c)
 		}
-		bindings := lib.Bind(t, rig)
+		bindings := lib.Bind(t, rig, nil)
 		out["capabilities"] = caps
 		out["bindings"] = bindings
 		b.WriteString("\non this rig:\n")

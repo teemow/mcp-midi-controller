@@ -1066,8 +1066,8 @@ func suggestPlugins(cat Catalog, want string) string {
 }
 
 // paramWire converts a value written in a song into the 0..127 a CC carries
-// for the parameter. AUM maps a CC's range onto the parameter's own range, so
-// the wire value is the value's position in that range. A parameter with a
+// for the parameter. AUM spreads a CC over the parameter's whole travel (see
+// Travel), so the wire value is the value's place on it. A parameter with a
 // mapping range takes ParamPlan.wire's instead.
 func paramWire(p device.ProbeParam, v Value) (int, error) {
 	pos, err := paramPos(p, v)
@@ -1077,9 +1077,24 @@ func paramWire(p device.ProbeParam, v Value) (int, error) {
 	return clamp7(int(math.Round(pos * 127))), nil
 }
 
-// paramPos is where a value written in a song lies in the parameter's own
-// range, 0 at its lowest and 1 at its highest: a number by its value, "NN%"
-// by the share, a value label by its place among the labels.
+// ValuePlace is where a value written in a song lies on a parameter's travel,
+// 0 at its lowest and 1 at its highest, or why the parameter cannot take it
+// (outside its range, not one of its labels).
+func ValuePlace(p device.ProbeParam, v Value) (float64, error) { return paramPos(p, v) }
+
+// ParseValue reads a value written as text the way a song document reads it:
+// a number, or else a string ("60%", a value label, on or off).
+func ParseValue(s string) Value {
+	if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+		return Number(f)
+	}
+	return Value{Str: s, IsStr: true}
+}
+
+// paramPos is where a value written in a song lies on the parameter's travel,
+// 0 at its lowest and 1 at its highest: a number by its value (along a log
+// scale for a parameter its plugin shows on one, see Travel), "NN%" by the
+// share of the travel, a value label by its place among the labels.
 func paramPos(p device.ProbeParam, v Value) (float64, error) {
 	span := p.Max - p.Min
 	pos := 0.0 // position in the range, 0..1
@@ -1089,7 +1104,7 @@ func paramPos(p device.ProbeParam, v Value) (float64, error) {
 			return 0, fmt.Errorf("%g is outside %s's range %g..%g", v.Num, device.FirstNonEmpty(p.DisplayName, p.Identifier), p.Min, p.Max)
 		}
 		if span > 0 {
-			pos = (v.Num - p.Min) / span
+			pos = Travel(p, v.Num)
 		}
 	case strings.HasSuffix(v.Str, "%"):
 		pct, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(v.Str, "%")), 64)
@@ -1245,6 +1260,12 @@ func (p *Plan) Fingerprint() string {
 			// another session. A parameter without one keeps its fingerprint.
 			if len(pa.Range) == 2 {
 				fmt.Fprintf(&b, "~%g:%g|", pa.Range[0], pa.Range[1])
+				// On a log scale the mapping's ends are places on that scale
+				// (range.go), not the linear places a session authored
+				// before that was known holds.
+				if LogTravel(pa.param) {
+					b.WriteString("log|")
+				}
 			}
 			// A parameter inside a group of its plugin's tree is mapped in
 			// that group's collection. A session authored before that was

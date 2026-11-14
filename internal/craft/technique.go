@@ -347,9 +347,12 @@ func compileSettings(t *Technique, f *techniqueFile, vocab Vocabulary, p *proble
 			pv := ParamValue{Param: cp.Name, Value: v, Unit: cp.Unit}
 			if rawP, ok := f.Precision[name][cp.Name]; ok {
 				prec, err := parsePrecision(rawP, cp)
-				if err != nil {
+				switch c, isConst := v.Const(); {
+				case err != nil:
 					p.addf("precision: %s.%s: %v", name, cp.Name, err)
-				} else {
+				case prec.Percent > 0 && isConst && c == 0:
+					p.addf("precision: %s.%s: a share of 0 is 0; give an amount in %s", name, cp.Name, unitOr(cp.Unit))
+				default:
 					pv.Precision = &prec
 				}
 			}
