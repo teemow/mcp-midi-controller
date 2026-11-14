@@ -1,0 +1,22 @@
+id: mastering.subsonic_highpass
+craft: mastering
+title: Cut the rumble below the music
+intent: >-
+  Energy below the lowest note takes headroom and moves a speaker's cone
+  without being heard. Cutting it leaves the limiter to work on the music.
+when: Every master, first in its chain.
+when_not:
+  - A master that is clean below 30 Hz already; the cut then changes only the phase of the low end.
+targets: master
+needs: [eq.highpass]
+set:
+  eq.highpass:
+    freq: "clamp(0.5 * lowest_note_hz, 20, 35)"
+    slope: 24
+precision:
+  eq.highpass: {freq: "20%"}
+place: first
+verify:
+  measure: band_level
+  band: [10, 20]
+  falls: 6

@@ -1,0 +1,245 @@
+# Craft cards: capabilities, technique cards and plugin cards
+
+What the crafts of making a song know is kept as data the daemon reads
+(design: [craft-tools.md](craft-tools.md)). A **technique card** says what a
+craft does: "hold the true peak under -1 dBTP with a limiter". It names the
+**capabilities** it needs (`dynamics.limiter`), never a plugin. A **plugin
+card** says how one plugin provides a capability: which of its parameters
+carry it and how a value reaches them. The rig's **order of preference** picks
+the plugin. A technique so stays true when the rig changes, and a new plugin
+is usable by every technique once it has a card.
+
+The code is `internal/craft`; the tools are `list_techniques` and
+`get_technique`.
+
+## Switching the tools on
+
+Every connected agent reads the whole tool list, so the craft tools are a set
+of their own. In `config.yaml`:
+
+```yaml
+craft_tools: true
+```
+
+## Where cards live
+
+| What | Shipped with the daemon | The rig's own, in the config dir |
+|------|-------------------------|----------------------------------|
+| Technique cards | `internal/craft/cards/techniques/` | `craft/techniques/*.yaml` |
+| Plugin cards | `internal/craft/cards/plugins/` | `craft/plugins/*.yaml` |
+| Order of preference | | `craft/prefer.yaml` |
+
+One card per file. A rig's card with the id of a shipped one replaces it (a
+technique by its `id`, a plugin card by its component tuple). The cards are
+read on every call, so an edit counts at once.
+
+Every card is checked against the capabilities when it loads: an unknown
+capability, parameter, field, craft, target or measurement is an error, and so
+is a value outside its parameter's range. A card that does not load is left
+out and named in the tools' `problems`; the others stay usable, and a shipped
+card stays when the rig's card of the same id is broken.
+
+## Capabilities
+
+Capabilities are a closed list in Go (`internal/craft/capability.go`). Each
+has parameters with a unit and a range, and the check `profile_plugin` uses to
+tell that a plugin provides it: it sweeps one parameter and reads a
+measurement at the tap, which has to move the way the capability says. A new
+capability is a code change.
+
+| Capability | Parameters | Check: sweep, read, moves |
+|------------|-----------|---------------------------|
+| `eq.highpass` | `freq` 10..2000 Hz, `slope` 6..96 dB/oct | `freq`; band level below `freq`; falls |
+| `eq.lowpass` | `freq` 200..22000 Hz, `slope` 6..96 dB/oct | `freq`; brightness; rises |
+| `eq.low_shelf` | `freq` 20..2000 Hz, `gain` -24..24 dB | `gain`; band level below `freq`; rises |
+| `eq.high_shelf` | `freq` 1000..20000 Hz, `gain` -24..24 dB | `gain`; band level above `freq`; rises |
+| `eq.bell` | `freq` 20..20000 Hz, `gain` -24..24 dB, `q` 0.1..30 Q | `gain`; band level around `freq`; rises |
+| `dynamics.compressor` | `threshold` -60..0 dB, `ratio` 1..20 :1, `attack` 0.01..500 ms, `release` 1..5000 ms, `makeup` 0..30 dB | `threshold`; crest factor; rises |
+| `dynamics.limiter` | `ceiling` -12..0 dBFS, `gain` 0..24 dB, `release` 1..2000 ms | `ceiling`; true peak; rises |
+| `color.saturation` | `drive` 0..36 dB, `mix` 0..100 % | `drive`; brightness; rises |
+| `stereo.width` | `width` 0..200 % (100 leaves it as it is) | `width`; side share; rises |
+| `stereo.mono_bass` | `freq` 20..500 Hz | `freq`; side share 20..150 Hz; falls |
+| `level.gain` | `gain` -24..24 dB | `gain`; level; rises |
+
+The measurements, for a check and for a card's `verify`: `band_level` (dB, of
+a band), `level` (rms, dBFS), `true_peak` (dBTP), `loudness` (integrated,
+LUFS), `loudness_range` (LU), `peak_to_loudness` (dB), `crest_factor` (dB),
+`brightness` (spectral centroid, Hz), `side_share` (%, optionally of a band),
+`correlation` (-1..1).
+
+## Technique cards
+
+A card belongs to one craft: `production`, `composition`, `drums`,
+`sound_design`, `orchestration`, `mixing` or `mastering`. Its id is the craft,
+a dot and a name: `mastering.ceiling`. It applies to `targets`: `track`,
+`section`, `master` or `song` (one, or a list). `intent`, `when` and
+`when_not` say what it is for and when it is not.
+
+There are two kinds.
+
+### Settings: what to set, where, how precisely, and how it is checked
+
+```yaml
+id: mixing.highpass_non_bass
+craft: mixing
+title: High-pass every track that is not bass
+intent: Leave the low end to the kick and the bass.
+when: A track whose role is not bass has energy below its lowest note.
+when_not:
+  - A sub pad or an 808 that is meant to fill the low end.
+targets: track
+needs: [eq.highpass]                 # the capabilities, in chain order
+set:
+  eq.highpass:
+    freq: "clamp(0.7 * lowest_note_hz, 40, 250)"
+    slope: 12
+precision:                           # what a binding has to reach
+  eq.highpass: {freq: "10%"}
+place: first                         # first, last (default), "before <capability>", "after <capability>"
+verify:
+  measure: band_level
+  band: [20, 80]                     # Hz; band_level needs one
+  falls: 6                           # or rises, at_most, at_least
+```
+
+- `set` gives values to parameters of capabilities in `needs`; a capability
+  in `needs` without values goes in as its plugin has it.
+- `precision` is a share of the value (`"10%"`) or an amount in the
+  parameter's unit (`0.1`).
+- `verify` measures the target before and after: `falls` and `rises` compare
+  after with before (by at least the amount), `at_most` and `at_least` read
+  the result.
+
+### Writing: a transform and its options
+
+```yaml
+id: composition.lock_bass_to_kick
+craft: composition
+title: Lock the bass to the kick
+targets: section
+transform: lock_bass
+options:
+  amount: "clamp(section.energy * 10, 20, 90)"
+```
+
+Like a capability, a transform is code with typed options. None exists yet: the
+composer's and the drummer's transforms
+(https://github.com/teemow/mcp-midi-controller/issues/237) add theirs, and a
+writing card loads once its transform does.
+
+### Values
+
+A value is a number, one of an enumerated parameter's labels, or arithmetic:
+numbers, `+ - * /`, parentheses, `min(a, b, …)`, `max(a, b, …)` and
+`clamp(x, low, high)`, with what the song tells:
+
+| Name | Is |
+|------|----|
+| `tempo` | beats per minute |
+| `beat_ms` | one beat in ms |
+| `bar_ms` | one bar in ms |
+| `lowest_note_hz` | the lowest note of the target, in Hz |
+| `section.energy` | the section's energy, 1 to 10 |
+
+A delay of `beat_ms * 0.75` stays in time when the tempo changes. Values are
+parsed and checked when the card loads; a constant outside its parameter's
+range is an error there, and one that follows the song is checked when it is
+worked out. There is nothing more: no conditions, no other functions.
+
+## Plugin cards
+
+A plugin is matched by its component tuple, `type/subtype/manufacturer` (four
+characters each), the codes its probe dump carries:
+
+```yaml
+plugin: aufx/Eq1x/Test
+name: Test EQ
+capabilities:
+  eq.highpass:
+    write: cc
+    params:
+      freq: {param: "Band 1 Frequency", range: [10, 400]}
+      slope: {fixed: 12}             # it cannot be set; the plugin holds it
+    enable:                          # set for the capability to work
+      "Band 1 Used": on
+      "Band 1 Shape": Low Cut
+  eq.high_shelf:
+    write: cc
+    params:
+      freq: "Band 4 Frequency"       # short for {param: …}
+      gain: {param: "Band 4 Gain", value: "gain / 2", range: [-12, 12]}
+notes:
+  - Its saved state is not text; exact values come from a CC or a preset.
+```
+
+- `params` map a capability's parameters to the plugin's own, named as the
+  probe dump names them (identifier or display name, as a song's `params`).
+- `write` is the write path: `cc` (a Control Change through AUM's mapping of
+  the parameter), `state` (a `field` of the plugin's saved state, where it is
+  text) or `preset` (the `preset` that holds the settings, with the values it
+  holds as `fixed`).
+- `range` is the **mapping range**, in the plugin's units: the binding narrows
+  AUM's mapping of the parameter to it, so the 128 steps of a CC fall where
+  the capability is used. Without it a CC spans the parameter's whole range.
+- `value` converts the capability's value into the plugin's units; it may use
+  the capability's parameters by name (`attack / 1000` for a plugin in
+  seconds). Without it the number is passed on as it is.
+- `notes` hold what is learnt about the plugin, for the next session.
+
+There is no `roles` field: what a plugin is for is the capabilities it
+provides.
+
+## The order of preference
+
+`craft/prefer.yaml` orders, per capability, the plugins by tuple, most
+preferred first:
+
+```yaml
+dynamics.limiter: [aufx/LimA/Test, aufx/LimB/Test]
+eq.highpass: aufx/Eq1x/Test
+```
+
+Every plugin it names needs a card that provides the capability. The plugins
+it leaves out come after the ones it names, by name.
+
+## The tools
+
+- **`list_techniques`** lists the cards, filtered by `craft`, `target`,
+  `capability`, `kind` or a word (`query`). With each, per capability it
+  needs, the plugin of this rig that would carry it, or that none can.
+- **`get_technique`** shows one card in full, the capabilities it needs with
+  their parameters, the song values it uses, and its **bindings** on this rig:
+  per capability every plugin with a card for it in the rig's order, the one
+  it would use, how each parameter reaches it, and why any other cannot.
+
+A plugin carries a capability when it is on the rig (its probe dump is staged,
+`import_auv3_probe`), its card names parameters the dump has, and it can set
+what the card sets. For a value that is a number in the plugin's units, the
+step of a CC over the mapping range has to reach the card's precision: a
+ceiling of -1 dBFS within 0.1 dB is out of reach of a CC over 30 dB (steps of
+0.24 dB), and in reach over 6 dB (0.05 dB). The tools only read; applying a
+technique is `apply_technique`'s
+(https://github.com/teemow/mcp-midi-controller/issues/230).
+
+## The shipped cards
+
+The first mastering cards, for the master's chain in its order:
+
+| Card | Sets | Checked by |
+|------|------|------------|
+| `mastering.subsonic_highpass` | `eq.highpass` at half the lowest note, 20 to 35 Hz, 24 dB/oct, first | 10..20 Hz falls by 6 dB |
+| `mastering.mono_low_end` | `stereo.mono_bass` below 120 Hz, after the high-pass | side share 20..120 Hz at most 5 % |
+| `mastering.air` | `eq.high_shelf` +1.5 dB at 12 kHz, before the compressor | 10..20 kHz rises by 1 dB |
+| `mastering.glue` | `dynamics.compressor` 2:1 from -18 dB, 30 ms attack, release half a beat (50 to 400 ms), before the limiter | crest factor falls by 1 dB |
+| `mastering.warmth` | `color.saturation` 3 dB of drive at 30 % mix, before the limiter | crest factor falls by 0.5 dB |
+| `mastering.ceiling` | `dynamics.limiter` ceiling -1 dBFS, release 100 ms, its gain raised to the target, last | true peak at most -1 dBTP |
+
+No plugin card ships yet: a card names a plugin's own parameters, which are
+read from a probe dump and measured by `profile_plugin`. Until then a rig
+writes its own in `craft/plugins/`.
+
+## Not known
+
+- Whether a plugin card and the per-plugin knowledge entry of
+  https://github.com/teemow/mcp-midi-controller/issues/167 are one record or
+  two.

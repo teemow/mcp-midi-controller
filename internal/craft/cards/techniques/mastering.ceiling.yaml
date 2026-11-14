@@ -1,0 +1,23 @@
+id: mastering.ceiling
+craft: mastering
+title: Hold the true peak under -1 dBTP with a limiter
+intent: >-
+  A limiter last in the chain keeps every peak under its ceiling, so the
+  master does not clip when it is encoded for streaming. Its gain is what
+  raises the loudness to the target, a step at a time while it is measured.
+when: Every master, last in its chain.
+when_not:
+  - A master for a medium that asks for another ceiling (-2 dBTP for a loud master that is encoded at a low bit rate).
+targets: master
+needs: [dynamics.limiter]
+set:
+  dynamics.limiter:
+    ceiling: -1
+    gain: 0
+    release: 100
+precision:
+  dynamics.limiter: {ceiling: 0.1, gain: 0.5}
+place: last
+verify:
+  measure: true_peak
+  at_most: -1

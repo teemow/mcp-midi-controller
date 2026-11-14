@@ -1,0 +1,22 @@
+id: mastering.mono_low_end
+craft: mastering
+title: Keep the low end mono
+intent: >-
+  Bass in the side signal cancels on a mono speaker and makes a club's subs
+  work against each other. Below about 120 Hz a mix loses nothing by being
+  mono.
+when: A master whose side signal carries bass (a wide pad, a stereo bass patch, a reverb's low end).
+when_not:
+  - A sparse acoustic piece whose low end is a room's and is meant to stay wide.
+targets: master
+needs: [stereo.mono_bass]
+set:
+  stereo.mono_bass:
+    freq: 120
+precision:
+  stereo.mono_bass: {freq: "20%"}
+place: after eq.highpass
+verify:
+  measure: side_share
+  band: [20, 120]
+  at_most: 5

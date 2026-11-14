@@ -1,0 +1,22 @@
+id: mastering.air
+craft: mastering
+title: Open the top with a gentle high shelf
+intent: >-
+  A dB or two above 10 kHz brings out air and detail without making the mix
+  harsh, where a master sounds dull beside its reference.
+when: A master darker above 8 kHz than its reference or its genre's tonal balance.
+when_not:
+  - A master that is harsh already (cymbals, sibilance, a bright saw lead); that is cut between 2 and 5 kHz in the mix.
+targets: master
+needs: [eq.high_shelf]
+set:
+  eq.high_shelf:
+    freq: 12000
+    gain: 1.5
+precision:
+  eq.high_shelf: {freq: "20%", gain: 0.5}
+place: before dynamics.compressor
+verify:
+  measure: band_level
+  band: [10000, 20000]
+  rises: 1
