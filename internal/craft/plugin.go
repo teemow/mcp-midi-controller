@@ -2,6 +2,7 @@ package craft
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -258,7 +259,10 @@ func compileParamMap(c Capability, cp Param, write string, f paramMapFile) (Para
 		if err != nil {
 			return m, fmt.Errorf("fixed: %v", err)
 		}
-		v, _ := e.Const()
+		v, ok := e.Const()
+		if !ok {
+			return m, fmt.Errorf("fixed: %s is not a number", e)
+		}
 		if v < cp.Min || v > cp.Max {
 			return m, fmt.Errorf("fixed: %g is outside %s's range %s", v, cp.Name, cp.Range())
 		}
@@ -296,8 +300,8 @@ func compileParamMap(c Capability, cp Param, write string, f paramMapFile) (Para
 		m.Value = e
 	}
 	if f.Range != nil {
-		if len(f.Range) != 2 || f.Range[0] >= f.Range[1] {
-			return m, fmt.Errorf("range: write [low, high] in the plugin's units, low below high")
+		if len(f.Range) != 2 || !finite(f.Range[0]) || !finite(f.Range[1]) || f.Range[0] >= f.Range[1] {
+			return m, fmt.Errorf("range: write [low, high] in the plugin's units, two finite numbers, low below high")
 		}
 		m.Range = f.Range
 	}
@@ -313,6 +317,8 @@ func (c *PluginCard) Provision(capability string) (Provision, bool) {
 	}
 	return Provision{}, false
 }
+
+func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 // rangeString renders a mapping range.
 func rangeString(r []float64) string {
