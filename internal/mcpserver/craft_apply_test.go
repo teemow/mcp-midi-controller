@@ -248,3 +248,39 @@ func TestApplyTechniqueVerify(t *testing.T) {
 		t.Errorf("the stored song lacks the limiter:\n%s", got)
 	}
 }
+
+// TestACraftJobHoldsTheRig: while a craft job plays, nothing else loads a
+// session or plays, as while a song's stems are recorded.
+func TestACraftJobHoldsTheRig(t *testing.T) {
+	s := newSongServer(t, WithCraftTools(true))
+	if res := call(t, s.handleSaveSong, map[string]any{"yaml": toolSong}); res.IsError {
+		t.Fatalf("save: %s", resultText(res))
+	}
+	job := &craftJob{tool: "profile_plugin", song: pluginLab, phase: "eq.highpass: freq at 160 (2 of 3)", done: make(chan struct{}), cancel: func() {}}
+	s.craftMu.Lock()
+	s.craftJob = job
+	s.craftMu.Unlock()
+	for name, h := range map[string]func() string{
+		"play_song": func() string { return resultText(call(t, s.handlePlaySong, map[string]any{"song": "night_drive"})) },
+		"load_song": func() string {
+			return resultText(call(t, s.handleLoadSong, map[string]any{"song": "night_drive", "confirm": true}))
+		},
+		"check_song": func() string { return resultText(call(t, s.handleCheckSong, map[string]any{"song": "night_drive"})) },
+		"mix_song":   func() string { return resultText(call(t, s.handleMixSong, map[string]any{"song": "night_drive"})) },
+		"mix_song_stems": func() string {
+			return resultText(call(t, s.handleMixSongStems, map[string]any{"song": "night_drive", "confirm": true}))
+		},
+		"open_sound_lab": func() string {
+			return resultText(call(t, s.handleOpenSoundLab, map[string]any{"plugins": []string{"syn1"}, "confirm": true}))
+		},
+	} {
+		if text := h(); !strings.Contains(text, name+": profile_plugin is running") {
+			t.Errorf("%s while a craft job runs: %s", name, text)
+		}
+	}
+	// Once it has ended, they run again.
+	close(job.done)
+	if text := resultText(call(t, s.handlePlaySong, map[string]any{"song": "night_drive"})); strings.Contains(text, "profile_plugin is running") {
+		t.Errorf("play_song after the craft job: %s", text)
+	}
+}

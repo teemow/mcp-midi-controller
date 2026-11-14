@@ -115,8 +115,13 @@ func (l *Library) Apply(t *Technique, target Target, rig Rig, env map[string]flo
 		default:
 			entry["place"] = map[string]any{"after": prev}
 		}
-		if target.Section != "" {
+		switch {
+		case target.Section != "":
 			entry["bypass"] = true
+		case existing:
+			// Applied everywhere, it plays everywhere: an effect a section's
+			// card declared bypassed is switched on (null drops the key).
+			entry["bypass"] = nil
 		}
 		entries[id] = entry
 		out.Effects = append(out.Effects, id)

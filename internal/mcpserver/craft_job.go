@@ -49,6 +49,23 @@ func (j *craftJob) finished() bool {
 	}
 }
 
+// craftBusy is the answer of a tool that would load a session or play while
+// a craft job runs, nil when none does: the job loads its own session and
+// plays its own passes, and either would land in what it measures (a card
+// written from another session's readings).
+func (s *Server) craftBusy(tool string) *mcp.CallToolResult {
+	s.craftMu.Lock()
+	j := s.craftJob
+	s.craftMu.Unlock()
+	if j == nil || j.finished() {
+		return nil
+	}
+	j.mu.Lock()
+	phase := j.phase
+	j.mu.Unlock()
+	return textResult(fmt.Sprintf("%s: %s is running (%s); get_craft_job follows it, stop_song ends it", tool, j.tool, phase), true)
+}
+
 // craftRun is a craft job's work: its report as text and as data.
 type craftRun func(ctx context.Context, job *craftJob) (text string, report any, err error)
 

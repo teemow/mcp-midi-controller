@@ -1,6 +1,7 @@
 package craft
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -142,5 +143,105 @@ func TestProposeSkipsWhatOnlyLooksAlike(t *testing.T) {
 	// Its ratio is a share of 1, another scale than 1..20: not matched.
 	if pv, ok := Propose(fab, Default()).Capabilities["dynamics.compressor"]; !ok || pv.Params["threshold"].Param != "Threshold" || pv.Params["ratio"].Param != "" {
 		t.Errorf("Pro-C 2: %+v", Propose(fab, Default()).Capabilities)
+	}
+}
+
+// TestOverKeepsWhatWasNotSwept: a profile replaces the rig's earlier card of
+// the plugin, and what that card says of the capabilities it did not sweep
+// stays, with its notes.
+func TestOverKeepsWhatWasNotSwept(t *testing.T) {
+	vocab := Default()
+	prev := []byte(`plugin: aufx/hpas/appl
+name: AUHighPassFilter
+capabilities:
+  eq.highpass:
+    write: cc
+    params:
+      freq: {param: Cutoff Frequency, range: [10, 400]}
+  eq.lowpass:
+    write: cc
+    params:
+      freq: Cutoff Frequency
+notes:
+  - Its resonance peaks at the cutoff.
+measured:
+  at: "2026-11-01T10:00:00Z"
+  by: profile_plugin
+  checks:
+    - "eq.highpass swept freq: band_level falls 2.00 dB"
+    - "eq.lowpass swept freq: brightness rises 900.00 Hz"
+`)
+	if _, err := ParsePluginCard(prev, vocab); err != nil {
+		t.Fatalf("the earlier card: %v", err)
+	}
+	now := Propose(appleHighPass, vocab)
+	now.Notes = []string{"Profiled at the tap."}
+	now.Measured = &Measured{At: "2026-11-14T12:00:00Z", By: "profile_plugin", Checks: []string{"eq.highpass swept freq: band_level falls 20.00 dB"}}
+	data, kept, err := now.Over(prev, []string{"eq.highpass"}, vocab)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0] != "eq.lowpass" {
+		t.Errorf("kept = %v, want eq.lowpass", kept)
+	}
+	card, err := ParsePluginCard(data, vocab)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, data)
+	}
+	if _, ok := card.Provision("eq.lowpass"); !ok {
+		t.Errorf("the capability that was not swept is gone:\n%s", data)
+	}
+	hp, _ := card.Provision("eq.highpass")
+	if m, _ := hp.Param("freq"); len(m.Range) != 2 || m.Range[1] != 2000 {
+		t.Errorf("the swept capability is not the one measured now: %+v", m)
+	}
+	if !slices.Contains(card.Notes, "Its resonance peaks at the cutoff.") || !slices.Contains(card.Notes, "Profiled at the tap.") {
+		t.Errorf("notes = %q", card.Notes)
+	}
+	want := []string{"eq.highpass swept freq: band_level falls 20.00 dB", "(2026-11-01T10:00:00Z) eq.lowpass swept freq: brightness rises 900.00 Hz"}
+	if card.Measured == nil || card.Measured.At != "2026-11-14T12:00:00Z" || !slices.Equal(card.Measured.Checks, want) {
+		t.Errorf("measured = %+v, want the checks %q", card.Measured, want)
+	}
+
+	// Without an earlier card it is the card as it renders.
+	data, kept, err = now.Over(nil, []string{"eq.highpass"}, vocab)
+	if err != nil || kept != nil {
+		t.Fatalf("without an earlier card: %v, %v", kept, err)
+	}
+	if rendered, _ := now.Render(vocab); string(data) != string(rendered) {
+		t.Errorf("without an earlier card:\n%s\nwant\n%s", data, rendered)
+	}
+}
+
+// TestSteps: the step size of every parameter a card sets over CC, over its
+// mapping range and along its travel.
+func TestSteps(t *testing.T) {
+	vocab := Default()
+	for _, tc := range []struct {
+		dump device.ProbeDump
+		want string
+	}{
+		// 60 dB over a linear travel: 128 values 0.472 dB apart.
+		{aCompressor, "dynamics.compressor threshold: a CC moves Threshold in steps of 0.472 dB at -60 to 0.472 dB at 0, along its linear travel over -60..0"},
+		// A log travel: the step grows with the cutoff.
+		{appleHighPass, "eq.highpass freq: a CC moves Cutoff Frequency in steps of "},
+	} {
+		data, err := Propose(tc.dump, vocab).Render(vocab)
+		if err != nil {
+			t.Fatal(err)
+		}
+		card, err := ParsePluginCard(data, vocab)
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := Steps(card, tc.dump)
+		if !slices.ContainsFunc(steps, func(s string) bool { return strings.HasPrefix(s, tc.want) }) {
+			t.Errorf("%s: steps = %q, want %q", tc.dump.Name, steps, tc.want)
+		}
+	}
+	data, _ := Propose(appleHighPass, vocab).Render(vocab)
+	card, _ := ParsePluginCard(data, vocab)
+	if steps := Steps(card, appleHighPass); len(steps) != 1 || !strings.HasSuffix(steps[0], "along its log travel over 10..2000") {
+		t.Errorf("AUHighPassFilter: steps = %q", steps)
 	}
 }

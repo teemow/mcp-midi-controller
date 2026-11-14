@@ -643,13 +643,14 @@ func (s *Server) stemsRunning() string {
 }
 
 // stemsBusy is the answer of a tool that would load a session or play while
-// a song's stems are being recorded, nil when none are: the recording loads
-// its own sessions and plays its own passes, and either would end a take.
+// a song's stems are being recorded, or while a craft job plays (craftBusy),
+// nil when neither runs: the recording and the job load their own sessions
+// and play their own passes, and either would end a take or spoil a reading.
 func (s *Server) stemsBusy(tool string) *mcp.CallToolResult {
 	if running := s.stemsRunning(); running != "" {
 		return textResult(fmt.Sprintf("%s: the stems of %q are being recorded, a session and a pass at a time (get_song_stems follows it); stop_song ends that recording", tool, running), true)
 	}
-	return nil
+	return s.craftBusy(tool)
 }
 
 func (s *Server) registerSongStemTools(songArg string) {
@@ -763,6 +764,9 @@ func (s *Server) handleRecordSongStems(_ context.Context, req *mcp.CallToolReque
 	s.mixMu.Unlock()
 	if measuring {
 		return textResult("record_song_stems: a mix measurement is running (get_song_mix); stop_song ends it", true), nil
+	}
+	if busy := s.craftBusy("record_song_stems"); busy != nil {
+		return busy, nil
 	}
 
 	s.stemsJobMu.Lock()
@@ -1270,6 +1274,9 @@ func (s *Server) handleMixSongStems(ctx context.Context, req *mcp.CallToolReques
 	id := song.ID(args.Song)
 	if running := s.stemsRunning(); running != "" {
 		return textResult(fmt.Sprintf("mix_song_stems: the stems of %q are being recorded (get_song_stems); stop_song ends it", running), true), nil
+	}
+	if busy := s.craftBusy("mix_song_stems"); busy != nil {
+		return busy, nil
 	}
 	kept, ok := loadSongStems()[id]
 	if !ok {
