@@ -4,7 +4,7 @@ package song
 // that AUM's mapping of it spans. A song's parameter value reaches its plugin
 // as a 7-bit CC, and without a range AUM spreads the CC's 128 steps over the
 // parameter's whole range: a frequency of 10 Hz to 30 kHz moves in steps of
-// about 235 Hz, and an 80 Hz high-pass cannot be set. With a range of 40 to
+// about 236 Hz, and an 80 Hz high-pass cannot be set. With a range of 40 to
 // 250 Hz the steps are about 1.7 Hz apart.
 //
 // The range is the session's, fixed per parameter where the plugin is
