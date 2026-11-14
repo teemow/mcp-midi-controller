@@ -23,7 +23,7 @@ that plays inside AUM.
 | 4. Play | `play_song`, `stop_song`, `get_song_playback` | The whole song from the session's sequencer, or live: from a section, or only some tracks. |
 | 5. Listen | `get_audio_tap`, `get_audio_clip` | The master strip carries a ProbeAudioTap, known to the daemon as `<session id>/master`. See [Taps](#taps). |
 | | `mix_song`, `get_song_mix` | The level of every bar, every section and every track. See [The mix](#the-mix). |
-| 6. Change | `get_song` → edit → `save_song` (or `patch_song` with `craft_tools: true`) | `get_song` and `save_song` return the song's `revision`; `patch_song` applies an id-keyed merge patch against that revision through `save_song` and refuses a stale one ([ADR 0002](adr/0002-patches-by-id-with-a-revision.md)). New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
+| 6. Change | `get_song` → edit → `save_song` (or `patch_song` with `craft_tools: true`) | `get_song` and `save_song` return the song's `revision`; `save_song` given that `revision` refuses to store over a song that has changed since, and `patch_song` applies an id-keyed merge patch against that revision through `save_song` and refuses a stale one ([ADR 0002](adr/0002-patches-by-id-with-a-revision.md)). See [Saving over a changed song](#saving-over-a-changed-song). New notes, patterns or arrangement play at once, live. The sequencer plays them after step 3. A change to what the song hosts or controls, to its tempo or to its session options needs step 3 before the song sounds right at all; `get_song` and `play_song` say when. |
 
 `check_song` tells at any time whether the loaded session will sound.
 `author_song_session` does only the first part of step 3: it builds the
@@ -907,6 +907,23 @@ problem with its place in the document:
   the MIDI range once it is shifted for its preset.
 
 `dry_run: true` checks without storing.
+
+### Saving over a changed song
+
+`save_song` replaces the stored song with the document it is given. When the
+document was read with `get_song`, pass the `revision` that came with it: the
+save is refused when the song is stored at another revision, because a
+`patch_song` or a craft tool's `apply` changed it in between, and the
+refusal names the stored revision, as `patch_song`'s does:
+
+```
+/revision: song "night_drive" is at revision 7c1e…, not 3fa0…: read it again with get_song and make the change against 7c1e…
+```
+
+Read the song again, make the change on what is stored now, and save with the
+new revision. A dry run checks the revision too. Without `revision`,
+`save_song` replaces the song whatever is stored, and a `revision` for a song
+that is not stored yet is refused.
 
 ## The session
 

@@ -95,8 +95,9 @@ a log scale for a frequency an Apple filter shows on one.
 A change to a song. It is a JSON merge patch (RFC 7386) in which tracks,
 effects and every other entry with an id are keyed by that id, the way scenes
 already address effects. A new entry carries its place (`first`, `last`,
-`after: <id>`), `null` removes an entry, and a list of values (a play list,
-the `arrangement`) is replaced whole. A patch names the revision it was made
+`after: <id>`), `null` removes an entry (an id the list does not have is
+refused), and a list of values (a play list, the `arrangement`) is replaced
+whole. A patch names the revision it was made
 against. Every craft tool returns one. `patch_song` stores it through
 `save_song`, and so does the tool itself when it is called with `apply: true`.
 [ADR 0002](docs/adr/0002-patches-by-id-with-a-revision.md).
@@ -115,7 +116,8 @@ config dir.
 
 The identity of a song's stored content. `get_song` and `save_song` return
 it. `patch_song` refuses a patch made against a revision that is no longer
-current, so a craft agent never overwrites a change it has not seen.
+current, and so does `save_song` when it is given the revision the document
+was made from, so a craft agent never overwrites a change it has not seen.
 [ADR 0002](docs/adr/0002-patches-by-id-with-a-revision.md).
 
 ## Rig

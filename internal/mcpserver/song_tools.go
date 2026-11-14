@@ -91,7 +91,7 @@ func (s *Server) registerSongTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name: "save_song",
-		Description: "Create or replace a song and return its revision. The document is checked before it is stored: every reference, every pattern (a miscounted bar is an error), and — against the staged AUv3 probes — every plugin, preset and parameter it names; problems come back with their place in the document and what would have matched. " +
+		Description: "Create or replace a song and return its revision. Pass the revision the document was made from (get_song's) to refuse the save when the stored song has changed since. The document is checked before it is stored: every reference, every pattern (a miscounted bar is an error), and — against the staged AUv3 probes — every plugin, preset and parameter it names; problems come back with their place in the document and what would have matched. " +
 			"The answer ends with a review of the song as music: its length, a fade-out at its end, sections heard unchanged several times, few tracks, and the sounds it shares with the other stored songs. That is advice and keeps nothing from being stored. " +
 			"Then load_song puts its session into AUM and play_song plays it. A song of more than 12 tracks has no session of its own and is checked stem by stem: record_song_stems and mix_song_stems play it.\n\n" + songFormat,
 		InputSchema: json.RawMessage(`{
@@ -100,6 +100,7 @@ func (s *Server) registerSongTools() {
 				"song": {"type": "string", "description": "Song id to store it under (default: from the title)."},
 				"yaml": {"type": "string", "description": "The song document as YAML text (kept verbatim, comments included)."},
 				"document": {"type": "object", "description": "The song document as an object (alternative to yaml)."},
+				"revision": {"type": "string", "description": "The stored song's revision this document was made from (from get_song, save_song or patch_song). The save is refused when the song is stored at another revision, so a change made in between (a patch_song or a craft tool's apply) is not overwritten unseen. Without it the stored song is replaced whatever its revision."},
 				"dry_run": {"type": "boolean", "description": "Check and compile the document without storing it."}
 			}
 		}`),
@@ -952,11 +953,34 @@ func (s *Server) describeSong(id string, sg *song.Song) (string, songSummary, er
 	return text, sum, nil
 }
 
+// staleRevision is the refusal of a change made against revision wantRev of
+// song id when the song is stored at curRev, or "" when the two match. A
+// change is "patch" for patch_song and "change" for save_song.
+func staleRevision(id, curRev, wantRev, change string) string {
+	if strings.EqualFold(curRev, wantRev) {
+		return ""
+	}
+	return fmt.Sprintf("/revision: song %q is at revision %s, not %s: read it again with get_song and make the %s against %s",
+		id, curRev, wantRev, change, curRev)
+}
+
+// checkSaveRevisionLocked refuses a save_song made against wantRev when the
+// stored song id is at another revision or not stored at all. Callers hold
+// s.songsMu.
+func (s *Server) checkSaveRevisionLocked(id, wantRev string) string {
+	_, raw, err := s.songs.Load(id)
+	if err != nil && raw == nil {
+		return fmt.Sprintf("/revision: song %q is not stored, so it has no revision %s: save it without revision to create it", id, wantRev)
+	}
+	return staleRevision(id, song.Revision(raw), wantRev, "change")
+}
+
 func (s *Server) handleSaveSong(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Song     string          `json:"song"`
 		YAML     string          `json:"yaml"`
 		Document json.RawMessage `json:"document"`
+		Revision string          `json:"revision"`
 		DryRun   bool            `json:"dry_run"`
 	}
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -989,7 +1013,16 @@ func (s *Server) handleSaveSong(_ context.Context, req *mcp.CallToolRequest) (*m
 	if id == "" {
 		return textResult("/song: give the song an id or a title", true), nil
 	}
+	wantRev := strings.TrimSpace(args.Revision)
 	if args.DryRun {
+		if wantRev != "" {
+			s.songsMu.Lock()
+			stale := s.checkSaveRevisionLocked(id, wantRev)
+			s.songsMu.Unlock()
+			if stale != "" {
+				return textResult(stale, true), nil
+			}
+		}
 		text, sum, _, err := s.saveSongLocked(id, data, true)
 		if err != nil {
 			return textResult(err.Error(), true), nil
@@ -997,6 +1030,12 @@ func (s *Server) handleSaveSong(_ context.Context, req *mcp.CallToolRequest) (*m
 		return structResult("checked "+text, map[string]any{"id": id, "saved": false, "summary": sum}), nil
 	}
 	s.songsMu.Lock()
+	if wantRev != "" {
+		if stale := s.checkSaveRevisionLocked(id, wantRev); stale != "" {
+			s.songsMu.Unlock()
+			return textResult(stale, true), nil
+		}
+	}
 	text, sum, rev, err := s.saveSongLocked(id, data, false)
 	s.songsMu.Unlock()
 	if err != nil {

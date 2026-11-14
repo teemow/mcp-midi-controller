@@ -17,14 +17,24 @@ import (
 // Maps merge recursively as in RFC 7386, with null removing a key. Lists whose
 // entries carry an id — tracks, a track's effects and modulators, the master
 // chain, and a stem strip's effects — are addressed in the patch as maps keyed
-// by that id: null removes the entry, an existing id merges in place (and moves
-// if place is given), and a new id inserts the entry at place ("first", "last",
-// "after: <id>" or "before: <id>", defaulting to "last"). Several entries placed
-// "first" (or "last") in one patch keep the patch's key order; the key order of
-// a JSON object is not guaranteed to survive (a craft tool's patch is sorted by
-// id), so chain entries with "after: <id>" when their order matters. Lists of
-// values (play lists, arrangement, notes, automation, events, pedal, depth,
-// locks, control_channels, a mapping range) are replaced whole.
+// by that id: null removes the entry (an id the list does not have is refused),
+// an existing id merges in place (and moves if place is given), and a new id
+// inserts the entry at place ("first", "last", "after: <id>" or "before: <id>",
+// defaulting to "last"). Several entries placed "first" (or "last") in one
+// patch keep the patch's key order; the key order of a JSON object is not
+// guaranteed to survive (a craft tool's patch is sorted by id), so chain
+// entries with "after: <id>" when their order matters. Lists of values (play
+// lists, arrangement, notes, automation, events, pedal, depth, locks,
+// control_channels, a mapping range) are replaced whole.
+//
+// A patch changes only the places it names, whatever YAML anchors (&name),
+// aliases (*name) and merge keys (<<) the song uses. A value the patch changes
+// through an alias becomes a copy of the value the alias names, changed there
+// only; the aliases of an anchored value the patch changes, moves before the
+// anchor or removes become copies of the value as it was; and a mapping the
+// patch changes has its merge keys written out as the keys they bring. Anchors
+// and aliases the patch does not reach stay as they are. A patch itself has no
+// anchors, aliases or merge keys.
 //
 // Comments on untouched parts of songYAML are kept. The patched document is
 // written out again with a 2-space indent, so the first patch normalizes the
@@ -39,7 +49,7 @@ func Patch(songYAML, patchData []byte) ([]byte, error) {
 		return nil, err
 	}
 	patchRoot := patchDoc.Content[0]
-	if err := checkUniqueKeys(patchRoot, nil); err != nil {
+	if err := checkPatchNode(patchRoot, nil); err != nil {
 		return nil, err
 	}
 	if len(patchRoot.Content) == 0 {
@@ -49,8 +59,13 @@ func Patch(songYAML, patchData []byte) ([]byte, error) {
 		return bytes.Clone(songYAML), nil
 	}
 
-	songRoot := songDoc.Content[0]
+	songRoot := own(songDoc, songDoc.Content[0])
+	songDoc.Content[0] = songRoot
+	prepare(songDoc, songRoot, patchRoot, nil)
 	if err := mergeMapping(songRoot, patchRoot, nil); err != nil {
+		return nil, err
+	}
+	if err := relinkAliases(songDoc); err != nil {
 		return nil, err
 	}
 
@@ -92,12 +107,27 @@ func decodeMappingDoc(label string, data []byte) (*yaml.Node, error) {
 	return &doc, nil
 }
 
-func checkUniqueKeys(n *yaml.Node, segs []string) error {
+// checkPatchNode refuses duplicate keys, keys that are not strings, and the
+// anchors, aliases and merge keys a patch has no use for: a patch names each
+// value it sets in its place.
+func checkPatchNode(n *yaml.Node, segs []string) error {
+	if n.Kind == yaml.AliasNode {
+		return fmt.Errorf("%s: a patch cannot use an alias (*%s): write the value out", pointerOf(segs), n.Value)
+	}
+	if n.Anchor != "" {
+		return fmt.Errorf("%s: a patch cannot set an anchor (&%s)", pointerOf(segs), n.Anchor)
+	}
 	switch n.Kind {
 	case yaml.MappingNode:
 		seen := make(map[string]bool, len(n.Content)/2)
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
+			if isMergeKey(k) {
+				return fmt.Errorf("%s: a patch cannot use a merge key (<<): write the keys out", pointerOf(segs))
+			}
+			if k.Anchor != "" {
+				return fmt.Errorf("%s: a patch cannot set an anchor (&%s)", pointerOf(appendSeg(segs, k.Value)), k.Anchor)
+			}
 			if k.Kind != yaml.ScalarNode {
 				return fmt.Errorf("%s: mapping key must be a string", pointerOf(segs))
 			}
@@ -105,13 +135,13 @@ func checkUniqueKeys(n *yaml.Node, segs []string) error {
 				return fmt.Errorf("%s: duplicate key %q in patch", pointerOf(appendSeg(segs, k.Value)), k.Value)
 			}
 			seen[k.Value] = true
-			if err := checkUniqueKeys(v, appendSeg(segs, k.Value)); err != nil {
+			if err := checkPatchNode(v, appendSeg(segs, k.Value)); err != nil {
 				return err
 			}
 		}
 	case yaml.SequenceNode:
 		for i, c := range n.Content {
-			if err := checkUniqueKeys(c, appendSeg(segs, fmt.Sprint(i))); err != nil {
+			if err := checkPatchNode(c, appendSeg(segs, fmt.Sprint(i))); err != nil {
 				return err
 			}
 		}
@@ -119,11 +149,229 @@ func checkUniqueKeys(n *yaml.Node, segs []string) error {
 	return nil
 }
 
+// prepare makes each node of the song that patch changes its own (own), top
+// down and before anything is merged, so every copy an alias or an anchor
+// needs holds the value from before the patch. It follows the patch the way
+// mergeMapping does and leaves what does not fit for mergeMapping to refuse.
+func prepare(doc, target, patch *yaml.Node, segs []string) {
+	for i := 0; i+1 < len(patch.Content); i += 2 {
+		key, val := patch.Content[i].Value, patch.Content[i+1]
+		if val.Kind != yaml.MappingNode {
+			continue
+		}
+		existing, idx := mapLookup(target, key)
+		if idx < 0 {
+			continue
+		}
+		existing = own(doc, existing)
+		target.Content[idx] = existing
+		childSegs := appendSeg(segs, key)
+		spec := idListSpecFor(segs, key)
+		switch {
+		case spec != nil && existing.Kind == yaml.SequenceNode:
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				id, entryPatch := val.Content[j].Value, val.Content[j+1]
+				if entryPatch.Kind != yaml.MappingNode {
+					continue
+				}
+				for k, item := range existing.Content {
+					if deref(item).Kind == yaml.MappingNode && spec.entryID(item) == id {
+						item = own(doc, item)
+						existing.Content[k] = item
+						prepare(doc, item, entryPatch, appendSeg(childSegs, id))
+						break
+					}
+				}
+			}
+		case spec == nil && existing.Kind == yaml.MappingNode:
+			prepare(doc, existing, val, childSegs)
+		}
+	}
+}
+
+// own makes n safe to change in place and returns the node to change, which
+// the caller puts where n was. An alias becomes a copy of the value it names,
+// so the change stays in this place. The aliases of an anchored n become
+// copies of n as it is now, so they keep their value. The merge keys (<<) of a
+// mapping become the keys they bring, so a patch can change or remove those
+// like the mapping's own.
+func own(doc, n *yaml.Node) *yaml.Node {
+	switch {
+	case n.Kind == yaml.AliasNode:
+		n = expandAlias(n)
+	case n.Anchor != "":
+		expandAliasesOf(doc, n)
+	}
+	if n.Kind == yaml.MappingNode {
+		expandMergeKeys(n)
+	}
+	return n
+}
+
+// expandAlias returns a copy of the value alias names, without anchors, that
+// carries the alias's comments.
+func expandAlias(alias *yaml.Node) *yaml.Node {
+	cp := detachedCopy(alias.Alias)
+	cp.HeadComment, cp.LineComment, cp.FootComment = alias.HeadComment, alias.LineComment, alias.FootComment
+	return cp
+}
+
+// expandAliasesOf replaces every alias of target in doc with a copy of target.
+func expandAliasesOf(doc, target *yaml.Node) {
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		for i, c := range n.Content {
+			if c.Kind == yaml.AliasNode && c.Alias == target {
+				n.Content[i] = expandAlias(c)
+				continue
+			}
+			walk(c)
+		}
+	}
+	walk(doc)
+}
+
+// relinkAliases makes every alias in doc name the value it named before the
+// patch. An alias whose anchored value the patch removed or replaced, or moved
+// after it, or that would now name another value of the same anchor, becomes
+// a copy of the value it named.
+func relinkAliases(doc *yaml.Node) error {
+	anchored := map[string]*yaml.Node{}
+	var expanding []*yaml.Node
+	var walk func(n *yaml.Node) error
+	walk = func(n *yaml.Node) error {
+		if n.Anchor != "" {
+			anchored[n.Anchor] = n
+		}
+		for i, c := range n.Content {
+			if c.Kind != yaml.AliasNode || anchored[c.Value] == c.Alias {
+				if err := walk(c); err != nil {
+					return err
+				}
+				continue
+			}
+			if slices.Contains(expanding, c.Alias) {
+				return fmt.Errorf("parse song: alias *%s is inside the value it names", c.Value)
+			}
+			cp := expandAlias(c)
+			n.Content[i] = cp
+			expanding = append(expanding, c.Alias)
+			err := walk(cp)
+			expanding = expanding[:len(expanding)-1]
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(doc)
+}
+
+// detachedCopy copies n without its anchors. Aliases inside n stay aliases.
+func detachedCopy(n *yaml.Node) *yaml.Node {
+	cp := cloneNode(n)
+	var clear func(n *yaml.Node)
+	clear = func(n *yaml.Node) {
+		n.Anchor = ""
+		for _, c := range n.Content {
+			clear(c)
+		}
+	}
+	clear(cp)
+	return cp
+}
+
+// deref follows an alias to the value it names.
+func deref(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
+}
+
+// isMergeKey tells a merge key (<<), as yaml.v3 does.
+func isMergeKey(k *yaml.Node) bool {
+	return k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.Tag == "!!merge")
+}
+
+// expandMergeKeys writes out the merge keys of mapping m as the keys they
+// bring that m does not set itself, in the merge key's place.
+func expandMergeKeys(m *yaml.Node) {
+	if !slices.ContainsFunc(keysOf(m), isMergeKey) {
+		return
+	}
+	have := map[string]bool{}
+	for _, k := range keysOf(m) {
+		if !isMergeKey(k) {
+			have[keyName(k)] = true
+		}
+	}
+	out := make([]*yaml.Node, 0, len(m.Content))
+	seen := map[*yaml.Node]bool{m: true}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		k, v := m.Content[i], m.Content[i+1]
+		if !isMergeKey(k) {
+			out = append(out, k, v)
+			continue
+		}
+		for _, kv := range mergedPairs(v, seen) {
+			if name := keyName(kv[0]); !have[name] {
+				have[name] = true
+				out = append(out, detachedCopy(kv[0]), detachedCopy(kv[1]))
+			}
+		}
+	}
+	m.Content = out
+}
+
+// mergedPairs returns the key-value pairs a merge key's value brings, in the
+// order that decides which one wins: a mapping's own keys before those it
+// merges, an earlier mapping before a later one.
+func mergedPairs(v *yaml.Node, seen map[*yaml.Node]bool) [][2]*yaml.Node {
+	v = deref(v)
+	srcs := []*yaml.Node{v}
+	if v.Kind == yaml.SequenceNode {
+		srcs = srcs[:0]
+		for _, c := range v.Content {
+			srcs = append(srcs, deref(c))
+		}
+	}
+	var out [][2]*yaml.Node
+	for _, src := range srcs {
+		if src.Kind != yaml.MappingNode || seen[src] {
+			continue
+		}
+		seen[src] = true
+		var merged [][2]*yaml.Node
+		for i := 0; i+1 < len(src.Content); i += 2 {
+			if k := src.Content[i]; isMergeKey(k) {
+				merged = append(merged, mergedPairs(src.Content[i+1], seen)...)
+			} else {
+				out = append(out, [2]*yaml.Node{k, src.Content[i+1]})
+			}
+		}
+		out = append(out, merged...)
+	}
+	return out
+}
+
+func keysOf(m *yaml.Node) []*yaml.Node {
+	keys := make([]*yaml.Node, 0, len(m.Content)/2)
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		keys = append(keys, m.Content[i])
+	}
+	return keys
+}
+
+// keyName is the string a mapping key stands for, through an alias.
+func keyName(k *yaml.Node) string { return deref(k).Value }
+
 type idListSpec struct {
 	label             string
 	requireExplicitID bool
 }
 
+// entryID is the id of a list entry, read through an alias and merge keys.
 func (s *idListSpec) entryID(m *yaml.Node) string {
 	if id := mapScalar(m, "id"); id != "" {
 		return id
@@ -254,7 +502,7 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 	items := make([]*yaml.Node, 0, len(seq.Content))
 	seenExisting := make(map[string]bool, len(seq.Content))
 	for idx, item := range seq.Content {
-		if item.Kind != yaml.MappingNode {
+		if deref(item).Kind != yaml.MappingNode {
 			return fmt.Errorf("%s/%d: expected an object entry, found %s", pointerOf(segs), idx, nodeKindName(item))
 		}
 		id := spec.entryID(item)
@@ -278,7 +526,9 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 	}
 
 	// Pass 1: apply null removals so freed ids or removed anchors are settled
-	// before updates and insertions run.
+	// before updates and insertions run. Removing an id the list does not have
+	// is refused, so a typo or an index ("0") does not pass for a removal.
+	stored := idsOf(items, spec)
 	for i := 0; i+1 < len(patchMap.Content); i += 2 {
 		key, val := patchMap.Content[i].Value, patchMap.Content[i+1]
 		if strings.TrimSpace(key) == "" {
@@ -287,9 +537,11 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 		if !isNullNode(val) {
 			continue
 		}
-		if idx := findItem(key); idx >= 0 {
-			items = slices.Delete(items, idx, idx+1)
+		idx := findItem(key)
+		if idx < 0 {
+			return fmt.Errorf("%s: no entry %q to remove (have %s)", pointerOf(appendSeg(segs, key)), key, stored)
 		}
+		items = slices.Delete(items, idx, idx+1)
 	}
 
 	// Pass 2: merge updates into existing entries and prepare new or moved
@@ -390,21 +642,25 @@ func patchIDList(seq, patchMap *yaml.Node, segs []string, spec *idListSpec) erro
 						pointerOf(first.segs), first.id, first.place.anchor)
 				}
 			}
-			have := "none"
-			if len(items) > 0 {
-				ids := make([]string, len(items))
-				for i, it := range items {
-					ids[i] = spec.entryID(it)
-				}
-				have = strings.Join(ids, ", ")
-			}
-			return fmt.Errorf("%s/place: no entry %q (have %s)", pointerOf(first.segs), first.place.anchor, have)
+			return fmt.Errorf("%s/place: no entry %q (have %s)", pointerOf(first.segs), first.place.anchor, idsOf(items, spec))
 		}
 		pending = rest
 	}
 
 	seq.Content = items
 	return nil
+}
+
+// idsOf names the ids of a list's entries, or "none".
+func idsOf(items []*yaml.Node, spec *idListSpec) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = spec.entryID(it)
+	}
+	return strings.Join(ids, ", ")
 }
 
 func checkPatchEntryID(cleanPatch *yaml.Node, key string, existing bool, segs []string, spec *idListSpec) error {
@@ -570,6 +826,7 @@ func isNullNode(n *yaml.Node) bool {
 }
 
 func nodeKindName(n *yaml.Node) string {
+	n = deref(n)
 	if n == nil || isNullNode(n) {
 		return "null"
 	}
@@ -583,17 +840,29 @@ func nodeKindName(n *yaml.Node) string {
 	}
 }
 
+// mapLookup finds the value of one of m's own keys and its index in m.Content.
 func mapLookup(m *yaml.Node, key string) (*yaml.Node, int) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
+		if !isMergeKey(m.Content[i]) && keyName(m.Content[i]) == key {
 			return m.Content[i+1], i + 1
 		}
 	}
 	return nil, -1
 }
 
+// mapScalar reads a scalar of m, through aliases and the keys m merges.
 func mapScalar(m *yaml.Node, key string) string {
+	m = deref(m)
 	v, _ := mapLookup(m, key)
+	if v == nil {
+		for _, kv := range mergedPairs(m, map[*yaml.Node]bool{}) {
+			if keyName(kv[0]) == key {
+				v = kv[1]
+				break
+			}
+		}
+	}
+	v = deref(v)
 	if v == nil || v.Kind != yaml.ScalarNode || isNullNode(v) {
 		return ""
 	}
@@ -621,7 +890,7 @@ func mapPrependScalar(m *yaml.Node, key, val string) {
 
 func mapDelete(m *yaml.Node, key string) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
+		if !isMergeKey(m.Content[i]) && keyName(m.Content[i]) == key {
 			m.Content = slices.Delete(m.Content, i, i+2)
 			return
 		}

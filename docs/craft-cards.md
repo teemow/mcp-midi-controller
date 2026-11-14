@@ -224,7 +224,8 @@ it leaves out come after the ones it names, by name.
   through `save_song`, refusing a patch whose `revision` is no longer current.
   Tracks, a track's `effects` and `modulators`, `master` and `stems.<stem>.effects`
   are addressed by id (`place`: `first`, `last`, `after: <id>`, `before: <id>`;
-  `null` removes an entry; several entries placed `first` or `last` keep the
+  `null` removes an entry, and an id the list does not have is refused;
+  several entries placed `first` or `last` keep the
   patch's key order); lists of values (play lists, `arrangement`) are
   replaced whole. Every craft tool answers in one `craft.Answer` shape (`craft`,
   `techniques`, `patch`, `revision`, `why`, `checks`, `applied`), whose
